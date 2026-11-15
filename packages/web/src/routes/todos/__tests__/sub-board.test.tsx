@@ -1,15 +1,16 @@
 import "@/test/preload-dialogs"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkItemCompactWire, WorkItemStatusWire, WorkItemTreeNodeWire, WorkItemTreeWire } from "@/lib/api"
 import type { BoardRole } from "@/lib/accounts-api"
 import { BOARD_FILTERS_STORAGE_KEY } from "@/lib/todos"
 import { TodoBoard } from "../board/board-page"
-import { clearBoardScrollCache } from "../board/board-route"
+import { clearBoardScrollCache, type BoardId } from "../board/board-route"
 import SubBoardDialog from "../board/sub-board-dialog"
 import { SubBoardLocationProvider } from "../board/sub-board-location"
+import { useSubBoardRoot } from "../board/sub-board-root"
 
 /* A Todo's sub-Todos as a board: the same board over the sub-board location, scoped to one Todo, its own header in
  * place of the title, none of the main board's chrome, and filters that stay in the pop-up. */
@@ -24,18 +25,21 @@ vi.mock("@/routes/settings-provider", () => ({ useSettings: () => ({ settings: {
 vi.mock("@/hooks/use-gateway", () => ({ useGateway: () => ({ connectionSeq: 1, subscribe: () => () => {} }) }))
 
 const listWorkItems = vi.fn()
+const getWorkItemTrees = vi.fn()
 const createWorkItem = vi.fn()
+const updateWorkItem = vi.fn()
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>()
   return {
     ...actual,
     api: {
       listWorkItems: (...args: unknown[]) => listWorkItems(...args),
-      getWorkItemTrees: async (ids: string[]) => ({ trees: Object.fromEntries(ids.map((id) => [id, treeOf(id)])) }),
+      getWorkItemTrees: (...args: unknown[]) => getWorkItemTrees(...args),
       getWorkItems: async () => ({ workItems: [] }),
       getDepartments: async () => ({ departments: [{ slug: "platform", prefix: "TSK", createdAt: "", todoCount: 4 }] }),
       getOrg: async () => ({ departments: ["platform"], employees: [{ name: "scout", displayName: "Scout", department: "platform", rank: "senior" }] }),
       createWorkItem: (...args: unknown[]) => createWorkItem(...args),
+      updateWorkItem: (...args: unknown[]) => updateWorkItem(...args),
     },
   }
 })
@@ -65,6 +69,7 @@ function treeOf(id: string): WorkItemTreeWire {
   const item = [CHILD, SIBLING, GRANDCHILD].find((candidate) => candidate.id === id) ?? ROOT
   return { root: node(item), totals: { [item.status]: 1 }, spendUsd: 0 }
 }
+const treesFor = (ids: string[]) => ({ trees: Object.fromEntries(ids.map((id) => [id, treeOf(id)])) })
 
 /** A sub-Todo may name another department than its root's. */
 let childDepartment = "platform"
@@ -106,6 +111,8 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   listWorkItems.mockImplementation(async (params: ListParams) => serve(params))
+  getWorkItemTrees.mockImplementation(async (ids: string[]) => treesFor(ids))
+  updateWorkItem.mockResolvedValue({ workItem: { ...CHILD, rank: 1024 } })
 })
 
 describe("the sub-board's data", () => {
@@ -227,6 +234,64 @@ describe("the sub-board's chrome", () => {
     await waitFor(() => expect(createWorkItem).toHaveBeenCalledTimes(1))
     // A child takes its department from its parent, so none is sent; it is born in the backlog like any new Todo.
     expect(createWorkItem.mock.calls[0][0]).toEqual({ title: "Back-fill the table", parentId: "TSK-1" })
+  })
+})
+
+describe("the sub-board's root read", () => {
+  it("offers a retry when the root's tree read fails, rather than calling the Todo not available", async () => {
+    let failed = false
+    getWorkItemTrees.mockImplementation(async (ids: string[]) => {
+      if (!failed && ids.length === 1 && ids[0] === "TSK-1") {
+        failed = true
+        throw Object.assign(new Error("boom"), { status: 500 })
+      }
+      return treesFor(ids)
+    })
+    renderSubBoard()
+    await waitFor(() => expect(screen.getByTestId("sub-board-root-title").textContent).toBe("This Todo could not be loaded"))
+    expect(screen.queryByText("This Todo is not available")).toBeNull()
+    fireEvent.click(screen.getByTestId("sub-board-retry"))
+    await waitFor(() => expect(screen.getByTestId("sub-board-root-title").textContent).toBe("Ship the importer"))
+    expect(screen.queryByTestId("sub-board-retry")).toBeNull()
+  })
+
+  it("keeps the not-available message for a Todo that is genuinely not there", async () => {
+    getWorkItemTrees.mockResolvedValue({ trees: {} })
+    renderSubBoard()
+    await waitFor(() => expect(screen.getByTestId("sub-board-root-title").textContent).toBe("This Todo is not available"))
+    expect(screen.queryByTestId("sub-board-retry")).toBeNull()
+  })
+
+  it("does not call a Todo missing while the previous root's tree is only a placeholder", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // The new root's read never lands: the only tree in hand is the previous key's, which must not answer for it.
+    getWorkItemTrees.mockImplementation((ids: string[]) => ids[0] === "TSK-1"
+      ? Promise.resolve(treesFor(ids))
+      : new Promise(() => {}))
+    const { result, rerender } = renderHook(
+      ({ board }: { board: BoardId }) => useSubBoardRoot(board),
+      {
+        wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+        initialProps: { board: { kind: "subtree", rootId: "TSK-1", depth: "children" } as BoardId },
+      },
+    )
+    await waitFor(() => expect(result.current.tree?.root.id).toBe("TSK-1"))
+    rerender({ board: { kind: "subtree", rootId: "TSK-2", depth: "children" } })
+    expect(result.current.tree).toBeUndefined()
+    expect(result.current.missing).toBe(false)
+  })
+})
+
+describe("reordering on All levels", () => {
+  it("writes no rank inside a column that mixes sibling groups", async () => {
+    renderSubBoard("all")
+    // TSK-2 hangs from the root and TSK-4 from TSK-2, yet share the To do column: the gap between them is not a
+    // sibling position either Todo can keep, so the flat board declines the reorder.
+    const card = await screen.findByTestId("board-card-TSK-2")
+    await act(async () => {
+      fireEvent.keyDown(card, { key: "ArrowDown", metaKey: true })
+    })
+    expect(updateWorkItem).not.toHaveBeenCalled()
   })
 })
 

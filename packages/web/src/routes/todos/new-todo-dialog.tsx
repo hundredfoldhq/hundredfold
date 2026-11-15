@@ -57,6 +57,9 @@ export function NewTodoDialog({
   const [body, setBody] = useState("")
   const seededParent = defaults?.parentId ?? ""
   const [parentId, setParentId] = useState(seededParent)
+  // A seeded parent is a sub-board's "+ New": the new Todo lives under it, so its board is the parent's and the
+  // department is not a choice. Clearing the parent returns it to a board-level create, chip and all.
+  const underSeededParent = seededParent !== "" && parentId.trim() !== ""
   const seededDepartment = seededParent ? null : creatableDepartment(defaults?.departments ?? [], defaults?.department)
   const [department, setDepartment] = useState<string | null>(seededDepartment)
   const [assignee, setAssignee] = useState<string | null>(null)
@@ -261,7 +264,7 @@ export function NewTodoDialog({
           >
             {desktopPicker("person")}
           </PropertyChip>
-          <PropertyChip
+          {!underSeededParent && <PropertyChip
             icon={<Building2 size={13} aria-hidden />}
             label={department ? department.charAt(0).toUpperCase() + department.slice(1) : "Department"}
             testId="todo-new-department-chip"
@@ -269,7 +272,7 @@ export function NewTodoDialog({
             onClick={() => togglePicker("department")}
           >
             {desktopPicker("department", Math.max(0, offeredDepartments(defaults?.departments ?? [], department).findIndex((item) => item.slug === department)))}
-          </PropertyChip>
+          </PropertyChip>}
           <PropertyChip
             icon={<Flag size={13} aria-hidden />}
             label={priority ? priorityLabel(priority) : "Priority"}

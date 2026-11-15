@@ -32,7 +32,7 @@ const departments = [
   { slug: "operations", prefix: "OPS", createdAt: "2026-07-01T00:00:00.000Z", todoCount: 3 },
 ]
 
-function renderDialog(overrides: { onCreated?: () => void; departments?: typeof departments } = {}) {
+function renderDialog(overrides: { onCreated?: () => void; departments?: typeof departments; parentId?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const onCreated = vi.fn(overrides.onCreated)
   render(
@@ -40,7 +40,7 @@ function renderDialog(overrides: { onCreated?: () => void; departments?: typeof 
       <NewTodoDialog
         onClose={vi.fn()}
         onCreated={onCreated}
-        defaults={{ employees, departments: overrides.departments ?? departments, department: "platform" }}
+        defaults={{ employees, departments: overrides.departments ?? departments, department: "platform", parentId: overrides.parentId }}
       />
     </QueryClientProvider>,
   )
@@ -129,6 +129,17 @@ describe("NewTodoDialog", () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
     expect(createWorkItem.mock.calls[0][0]).not.toHaveProperty("department")
+  })
+
+  it("does not offer a Department chip for a Todo filed under a seeded parent", async () => {
+    const user = userEvent.setup()
+    const { onCreated } = renderDialog({ parentId: "TSK-1" })
+    // The sub-board's "+ New": the Todo lives under the root, so its board is the parent's, not a choice.
+    expect(screen.queryByTestId("todo-new-department-chip")).toBeNull()
+    await user.type(screen.getByTestId("todo-new-title"), "Pick the column types")
+    await user.click(screen.getByTestId("todo-new-create"))
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
+    expect(createWorkItem).toHaveBeenCalledWith({ title: "Pick the column types", parentId: "TSK-1" })
   })
 
   it("uses command-enter to create and close", async () => {

@@ -798,6 +798,20 @@ describe("card anatomy", () => {
   })
 })
 
+describe("in-column reorder", () => {
+  it("writes a sibling rank on a board whose column holds one sibling group", async () => {
+    rows.backlog = [compact({ id: "TSK-1", status: "backlog" }), compact({ id: "TSK-2", status: "backlog" })]
+    updateWorkItem.mockResolvedValue({ workItem: compact({ id: "TSK-1", status: "backlog", rank: 0 }) })
+    renderBoard("/todos/b/platform")
+    fireEvent.keyDown(await screen.findByTestId("board-card-TSK-1"), { key: "ArrowDown", metaKey: true })
+    await waitFor(() => expect(updateWorkItem).toHaveBeenCalledTimes(1))
+    expect(updateWorkItem.mock.calls[0][0]).toBe("TSK-1")
+    const written = updateWorkItem.mock.calls[0][1] as { patch: { rank: unknown }; expectedVersion: number }
+    expect(written.expectedVersion).toBe(3)
+    expect(typeof written.patch.rank).toBe("number")
+  })
+})
+
 describe("the switcher-in-title", () => {
   it("renders the board title as the menu trigger and lists attention, departments, everything", async () => {
     rows.backlog = [compact({ id: "TSK-1", status: "backlog" })]

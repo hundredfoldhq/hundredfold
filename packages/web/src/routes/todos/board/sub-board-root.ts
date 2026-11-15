@@ -8,6 +8,10 @@ export interface SubBoardRoot {
   tree: WorkItemTreeWire | undefined
   /** The tree answered and the Todo is not in it: unknown, or not one this person may read. */
   missing: boolean
+  /** The tree read itself failed — a transient 500 is not an unknown Todo, and the header offers a retry rather than calling it missing. */
+  error: boolean
+  /** Read the root's tree again, for the header's retry. */
+  retry: () => void
   /** The department of the Todo's own root, which is the board a member's abilities come from. Null until it lands. */
   department: string | null
   /** Every Todo below the root by id, so a card can name its parent without a fetch of its own. */
@@ -43,9 +47,13 @@ export function useSubBoardRoot(board: BoardId): SubBoardRoot {
   const tree = rootId ? trees.data?.get(rootId) : undefined
   const department = useRootDepartment(tree)
   const titleById = useMemo(() => (tree ? titlesBelow(tree.root) : NONE), [tree])
+  // A placeholder is the previous key's data, not this Todo's answer: it must not read as missing while it lands.
+  const answered = trees.isSuccess && !trees.isPlaceholderData
   return {
     tree,
-    missing: rootId !== null && !trees.isPending && !tree,
+    missing: rootId !== null && !tree && answered,
+    error: rootId !== null && !tree && trees.isError,
+    retry: () => { void trees.refetch() },
     department,
     titleById,
   }
