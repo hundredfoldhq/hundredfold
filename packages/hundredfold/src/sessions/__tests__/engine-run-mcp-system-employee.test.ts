@@ -17,10 +17,11 @@ import { resolveEngineRunMcp, resolveSessionEngineMcp } from "../engine-run-mcp.
 import { resolveMcpServers } from "../../mcp/resolver.js";
 
 /**
- * A built-in system employee (the Todo Dispatcher, the Todo Shaper) is staged
- * exactly `hundredfold` and `browser`, like any employee that lists those two. It must
- * not receive the instance's custom servers, on any engine and on any path that
- * resolves a session's MCP set: a turn, the terminal view, a fallback hop.
+ * A built-in system employee (the Todo Dispatcher, the Todo Shaper) is staged the company
+ * belt and nothing else: its own list names `hundredfold` alone, so the browser and the
+ * instance's custom servers stay off every path that resolves a session's MCP set: a turn,
+ * the terminal view, a fallback hop. Every browser tool schema staged on a run that never
+ * browses is tokens spent for nothing.
  */
 
 const config = {
@@ -62,22 +63,22 @@ function systemEmployee(name: string): Employee {
 const names = (mcp: { mcpServers: Record<string, unknown> } | undefined) => Object.keys(mcp?.mcpServers ?? {}).sort();
 
 describe.each(["todo-dispatcher", "todo-shaper"])("MCP set of the system employee %s", (name) => {
-  it("is hundredfold and browser on a turn, never a custom server, on opencode", () => {
+  it("is only hundredfold on a turn: no browser, no custom server, on opencode", () => {
     const run = resolveEngineRunMcp({ config, employee: systemEmployee(name), engine: "opencode", sessionId: "sys-turn" });
-    expect(names(run.resolvedMcp)).toEqual(["browser", "hundredfold"]);
+    expect(names(run.resolvedMcp)).toEqual(["hundredfold"]);
   });
 
   it("is the same on the terminal view and a fallback hop", () => {
     const employee = systemEmployee(name);
     const view = resolveSessionEngineMcp({ config, session: { id: "sys-view" }, employee, engine: "opencode" });
     const hop = resolveEngineRunMcp({ config, employee, engine: "codex", sessionId: "sys-hop" });
-    expect(names(view.resolvedMcp)).toEqual(["browser", "hundredfold"]);
-    expect(names(hop.resolvedMcp)).toEqual(["browser", "hundredfold"]);
+    expect(names(view.resolvedMcp)).toEqual(["hundredfold"]);
+    expect(names(hop.resolvedMcp)).toEqual(["hundredfold"]);
   });
 
   it("is the same on claude", () => {
     const run = resolveEngineRunMcp({ config, employee: systemEmployee(name), engine: "claude", sessionId: "sys-claude" });
-    expect(names(run.resolvedMcp)).toEqual(["browser", "hundredfold"]);
+    expect(names(run.resolvedMcp)).toEqual(["hundredfold"]);
   });
 });
 

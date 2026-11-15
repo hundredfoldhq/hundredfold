@@ -16,11 +16,15 @@ export const TODO_DISPATCHER_NAME = "todo-dispatcher";
 export const TODO_SHAPER_NAME = "todo-shaper";
 
 /**
- * The MCP servers a built-in system employee gets: the company belt and the browser, like any
- * employee that lists those two. An employee that declares no `mcp` is staged every enabled
- * instance server, so the built-ins name theirs; the org override never carries `mcp`.
+ * The MCP servers a built-in system employee gets: the company belt and nothing else. An
+ * employee that declares no `mcp` is staged every enabled instance server, so the built-ins
+ * name theirs; the org override never carries `mcp`.
+ *
+ * The browser was on this list until it cost every run tokens for nothing: each server's whole
+ * tool schema is injected into the session, and the Dispatcher (read a Todo, hand it on) and the
+ * Shaper (write a Todo) never open a page. Anything they need is on the company belt.
  */
-const SYSTEM_EMPLOYEE_MCP: readonly string[] = ["hundredfold", "browser"];
+const SYSTEM_EMPLOYEE_MCP: readonly string[] = ["hundredfold"];
 
 export const SYSTEM_EMPLOYEES: readonly SystemEmployeeDefinition[] = [
   {
