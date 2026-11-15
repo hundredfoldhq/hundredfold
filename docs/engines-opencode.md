@@ -235,6 +235,7 @@ A provider call that fails is read from opencode's own error, `{type, message, s
 | HTTP 429 `usage limit exceeded` | `quota` | the provider | the reset it states, else the re-probe interval |
 | `provider.auth`, HTTP 401 (`This API key has expired`) | `auth` | the provider, as signed out | the credential changes (see below) |
 | `provider.auth`, HTTP 403 (`Model access is disabled`, a region opt-in refusal, or a bare `Forbidden`; a 403 whose message names the key, such as `Invalid API key`, reads as a 401) | `model-access` | that one model (`opencode/<provider>/<model>`) | the re-probe interval |
+| `provider.no-route` (`Model unavailable: <model>`, with or without a status): the provider has no route to the model for this key | `model-access` | that one model | the re-probe interval |
 
 Every class also hops the turn along the session's fallback chain. A dead key and an unavailable model never park a session to wait, since no clock fixes them: with no link left the turn fails with the provider's own words, as a spent balance does.
 

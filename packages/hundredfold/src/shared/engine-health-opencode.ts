@@ -151,6 +151,6 @@ function reasonOf(failure: OpencodeFailure): string {
     case "quota": return "the provider reports no usable allowance (HTTP 402)";
     case "usage-limit": return "the provider reports its usage limit is spent";
     case "auth": return "the provider's API key is expired or invalid; sign in again";
-    case "model-access": return "this model is not enabled for the account (or its region has not been opted in)";
+    case "model-access": return "this model is not enabled for the account, its region has not been opted in, or the provider has no route to it";
   }
 }

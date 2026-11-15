@@ -25,6 +25,7 @@ const FUNDS = "provider.quota: Insufficient account funds (HTTP 402)";
 const BALANCE = "provider.quota: Insufficient balance. Top up at https://opencode.ai/console/wrk_1/billing?credits=1. (HTTP 402)";
 const EXPIRED = "provider.auth: This API key has expired. Create a new API key in OpenCode Console. (HTTP 401)";
 const NO_ACCESS = "provider.auth: Upstream request failed: Model access is disabled (HTTP 403)";
+const NO_ROUTE = "provider.no-route: Model unavailable: opencode-go/x";
 const MIN = 60_000;
 
 const worker = (): Employee => ({ name: "worker-oc", engine: "opencode", model: GO.model, fallback: [GO_B, ROUTER] }) as Employee;
@@ -138,6 +139,41 @@ describe("a model the account cannot use (403)", () => {
     expect(isLinkExhausted(health, { engine: "opencode", model: "opencode-go/x", account: "opencode" })).toBe(true);
     expect(isLinkExhausted(health, { engine: "opencode", model: "opencode-go/y", account: "opencode" })).toBe(false);
     expect(hopsOf(id).map((hop) => [hop.to, hop.reason])).toContainEqual([key(GO_B), "invalid-model"]);
+  });
+});
+
+describe("a model the provider has no route to (provider.no-route)", () => {
+  it("is read from the failed turn as a refusal, then hops the turn and holds that model out, not the provider", async () => {
+    const { detectRateLimit } = await import("../../shared/rateLimit.js");
+    const detected = detectRateLimit(failed(NO_ROUTE) as never);
+    expect(detected).toMatchObject({ limited: true, refused: "model-access" });
+    const { engines, calls } = scripted((call) => answer(`served by ${call.model}`));
+    const { id, opts } = turnFailing(NO_ROUTE, engines, { refused: detected.refused });
+
+    const outcome = await handleRateLimit(opts);
+
+    expect(outcome).toMatchObject({ kind: "fallback", result: { result: "served by opencode-go-b/x" } });
+    expect(calls.map((call) => call.model)).toEqual(["opencode-go-b/x"]);
+    const health = readEngineHealth();
+    expect(health["opencode/opencode-go"]).toBeUndefined();
+    expect(health["opencode/opencode-go/x"]).toMatchObject({ state: "exhausted", failureClass: "model-access" });
+    expect(hopsOf(id).map((hop) => [hop.to, hop.reason])).toContainEqual([key(GO_B), "invalid-model"]);
+  });
+
+  it("walks on past a second link with no route and lands on the third", async () => {
+    const { engines, calls } = scripted((call) => (call.model === "openrouter/x" ? answer("served by openrouter/x") : failed(NO_ROUTE.replace("opencode-go/x", String(call.model)))));
+    const { id, opts } = turnFailing(NO_ROUTE, engines, { refused: "model-access" });
+
+    const outcome = await handleRateLimit(opts);
+
+    expect(outcome).toMatchObject({ kind: "fallback", result: { result: "served by openrouter/x" } });
+    expect(calls.map((call) => call.model)).toEqual(["opencode-go-b/x", "openrouter/x"]);
+    expect(hopsOf(id).map((hop) => hop.to)).toContain(key(ROUTER));
+    // The next walk, as a "carry on" starts one, does not send the dead models a request again.
+    const health = readEngineHealth();
+    expect(isLinkExhausted(health, { ...GO, account: "opencode" })).toBe(true);
+    expect(isLinkExhausted(health, { ...GO_B, account: "opencode" })).toBe(true);
+    expect(isLinkExhausted(health, { ...ROUTER, account: "opencode" })).toBe(false);
   });
 });
 
