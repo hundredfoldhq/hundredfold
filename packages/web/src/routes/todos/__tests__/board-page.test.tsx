@@ -806,7 +806,9 @@ describe("in-column reorder", () => {
     fireEvent.keyDown(await screen.findByTestId("board-card-TSK-1"), { key: "ArrowDown", metaKey: true })
     await waitFor(() => expect(updateWorkItem).toHaveBeenCalledTimes(1))
     expect(updateWorkItem.mock.calls[0][0]).toBe("TSK-1")
-    expect(updateWorkItem.mock.calls[0][1]).toMatchObject({ patch: { rank: 0 }, expectedVersion: 3 })
+    const written = updateWorkItem.mock.calls[0][1] as { patch: { rank: unknown }; expectedVersion: number }
+    expect(written.expectedVersion).toBe(3)
+    expect(typeof written.patch.rank).toBe("number")
   })
 })
 

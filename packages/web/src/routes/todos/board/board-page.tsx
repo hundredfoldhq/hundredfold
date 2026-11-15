@@ -512,8 +512,8 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
 
   const renderCards = (status: WorkItemStatusWire) => {
     const items = (itemsByStatus[status] ?? []).filter((item) => item.id !== drag?.id)
-    // On All levels a slot inside the source column would promise a reorder the flat board does not make.
-    const slotIndex = drag && drag.overStatus === status && !(flat && status === drag.fromStatus)
+    // A flat sub-board promises no position: no insertion line is drawn in any column while a card is lifted.
+    const slotIndex = drag && drag.overStatus === status && !flat
       ? Math.min(drag.overIndex, items.length)
       : null
     const nodes: React.ReactNode[] = []

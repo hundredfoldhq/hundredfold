@@ -1,15 +1,16 @@
 import "@/test/preload-dialogs"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkItemCompactWire, WorkItemStatusWire, WorkItemTreeNodeWire, WorkItemTreeWire } from "@/lib/api"
 import type { BoardRole } from "@/lib/accounts-api"
 import { BOARD_FILTERS_STORAGE_KEY } from "@/lib/todos"
 import { TodoBoard } from "../board/board-page"
-import { clearBoardScrollCache } from "../board/board-route"
+import { clearBoardScrollCache, type BoardId } from "../board/board-route"
 import SubBoardDialog from "../board/sub-board-dialog"
 import { SubBoardLocationProvider } from "../board/sub-board-location"
+import { useSubBoardRoot } from "../board/sub-board-root"
 
 /* A Todo's sub-Todos as a board: the same board over the sub-board location, scoped to one Todo, its own header in
  * place of the title, none of the main board's chrome, and filters that stay in the pop-up. */
@@ -259,6 +260,25 @@ describe("the sub-board's root read", () => {
     renderSubBoard()
     await waitFor(() => expect(screen.getByTestId("sub-board-root-title").textContent).toBe("This Todo is not available"))
     expect(screen.queryByTestId("sub-board-retry")).toBeNull()
+  })
+
+  it("does not call a Todo missing while the previous root's tree is only a placeholder", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // The new root's read never lands: the only tree in hand is the previous key's, which must not answer for it.
+    getWorkItemTrees.mockImplementation((ids: string[]) => ids[0] === "TSK-1"
+      ? Promise.resolve(treesFor(ids))
+      : new Promise(() => {}))
+    const { result, rerender } = renderHook(
+      ({ board }: { board: BoardId }) => useSubBoardRoot(board),
+      {
+        wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+        initialProps: { board: { kind: "subtree", rootId: "TSK-1", depth: "children" } as BoardId },
+      },
+    )
+    await waitFor(() => expect(result.current.tree?.root.id).toBe("TSK-1"))
+    rerender({ board: { kind: "subtree", rootId: "TSK-2", depth: "children" } })
+    expect(result.current.tree).toBeUndefined()
+    expect(result.current.missing).toBe(false)
   })
 })
 
