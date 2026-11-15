@@ -281,13 +281,15 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
       const index = closing ? 0 : dropIndex
       // The drop position is a promise: once the status PUT lands, write the
       // rank at the landing slot too (Stage-A review F3) so the next refetch
-      // never reorders a drop the gateway accepted.
-      const siblings = closing ? [] : (itemsByStatus[to] ?? []).filter((it) => it.id !== item.id)
+      // never reorders a drop the gateway accepted. A flat sub-board is the
+      // exception — its columns mix sibling groups, so no slot there names a
+      // sibling rank (see commitRank).
+      const siblings = closing || flat ? [] : (itemsByStatus[to] ?? []).filter((it) => it.id !== item.id)
       const before = index > 0 ? siblings[Math.min(index, siblings.length) - 1] : null
       const after = index < siblings.length ? siblings[index] : null
-      const rank = rankBetween(before?.rank ?? null, after?.rank ?? null)
+      const rank = closing || flat ? null : rankBetween(before?.rank ?? null, after?.rank ?? null)
       setMoves((prev) => new Map(prev).set(item.id, { status: to, index, item, board: key }))
-      if (!closing) setRankOverrides((prev) => new Map(prev).set(item.id, rank))
+      if (rank !== null) setRankOverrides((prev) => new Map(prev).set(item.id, rank))
       const clearRankOverride = () =>
         setRankOverrides((prev) => {
           const next = new Map(prev)
@@ -308,7 +310,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
               openTodo(item.id, { fromBoard: key, focusBannerReason: true })
             }
             const version = result.workItem?.version
-            if (closing) return
+            if (rank === null) return
             if (!isPositiveTodoVersion(version)) {
               clearRankOverride()
               return
@@ -334,13 +336,16 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
         },
       )
     },
-    [transition, rankEdit, announce, itemsByStatus, openTodo, key],
+    [transition, rankEdit, announce, itemsByStatus, openTodo, key, flat],
   )
 
   const commitRank = useCallback(
     (item: WorkItemCompactWire, beforeRank: number | null, afterRank: number | null) => {
       // Closed columns order by when each card closed; a manual position would be lost on the next refetch.
       if (isClosedStatus(item.status)) return
+      // On All levels a column holds Todos from different parents, so the gap between two cards is not a sibling
+      // position this Todo can keep. The board declines the reorder rather than write a rank that means nothing.
+      if (flat) return
       if (!isPositiveTodoVersion(item.version)) return
       const rank = rankBetween(beforeRank, afterRank)
       setRankOverrides((prev) => new Map(prev).set(item.id, rank))
@@ -358,7 +363,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
         },
       )
     },
-    [rankEdit, announce],
+    [rankEdit, announce, flat],
   )
 
   const openChildrenOf = useCallback(
@@ -393,7 +398,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
   const liveRef = useRef<HTMLSpanElement>(null)
   const onCardKeyDown = useCallback(
     (event: React.KeyboardEvent, item: WorkItemCompactWire) => {
-      if (gate.member || !(event.metaKey || event.ctrlKey) || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
+      if (gate.member || flat || !(event.metaKey || event.ctrlKey) || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
       event.preventDefault()
       if (isClosedStatus(item.status)) return
       const list = itemsByStatus[item.status] ?? []
@@ -409,7 +414,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
         liveRef.current.textContent = `${item.id} moved to position ${target + 1} of ${list.length}`
       }
     },
-    [itemsByStatus, commitRank, gate.member],
+    [itemsByStatus, commitRank, gate.member, flat],
   )
   // ── Scroll position (per board on POP, anchored across every reflow) ────────
   const { boardScrollRef, listScrollRef, onBoardScroll, onListScroll } =
@@ -507,7 +512,10 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
 
   const renderCards = (status: WorkItemStatusWire) => {
     const items = (itemsByStatus[status] ?? []).filter((item) => item.id !== drag?.id)
-    const slotIndex = drag && drag.overStatus === status ? Math.min(drag.overIndex, items.length) : null
+    // On All levels a slot inside the source column would promise a reorder the flat board does not make.
+    const slotIndex = drag && drag.overStatus === status && !(flat && status === drag.fromStatus)
+      ? Math.min(drag.overIndex, items.length)
+      : null
     const nodes: React.ReactNode[] = []
     items.forEach((item, index) => {
       if (slotIndex === index) nodes.push(<DragSlot key="slot" height={drag!.height} />)
@@ -571,6 +579,8 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
             rootId={subtree.rootId}
             tree={subRoot.tree}
             missing={subRoot.missing}
+            error={subRoot.error}
+            onRetry={subRoot.retry}
             depth={subtree.depth}
             onDepth={(depth) => setBoard({ ...subtree, depth })}
             onOpenRoot={() => openTodo(subtree.rootId, { fromBoard: key })}

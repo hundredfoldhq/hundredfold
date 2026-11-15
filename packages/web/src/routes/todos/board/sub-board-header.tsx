@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { ExternalLink, Pin } from "@/components/ui/icon"
+import { ExternalLink, Pin, RefreshCw } from "@/components/ui/icon"
 import type { WorkItemTreeWire } from "@/lib/api"
 import { stateKeyOf } from "@/lib/todos"
 import { StateCircle } from "../state-glyph"
@@ -15,6 +15,13 @@ const DEPTHS: readonly { id: SubBoardDepth; label: string }[] = [
   { id: "children", label: "Children" },
   { id: "all", label: "All levels" },
 ]
+
+/** What the heading says before the root's tree lands or when it never does: a failed read is not an unknown Todo. */
+function rootHeading(root: WorkItemTreeWire["root"] | undefined, missing: boolean, error: boolean): string {
+  if (root) return root.title
+  if (error) return "This Todo could not be loaded"
+  return missing ? "This Todo is not available" : ""
+}
 
 function DepthToggle({ value, onChange }: { value: SubBoardDepth; onChange: (depth: SubBoardDepth) => void }) {
   return (
@@ -58,10 +65,21 @@ function HeaderAction({ testId, onClick, children }: { testId: string; onClick: 
   )
 }
 
-function RootLine({ rootId, tree, missing, onOpenRoot, onPin }: {
+function RetryAction({ onRetry }: { onRetry: () => void }) {
+  return (
+    <HeaderAction testId="sub-board-retry" onClick={onRetry}>
+      <RefreshCw size={13} aria-hidden />
+      Retry
+    </HeaderAction>
+  )
+}
+
+function RootLine({ rootId, tree, missing, error, onRetry, onOpenRoot, onPin }: {
   rootId: string
   tree: WorkItemTreeWire | undefined
   missing: boolean
+  error: boolean
+  onRetry: () => void
   onOpenRoot: () => void
   onPin?: () => void
 }) {
@@ -81,13 +99,14 @@ function RootLine({ rootId, tree, missing, onOpenRoot, onPin }: {
         data-testid="sub-board-root-title"
         className="min-w-0 truncate text-[calc(17px*var(--text-scale))] font-semibold text-[var(--text-primary)]"
       >
-        {root?.title ?? (missing ? "This Todo is not available" : "")}
+        {rootHeading(root, missing, error)}
       </h2>
       {rollup && (
         <span data-testid="sub-board-rollup" className="flex-none text-[calc(12px*var(--text-scale))] tabular-nums text-[var(--text-tertiary)]">
           {rollup.closed}/{rollup.total} done
         </span>
       )}
+      {error && <RetryAction onRetry={onRetry} />}
       <HeaderAction testId="sub-board-open-root" onClick={onOpenRoot}>
         <ExternalLink size={13} aria-hidden />
         Open
@@ -111,6 +130,9 @@ export function SubBoardHeader({
   tree: WorkItemTreeWire | undefined
   /** The root Todo could not be read: unknown, or not one this person may see. */
   missing: boolean
+  /** The read failed before it could answer, so the header offers a retry instead of calling the Todo missing. */
+  error: boolean
+  onRetry: () => void
   depth: SubBoardDepth
   onDepth: (depth: SubBoardDepth) => void
   onOpenRoot: () => void
