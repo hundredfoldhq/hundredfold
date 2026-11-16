@@ -50,8 +50,16 @@ describe("heartbeat delivery into its owning session", () => {
 
     await withRouteBackedFetch(context, {}, async () => {
       // Simulated time runs to two and a half intervals: two deadlines pass, and
-      // the last sweep is there to prove the third has not.
-      for (const intervals of [0.5, 1, 2, 2.5]) {
+      // the last sweep is there to prove the third has not. The session takes the
+      // first tick off its queue before the second falls due, as a session that
+      // can run does; a tick that finds the last one still waiting folds into it.
+      scheduler.sweepOnce({ now: () => armedAt + 0.5 * INTERVAL_MS });
+      scheduler.sweepOnce({ now: () => armedAt + INTERVAL_MS });
+      await eventually(() => {
+        expect(deliveredPrompts(owner.id)).toHaveLength(1);
+      });
+      dbModule.initDb().prepare("UPDATE queue_items SET status = 'completed' WHERE session_id = ?").run(owner.id);
+      for (const intervals of [2, 2.5]) {
         scheduler.sweepOnce({ now: () => armedAt + intervals * INTERVAL_MS });
       }
       await eventually(() => {

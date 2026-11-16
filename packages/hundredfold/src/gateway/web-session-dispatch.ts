@@ -25,6 +25,7 @@ import { resolveMessageAudiences } from "./speech-context.js";
 import { startDelegatedTurn } from "./delegation-handoff.js";
 import { recordTurnRequester } from "../sessions/turn-requester.js";
 import { isHeartbeatQueueItem, markHeartbeatTurn } from "../heartbeats/turn-origin.js";
+import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
 import type { ApiContext } from "./api.js";
 
 /**
@@ -84,6 +85,14 @@ async function runQueuedTurn(
   request: Omit<WebTurnRequest, "attemptToken">,
   opts: { sessionKey: string; queueItemId?: string; operatorTurn?: boolean; onAttempt: (token: string) => void },
 ): Promise<void> {
+  // A child-watch wake can wait here for hours; if nothing is left to watch by
+  // the time it is let through, it is dropped (the queue closes its row) rather
+  // than spending a model turn to find that out.
+  const stale = staleChildWatchWakeReason(opts.queueItemId);
+  if (stale) {
+    logger.info(`Dropped stale child-watch wake ${opts.queueItemId} for session ${session.id}: ${stale}`);
+    return;
+  }
   const startedAttempt = beginSessionAttempt(session.id, {
     lastActivity: new Date().toISOString(),
     lastError: null,
