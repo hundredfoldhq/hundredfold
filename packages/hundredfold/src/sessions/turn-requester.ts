@@ -52,12 +52,10 @@ export function recordTurnRequester(session: Pick<Session, "id" | "attemptToken"
 }
 
 function requesterOfAttempt(session: NoticeSession): string | undefined {
-  const fresh = getSession(session.id)?.transportMeta ?? session.transportMeta;
-  const record = fresh?.[TURN_REQUESTER_KEY];
-  if (!record || typeof record !== "object" || Array.isArray(record)) return undefined;
-  const { attempt, sessionId } = record as { attempt?: unknown; sessionId?: unknown };
-  const token = getSession(session.id)?.attemptToken ?? session.attemptToken;
-  return typeof sessionId === "string" && typeof attempt === "string" && attempt === token ? sessionId : undefined;
+  const fresh = getSession(session.id) ?? session;
+  const record = fresh.transportMeta?.[TURN_REQUESTER_KEY] as { attempt?: unknown; sessionId?: unknown } | null | undefined;
+  if (!record || record.attempt !== fresh.attemptToken) return undefined;
+  return typeof record.sessionId === "string" ? record.sessionId : undefined;
 }
 
 /**
