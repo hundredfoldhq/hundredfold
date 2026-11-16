@@ -2,6 +2,7 @@ import { isBoardWalkTurn } from "../board-walk/started-sessions.js";
 import { loadConfig } from "../shared/config.js";
 import { initDb } from "../shared/db.js";
 import { logger } from "../shared/logger.js";
+import type { LostBackgroundCause } from "../shared/engine-switch.js";
 import { deliverClaimedSessionDelivery } from "./callbacks.js";
 import { describeBackgroundTask, recordLeftBackgroundTasks, type LeftBackgroundTask } from "./left-background-tasks.js";
 import { claimSessionDelivery, getSession } from "./registry.js";
@@ -118,13 +119,14 @@ function claimNudge(sessionId: string, tasks: readonly LostBackgroundTask[], now
 
 /**
  * What the gateway does when a session's engine process ends under background tasks. A session
- * stopped on purpose is not woken, but its next explicit turn is told; any other loss asks the
+ * stopped on purpose, or moved to another account or engine, is not woken, but the turn it runs next is told; any other loss asks the
  * session to carry on, and a nudge that is not sent is kept for its next turn instead (see
  * {@link notifyLostBackgroundTasks}).
  */
-export function handleLostBackgroundTasks(sessionId: string, tasks: readonly LostBackgroundTask[], deliberate: boolean): void {
-  if (deliberate) {
-    recordLeftBackgroundTasks(sessionId, tasks, "stopped");
+export function handleLostBackgroundTasks(sessionId: string, tasks: readonly LostBackgroundTask[], cause: LostBackgroundCause): void {
+  if (cause !== "ended") {
+    // A session moved to another account or engine is told on the turn that runs there; nothing is nudged.
+    recordLeftBackgroundTasks(sessionId, tasks, cause);
     return;
   }
   const result = notifyLostBackgroundTasks(sessionId, tasks);

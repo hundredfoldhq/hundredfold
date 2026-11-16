@@ -70,7 +70,7 @@ export interface RateLimitHandlerHooks {
    * The persistence of the assistant message and any "completed" event emission
    * is done here (caller-specific).
    */
-  onFallbackComplete?: (result: EngineResult, ran: { engine: EngineName; model?: string }) => void | Promise<void>;
+  onFallbackComplete?: (result: EngineResult, ran: { engine: EngineName; model?: string; carriedLeftBackgroundTaskIds: string[] }) => void | Promise<void>;
 
   /**
    * Called once when entering the wait-and-retry loop. Use this to: switch UI
@@ -121,7 +121,7 @@ export interface RateLimitHandlerHooks {
    * Called when a retry succeeds (or fails with a non-rate-limit error).
    * Persist the assistant message + emit completion event here.
    */
-  onRetrySuccess?: (result: EngineResult) => void | Promise<void>;
+  onRetrySuccess?: (result: EngineResult, ran: { carriedLeftBackgroundTaskIds: string[] }) => void | Promise<void>;
 
   /**
    * Called when the deadline expires before the limit clears. Notify the user,

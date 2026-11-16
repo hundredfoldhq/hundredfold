@@ -13,6 +13,7 @@ import { abandonEngineSubstitution, beginEngineSubstitution, standingOverrideUnt
 import { chooseSubstituteOrReason, type SubstituteDecision } from "./rate-limit-substitute.js";
 import type { RateLimitHandlerOpts } from "./rate-limit-contract.js";
 import { getSession, nextEngineSessionFields, updateSessionForAttempt } from "./registry.js";
+import { withLeftBackgroundTasksNote, withLeftBackgroundTasksOf } from "./left-background-tasks.js";
 import { handoffPrompt, resumedPrompt } from "./rate-limit-hop-prompt.js";
 import { spawnCwd } from "./session-cwd.js";
 import type { RemoteTarget, SessionRemoteTarget } from "../shared/types.js";
@@ -70,6 +71,8 @@ interface Walk {
   triedLabels: string[];
   ownLabel: string;
   startedAt: string;
+  /** The tasks the prompt of the link now running carries; settle clears them once the link has served the turn. */
+  carried: string[];
 }
 
 type Found = SubstituteDecision & { choice: NonNullable<SubstituteDecision["choice"]>; next: NonNullable<SubstituteDecision["next"]>; chain: NonNullable<SubstituteDecision["chain"]> };
@@ -114,7 +117,7 @@ function startWalk(input: WalkInput): Walk {
   const metaBefore = (getSession(session.id) ?? session).transportMeta;
   return {
     input, metaBefore, runAtStart: readFallbackRun(metaOf({ transportMeta: metaBefore })), tried: new Set(), cursor: 0, source: undefined,
-    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], ownLabel: "", startedAt: new Date().toISOString(),
+    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], ownLabel: "", startedAt: new Date().toISOString(), carried: [],
     failure: { engine: input.limited.engine, account: input.limited.account, reason: limitReason(originalResult), resetsAt: rateLimit.resetsAt },
   };
 }
@@ -202,10 +205,15 @@ async function flipOnto(w: Walk, found: Found, hop: FallbackHop): Promise<Engine
   return substitution;
 }
 
-/** The prompt the link is sent: what its thread missed when it has one, the conversation so far when it has not. */
+/** The prompt the link is sent: what its thread missed when it has one, the conversation so far when it has not. It leads
+ *  with the note on any background task the session was left without (the process that held it was released when the turn
+ *  moved off its engine), read from the live row, so a link that fails and moves on leaves them owed to the next. */
 function promptFor(w: Walk, substitution: EngineSubstitution): string {
   const { session, prompt } = w.input.opts;
-  return substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id);
+  const base = substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id);
+  const { promptToRun, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? session, base);
+  w.carried = carriedLeftBackgroundTaskIds;
+  return promptToRun;
 }
 
 async function launch(w: Walk, found: Found, hop: FallbackHop): Promise<WalkOutcome | undefined> {
@@ -253,7 +261,7 @@ async function served(w: Walk, found: Found, model: string | undefined, ran: { r
     const { link } = found.next;
     recordTurnServed({ engine: link.engine, key: linkHealthKey(link), startedMs: ran.startedMs, model, servedOn: w.input.remote?.remoteHost });
   }
-  await hooks.onFallbackComplete?.(result, { engine: found.choice.engine as EngineName, model });
+  await hooks.onFallbackComplete?.(result, { engine: found.choice.engine as EngineName, model, carriedLeftBackgroundTaskIds: w.carried });
   return { kind: "served", result };
 }
 
@@ -293,6 +301,8 @@ async function settleExhausted(w: Walk): Promise<boolean> {
     // Back where the turn began: the engine, thread and model it ran on, with the hops this walk made on top.
     let meta = w.hops.reduce(withHop, metaOf({ transportMeta: w.metaBefore }));
     if (w.runAtStart) meta = withRun(meta, { ...w.runAtStart, tried: [...w.tried] });
+    // What the session was left without when its engine was released is not part of "where the turn began": the live record stays.
+    meta = withLeftBackgroundTasksOf(meta, getSession(session.id)?.transportMeta);
     return abandonEngineSubstitution(session, attemptToken, meta as Session["transportMeta"]);
   }
   const unwritten = w.hops.slice(w.written);

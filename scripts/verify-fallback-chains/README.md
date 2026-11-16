@@ -53,6 +53,8 @@ inside an operator home. It tears everything down on exit.
 | j | an own target still limited at the reset is probed once; the next turns, inside the new window, do not probe it again |
 | k | a stand-in held by a window an hour out returns to its own target at the next turn once `hundredfold limits --clear` clears that target |
 | l | a session whose chain ran out on its stand-in, waiting for the stand-in's reset, hands back to its own target within a minute of that target being cleared |
+| m | a Monitor armed on the own account when a limit moves the session is named in the stand-in's first prompt (the ledger keeps the note as `gatewayNote`), with no separate nudge turn, and is not owed afterwards |
+| n | a Monitor armed on the stand-in is named in the prompt of the turn that goes back to the own account once its target is cleared |
 
 Every scenario runs and counts. `--pending a,b` marks scenarios that wait on runtime work not
 yet merged (none today: the default list is empty): a pending scenario is reported, never
@@ -96,6 +98,8 @@ item and the last repeats.
 | `retry-abandon` | | a retry an hour off, which server mode abandons after about 15 s as a rate limit |
 | `hang` | never stops | never answers |
 | `fail` | `StopFailure` (`max_output_tokens`, or `"error"`) | an error that is not a limit |
+
+A claude outcome may add `"armMonitor": "<task id>"`: its turn arms a background Monitor of that id (a `PostToolUse` for the Monitor tool), and the ledger keeps the gateway's note about background tasks a prompt carries, as `gatewayNote`.
 | `signed-out` | `StopFailure` `authentication_failed` | as `fail` |
 
 While a scenario file is set, a prompt's own words steer nothing, so the older `HANG`,

@@ -285,6 +285,59 @@ async function exhaustedWaitHandsBack(h) {
   expectEqual("back on its own target", [done.engine, done.fallback?.chain?.position, done.transportMeta?.engineOverride], ["claude", 0, undefined]);
 }
 
+/** The tasks the gateway holds a session owed a word about (`transportMeta.leftBackgroundTasks`), by id. */
+const owedTasks = (session) => (session.transportMeta?.leftBackgroundTasks ?? []).map((entry) => entry.id);
+/** Ledger rows whose prompt carries the gateway's note on background tasks, and those that are the crash-worded nudge turn. */
+const notedRows = (rows) => rows.filter((row) => row.gatewayNote);
+const nudgeRows = (rows) => rows.filter((row) => row.gatewayNote?.includes("engine process ended while"));
+
+/** A Monitor the session armed on its own account is named in the stand-in's first prompt, with no separate nudge turn. */
+async function monitorNamedAfterHop(h) {
+  const { claudeB } = h.links();
+  await h.putConfig({ engines: { claude: { accounts: { A: { fallback: [claudeB] } } } } });
+  h.writeScenario({ claude: { "profile-a|opus": [{ outcome: "ok", armMonitor: "mon-fc-1" }, limitedFor(3600)], "profile-b|*": "ok" } });
+  const tag = h.newTag();
+  const id = await h.startSession({ employee: h.layout.employees.onA, tag });
+  await h.settled(id);
+  expectEqual("no note on the first turn", notedRows(h.rowsFor(tag)).length, 0);
+  await h.sendMessage(id, tag);
+  const after = await h.settled(id);
+  const rows = h.rowsFor(tag);
+  expectEqual("the hop", walkOf(rows), "claude/profile-a/opus:ok -> claude/profile-a/opus:rate-limit -> claude/profile-b/sonnet:ok");
+  const [standIn] = notedRows(rows);
+  expectTrue("the stand-in's first prompt carries a note", standIn?.profile === "profile-b", JSON.stringify(standIn));
+  expectTrue("it names the Monitor and what it watched", standIn.gatewayNote.includes("mon-fc-1 (Monitor): watch the deploy log: `tail -f deploy.log`"), standIn.gatewayNote);
+  expectTrue("it says the process was replaced and to re-arm", /replaced when the session moved/.test(standIn.gatewayNote) && /Re-arm any Monitor/.test(standIn.gatewayNote), standIn.gatewayNote);
+  expectEqual("nothing is owed once that turn settled", owedTasks(after), []);
+  expectEqual("no nudge turn was started", nudgeRows(rows).length, 0);
+  expectEqual("the session settled idle", after.status, "idle");
+}
+
+/** A Monitor armed on the stand-in is named in the first prompt of the turn that goes back to the own account. */
+async function monitorNamedAfterReturn(h) {
+  const { claudeB } = h.links();
+  await h.putConfig({ engines: { claude: { accounts: { A: { fallback: [claudeB] } } } } });
+  h.writeScenario({ claude: { "profile-a|opus": [limitedFor(3600), "ok"], "profile-b|*": ["ok", { outcome: "ok", armMonitor: "mon-fc-2" }, "ok"] } });
+  const tag = h.newTag();
+  const id = await h.startSession({ employee: h.layout.employees.onA, tag });
+  await h.settled(id);
+  await h.sendMessage(id, tag);
+  await h.settled(id);
+  expectEqual("held on the stand-in, which armed the Monitor", walkOf(h.rowsFor(tag)), "claude/profile-a/opus:rate-limit -> claude/profile-b/sonnet:ok -> claude/profile-b/sonnet:ok");
+  expectEqual("nothing is owed while the Monitor lives", owedTasks(await h.session(id)), []);
+  cliClear(h, keyOfA(h));
+  await h.sendMessage(id, tag);
+  const after = await h.settled(id);
+  const rows = h.rowsFor(tag);
+  const last = rows.at(-1);
+  expectEqual("the next turn ran on A", [last.profile, last.model, last.outcome], ["profile-a", "opus", "ok"]);
+  expectTrue("its prompt names the Monitor the stand-in held", last.gatewayNote?.includes("mon-fc-2 (Monitor): watch the deploy log: `tail -f deploy.log`"), String(last.gatewayNote));
+  expectTrue("and says it moved", /replaced when the session moved/.test(last.gatewayNote), last.gatewayNote);
+  expectEqual("nothing is owed once that turn settled", owedTasks(after), []);
+  expectEqual("no nudge turn was started", nudgeRows(rows).length, 0);
+  expectEqual("back on its own target", [after.engine, after.fallback?.chain?.position, after.transportMeta?.engineOverride], ["claude", 0, undefined]);
+}
+
 export const SCENARIOS = [
   { id: "a", title: "four-link chain walks hop by hop, each hop on its own profile and model", run: fourLinkWalk },
   { id: "b", title: "every link limited: each target once, then the session waits on its own", run: everyLinkLimited },
@@ -298,4 +351,6 @@ export const SCENARIOS = [
   { id: "j", title: "an own target still limited at the reset is probed once, then left alone for the new window", run: stillLimitedAtReset },
   { id: "k", title: "a held stand-in returns at the next turn once its own target is cleared", run: heldReturnsOnClear },
   { id: "l", title: "a chain-exhausted wait hands back when its own target is cleared", run: exhaustedWaitHandsBack },
+  { id: "m", title: "a Monitor held when a limit moves the session is named in the stand-in's first prompt", run: monitorNamedAfterHop },
+  { id: "n", title: "a Monitor the stand-in held is named in the prompt of the turn that goes back to the own account", run: monitorNamedAfterReturn },
 ];

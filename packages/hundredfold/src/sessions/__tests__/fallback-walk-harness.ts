@@ -101,13 +101,13 @@ export function newSession(opts: { ref: string; employeeName?: string; model?: s
 }
 
 export function recordingHooks() {
-  const seen = { starts: [] as Array<{ substitute: string; model?: string; hop?: FallbackHop }>, waiting: [] as Array<{ reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }>, completes: [] as Array<{ engine: string; model?: string }>, failed: [] as EngineResult[] };
+  const seen = { starts: [] as Array<{ substitute: string; model?: string; hop?: FallbackHop }>, waiting: [] as Array<{ reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }>, completes: [] as Array<{ engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }>, failed: [] as EngineResult[] };
   return {
     seen,
     hooks: {
       onFallbackStart: (info: { substitute: string; model?: string; hop?: FallbackHop }) => { seen.starts.push(info); },
       onFallbackFailed: (result: EngineResult) => { seen.failed.push(result); },
-      onFallbackComplete: (_result: EngineResult, ran: { engine: string; model?: string }) => { seen.completes.push(ran); },
+      onFallbackComplete: (_result: EngineResult, ran: { engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }) => { seen.completes.push(ran); },
       onWaitingStart: (info: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }) => { seen.waiting.push(info); },
     },
   };
