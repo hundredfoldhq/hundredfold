@@ -23,6 +23,7 @@ import { withReportingParent } from "../work-items/employee-session-delegation.j
 import { withNoticeTarget } from "./turn-requester.js";
 import type { SessionDeliveryPayload } from "../shared/types.js";
 import { releaseChildWatchIfSettled } from "../heartbeats/child-watch.js";
+import { isHeartbeatTurn, isNoChangeReply } from "../heartbeats/turn-origin.js";
 import { isSpentDispatcher } from "../gateway/work-item-authority.js";
 
 export const CALLBACK_DELIVERY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
@@ -131,7 +132,7 @@ export async function notifyParentSessionAndWait(
   // external reply — that would re-create the loss on a side path.
   const relayed = consumeExplicitRelay(childSession);
   if (result.error || relayed) releaseHeldReply(childSession.id);
-  if (!result.error && (!hasMeaningfulReply(result.result) || relayed)) {
+  if (!result.error && (!hasMeaningfulReply(result.result) || relayed || isQuietHeartbeatTurn(childSession, result.result))) {
     reviewHeldInterimReply(childSession.id);
     return;
   }
@@ -539,6 +540,12 @@ function repeatsDeliveredReply(childSession: Session, text: string | null | unde
   if (!delivered) return false;
   if (delivered.fullMessageChars === undefined) return delivered.fullMessage.trim() === reply;
   return delivered.fullMessageSha256 === fullMessageDigest(reply);
+}
+
+/** A heartbeat's turn that found nothing (it replied `NO_CHANGE`): the reply stays in the child's own chat. */
+function isQuietHeartbeatTurn(childSession: Session, result: string | null | undefined): boolean {
+  if (!isNoChangeReply(result)) return false;
+  return isHeartbeatTurn(getSession(childSession.id) ?? childSession);
 }
 
 function hasMeaningfulReply(result: string | null | undefined): boolean {

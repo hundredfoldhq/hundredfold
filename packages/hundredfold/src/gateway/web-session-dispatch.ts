@@ -23,6 +23,7 @@ import { resolveMessageAudiences } from "./speech-context.js";
 // carries without this module and api.ts importing each other at runtime.
 import { startDelegatedTurn } from "./delegation-handoff.js";
 import { recordTurnRequester } from "../sessions/turn-requester.js";
+import { isHeartbeatQueueItem, markHeartbeatTurn } from "../heartbeats/turn-origin.js";
 import type { ApiContext } from "./api.js";
 
 /**
@@ -92,6 +93,7 @@ async function runQueuedTurn(
     return;
   }
   opts.onAttempt(startedAttempt.attemptToken);
+  if (isHeartbeatQueueItem(opts.queueItemId)) markHeartbeatTurn(session.id, startedAttempt.attemptToken);
   startDelegatedTurn(startedAttempt, opts.queueItemId);
   recordTurnRequester(startedAttempt, opts.queueItemId);
   context.emit("session:started", { sessionId: session.id });

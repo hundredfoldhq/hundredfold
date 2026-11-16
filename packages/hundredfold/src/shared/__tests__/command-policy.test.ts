@@ -127,6 +127,86 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
       expect(evaluateCommandPolicy(`grep -r todo /home/agent/.${OLD.codename}/docs`, REMOTE).action).toBe("allow");
     });
 
+    it("does not take a redirect elsewhere for a write to the home the command reads", () => {
+      // A redirect alone used to open the gate for every path in the line, so a
+      // read of the gateway's own home with stderr discarded was refused as a write.
+      for (const cmd of [
+        `grep -rn todo ${GATEWAY_HOME}/knowledge 2>/dev/null`,
+        `ls ${GATEWAY_HOME}/docs &>/dev/null`,
+        `grep -c x /home/agent/.${OLD.codename}/org/a.yaml >/dev/stderr`,
+        `cat ${GATEWAY_HOME}/knowledge/x.md > /tmp/x.md`,
+        `cat ${GATEWAY_HOME}/knowledge/x.md >> ${MOUNT}/knowledge/x.md`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("allow");
+      }
+    });
+
+    it("does not take a write command's name, as an argument, for the command", () => {
+      for (const cmd of [
+        `grep -rn install ${GATEWAY_HOME}/docs 2>/dev/null`,
+        `grep -rnw "cp" ${GATEWAY_HOME}/knowledge`,
+        `grep -c rm ${GATEWAY_HOME}/org/a.yaml`,
+        `ls ${GATEWAY_HOME}/docs | grep -e mkdir -e ln`,
+        `git -C ${GATEWAY_HOME} log --grep touch`,
+        `/usr/bin/grep -c mv ${GATEWAY_HOME}/docs/a.md`,
+        `LC_ALL=C rg -n "rm -rf" ${GATEWAY_HOME}/docs`,
+        `find ${GATEWAY_HOME}/docs -name install`,
+        `cat ${GATEWAY_HOME}/docs/a.md | grep cp | wc -l`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("allow");
+      }
+    });
+
+    it("still refuses a write command wherever it runs", () => {
+      for (const cmd of [
+        `FOO=1 cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `/bin/cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `sudo -u agent cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `nice -n 10 rsync -a out/ ${GATEWAY_HOME}/docs/`,
+        `find ${GATEWAY_HOME}/docs -name '*.tmp' -exec rm {} +`,
+        `ls ${GATEWAY_HOME}/docs | xargs -0 rm`,
+        `echo hi | tee -a ${GATEWAY_HOME}/knowledge/x.md`,
+        `cd /tmp && mkdir -p ${GATEWAY_HOME}/org/new`,
+        `echo $(touch ${GATEWAY_HOME}/knowledge/x.md)`,
+        `if true; then rm ${GATEWAY_HOME}/knowledge/x.md; fi`,
+        // A command word the policy does not know is judged as a write, never cleared.
+        `if cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md; then echo ok; fi`,
+        `while rm ${GATEWAY_HOME}/knowledge/lock; do sleep 1; done`,
+        `{ cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md; }`,
+        `! mkdir ${GATEWAY_HOME}/knowledge/lock`,
+        `/usr/bin/env cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `/usr/bin/sudo cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `git -C ${GATEWAY_HOME}/knowledge mv a.md b.md`,
+        `git -C ${GATEWAY_HOME}/knowledge rm a.md`,
+        `flock /tmp/l cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `eval cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `grep -rl x ${GATEWAY_HOME}/docs | xargs rm`,
+        // A read-only tool's own options that run a command or write a file.
+        `rg --pre ./rm-and-cat ${GATEWAY_HOME}/docs`,
+        `git -C ${GATEWAY_HOME} grep -O ./open cp`,
+        `git -C ${GATEWAY_HOME} grep --open-files-in-pager=./open mv`,
+        `git -C ${GATEWAY_HOME} diff --output=${GATEWAY_HOME}/knowledge/cp.diff`,
+        `git -C ${GATEWAY_HOME} log --output ${GATEWAY_HOME}/knowledge/mv.log`,
+        `tree -o ${GATEWAY_HOME}/knowledge/rm.txt ${GATEWAY_HOME}`,
+        `find ${GATEWAY_HOME}/docs -name x -delete -o -name y -exec mv {} /tmp \\;`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");
+      }
+    });
+
+    it("still refuses a redirect whose target is an off-mount home", () => {
+      for (const cmd of [
+        `grep x ${MOUNT}/docs/a.md > ${GATEWAY_HOME}/knowledge/x.md`,
+        `echo hi 2>/dev/null >> /home/agent/.${OLD.codename}/docs/x.md`,
+        `echo hi >| ${GATEWAY_HOME}/knowledge/x.md`,
+        `echo hi > "${GATEWAY_HOME}/knowledge/x.md"`,
+        `echo hi > /dev/../home/agent/.${OLD.codename}/knowledge/x.md`,
+        `grep -rn todo ${GATEWAY_HOME}/docs 2>/dev/null | tee ${GATEWAY_HOME}/knowledge/x.md`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");
+      }
+    });
+
     it("does not fire on a write-shaped command that names no instance home", () => {
       expect(evaluateCommandPolicy("npm install --prefix /srv/work/repo", REMOTE).action).toBe("allow");
       expect(evaluateCommandPolicy("pnpm build 2>/dev/null", REMOTE).action).toBe("allow");
