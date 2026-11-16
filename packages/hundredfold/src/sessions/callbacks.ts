@@ -5,6 +5,7 @@ import {
   claimSessionDelivery,
   claimSessionDeliveryAttempt,
   consumeChildReportedToParent,
+  lastMessageFromChild,
   recordSessionDeliveryFailure,
   ensureCallbackAttemptToken,
   listDelegationCompletionNudgedSessions,
@@ -112,7 +113,11 @@ export function notifyParentSession(
 export async function notifyParentSessionAndWait(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
-  options?: { alwaysNotify?: boolean },
+  options?: {
+    alwaysNotify?: boolean;
+    /** The turn was answered after a usage limit: on a fallback target, or on the same one once the limit lifted. */
+    afterLimit?: boolean;
+  },
 ): Promise<void> {
   childSession = withReportingParent(childSession);
   if (!childSession.parentSessionId) return;
@@ -126,6 +131,10 @@ export async function notifyParentSessionAndWait(
   if (!result.error && (!hasMeaningfulReply(result.result) || relayed)) {
     reviewHeldInterimReply(childSession.id);
     return;
+  }
+  if (!result.error && options?.afterLimit && repeatsDeliveredReply(childSession, result.result)) {
+    logger.info(`[callbacks] Child ${childSession.id} answered after a usage limit with the reply it already gave parent ${childSession.parentSessionId}; sending a short note instead of the same text`);
+    result = { ...result, result: REPEATED_REPLY_NOTE };
   }
   if (!result.error && holdsInterimRelay(childSession, result.result ?? "", { ...options, settledTurn: true })) return;
 
@@ -504,6 +513,23 @@ function childNotificationMeta(
     childSessionId: childSession.id,
     fullMessage: fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
   };
+}
+
+/** What the parent is sent in place of a reply that repeats, word for word, the one it already has. */
+export const REPEATED_REPLY_NOTE =
+  "↩️ No new reply: this session's answer is the same, word for word, as the reply it already sent you. The earlier reply stands; nothing here to act on.";
+
+/**
+ * Whether `text` is the reply this child last put in front of its parent, so
+ * relaying it again would only make the parent check that it says nothing new.
+ * Compared as the parent stored it, which clips a long reply.
+ */
+function repeatsDeliveredReply(childSession: Session, text: string | null | undefined): boolean {
+  const parentId = childSession.parentSessionId;
+  const reply = text?.trim();
+  if (!parentId || !reply) return false;
+  const delivered = lastMessageFromChild(parentId, childSession.id)?.trim();
+  return delivered !== undefined && delivered === reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
 }
 
 function hasMeaningfulReply(result: string | null | undefined): boolean {

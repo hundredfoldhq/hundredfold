@@ -1,5 +1,5 @@
 import { getMessages } from "./registry.js";
-import { syncTranscriptPrompt } from "./turn/sync-transcript.js";
+import { catchUpPrompt, currentMessageSection, syncTranscriptLine, withoutCurrentMessage } from "./turn/sync-transcript.js";
 
 /**
  * The prompt a fallback chain hop sends, by what the target already has.
@@ -11,28 +11,30 @@ import { syncTranscriptPrompt } from "./turn/sync-transcript.js";
  */
 
 const HANDOFF_MESSAGES = 12;
+const HANDOFF_INTRO = "Continue this conversation and respond to the current message.";
 const RESUMED_INTRO = "This session moved between engines or accounts after usage limits, so this conversation missed some of what was said. "
   + "Sync your context with this transcript (most recent last), then respond to the current message.";
 
-/** The recent conversation for an engine with no thread of its own to resume: the last twelve messages. */
-export function handoffPrompt(sessionId: string): string {
-  const history = getMessages(sessionId)
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => `${message.role.toUpperCase()}: ${message.content}`);
-  return `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${history.slice(-HANDOFF_MESSAGES).join("\n\n")}`;
-}
-
-/** Whether `message` is the user message `prompt` answers (the prompt may carry text added after it, such as the board reminder). */
-function isCurrentMessage(message: { role: string; content: string }, prompt: string): boolean {
-  return message.role === "user" && prompt.trimStart().startsWith(message.content.trim());
+/**
+ * The prompt for an engine with no thread of its own to resume: the last twelve
+ * messages, then the current one. The current message is stated, not looked for
+ * as the transcript's last line: a message from another session is logged as a
+ * notification, and a handoff that left it to the transcript read the previous
+ * request as the last one and answered it again.
+ */
+export function handoffPrompt(sessionId: string, prompt: string): string {
+  const history = withoutCurrentMessage(getMessages(sessionId), prompt)
+    .map(syncTranscriptLine)
+    .filter((line): line is string => line !== undefined)
+    .slice(-HANDOFF_MESSAGES);
+  return [HANDOFF_INTRO, history.length > 0 ? `Conversation so far:\n\n${history.join("\n\n")}` : "", currentMessageSection(prompt)].filter(Boolean).join("\n\n");
 }
 
 /** The prompt for a resumed thread: the transcript it missed since `since`, then the prompt; the prompt itself when it missed nothing. */
 export function resumedPrompt(sessionId: string, since: string | undefined, prompt: string): string {
   const sinceMs = Date.parse(since ?? "");
   if (!Number.isFinite(sinceMs)) return prompt;
-  const missed = getMessages(sessionId).filter((message) => message.timestamp >= sinceMs && (message.role === "user" || message.role === "assistant"));
-  const latest = missed.at(-1);
-  const earlier = latest && isCurrentMessage(latest, prompt) ? missed.slice(0, -1) : missed;
-  return earlier.length === 0 ? prompt : syncTranscriptPrompt({ recentMessages: earlier, prompt, intro: RESUMED_INTRO });
+  const earlier = withoutCurrentMessage(getMessages(sessionId).filter((message) => message.timestamp >= sinceMs), prompt)
+    .filter((message) => syncTranscriptLine(message) !== undefined);
+  return earlier.length === 0 ? prompt : catchUpPrompt({ earlier, prompt, intro: RESUMED_INTRO });
 }

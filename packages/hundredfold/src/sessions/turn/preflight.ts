@@ -25,7 +25,7 @@ import { findBuiltinMcp } from "../../mcp/builtin-name.js";
 import type { TurnHierarchy, TurnInput, TurnPlan, TurnPreflight } from "./types.js";
 export { warnIfNearUsageLimit } from "./usage-warning.js";
 
-import { SYNC_TRANSCRIPT_MESSAGES, syncTranscriptPrompt } from "./sync-transcript.js";
+import { FROM_ANOTHER_SESSION, SYNC_TRANSCRIPT_MESSAGES, engineText, syncTranscriptPrompt } from "./sync-transcript.js";
 import { LOST_CONVERSATION_META_KEY, LOST_CONVERSATION_NOTICE_KIND, SYNC_MODE_META_KEY, withoutCatchUpMarkers } from "../sync-markers.js";
 import { historyPointerPrompt } from "./history-pointer.js";
 
@@ -343,12 +343,6 @@ export function resolveLostConversationPrompt(
 
 type LoggedMessage = ReturnType<typeof getMessages>[number];
 
-/** A logged message as the engine would have read it: a notification's full text, not its banner. */
-function engineText(message: LoggedMessage): string {
-  const full = message.meta?.["fullMessage"];
-  return typeof full === "string" && full.trim() ? full : message.content;
-}
-
 /** Whether a logged message is one an open turn (this one, or one queued) will answer. */
 function isOpenTurnMessage(message: LoggedMessage, open: { messageIds: Set<string>; prompts: string[] }): boolean {
   if (open.messageIds.has(message.id)) return true;
@@ -388,9 +382,6 @@ const TRANSCRIPT_LABELS = new Map([
   ["user", "USER"],
   ["assistant", "ASSISTANT"],
 ]);
-
-/** Notification kinds that are a message from another session; any other is the gateway's own notice. */
-const FROM_ANOTHER_SESSION = new Set(["agent-relay", "child-reply", "child-error"]);
 
 function notificationLabel(message: LoggedMessage): string {
   const kind = message.meta?.["kind"];
