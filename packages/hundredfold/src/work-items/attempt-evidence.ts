@@ -1,7 +1,7 @@
 import { latestAssigneeExecutingDeclaredAt, latestEvidenceFloorAt } from './event-log.js';
 import { closeWorkItemRun, findOpenWorkItemRunBySession, runOutcomeForReceipt } from './runs.js';
 import { getSession, listSessionsByWorkItem } from '../sessions/registry.js';
-import { settledAttemptOutcome } from '../sessions/restart-resume-window.js';
+import { settledOutcomeUnlessTurnOwed } from '../sessions/owed-turns.js';
 import { isExecutionAttempt } from './link-role.js';
 import { logger } from '../shared/logger.js';
 import type { Session, SessionAttemptOutcome } from '../shared/types.js';
@@ -46,7 +46,7 @@ export interface WorkItemAttemptReading {
  */
 function closeRunsForSettledAttempts(sessions: readonly Session[]): void {
   for (const session of sessions) {
-    const outcome = settledAttemptOutcome(session);
+    const outcome = settledOutcomeUnlessTurnOwed(session);
     if (!outcome) continue;
     try {
       const run = findOpenWorkItemRunBySession(session.id);
@@ -112,9 +112,12 @@ function attemptsAfterAssigneeResume(
  * about to resume (queue replay or restart nudge) is still in flight, not a
  * settled interruption: reading it as settled would block the Todo and wake its
  * parent's owner for a turn that resumes seconds later (`settledAttemptOutcome`).
+ * So is a failed or interrupted attempt while the gateway still owes the session
+ * a turn it will run on its own, such as the resume after a self-compaction
+ * (`gatewayOwesTurn`).
  */
 function attemptEvidence(session: Session): WorkItemAttemptEvidence {
-  const outcome = settledAttemptOutcome(session);
+  const outcome = settledOutcomeUnlessTurnOwed(session);
   if (session.attemptOutcome && !outcome) return { status: 'running', outcome: null };
   return { status: session.status as SessionStatus, outcome };
 }
