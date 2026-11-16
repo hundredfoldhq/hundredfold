@@ -55,6 +55,14 @@ describe("wrapServersWithScrub (pure spec transform)", () => {
     expect(out.remote).toBe(servers.remote);
   });
 
+  it("wraps a server that names both a command and a url: a command is what an engine launches", () => {
+    const both = { command: "node", args: ["x.js"], url: "http://127.0.0.1:1/sse", type: "sse" } as unknown as McpServerConfig;
+    const wrapped = wrapServersWithScrub({ both }).both as McpServerStdioConfig & { url?: string };
+    expect(wrapped.command).toBe(process.execPath);
+    expect(wrapped.args?.slice(1)).toEqual(["node", "x.js"]);
+    expect(wrapped.url).toBe("http://127.0.0.1:1/sse");
+  });
+
   it("wraps a server with no args/env and defaults args to just the real command", () => {
     const out = wrapServersWithScrub({ fetch: { command: "npx" } });
     const wrapped = out.fetch as McpServerStdioConfig;
