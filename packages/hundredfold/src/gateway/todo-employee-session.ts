@@ -34,6 +34,11 @@ export interface TodoSessionDelivery {
   deliveryKind: string;
   message: string;
   displayMessage: string;
+  /** The operator's own mention: a turn running in the live session takes it at
+   *  its next step when its engine can, and otherwise it runs next, ahead of
+   *  anything queued earlier; the turn is never cut off. Only a delivery into a session that
+   *  is already running can use it; a new session has no turn to reach. */
+  reachRunningTurn?: true;
 }
 
 /** Deliver into a live session through the outbox. A repeat of the same
@@ -49,7 +54,11 @@ export function deliverIntoSession(session: Session, delivery: TodoSessionDelive
     sourceOutcome: delivery.deliveryKind,
     sourceVersion: 1,
     deliveryKind: delivery.deliveryKind,
-    payload: { message: delivery.message, displayMessage: delivery.displayMessage },
+    payload: {
+      message: delivery.message,
+      displayMessage: delivery.displayMessage,
+      ...(delivery.reachRunningTurn ? { reachRunningTurn: true as const } : {}),
+    },
   };
   const claim = cap === undefined ? claimSessionDelivery(identity) : claimSessionDeliveryWithinSourceLimit(identity, cap);
   const claimed = claim.delivery;
