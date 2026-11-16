@@ -565,12 +565,13 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     const id = await sessionWithServer(h);
     const turn = streamed(h, { resumeSessionId: id, prompt: "SLOW answer" });
     await waitDelivered(h);
-    const outcome = h.engine.steer("sess-1", "late aside");
+    // The input's own step takes a moment too, so the turn is still running when it is delivered.
+    const outcome = h.engine.steer("sess-1", "late aside SLOW").then((o) => ({ o, turnStillRunning: h.engine.isAlive("sess-1") }));
     const { result } = await turn;
-    expect(await outcome).toBe("steered");
     // The server takes the input in right after the step it arrived in, and answers it.
+    expect(await outcome).toEqual({ o: "steered", turnStillRunning: true });
     expect(result.error).toBeUndefined();
-    expect(result.result).toBe("fake:late aside");
+    expect(result.result).toBe("fake:slow");
     expect(result.numTurns).toBe(2);
   });
 
