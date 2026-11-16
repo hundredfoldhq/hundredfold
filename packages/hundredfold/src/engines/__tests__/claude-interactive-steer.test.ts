@@ -306,19 +306,37 @@ describe("InteractiveClaudeEngine — steering a running turn", () => {
       expect(results.sort()).toEqual(["a:steered", "b:steered"]);
       deliver("s-merged", { hook_event_name: "Stop", last_assistant_message: "second answer MANGO KIWI" });
       await turn;
+      // The one prompt was recognised as both inputs: nothing typed into the terminal is waited for.
+      const next = engine.run({ sessionId: "s-merged", prompt: "third", cwd: "/tmp", resumeSessionId: "c1" } as any);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(pasted("third")).toBe(true);
+      deliver("s-merged", { hook_event_name: "UserPromptSubmit", prompt: "third" });
+      deliver("s-merged", { hook_event_name: "Stop", last_assistant_message: "third answer" });
+      await next;
     });
 
     it("an input identical to an earlier one is not taken in by the earlier one's entry", async () => {
       const { turn } = await runningTurn("s-same");
-      fs.appendFileSync(transcript, foldedLine(STEER)); // an earlier message with the same text, taken in already
-      await vi.advanceTimersByTimeAsync(10);
-      let settled: string | undefined;
-      void steerAcknowledged("s-same").then((o) => { settled = o; });
+      // Another input stays outstanding, so the transcript watch outlives the first.
+      void steerAcknowledged("s-same", "a different input, still queued");
+      await vi.advanceTimersByTimeAsync(400);
+      let first: string | undefined;
+      void steerAcknowledged("s-same").then((o) => { first = o; });
+      await vi.advanceTimersByTimeAsync(400);
+      fs.appendFileSync(transcript, foldedLine(STEER));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(first).toBe("steered");
+      // The same text again: the first's entry is not its own.
+      let second: string | undefined;
+      void steerAcknowledged("s-same").then((o) => { second = o; });
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(settled).toBeUndefined();
+      expect(second).toBeUndefined();
+      fs.appendFileSync(transcript, foldedLine(STEER));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(second).toBe("steered");
       deliver("s-same", { hook_event_name: "Stop", last_assistant_message: "second answer" });
       await turn;
-      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(5_000);
     });
 
     it("an input with nothing in it is withdrawn without being pasted", async () => {

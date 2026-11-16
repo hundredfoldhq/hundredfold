@@ -130,6 +130,55 @@ describe.skipIf(!LIVE || !CONFIG_DIR)("InteractiveClaudeEngine steering — real
     }
   }, 240_000);
 
+  it("a multi-line input (recorded wrapped in pasted_content tags) is taken in and answered once", async () => {
+    const id = "steer-live-multiline";
+    const live = await liveEngine(id);
+    const { engine, hooks, unclaimed, until } = live;
+    try {
+      const turn = engine.run(live.runOpts(`Run exactly this Bash command: ${SLEEP}  Then run it a second time in a separate Bash call. Then reply with exactly: FIRST-DONE`));
+      expect(await until(() => engine.canSteer(id), 60_000)).toBe(true);
+      expect(await until(() => hooks.some((h) => h.event === "PreToolUse"), 60_000)).toBe(true);
+      const outcome = await engine.steer(id, "/notacommand STEER-C: also add the word PAPAYA\n  `inline code`\n```js\nconst x = 1;\n```\n@file !bang trailing   ");
+      // Taken in at the boundary, not "withdrawn" after the turn: it was answered.
+      expect(outcome).toBe("steered");
+      expect(engine.isTurnRunning(id)).toBe(true);
+      const result = await turn;
+      expect(result.result).toContain("PAPAYA");
+      expect(hooks.filter((h) => h.event === "Stop")).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 3_000));
+      expect(unclaimed).toEqual([]);
+      expect(engine.holdsTurn(id)).toBe(false);
+    } finally {
+      live.close();
+    }
+  }, 240_000);
+
+  it("two inputs handed over at once are both taken in and answered once", async () => {
+    const id = "steer-live-concurrent";
+    const live = await liveEngine(id);
+    const { engine, hooks, unclaimed, until } = live;
+    try {
+      const turn = engine.run(live.runOpts(`Run exactly this Bash command: ${SLEEP}  Then run it a second time in a separate Bash call. Then reply with exactly: FIRST-DONE`));
+      expect(await until(() => engine.canSteer(id), 60_000)).toBe(true);
+      expect(await until(() => hooks.some((h) => h.event === "PreToolUse"), 60_000)).toBe(true);
+      // Claude Code may merge the two into one message; either way each was delivered.
+      const outcomes = await Promise.all([
+        engine.steer(id, "STEER-A: also add the word MANGO to your final answer."),
+        engine.steer(id, "STEER-B: also add the word KIWI to your final answer."),
+      ]);
+      expect(outcomes).toEqual(["steered", "steered"]);
+      const result = await turn;
+      expect(result.result).toContain("MANGO");
+      expect(result.result).toContain("KIWI");
+      expect(hooks.filter((h) => h.event === "Stop")).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 3_000));
+      expect(unclaimed).toEqual([]);
+      expect(engine.holdsTurn(id)).toBe(false);
+    } finally {
+      live.close();
+    }
+  }, 240_000);
+
   it("a turn that ends before a tool boundary: the input runs as the next turn, and the session is held for it", async () => {
     const id = "steer-live-unfolded";
     const live = await liveEngine(id);
