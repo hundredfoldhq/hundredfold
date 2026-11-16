@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Employee, Engine } from "../../shared/types.js";
-import { answer, config, failed, handleRateLimit, hopsOf, key, limitedTurn, newSession, overrideOf, readEngineHealth, scripted, tmp, useWalkHarness } from "./fallback-walk-harness.js";
+import { answer, config, failed, handleRateLimit, hopsOf, key, limited, limitedTurn, newSession, overrideOf, readEngineHealth, reg, scripted, tmp, useWalkHarness } from "./fallback-walk-harness.js";
 import { recordOpencodeFailure } from "../../shared/engine-health-opencode.js";
 import { isLinkExhausted } from "../../shared/fallback-chain-health.js";
 
@@ -121,6 +121,63 @@ describe("an expired key (401)", () => {
     expect(await handleRateLimit(opts)).toMatchObject({ kind: "fallback", result: { result: "served by openrouter/x" } });
     expect(readEngineHealth()["opencode/opencode-go-b"]).toMatchObject({ state: "exhausted", failureClass: "auth" });
     expect(hopsOf(id).map((hop) => hop.reason)).toContain("auth");
+  });
+});
+
+describe("a walk that ends on a link whose key was rejected", () => {
+  // The own target fails one way; the next link's provider answers 401, and the rest of the chain is on that provider.
+  const GO_B_Y = { engine: "opencode", model: "opencode-go-b/y" };
+  const B_LABEL = `opencode · ${GO_B.model}`;
+  const deadLinkWorker = (): Employee => ({ name: "worker-oc", engine: "opencode", model: GO.model, fallback: [GO_B, GO_B_Y] }) as Employee;
+  const turnOnDeadLink = (engines: Map<string, Engine>) => {
+    const id = newSession({ ref: "web:oc", engine: "opencode", model: GO.model, employeeName: "worker-oc" });
+    return { id, ...limitedTurn(id, deadLinkWorker(), engines) };
+  };
+
+  it("fails a refused own target naming the signed-out link, not only the own target's error", async () => {
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const turn = turnOnDeadLink(engines);
+    const onBillingFailure = vi.fn();
+    const opts = { ...turn.opts, rateLimit: { refused: "model-access" }, originalResult: failed(NO_ROUTE), hooks: { ...turn.opts.hooks, onBillingFailure } } as typeof turn.opts;
+
+    expect(await handleRateLimit(opts)).toMatchObject({ kind: "billing" });
+    expect(calls.map((call) => call.model)).toEqual([GO_B.model]);
+    expect(onBillingFailure).toHaveBeenCalledWith({ signedOut: [B_LABEL] });
+    expect(hopsOf(turn.id)[0]).toMatchObject({ to: null, reason: "auth", skipped: [{ key: key(GO_B_Y), reason: "signed-out" }] });
+  });
+
+  it("waits on a limited own target with the signed-out link in its lastError and notice", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const turn = turnOnDeadLink(engines);
+
+    const outcome = handleRateLimit(turn.opts);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls.map((call) => call.model)).toEqual([GO_B.model]);
+    expect(reg.getSession(turn.id)!.status).toBe("waiting");
+    expect(turn.seen.waiting[0]!.exhausted).toEqual({ tried: [B_LABEL], own: `opencode · ${GO.model}`, signedOut: [B_LABEL] });
+    expect(reg.getSession(turn.id)!.lastError).toMatch(
+      new RegExp(`^opencode · opencode-go/x usage limit, resumes .+; opencode · opencode-go-b/x is signed out: its key or login was rejected and needs replacing$`),
+    );
+    reg.updateSession(turn.id, { status: "idle" } as never);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await outcome).toMatchObject({ kind: "cancelled" });
+  });
+
+  it("says nothing of signing out when the link failed another way", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { engines } = scripted(() => limited());
+    const turn = turnOnDeadLink(engines);
+
+    const outcome = handleRateLimit(turn.opts);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(turn.seen.waiting[0]!.exhausted).not.toHaveProperty("signedOut");
+    expect(reg.getSession(turn.id)!.lastError).not.toMatch(/signed out/);
+    reg.updateSession(turn.id, { status: "idle" } as never);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await outcome;
   });
 });
 

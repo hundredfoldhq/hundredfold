@@ -1,4 +1,4 @@
-import { classifyOpencodeFailure } from "../../shared/opencode-failure.js";
+import { classifyOpencodeFailure, type OpencodeFailureKind } from "../../shared/opencode-failure.js";
 import { isInterruptibleEngine, type EngineResult, type Session } from "../../shared/types.js";
 import { rateLimitEngineLabel } from "../../shared/rateLimit.js";
 import type { EngineName } from "../../shared/models.js";
@@ -12,7 +12,7 @@ import { settleTurn, type SettleTurnInput } from "./completion.js";
 import { formatResumeTime, turnDisplayText } from "./text.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
-import { chainExhaustedNotice, hopNoticeText } from "../fallback-hop.js";
+import { chainExhaustedNotice, hopNoticeText, signedOutClause } from "../fallback-hop.js";
 import type { FallbackHop, FallbackHopNoticeMeta } from "../../shared/fallback-chain-wire.js";
 import type { JsonObject } from "../../shared/types.js";
 import { postEngineNotices } from "./engine-notices.js";
@@ -108,7 +108,7 @@ async function announceFallback(
 }
 
 async function announceWaiting(
-  args: RateLimitTurnArgs, resumeAt: Date | null, why: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } } = {},
+  args: RateLimitTurnArgs, resumeAt: Date | null, why: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string; signedOut?: string[] } } = {},
 ): Promise<void> {
   const { reason, hop, exhausted } = why;
   const session = args.input.session;
@@ -173,17 +173,33 @@ async function announceHostNotReady(args: RateLimitTurnArgs, info: { error: stri
   await args.surface.notice(`⏳ The usage limit reset, but this session's host is not ready (${info.error}). I'll keep retrying and continue automatically.`);
 }
 
+type Refusal = OpencodeFailureKind | undefined;
+
+/** The turn's error for a refused own target, in the provider's own words. */
+function refusedError(label: string, refused: Refusal, provider: string): string {
+  if (refused === "auth") return `${label} provider is signed out: ${provider}`;
+  if (refused === "model-access") return `${label} provider does not serve this model for the account: ${provider}`;
+  return `${label} account is out of credit: ${provider}`;
+}
+
+/** What the reply tells the person to do about a refused own target. */
+function refusedReply(refused: Refusal): string {
+  if (refused === "auth") return "The provider rejected its API key and no fallback could serve this turn. Sign in again or add a fallback, then try again.";
+  if (refused === "model-access") return "The provider does not serve this model for the account and no fallback could serve this turn. Enable the model or pick another, then try again.";
+  return "The provider reports an insufficient balance and no fallback could serve this turn. Top up the account or add a fallback, then try again.";
+}
+
 /** A prepaid balance ran dry, a key is dead, or a model is not enabled for the account, and no fallback
  *  link could serve the turn: fail it with the provider's own words (they say where to top up or sign
- *  in) so it reaches the manager, instead of parking it for a window that never opens. */
-async function settleBillingFailedTurn(args: RateLimitTurnArgs): Promise<void> {
+ *  in) so it reaches the manager, instead of parking it for a window that never opens. A fallback link
+ *  the walk found signed out is named too: its key needs replacing as much as the own target's fault. */
+async function settleBillingFailedTurn(args: RateLimitTurnArgs, info: { signedOut?: string[] } = {}): Promise<void> {
   const session = args.input.session;
   const provider = args.originalResult.error?.replace(/\s+/g, " ").trim().slice(0, 400) || "the provider reported an insufficient balance";
   const refused = classifyOpencodeFailure(args.originalResult.error)?.kind;
-  const label = rateLimitEngineLabel(session.engine);
-  const billingError = refused === "auth" ? `${label} provider is signed out: ${provider}`
-    : refused === "model-access" ? `${label} provider does not serve this model for the account: ${provider}`
-    : `${label} account is out of credit: ${provider}`;
+  const own = refusedError(rateLimitEngineLabel(session.engine), refused, provider);
+  const signedOut = info.signedOut?.length ? signedOutClause(info.signedOut) : undefined;
+  const billingError = signedOut ? `${own}; fallback ${signedOut}` : own;
   notifyOperatorChannel(`❌ ${billingError}. ${describe(session)} has been stopped.`, undefined, "stopped");
   await settleTurn({
     sessionId: session.id,
@@ -194,11 +210,7 @@ async function settleBillingFailedTurn(args: RateLimitTurnArgs): Promise<void> {
     employee: args.input.employee,
     surface: args.surface,
   });
-  await args.surface.reply(
-    refused === "auth" ? "The provider rejected its API key and no fallback could serve this turn. Sign in again or add a fallback, then try again."
-      : refused === "model-access" ? "The provider does not serve this model for the account and no fallback could serve this turn. Enable the model or pick another, then try again."
-      : "The provider reports an insufficient balance and no fallback could serve this turn. Top up the account or add a fallback, then try again.",
-  );
+  await args.surface.reply(signedOut ? `${refusedReply(refused)} The fallback ${signedOut}.` : refusedReply(refused));
 }
 
 function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
@@ -239,7 +251,7 @@ function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
     onRetryHostNotReady: (info) => announceHostNotReady(args, info),
     onRetryHostUnreachable: ({ error }) => settleUnreachableTurn(args, error),
     onTimeout: () => settleTimedOutTurn(args),
-    onBillingFailure: () => settleBillingFailedTurn(args),
+    onBillingFailure: (info) => settleBillingFailedTurn(args, info),
   };
 }
 

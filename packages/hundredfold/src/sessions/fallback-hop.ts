@@ -104,15 +104,34 @@ function resetClause(resumeAt: Date | null | undefined): string {
   return when ? `at ${when}` : "(time unknown)";
 }
 
-/** The notice for a run that ran out of chain: plainly that no hop is left, what was tried, and what the session waits for. */
-export function chainExhaustedNotice(exhausted: { tried: readonly string[]; own: string }, resumeAt: Date | null | undefined): string {
-  return `⏳ Every target in this session's chain is at its limit (tried: ${exhausted.tried.join(", ")}). Waiting for ${exhausted.own} to reset ${resetClause(resumeAt)}.`;
+/**
+ * What a walk that ended unserved says about the links it found signed out (a provider that rejected
+ * the link's key, a Claude login that is down): nothing renews those on a clock, so the operator has
+ * to, and the session's error has to say so rather than leave it in the hop record alone.
+ */
+export function signedOutClause(labels: readonly string[]): string {
+  const many = labels.length > 1;
+  return `${labels.join(", ")} ${many ? "are" : "is"} signed out: ${many ? "their" : "its"} key or login was rejected and needs replacing`;
 }
 
-/** The session's `lastError` while it waits on its own target after the chain ran out. */
-export function chainExhaustedLastError(ownLabel: string, resumeAt: Date | null | undefined): string {
+/** The notice for a run that ran out of chain: plainly that no hop is left, what was tried, why a signed-out link failed, and what the session waits for. */
+export function chainExhaustedNotice(exhausted: { tried: readonly string[]; own: string; signedOut?: readonly string[] }, resumeAt: Date | null | undefined): string {
+  const tried = exhausted.tried.join(", ");
+  const waiting = `Waiting for ${exhausted.own} to reset ${resetClause(resumeAt)}.`;
+  // A link that was refused its key is not at a limit, so the notice does not say every target is.
+  if (exhausted.signedOut?.length) return `⏳ No target in this session's chain could take the turn (tried: ${tried}). ${capitalised(signedOutClause(exhausted.signedOut))}. ${waiting}`;
+  return `⏳ Every target in this session's chain is at its limit (tried: ${tried}). ${waiting}`;
+}
+
+/** The session's `lastError` while it waits on its own target after the chain ran out, naming any link it found signed out. */
+export function chainExhaustedLastError(ownLabel: string, resumeAt: Date | null | undefined, signedOut?: readonly string[]): string {
   const when = formatResumeTime(resumeAt);
-  return `${ownLabel} usage limit, ${when ? `resumes ${when}` : "reset time unknown"}`;
+  const waiting = `${ownLabel} usage limit, ${when ? `resumes ${when}` : "reset time unknown"}`;
+  return signedOut?.length ? `${waiting}; ${signedOutClause(signedOut)}` : waiting;
+}
+
+function capitalised(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** The window a hop's stand-in holds the session for: until the failing target's stated reset, else a default window. */

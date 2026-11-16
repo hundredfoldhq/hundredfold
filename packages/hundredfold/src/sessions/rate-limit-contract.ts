@@ -80,7 +80,7 @@ export interface RateLimitHandlerHooks {
    * fallback target could not, or every link was tried), so the notice can say why it waited
    * instead of switching; `hop` is then the record that the chain ran out.
    */
-  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }) => void | Promise<void>;
+  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string; signedOut?: string[] } }) => void | Promise<void>;
 
   /**
    * Called each retry iteration BEFORE the retry engine.run — switch UI back
@@ -128,8 +128,12 @@ export interface RateLimitHandlerHooks {
    * mark session errored, emit completion event with the timeout error.
    */
   onTimeout?: () => void | Promise<void>;
-  /** The chain could not serve a spent balance and the turn is not parked. */
-  onBillingFailure?: () => void | Promise<void>;
+  /**
+   * The chain could not serve a spent balance, a dead key or a model the account is not enabled for, and
+   * the turn is not parked. `signedOut` names the fallback links the walk found signed out (their key or
+   * login rejected), so the failure says so as well as the own target's error.
+   */
+  onBillingFailure?: (info?: { signedOut?: string[] }) => void | Promise<void>;
 
   /**
    * Called when the session was deleted/cancelled while waiting. The handler

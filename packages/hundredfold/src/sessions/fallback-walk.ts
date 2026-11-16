@@ -41,7 +41,8 @@ export type WalkOutcome =
   | { kind: "served"; result: EngineResult }
   | { kind: "cancelled" }
   /** Nothing served the turn: it waits on its own target. `reason` says why no one else did, `hop` is the record that the chain ran out. */
-  | { kind: "unserved"; reason?: string; hop?: FallbackHop; walked: boolean; exhausted?: { tried: string[]; own: string } };
+  /** `signedOut`: the links this walk tried whose key or login was rejected, which only the operator can renew. */
+  | { kind: "unserved"; reason?: string; hop?: FallbackHop; walked: boolean; exhausted?: { tried: string[]; own: string; signedOut?: string[] }; signedOut?: string[] };
 
 /** The target that just failed, and how. */
 interface Failure {
@@ -68,6 +69,8 @@ interface Walk {
   failedOver: boolean;
   failure: Failure;
   triedLabels: string[];
+  /** The links this walk tried that failed signed out (`auth`), in the order it tried them. */
+  signedOut: string[];
   ownLabel: string;
   startedAt: string;
 }
@@ -114,7 +117,7 @@ function startWalk(input: WalkInput): Walk {
   const metaBefore = (getSession(session.id) ?? session).transportMeta;
   return {
     input, metaBefore, runAtStart: readFallbackRun(metaOf({ transportMeta: metaBefore })), tried: new Set(), cursor: 0, source: undefined,
-    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], ownLabel: "", startedAt: new Date().toISOString(),
+    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], signedOut: [], ownLabel: "", startedAt: new Date().toISOString(),
     failure: { engine: input.limited.engine, account: input.limited.account, reason: limitReason(originalResult), resetsAt: rateLimit.resetsAt },
   };
 }
@@ -230,6 +233,7 @@ function failedOver(w: Walk, found: Found, failure: { reason: FallbackHopReason;
   w.failedOver = true;
   w.tried.add(link.key);
   w.triedLabels.push(link.label);
+  if (failure.reason === "auth") w.signedOut.push(link.label);
   w.cursor = found.next.index;
   w.failure = { end: endOf(link), engine: link.engine, account: link.account, reason: failure.reason, resetsAt: failure.resetsAt };
   if (failure.isLimit) recordLinkLimit(link, failure.resetsAt, failure.model, { error: failure.error, config: w.input.opts.config, host: w.input.remote?.remoteHost });
@@ -267,14 +271,16 @@ async function unserved(w: Walk, decision: SubstituteDecision): Promise<WalkOutc
     logger.info(hopLogLine(w.input.opts.session.id, hop));
   }
   if (!(await settleExhausted(w))) return { kind: "cancelled" };
-  return { kind: "unserved", ...whyUnserved(w, decision, ranOut), ...(hop ? { hop } : {}), walked };
+  const signedOut = w.signedOut.length > 0 ? { signedOut: [...w.signedOut] } : {};
+  return { kind: "unserved", ...whyUnserved(w, decision, ranOut), ...(hop ? { hop } : {}), walked, ...signedOut };
 }
 
 /** Why nothing took the turn: the session target's own reason, or that the chain ran out, naming what was tried and what the session waits for. */
-function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { reason?: string; exhausted?: { tried: string[]; own: string } } {
+function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { reason?: string; exhausted?: { tried: string[]; own: string; signedOut?: string[] } } {
   if (decision.reason) return { reason: decision.reason };
   if (!ranOut) return {};
-  return { reason: chainExhaustedReason(w.triedLabels, w.ownLabel), exhausted: { tried: [...w.triedLabels], own: w.ownLabel } };
+  const signedOut = w.signedOut.length > 0 ? { signedOut: [...w.signedOut] } : {};
+  return { reason: chainExhaustedReason(w.triedLabels, w.ownLabel), exhausted: { tried: [...w.triedLabels], own: w.ownLabel, ...signedOut } };
 }
 
 /** The hop that records the chain ran out: what was left after the cursor, and why none of it could be used. */

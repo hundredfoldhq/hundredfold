@@ -126,7 +126,12 @@ reset, as before.
   resumes there. It reads `waiting` (its `lastError` names the own target and
   when it reopens, e.g. "claude · work · opus usage limit, resumes …"), its last
   hop has no target, and the notice says plainly that no hop is left and what
-  was tried. If a stand-in held the session when it ran out, the wait ends
+  was tried. A link the run found signed out (its key or login rejected) is
+  named in both, since no reset renews it: "…; opencode · go-b/mimo is signed
+  out: its key or login was rejected and needs replacing". A turn whose own
+  target was refused (a dead key, a spent balance, a model it cannot use) fails
+  instead of waiting, and its error names a signed-out link the same way after
+  the own target's own error. If a stand-in held the session when it ran out, the wait ends
   where the stand-in's window does (the own target's reset), and the turn runs
   again on the own target. See [session statuses](session-statuses.md) for what
   `waiting` means and how to read it.

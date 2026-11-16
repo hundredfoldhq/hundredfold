@@ -110,8 +110,10 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   // is not enabled for, so there is nothing to wait out: the chain was the only way past it, and
   // with none left the turn fails to be seen.
   if (rateLimit.billing || rateLimit.refused) {
-    logger.warn(`Session ${session.id} hit a ${engineLabel} ${rateLimit.refused ?? "billing"} failure and no fallback link could serve it; failing the turn instead of waiting`);
-    await hooks.onBillingFailure?.();
+    const signedOut = walk.signedOut ? `; signed out: ${walk.signedOut.join(", ")}` : "";
+    logger.warn(`Session ${session.id} hit a ${engineLabel} ${rateLimit.refused ?? "billing"} failure and no fallback link could serve it${signedOut}; failing the turn instead of waiting`);
+    // The own target's failure is not the whole story: a link that was refused its key needs the operator too.
+    await hooks.onBillingFailure?.(walk.signedOut ? { signedOut: walk.signedOut } : {});
     return { kind: "billing" };
   }
   const targetReason = walk.reason;
@@ -148,7 +150,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     status: "waiting",
     lastActivity: new Date().toISOString(),
     // A chain that ran out names the own target and when it reopens; any other wait keeps its wording.
-    lastError: walk.exhausted ? chainExhaustedLastError(walk.exhausted.own, resumeAt) : (resumeAt
+    lastError: walk.exhausted ? chainExhaustedLastError(walk.exhausted.own, resumeAt, walk.exhausted.signedOut) : (resumeAt
       ? `${engineLabel} usage limit — resumes ${resumeAt.toISOString()}`
       : `${engineLabel} usage limit — waiting for reset`) + (targetReason ? `; ${targetReason}` : ""),
   });
