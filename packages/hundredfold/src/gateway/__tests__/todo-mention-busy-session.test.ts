@@ -19,7 +19,6 @@ import { makeResponse, withRouteBackedFetch } from "./helpers/callback-requests.
 import { sessionHeaders } from "./todo-mentions-harness.js";
 import { installTodoCommentRouting } from "../todo-comment-routing.js";
 import { addComment } from "../../work-items/comments.js";
-import { USER_MESSAGE_INTERRUPTION_REASON } from "../../sessions/interruption-reasons.js";
 import { setSteerSettleTimeoutForTest } from "../../sessions/steered-deliveries.js";
 import { resumePendingWebQueueItems } from "../callback-queue-recovery.js";
 import type { Engine, EngineRunOpts, SteerOutcome } from "../../shared/types.js";
@@ -30,9 +29,11 @@ import type { Engine, EngineRunOpts, SteerOutcome } from "../../shared/types.js"
  * engine is fake: its turn stays open until the test lets it end.
  *
  * An engine that can take a new input into the turn running (steer) is handed
- * the mention; any other is interrupted, as an operator's chat message would
- * be, and the mention runs before anything queued earlier. Nobody else's
- * message, and no relay or callback, ever does either.
+ * the mention; for any other the turn runs on, uncut, and the mention moves to
+ * the head of its lane, so it is the next thing the session reads, before
+ * anything queued earlier. Nothing here ever kills a turn: on claude that ends
+ * the whole process, tools, background shells and subagents with it. Nobody
+ * else's message, and no relay or callback, ever reaches a running turn.
  */
 
 for (const name of ["alpha", "bravo"]) {
@@ -121,12 +122,14 @@ async function busyTodo(options: FakeEngineOptions & { config?: Record<string, u
     call(context, "POST", `/api/work-items/${item.id}/comments`, { body, ...extra });
   const commentAs = (sessionId: string, body: string, extra: Record<string, unknown> = {}) =>
     call(context, "POST", `/api/work-items/${item.id}/comments`, { body, ...extra }, { host: "gateway.test", ...sessionHeaders(sessionId) });
+  /** The pending rows' prompts in lane order, which is what runs next. */
+  const laneOrder = () => (dbModule.initDb().prepare("SELECT prompt FROM queue_items WHERE session_key = ? AND status = 'pending' ORDER BY position ASC, created_at ASC, rowid ASC").pluck().all(session.sessionKey) as string[]);
   const pendingPrompts = () => registry.listPendingQueueItemIdsForSession(session.id).map((id) => registry.getQueueItem(id)!.prompt);
   const settled = () => eventually(() => {
     expect(queue.isRunning(session.sessionKey)).toBe(false);
     expect(queue.getPendingCount(session.sessionKey)).toBe(0);
   });
-  return { ...fake, context, queue, events, item, session, operatorComment, commentAs, pendingPrompts, settled };
+  return { ...fake, context, queue, events, item, session, operatorComment, commentAs, pendingPrompts, laneOrder, settled };
 }
 
 /** Let any hand-over or interruption a mistaken policy would make happen. */
@@ -135,7 +138,7 @@ const quiet = () => new Promise((resolve) => setTimeout(resolve, 60));
 const mentionRowId = () => dbModule.initDb().prepare("SELECT queue_item_id FROM callback_deliveries WHERE delivery_kind = 'todo-mention'").pluck().get() as string;
 
 describe("an operator's mention into a busy session", () => {
-  it("(a) interrupts a turn that cannot be steered, and runs before a child callback queued earlier", async () => {
+  it("(a) never kills a turn that cannot be steered, and runs the mention right after it, before a child callback queued earlier", async () => {
     const busy = await busyTodo();
     await withRouteBackedFetch(busy.context, {}, async () => {
       const child = createChild(busy.session.id, "busy-callback-child");
@@ -144,8 +147,18 @@ describe("an operator's mention into a busy session", () => {
 
       expect((await busy.operatorComment("@alpha please look at the failing check")).status).toBe(201);
 
-      await eventually(() => expect(busy.kills).toEqual([USER_MESSAGE_INTERRUPTION_REASON]));
-      expect(busy.events).toContainEqual({ event: "session:interrupted", data: { sessionId: busy.session.id, reason: "todo mention" } });
+      await eventually(() => expect(busy.pendingPrompts()).toHaveLength(2));
+      await quiet();
+      // Nothing was cut off or interrupted: the turn is still the one it was.
+      expect(busy.kills).toEqual([]);
+      expect(busy.steers).toEqual([]);
+      expect(busy.events.filter((event) => event.event === "session:interrupted")).toEqual([]);
+      expect(busy.prompts).toEqual(["long running turn"]);
+      // The mention heads the lane, ahead of the earlier callback.
+      expect(busy.laneOrder()[0]).toContain("please look at the failing check");
+      expect(busy.laneOrder()[1]).toContain("child finished its part");
+
+      busy.releaseNext();
       await eventually(() => expect(busy.prompts).toHaveLength(2));
       expect(busy.prompts[1]).toContain("please look at the failing check");
       busy.releaseNext();
@@ -153,19 +166,64 @@ describe("an operator's mention into a busy session", () => {
       expect(busy.prompts[2]).toContain("child finished its part");
       busy.releaseNext();
       await busy.settled();
-      // The cut-off turn settles quietly: only the mention's turn and the callback's reply, never a stale third.
-      await eventually(() => expect(registry.getMessages(busy.session.id).filter((message) => message.role === "assistant")).toHaveLength(2));
-      await quiet();
-      expect(registry.getMessages(busy.session.id).filter((message) => message.role === "assistant")).toHaveLength(2);
+      expect(busy.kills).toEqual([]);
+      expect(registry.getMessages(busy.session.id).filter((message) => message.role === "assistant")).toHaveLength(3);
     });
   });
 
-  it("(a) leaves the turn running when the interrupt fallback is switched off", async () => {
-    const busy = await busyTodo({ config: { interruptOnNewMessage: false } });
+  it("(a) two operator mentions in a row kill nothing, and the first runs first", async () => {
+    const busy = await busyTodo();
+    await withRouteBackedFetch(busy.context, {}, async () => {
+      await busy.operatorComment("@alpha first request");
+      await eventually(() => expect(busy.pendingPrompts()).toHaveLength(1));
+      await busy.operatorComment("@alpha second request");
+      await eventually(() => expect(busy.pendingPrompts()).toHaveLength(2));
+      await quiet();
+      expect(busy.kills).toEqual([]);
+      expect(busy.prompts).toEqual(["long running turn"]);
+
+      busy.releaseNext();
+      // The second mention heads the lane (it arrived last), and the first follows: neither turn is cut off.
+      await eventually(() => expect(busy.prompts).toHaveLength(2));
+      busy.releaseNext();
+      await eventually(() => expect(busy.prompts).toHaveLength(3));
+      expect(busy.prompts.slice(1).join("\n")).toContain("first request");
+      expect(busy.prompts.slice(1).join("\n")).toContain("second request");
+      busy.releaseNext();
+      await busy.settled();
+      expect(busy.kills).toEqual([]);
+      expect(busy.events.filter((event) => event.event === "session:interrupted")).toEqual([]);
+    });
+  });
+
+  for (const interruptOnNewMessage of [true, false]) {
+    it(`(a) interruptOnNewMessage ${interruptOnNewMessage} makes no difference to a mention: promoted, nothing killed`, async () => {
+      const busy = await busyTodo({ config: { interruptOnNewMessage } });
+      await withRouteBackedFetch(busy.context, {}, async () => {
+        await busy.operatorComment("@alpha please look at the failing check");
+        await eventually(() => expect(busy.pendingPrompts()).toHaveLength(1));
+        await quiet();
+        expect(busy.kills).toEqual([]);
+        expect(busy.events.filter((event) => event.event === "session:interrupted")).toEqual([]);
+        expect(busy.prompts).toEqual(["long running turn"]);
+        busy.releaseNext();
+        await eventually(() => expect(busy.prompts).toHaveLength(2));
+        expect(busy.prompts[1]).toContain("please look at the failing check");
+        busy.releaseNext();
+        await busy.settled();
+      });
+    });
+  }
+
+  it("(a) a mention while a /compact turn runs never steers into it, and kills nothing", async () => {
+    const busy = await busyTodo({ steerable: true });
+    // The stub engine has no compaction path, so the running turn's row is relabelled as the compact command it stands for.
+    dbModule.initDb().prepare("UPDATE queue_items SET prompt = '/compact' WHERE session_id = ? AND status = 'running'").run(busy.session.id);
     await withRouteBackedFetch(busy.context, {}, async () => {
       await busy.operatorComment("@alpha please look at the failing check");
       await eventually(() => expect(busy.pendingPrompts()).toHaveLength(1));
       await quiet();
+      expect(busy.steers).toEqual([]);
       expect(busy.kills).toEqual([]);
       expect(busy.prompts).toEqual(["long running turn"]);
       busy.releaseNext();

@@ -38,7 +38,7 @@ import { reroutedSessionMeta } from "../sessions/engine-override-window.js";
 import { stripControlChars, hasControlBytes } from "../shared/sanitize.js";
 import { CONNECTOR_ID_REQUIREMENTS, isValidConnectorId } from "../shared/connector-id.js";
 import { initDb } from "../shared/db.js";
-import { countPendingQueueItemsByKey } from "../sessions/queue-item-registry.js";
+import { countPendingQueueItemsByKey, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
 import { withdrawPendingSwitchOfDelivery } from "../sessions/pending-switch.js";
 import {
   listSessions,
@@ -353,7 +353,7 @@ import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from 
 import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { isAutoCompacting } from "../sessions/auto-compaction.js";
-import { isRawEngineCommand } from "../shared/skill-commands.js";
+import { isCompactCommand, isRawEngineCommand } from "../shared/skill-commands.js";
 import { handleTerminalApi, type TerminalApiOptions } from "./terminal-api.js";
 import { isTerminalSession, TERMINAL_HAS_NO_TURN, TERMINAL_REFUSES_MESSAGES } from "../terminals/session.js";
 import { handleWorkItemKeptApi } from "./work-item-kept-api.js";
@@ -4138,7 +4138,8 @@ export async function handleApiRequest(
         delivery,
         queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
         reachRunningTurn: callbackDelivery?.payload.reachRunningTurn === true,
-        canSteer: () => isSteerableEngine(engine) && engine.canSteer(targetSessionId),
+        // Never into a running /compact: the summary must not take in new input.
+        canSteer: () => isSteerableEngine(engine) && !runningQueuePromptsForSession(targetSessionId).some(isCompactCommand) && engine.canSteer(targetSessionId),
       });
       const shouldInterruptRunningTurn = runningAction === "interrupt";
       if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
@@ -4191,9 +4192,10 @@ export async function handleApiRequest(
           }
         }
         callbackQueueNeedsDispatch = !queue.hasInFlightItem(queueItemId);
-        // An interrupting mention runs before anything queued earlier, a child's
-        // callback included: the turn it cuts off hands the lane to the head row.
-        if (shouldInterruptRunningTurn) movePendingQueueItemToHead(sessionKey, queueItemId);
+        // A mention that reaches a running turn runs before anything queued earlier,
+        // a child's callback included: the turn ends, or a withdrawn steer is
+        // taken back, and the lane hands over to the head row. Nothing is cut off.
+        if (runningAction === "promote" || runningAction === "steer") movePendingQueueItemToHead(sessionKey, queueItemId);
       } else {
         const claim = claimIncomingTurn({
           sessionId: session.id, sessionKey, prompt, isNotification, role: messageRole, dedupeKey: lateralDedupeKey,
@@ -4297,7 +4299,7 @@ export async function handleApiRequest(
           engine.kill(session.id, USER_MESSAGE_INTERRUPTION_REASON);
           // SessionQueue serializes per-session; the new turn enqueued below will
           // wait for the killed run()'s promise to settle before starting.
-          context.emit("session:interrupted", { sessionId: session.id, reason: callbackDelivery ? "todo mention" : "new message" });
+          context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
         }
       }
 

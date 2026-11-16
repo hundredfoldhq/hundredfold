@@ -71,10 +71,12 @@ describe("runningTurnAction", () => {
   const rows: Array<{ name: string; extra: Record<string, unknown>; flagged: Action; unflagged: Action }> = [
     { name: "no turn running", extra: { turnRunning: false, ...steerable }, flagged: "queue", unflagged: "queue" },
     { name: "running, engine can steer", extra: steerable, flagged: "steer", unflagged: "queue" },
-    { name: "running, engine cannot steer", extra: notSteerable, flagged: "interrupt", unflagged: "queue" },
-    { name: "running, no steering offered at all", extra: {}, flagged: "interrupt", unflagged: "queue" },
+    { name: "running, engine cannot steer", extra: notSteerable, flagged: "promote", unflagged: "queue" },
+    { name: "running, no steering offered at all", extra: {}, flagged: "promote", unflagged: "queue" },
     { name: "interruptOnNewMessage off, engine can steer", extra: { interruptOnNewMessage: false, ...steerable }, flagged: "steer", unflagged: "queue" },
-    { name: "interruptOnNewMessage off, engine cannot steer", extra: { interruptOnNewMessage: false, ...notSteerable }, flagged: "queue", unflagged: "queue" },
+    { name: "interruptOnNewMessage off, engine cannot steer", extra: { interruptOnNewMessage: false, ...notSteerable }, flagged: "promote", unflagged: "queue" },
+    { name: "interruptOnNewMessage on, engine cannot steer", extra: { interruptOnNewMessage: true, ...notSteerable }, flagged: "promote", unflagged: "queue" },
+    { name: "interruptOnNewMessage on, engine can steer", extra: { interruptOnNewMessage: true, ...steerable }, flagged: "steer", unflagged: "queue" },
     { name: "queue paused", extra: { queuePaused: () => true, ...steerable }, flagged: "queue", unflagged: "queue" },
     { name: "queue not paused", extra: { queuePaused: () => false, ...steerable }, flagged: "steer", unflagged: "queue" },
     { name: "auto-compacting", extra: { autoCompacting: true, ...steerable }, flagged: "queue", unflagged: "queue" },
@@ -84,6 +86,16 @@ describe("runningTurnAction", () => {
   it.each(rows)("$name: a flagged mention $flagged, an unflagged notification $unflagged", (row) => {
     expect(runningTurnAction({ ...flagged, ...row.extra })).toBe(row.flagged);
     expect(runningTurnAction({ ...notification, ...row.extra })).toBe(row.unflagged);
+  });
+
+  it("never answers interrupt for a flagged mention, whatever else is set", () => {
+    for (const interruptOnNewMessage of [undefined, true, false]) {
+      for (const delivery of [undefined, "queue" as const, "now" as const]) {
+        for (const extra of [steerable, notSteerable, {}]) {
+          expect(runningTurnAction({ ...flagged, interruptOnNewMessage, delivery, ...extra })).not.toBe("interrupt");
+        }
+      }
+    }
   });
 
   it("never asks the engine whether it can steer when nothing could be steered", () => {
@@ -97,7 +109,8 @@ describe("runningTurnAction", () => {
 
   it("ignores a per-message delivery choice for a flagged mention, which no request can make", () => {
     expect(runningTurnAction({ ...flagged, delivery: "queue", ...steerable })).toBe("steer");
-    expect(runningTurnAction({ ...flagged, delivery: "queue", ...notSteerable })).toBe("interrupt");
+    expect(runningTurnAction({ ...flagged, delivery: "queue", ...notSteerable })).toBe("promote");
+    expect(runningTurnAction({ ...flagged, delivery: "now", ...notSteerable })).toBe("promote");
   });
 
   it("leaves everything unflagged exactly as shouldInterruptRunningTurn has it", () => {

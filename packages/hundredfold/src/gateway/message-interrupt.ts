@@ -61,7 +61,7 @@ export function shouldInterruptRunningTurn(o: {
 }
 
 /** What an arriving message does to the turn running in its session. */
-export type RunningTurnAction = "queue" | "interrupt" | "steer";
+export type RunningTurnAction = "queue" | "interrupt" | "steer" | "promote";
 
 /**
  * What to do with a message that arrives while a turn may be running.
@@ -70,9 +70,11 @@ export type RunningTurnAction = "queue" | "interrupt" | "steer";
  * interrupts or it queues, and a notification never does either, never steers.
  *
  * A message the operator asked to be heard (`reachRunningTurn`, read from the
- * durable delivery row, never from a request) is handed to the running turn
- * when the engine can take it, else interrupts like an operator's chat message.
- * Steering ignores `interruptOnNewMessage`: it cuts nothing off. The same
+ * durable delivery row, never from a request) never cuts a turn off: on claude
+ * an interrupt ends the whole process, with its tool call, background shells
+ * and subagents. It is handed to the running turn when the engine can take it
+ * (`"steer"`), else moved to the head of its lane (`"promote"`) to be the next
+ * thing the session reads. Neither looks at `interruptOnNewMessage`. The same
  * guards as above hold it back: no turn running, a running auto-compaction, a
  * compact command and a paused queue all leave it queued behind the turn.
  */
@@ -92,7 +94,7 @@ export function runningTurnAction(o: {
   if (!o.reachRunningTurn) return shouldInterruptRunningTurn(o) ? "interrupt" : "queue";
   if (!reachableTurnRunning(o)) return "queue";
   if (o.canSteer?.()) return "steer";
-  return o.interruptOnNewMessage === false ? "queue" : "interrupt";
+  return "promote";
 }
 
 /** Whether there is a running turn a mention may reach: one that is neither compacting, nor about to compact, nor held by a pause. */
