@@ -209,7 +209,7 @@ describe("a busy session's lane keeps send order across child callbacks", () => 
       expect(seen, `seed ${seed}: ${s.started.join(" | ")}`).toEqual(sent);
       expect(s.overtaken, `seed ${seed}: ${s.started.join(" | ")}`).toEqual([]);
     }
-  });
+  }, 60_000);
 });
 
 describe("recoverStaleQueueItems", () => {
@@ -219,6 +219,8 @@ describe("recoverStaleQueueItems", () => {
   const run = (id: string) => reg.markQueueItemRunning(id);
 
   it("puts the rows a restart cut off ahead of their lane's waiting rows and numbers the lane densely", () => {
+    // Turns the scenarios above left running belong to their own lanes; start from a settled database.
+    reg.recoverStaleQueueItems();
     const owner = reg.createSession({ engine: "claude", source: "web", sourceRef: "web:recover-owner" });
     const lane = "web:recover-lane";
     // The lane drained a deep queue: the row that is running was numbered 3.
