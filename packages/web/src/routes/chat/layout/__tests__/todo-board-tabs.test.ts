@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   isChatTabId,
   isDocTabId,
+  isMalformedTodoBoardTabId,
   isTodoBoardTabId,
   paneTabKind,
   parseDocTabId,
@@ -13,6 +14,7 @@ import {
 import { closeAllUnpinned, closeUserTab, isPinned, openPinnedDocTab, unpinTab } from '../pinned-tabs'
 import { paneTabItems } from '../pane-tab-ops'
 import { createSplitLayout, emptySplitLayout, groupsOf, openDocTab, closeSession } from '../split-layout'
+import { restoreSplitLayout, serializeSplitLayout } from '../split-layout-storage'
 
 const board = todoBoardTabId('ACM-7')
 const tabsOf = (layout: Parameters<typeof groupsOf>[0]) => groupsOf(layout).map((group) => group.tabs)
@@ -38,6 +40,17 @@ describe('a Todo board tab id', () => {
     expect(parseTodoBoardTabId('todo-board:')).toBeNull()
     expect(parseTodoBoardTabId('todo-board:not-an-id')).toBeNull()
     expect(parseDocTabId('todo-board:nope')).toBeNull()
+  })
+
+  it('is not one, by the predicate either, when the id after the prefix is not a Todo id', () => {
+    for (const id of ['todo-board:', 'todo-board:foo', 'todo-board:not-an-id']) {
+      expect(isTodoBoardTabId(id)).toBe(false)
+      expect(isDocTabId(id)).toBe(false)
+      expect(isMalformedTodoBoardTabId(id)).toBe(true)
+    }
+    expect(isMalformedTodoBoardTabId(board)).toBe(false)
+    expect(isMalformedTodoBoardTabId('todo:foo')).toBe(false)
+    expect(isMalformedTodoBoardTabId('a')).toBe(false)
   })
 })
 
@@ -80,5 +93,19 @@ describe('a Todo board tab in a layout', () => {
     const layout = openPinnedDocTab(createSplitLayout(['a'], 'a'), board)
     const [group] = groupsOf(layout)
     expect(paneTabItems(group, () => undefined, layout.pinned)).toContainEqual({ id: board, kind: 'todo-board', title: 'ACM-7', pinned: true, closable: false })
+  })
+})
+
+describe('a Todo board tab in a stored layout', () => {
+  it('drops one naming no valid Todo when the layout is read, and keeps every other tab', () => {
+    const layout = openDocTab(openDocTab(createSplitLayout(['a'], 'a'), 'a', board), 'a', todoTabId('ACM-9'))
+    const stored = JSON.parse(serializeSplitLayout(layout)) as { root: { tabs: string[]; activeTab: string } }
+    expect(stored.root.tabs).toContain(board)
+    stored.root.tabs.splice(1, 0, 'todo-board:foo')
+    stored.root.activeTab = 'todo-board:foo'
+    const restored = restoreSplitLayout(JSON.stringify(stored))
+    expect(tabsOf(restored)).toEqual(tabsOf(layout))
+    expect(tabsOf(restored).flat()).not.toContain('todo-board:foo')
+    expect(groupsOf(restored)[0].activeTab).not.toBe('todo-board:foo')
   })
 })

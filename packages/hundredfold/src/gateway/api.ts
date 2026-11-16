@@ -7,7 +7,8 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, reportsTurnProgress } from "../shared/types.js";
+import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -296,6 +297,7 @@ import {
 import { announceDelegation, claimHeldBy, landInLiveSession, reusedDelegationBody, reusedDelegationReceipt, delegationLoopError, delegationReplayBody } from "./delegation-handoff.js";
 import { liveEmployeeSession } from "../work-items/employee-sessions.js";
 import { recordNewDelegateSession, reportingParentSessionId } from "../work-items/employee-session-delegation.js";
+import { noticeTargetSessionId } from "../sessions/turn-requester.js";
 import { NOTE_FILE_MAX_BYTES, createNote, listNotes, readKnowledgeFile, readNote, searchKnowledge, updateNote, type NoteStoreResult } from "../notes/store.js";
 import { loadInstances, saveInstances, type Instance, type InstanceInput } from "../instances/directory.js";
 import { createInstance, type CreateInstanceInput, type CreateInstanceResult } from "../instances/create.js";
@@ -2202,8 +2204,9 @@ export async function handleApiRequest(
 
     // GET /api/sessions/:id/context?message=<id>&radius=<n> — GRS-020a: the
     // bounded ±radius window around a message anchor (a search hit), so a hit
-    // becomes readable in place. Message bodies are returned as stored; the
-    // session field is the COMPACT summary (GRS-020a-fix finding 5).
+    // becomes readable in place. Message bodies are returned as stored, except
+    // that a notification reads as the full body it carries rather than its
+    // banner; the session field is the COMPACT summary (GRS-020a-fix finding 5).
     params = matchRoute("/api/sessions/:id/context", pathname);
     if (method === "GET" && params) {
       const session = getSession(params.id);
@@ -3970,12 +3973,13 @@ export async function handleApiRequest(
         body.meta = plan.meta;
         if (targetParentId === caller.id) {
           parentFollowUp = { caller, message: String(rawMessage) };
-        } else if (callerParentId === session.id && caller.attemptToken) {
-          // The child is reporting UP to its parent via send_to_session. The
-          // automatic parent-completion callback fired at this child's settle
-          // would be a SECOND injection of the same turn (the operator sees a
-          // spurious "duplicate callback" wake). Mark the attempt so
-          // notifyParentSession suppresses that redundant callback.
+        } else if (noticeTargetSessionId(caller) === session.id && caller.attemptToken) {
+          // The child is reporting UP to whoever its notice goes to (its parent,
+          // or the session that sent it the message it is answering) via
+          // send_to_session. The automatic completion callback fired at this
+          // child's settle would be a SECOND injection of the same turn (the
+          // operator sees a spurious "duplicate callback" wake). Mark the
+          // attempt so notifyParentSession suppresses that redundant callback.
           recordChildReportedToParent(caller.id, caller.attemptToken);
         }
         // A parent/child message is not a relay hop: it counts against the pair
@@ -4017,9 +4021,10 @@ export async function handleApiRequest(
           kind: "agent-relay",
           ...(relayFromSessionId ? { fromSessionId: relayFromSessionId } : {}),
           fromLabel,
+          viaOperator: true,
           hops: 1,
           maxHops: sessionCommGuards.maxHops(),
-          fullMessage: relayBody.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+          ...fullMessageMeta(relayBody),
         };
       } else if (body.role !== "notification") {
         // A genuine user/operator message resets the target's relay-hop chain —
@@ -4051,9 +4056,8 @@ export async function handleApiRequest(
         const employee = typeof rawMeta.employee === "string" ? stripControlChars(rawMeta.employee).trim().slice(0, 160) : "";
         const employeeDisplay = typeof rawMeta.employeeDisplay === "string" ? stripControlChars(rawMeta.employeeDisplay).trim().slice(0, 160) : "";
         const childSessionId = typeof rawMeta.childSessionId === "string" ? stripControlChars(rawMeta.childSessionId).trim().slice(0, 160) : "";
-        const fullMessage = typeof rawMeta.fullMessage === "string"
-          ? rawMeta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)
-          : undefined;
+        const full = readFullMessageMeta(rawMeta);
+        const fullMessage = full?.fullMessage;
         if (rawMeta.kind === "agent-relay") {
           const fromSessionId = typeof rawMeta.fromSessionId === "string" ? stripControlChars(rawMeta.fromSessionId).trim().slice(0, 160) : "";
           const fromLabel = typeof rawMeta.fromLabel === "string" ? stripControlChars(rawMeta.fromLabel).trim().slice(0, 160) : "";
@@ -4069,9 +4073,10 @@ export async function handleApiRequest(
               ...(fromSessionId ? { fromSessionId } : {}),
               fromLabel,
               ...(fromEmployee ? { fromEmployee } : {}),
+              ...(rawMeta.viaOperator === true ? { viaOperator: true } : {}),
               hops,
               maxHops,
-              fullMessage,
+              ...full,
             };
           }
         } else if (kind && employee && childSessionId) {
@@ -4080,7 +4085,7 @@ export async function handleApiRequest(
             employee,
             ...(employeeDisplay ? { employeeDisplay } : {}),
             childSessionId,
-            ...(fullMessage !== undefined ? { fullMessage } : {}),
+            ...full,
           };
         } else if (rawMeta.kind === "manager-visibility" && employee && childSessionId) {
           const manager = typeof rawMeta.manager === "string" ? stripControlChars(rawMeta.manager).trim().slice(0, 160) : "";

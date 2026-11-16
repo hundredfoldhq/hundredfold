@@ -210,7 +210,7 @@ async function flipOnto(w: Walk, found: Found, hop: FallbackHop): Promise<Engine
  *  moved off its engine), read from the live row, so a link that fails and moves on leaves them owed to the next. */
 function promptFor(w: Walk, substitution: EngineSubstitution): string {
   const { session, prompt } = w.input.opts;
-  const base = substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id);
+  const base = substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id, prompt);
   const { promptToRun, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? session, base);
   w.carried = carriedLeftBackgroundTaskIds;
   return promptToRun;

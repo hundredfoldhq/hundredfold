@@ -268,10 +268,18 @@ Each account (and each non-Claude engine) keeps its own conversation thread.
   with the messages it has not seen prepended (everything since the thread was
   last brought up to date: its slot's `lastSyncedAt`).
 - **Another account or engine with no thread**: a fresh run whose prompt
-  carries the recent conversation. A Claude session id from one profile is
-  never resumed under another.
+  carries the recent conversation, then the message being answered, stated
+  as the current message. A Claude session id from one profile is never
+  resumed under another.
 - **Back on the session's own target**: its thread resumes with the messages
   exchanged elsewhere prepended, as today.
+
+A message from another session (a brief, a follow-up, a child's reply) is
+logged as a notification and travels in these transcripts as `MESSAGE FROM
+ANOTHER SESSION`; gateway notices are left out. If the session's parent has
+already been sent this exact reply by the session, a turn answered after a
+limit that comes back with the same text is not relayed again: the parent is
+sent a one-line note that nothing is new.
 
 ### Background tasks across a hop
 

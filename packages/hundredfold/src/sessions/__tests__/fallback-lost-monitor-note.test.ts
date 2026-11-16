@@ -131,7 +131,10 @@ describe("a Monitor held when a usage limit moves the turn along the chain", () 
     expect(owedWhenXRan).toEqual(["mon-1"]);
     expect(calls[2]!.prompt).toMatch(NOTE_LEAD);
     expect(calls[2]!.prompt).toContain("`tail -f deploy.log`");
-    expect(calls[2]!.prompt).toContain("Continue this conversation and respond to the last USER message.");
+    expect(calls[2]!.prompt).toContain("Continue this conversation and respond to the current message.");
+    // The note leads, and the current message is still stated as such after it (the handoff builds its prompt before the note is put ahead).
+    expect(calls[2]!.prompt.endsWith("now publish them")).toBe(true);
+    expect(calls[2]!.prompt.indexOf("now publish them")).toBeGreaterThan(calls[2]!.prompt.indexOf("Continue this conversation"));
     expect(deliveries()).toBe(0);
     expect(owed(id)).toBeUndefined();
     dispose();
