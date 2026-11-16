@@ -23,6 +23,7 @@ import { createRuntimeActivityHandler } from "./runtime-activity.js";
 import { getPackageVersion } from "../shared/version.js";
 import { PRODUCT_NAME, productBanner } from "../shared/brand.js";
 import { handleLostBackgroundTasks } from "../sessions/lost-background-tasks.js";
+import { releaseEngineOnMove } from "../sessions/engine-move-release.js";
 import { acknowledgeRestartRequesters, backgroundWorkAtShutdown, interruptRunningSessionsForShutdown, recordSessionsRunningAtBoot, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { initDb } from "../shared/db.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -885,9 +886,12 @@ export async function startGateway(
   // a respawn, a crash) is never re-invoked by them: ask it to carry on. Not
   // while shutting down, when the restart record nudges what the shutdown kills.
   let shuttingDown = false;
-  interactiveClaudeEngine.onLostBackgroundTasks((sessionId, tasks, deliberate) => {
-    if (!shuttingDown) handleLostBackgroundTasks(sessionId, tasks, deliberate);
+  interactiveClaudeEngine.onLostBackgroundTasks((sessionId, tasks, cause) => {
+    if (!shuttingDown) handleLostBackgroundTasks(sessionId, tasks, cause);
   });
+
+  // A session handed back to its own target leaves the stand-in's process behind: release it as a move.
+  releaseEngineOnMove(engines);
 
   // Unsolicited-Stop consumer: a Stop hook nobody claims within the registry's
   // grace delay means a PTY-native turn (typed straight into the CLI/xterm

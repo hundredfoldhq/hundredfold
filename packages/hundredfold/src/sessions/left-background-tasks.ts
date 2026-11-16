@@ -13,9 +13,9 @@ import { getSession, updateSession } from "./registry.js";
  */
 export const LEFT_BACKGROUND_TASKS_META_KEY = "leftBackgroundTasks";
 
-/** Why nobody was told at the time: the session was stopped on purpose, or the
- *  gateway did not start the turn that would have told it. */
-export type LeftBackgroundReason = "stopped" | "not-nudged";
+/** Why nobody was told at the time: the session was stopped on purpose, it was moved to another account or
+ *  engine (the turn that runs there carries the note), or the gateway did not start the turn that would have told it. */
+export type LeftBackgroundReason = "stopped" | "moved" | "not-nudged";
 
 /** The slice of a task the note names. */
 export type LeftBackgroundTask = Pick<BackgroundTaskWait, "id" | "kind" | "command" | "description" | "agentType">;
@@ -42,6 +42,11 @@ export function describeBackgroundTask(task: LeftBackgroundTask): string {
   return `- ${parts.join(": ")}`;
 }
 
+/** The reason a stored entry gives; one this build does not know reads as not nudged. */
+function reasonOf(value: unknown): LeftBackgroundReason {
+  return value === "stopped" || value === "moved" ? value : "not-nudged";
+}
+
 function entryFrom(value: unknown): LeftBackgroundEntry | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
@@ -51,7 +56,7 @@ function entryFrom(value: unknown): LeftBackgroundEntry | null {
   if (!id || (kind !== "process" && kind !== "monitor" && kind !== "subagent")) return null;
   return {
     id, kind, command: text("command"), description: text("description"), agentType: text("agentType"),
-    reason: row.reason === "stopped" ? "stopped" : "not-nudged", at: text("at") ?? "",
+    reason: reasonOf(row.reason), at: text("at") ?? "",
   };
 }
 
@@ -92,6 +97,7 @@ export function recordLeftBackgroundTasks(
 /** The note a turn leads with: what was left behind and what to do about it. */
 export function leftBackgroundTasksNote(entries: readonly LeftBackgroundEntry[]): string {
   const one = entries.length === 1;
+  if (entries.every((entry) => entry.reason === "moved")) return movedNote(entries);
   const stopped = entries.every((entry) => entry.reason === "stopped");
   return [
     `[Gateway] ${one ? "A background task" : `${entries.length} background tasks`} this session started ${one ? "was" : "were"} still running `
@@ -99,6 +105,21 @@ export function leftBackgroundTasksNote(entries: readonly LeftBackgroundEntry[])
       + `${one ? "Its" : "Their"} completion notification will never arrive and ${one ? "its" : "their"} output may be partial or missing. Task ids:`,
     ...entries.map(describeBackgroundTask),
     `Check ${one ? "its" : "each one's"} outcome directly (output, files or service touched), re-run what is still needed, `
+      + "then deal with the message below.",
+  ].join("\n");
+}
+
+/** The note when every task was left behind by a move: the process that held them was replaced, and no
+ *  notification of theirs will come. The task may still be running, so the session checks before it re-runs. */
+function movedNote(entries: readonly LeftBackgroundEntry[]): string {
+  const one = entries.length === 1;
+  return [
+    `[Gateway] ${one ? "A background task" : `${entries.length} background tasks`} this session started ${one ? "was" : "were"} held by an engine process that was replaced `
+      + "when the session moved to another account or engine after a usage limit. "
+      + `${one ? "Its" : "Their"} completion notification will never arrive and ${one ? "its" : "their"} output may be partial or missing. Task ids:`,
+    ...entries.map(describeBackgroundTask),
+    `Check ${one ? "its" : "each one's"} outcome directly (output, files or service touched). `
+      + "Re-arm any Monitor you still need, and re-run background work that is still needed once you have checked it did not finish, "
       + "then deal with the message below.",
   ].join("\n");
 }
@@ -133,6 +154,16 @@ export function withLeftBackgroundTasksCleared(meta: unknown, ids: readonly stri
   const carried = new Set(ids);
   const left = readLeftBackgroundTasks({ transportMeta: base as Session["transportMeta"] }).filter((entry) => !carried.has(entry.id));
   if (left.length > 0) base[LEFT_BACKGROUND_TASKS_META_KEY] = left;
+  else delete base[LEFT_BACKGROUND_TASKS_META_KEY];
+  return base;
+}
+
+/** `meta` carrying the tasks `live` is owed a word about, in place of whatever `meta` held of them. For a writer that
+ *  restores an older snapshot of the session's meta, which would otherwise drop tasks recorded since it was taken. */
+export function withLeftBackgroundTasksOf(meta: unknown, live: unknown): Record<string, unknown> {
+  const base = meta && typeof meta === "object" && !Array.isArray(meta) ? { ...(meta as Record<string, unknown>) } : {};
+  const held = live && typeof live === "object" && !Array.isArray(live) ? (live as Record<string, unknown>)[LEFT_BACKGROUND_TASKS_META_KEY] : undefined;
+  if (Array.isArray(held) && held.length > 0) base[LEFT_BACKGROUND_TASKS_META_KEY] = held;
   else delete base[LEFT_BACKGROUND_TASKS_META_KEY];
   return base;
 }

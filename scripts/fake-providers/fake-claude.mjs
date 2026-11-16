@@ -162,6 +162,23 @@ function compacted(text) {
   }, delay);
 }
 
+/** What a prompt says of background tasks the gateway left the session without: the note's own text, or null. */
+function gatewayNoteOf(text) {
+  const at = text.search(/\[Gateway\] (?:A background task|\d+ background tasks) this session started /);
+  return at < 0 ? null : text.slice(at, at + 3000);
+}
+
+/** An outcome with `armMonitor: "<id>"` arms a background Monitor during its turn, as the CLI reports one: a PostToolUse
+ *  for the Monitor tool with the task id it was given. */
+function armMonitor(taskId) {
+  if (!taskId) return;
+  fire("PostToolUse", hookPayload("PostToolUse", base, {
+    tool_name: "Monitor",
+    tool_input: { description: "watch the deploy log", timeout_ms: 600000, command: "tail -f deploy.log" },
+    tool_response: { taskId, timeoutMs: 600000, persistent: false },
+  }));
+}
+
 function turn(text) {
   // Read per turn, as the header says: a warm process picks up a scenario rewritten between turns.
   const scenario = loadScenario();
@@ -169,10 +186,13 @@ function turn(text) {
   ledger({
     outcome: outcome.outcome, scenarioKey, step, generation: scenario._generation ?? null, consumed: true, warm: turns > 0, sessionId,
     promptHead: promptHead(text), tag: promptTag(text), marks: promptMarks(text),
+    // The note a prompt carries about background tasks the session was left without, from its first line on: kept whole, bounded.
+    gatewayNote: gatewayNoteOf(text),
   });
   turns += 1;
   record("user", text);
   fire("UserPromptSubmit", hookPayload("UserPromptSubmit", base, { prompt: text }));
+  armMonitor(outcome.armMonitor);
   if (outcome.outcome === "hang") { hanging = true; return; }
   if (outcome.outcome === "rate-limit") limited(outcome);
   else if (outcome.outcome === "signed-out") failed(outcome, "authentication_failed", "Invalid API key · Please run /login");

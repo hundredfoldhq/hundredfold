@@ -31,7 +31,7 @@ describe("a four-link chain: claude/A/opus -> claude/B/sonnet -> opencode/X -> o
       ["claude", DIR_B, "sonnet"], ["opencode", null, "x-provider/model-x"], ["opencode", null, "y-provider/model-y"],
     ]);
     expect(seen.starts.map((start) => start.substitute)).toEqual(["claude", "opencode", "opencode"]);
-    expect(seen.completes).toEqual([{ engine: "opencode", model: "y-provider/model-y" }]);
+    expect(seen.completes).toEqual([{ engine: "opencode", model: "y-provider/model-y", carriedLeftBackgroundTaskIds: [] }]);
     expect(hopsOf(id).map((hop) => [hop.from, hop.to, hop.reason]).reverse()).toEqual([
       [key({ engine: "claude", profile: "A", model: "opus" }), key(CLAUDE_B), "rate-limit"],
       [key(CLAUDE_B), key(OPENCODE_X), "rate-limit"],

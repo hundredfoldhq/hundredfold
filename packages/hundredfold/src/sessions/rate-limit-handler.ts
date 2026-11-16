@@ -44,6 +44,7 @@ import { chainExhaustedLastError, withSignedOut } from "./fallback-hop.js";
 import { standingOverrideUntil } from "./engine-override.js";
 import { earlier, handBack, handBackAt as accountHandBackAt } from "./rate-limit-handback.js";
 import { getSession, updateSessionForAttempt, nextEngineSessionFields } from "./registry.js";
+import { withLeftBackgroundTasksNote } from "./left-background-tasks.js";
 import { runtimeSessionSource } from "./context.js";
 import { handBackDue, ownTargetClearedCheck, withOwnClearWake } from "./rate-limit-own-clear.js";
 import { EARLY_RESET_POLL_MS, earlyResetWatch, type EarlyReset } from "./rate-limit-early-reset.js";
@@ -288,9 +289,12 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       beginLimitProbe(session.id);
       const probeShowedOutput = () => { endLimitProbe(session.id); };
       let retryResult: EngineResult;
+      // The process that held the session's background tasks may have been released since the turn began (a hop that failed before
+      // the wait): the retry leads with the note, and settle clears what it carried once the engine has read it.
+      const { promptToRun: retryPrompt, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? currentSession, prompt);
       try {
         retryResult = await engine.run({
-          prompt,
+          prompt: retryPrompt,
           resumeSessionId: currentSession.engineSessionId ?? undefined,
           systemPrompt,
           platformContextRefresh,
@@ -380,7 +384,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
         recordTurnServed({ engine: session.engine, key: limitedKey, startedMs: retryStartedMs, model: retryModel, servedOn: remote?.remoteHost });
       }
       // Success (or non-rate-limit error) — hand off to caller for persistence + transport.
-      await hooks.onRetrySuccess?.(retryResult);
+      await hooks.onRetrySuccess?.(retryResult, { carriedLeftBackgroundTaskIds });
       logger.info(`Session ${session.id} resumed after usage reset`);
       return { kind: "resumed", result: retryResult };
     }

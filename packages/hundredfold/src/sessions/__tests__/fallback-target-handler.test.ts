@@ -98,7 +98,7 @@ describe("handleRateLimit — a session's own fallback target", () => {
     expect(codexRun).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-mini" }));
     expect(updateSessionForAttemptMock).toHaveBeenCalledWith("sess-1", "attempt-1", expect.objectContaining({ engine: "codex", model: "gpt-mini" }));
     expect(hooks.onFallbackStart).toHaveBeenCalledWith(expect.objectContaining({ substitute: "codex", model: "gpt-mini" }));
-    expect(hooks.onFallbackComplete).toHaveBeenCalledWith(expect.anything(), { engine: "codex", model: "gpt-mini" });
+    expect(hooks.onFallbackComplete).toHaveBeenCalledWith(expect.anything(), { engine: "codex", model: "gpt-mini", carriedLeftBackgroundTaskIds: [] });
   });
 
   it("a same-engine target switches the model on the same engine", async () => {

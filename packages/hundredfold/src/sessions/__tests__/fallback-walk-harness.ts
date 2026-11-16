@@ -106,7 +106,7 @@ export function newSession(opts: { ref: string; employeeName?: string; model?: s
  * before the link's prompt is built, so a suite sees the transcript a real hop builds that prompt from.
  */
 export function recordingHooks(sessionId?: string) {
-  const seen = { starts: [] as Array<{ substitute: string; model?: string; hop?: FallbackHop }>, waiting: [] as Array<{ reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }>, completes: [] as Array<{ engine: string; model?: string }>, failed: [] as EngineResult[] };
+  const seen = { starts: [] as Array<{ substitute: string; model?: string; hop?: FallbackHop }>, waiting: [] as Array<{ reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }>, completes: [] as Array<{ engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }>, failed: [] as EngineResult[] };
   return {
     seen,
     hooks: {
@@ -115,7 +115,7 @@ export function recordingHooks(sessionId?: string) {
         if (sessionId) reg.insertMessage(sessionId, "notification", `⚠️ usage limit reached. Switching to ${info.substitute} for now.`, undefined, undefined, undefined, info.hop ? { fallbackHop: info.hop } as never : undefined);
       },
       onFallbackFailed: (result: EngineResult) => { seen.failed.push(result); },
-      onFallbackComplete: (_result: EngineResult, ran: { engine: string; model?: string }) => { seen.completes.push(ran); },
+      onFallbackComplete: (_result: EngineResult, ran: { engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }) => { seen.completes.push(ran); },
       onWaitingStart: (info: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }) => { seen.waiting.push(info); },
     },
   };
