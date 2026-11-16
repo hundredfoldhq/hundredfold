@@ -33,6 +33,8 @@
 //   TOOL        one shell tool step (finish tool-calls), then the text "tool done"
 //   SLOWTOOL    the same, with a tool that runs 1.5 s (time to steer an input in)
 //   SLOW        a text step that takes 2 s
+//   LATESTART   the input is delivered, and its step starts only 1.2 s later (a
+//               gap in which nothing says the input is being answered)
 //   HANG        the step runs until interrupted
 //   FAIL        step.failed and execution.failed {type: provider.invalid-request, status: 400}
 //   RETRY       retry.scheduled 200 ms ahead, then a successful step on the same
@@ -452,6 +454,7 @@ function serve() {
     ["TOOL", toolTurn],
     ["SLOWTOOL", toolTurn],
     ["SLOW", (s) => textStep(s, "fake:slow", { waitMs: 2000 })],
+    ["LATESTART", async (s) => ((await sleep(s, 1200)) ? "interrupted" : await textStep(s, "fake:latestart"))],
     ["HANG", hangTurn],
     ["FAIL", failTurn],
     ["RETRY", retryTurn],

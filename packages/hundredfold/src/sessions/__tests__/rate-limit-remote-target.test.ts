@@ -260,7 +260,7 @@ describe("handleRateLimit — a remote employee only substitutes onto an engine 
 
     await handleRateLimit({ ...makeOpts({ substituteRun, retryRun: vi.fn() }), hooks: { onFallbackComplete: (_r, info) => { ran.push(info); } } });
 
-    expect(ran).toEqual([{ engine: "codex", model: substituteRun.mock.calls[0]![0].model }]);
+    expect(ran).toEqual([{ engine: "codex", model: substituteRun.mock.calls[0]![0].model, carriedLeftBackgroundTaskIds: [] }]);
     expect(ran[0]).toMatchObject({ model: expect.any(String) });
   });
 

@@ -1,5 +1,5 @@
 import { classifyOpencodeFailure, type OpencodeFailureKind } from "../../shared/opencode-failure.js";
-import { isInterruptibleEngine, type EngineResult, type Session } from "../../shared/types.js";
+import { isInterruptibleEngine, type EngineResult, type Session, type StreamDelta } from "../../shared/types.js";
 import { rateLimitEngineLabel } from "../../shared/rateLimit.js";
 import type { EngineName } from "../../shared/models.js";
 import { getSession, insertMessage, type UpdateSessionFields } from "../registry.js";
@@ -18,6 +18,8 @@ import type { FallbackHop, FallbackHopNoticeMeta } from "../../shared/fallback-c
 import type { JsonObject } from "../../shared/types.js";
 import { postEngineNotices } from "./engine-notices.js";
 import { awaitRemoteHostForRetry } from "./remote-ready.js";
+import { ENGINE_SWITCHED_REASON } from "../../shared/engine-switch.js";
+import { withLeftBackgroundTasksCleared } from "../left-background-tasks.js";
 
 export interface RateLimitTurnArgs {
   input: TurnInput;
@@ -47,8 +49,7 @@ async function settleRecoveredTurn(
   args: RateLimitTurnArgs,
   recovered: EngineResult,
   engineSession: EngineSession | undefined,
-  ranOn: string | undefined,
-  recordServed = false,
+  served: { ranOn?: string; recordServed?: boolean; readTaskIds?: readonly string[] } = {},
 ): Promise<Session | undefined> {
   const sessionId = args.input.session.id;
   const text = turnDisplayText(recovered.result, recovered.error);
@@ -62,19 +63,78 @@ async function settleRecoveredTurn(
     error: recovered.error ?? null,
     cost: recovered.cost,
     durationMs: recovered.durationMs,
-    accounting: { cost: recovered.cost, numTurns: recovered.numTurns, ...(ranOn ? { model: ranOn } : {}) },
+    accounting: { cost: recovered.cost, numTurns: recovered.numTurns, ...(served.ranOn ? { model: served.ranOn } : {}) },
     ...(engineSession ? { engineSession } : {}),
-    // The retry that waited out a limit was answered by the target the session is on; a hop records its own.
-    fields: servedFields(args.input, {
-      ...args.terminalFields(),
-      ...(typeof recovered.contextTokens === "number" ? { lastContextTokens: recovered.contextTokens } : {}),
-    }, recordServed && !recovered.error),
+    fields: recoveredFields(args, recovered, served),
     employee: args.input.employee,
     afterLimit: true,
     surface: args.surface,
   });
   if (text) await args.surface.reply(text);
   return settled;
+}
+
+/** The fields a recovered turn settles with. The retry that waited out a limit was answered by the target the session is on,
+ *  and a hop records its own. The tasks the prompt's note named, which the engine has read, are no longer owed. */
+function recoveredFields(
+  args: RateLimitTurnArgs, recovered: EngineResult, served: { recordServed?: boolean; readTaskIds?: readonly string[] },
+): UpdateSessionFields {
+  const fields = servedFields(args.input, {
+    ...args.terminalFields(),
+    ...(typeof recovered.contextTokens === "number" ? { lastContextTokens: recovered.contextTokens } : {}),
+  }, Boolean(served.recordServed) && !recovered.error);
+  return withCarriedTasksCleared(args.input.session.id, fields, served.readTaskIds ?? []);
+}
+
+/** `fields` also dropping the tasks the settled turn's prompt carried: the live row's record, less exactly those ids. */
+function withCarriedTasksCleared(sessionId: string, fields: UpdateSessionFields, ids: readonly string[]): UpdateSessionFields {
+  if (ids.length === 0) return fields;
+  const meta = withLeftBackgroundTasksCleared(fields.transportMeta ?? getSession(sessionId)?.transportMeta, ids);
+  return { ...fields, transportMeta: meta as UpdateSessionFields["transportMeta"] };
+}
+
+/** Whether a stream delta shows the engine took up the prompt. */
+function showsOutput(delta: StreamDelta): boolean {
+  return delta.type === "text" || delta.type === "text_snapshot" || delta.type === "tool_use" || delta.type === "tool_result";
+}
+
+/** What the link or retry now running has shown. Output means the engine read its prompt even if it then failed, so the
+ *  tasks the prompt carried are settled for a result that has none of an error or that was streamed. */
+function outputWatch(forward: (delta: StreamDelta) => void) {
+  let streamed = false;
+  return {
+    reset: () => { streamed = false; },
+    delta: (delta: StreamDelta) => {
+      if (showsOutput(delta)) streamed = true;
+      forward(delta);
+    },
+    read: (result: EngineResult, carried: readonly string[]): readonly string[] => (!result.error || streamed ? carried : []),
+  };
+}
+
+/** A hop answered: its native id is filed under whichever engine the switch landed on, and without a platform context
+ *  fingerprint, which belongs to the engine that was limited. */
+async function settleFallbackAnswer(args: RateLimitTurnArgs, result: EngineResult, ran: { model?: string }, readTaskIds: readonly string[]): Promise<void> {
+  await postEngineNotices(args.surface, args.input.session.id, result.notices);
+  const engine = getSession(args.input.session.id)?.engine ?? args.input.session.engine;
+  const { plan } = args;
+  await settleRecoveredTurn(args, result, result.sessionId?.trim() ? {
+    engine, nativeId: result.sessionId, meta: { model: plan.model, effortLevel: plan.effortLevel },
+  } : undefined, { ranOn: ran.model, readTaskIds });
+}
+
+/** The wait on the original target ended in an answer. */
+async function settleRetryAnswer(args: RateLimitTurnArgs, result: EngineResult, readTaskIds: readonly string[]): Promise<void> {
+  await postEngineNotices(args.surface, args.input.session.id, result.notices);
+  const { plan } = args;
+  const settled = await settleRecoveredTurn(args, result, !result.error && result.sessionId?.trim() ? {
+    engine: plan.engineName,
+    nativeId: result.sessionId,
+    meta: { model: plan.model, effortLevel: plan.effortLevel, platformContextFingerprint: args.platformContextFingerprint },
+  } : undefined, { ranOn: plan.model, recordServed: true, readTaskIds });
+  if (!settled) return;
+  notifyRateLimitResumed(settled);
+  notifyOperatorChannel(`✅ ${rateLimitEngineLabel(args.input.session.engine)} usage limit cleared. ${describe(args.input.session)} resumed.`, undefined, "resumed");
 }
 
 /** The notification a hop leaves in the transcript: its readable text, and the hop itself for the dashboard. */
@@ -104,7 +164,7 @@ async function announceFallback(
   // the abandoned turn can't double-answer after the substitute delivers.
   const limited = args.input.engines.get(limitedEngine);
   if (limited && isInterruptibleEngine(limited)) {
-    limited.kill(session.id, "Interrupted: engine switched");
+    limited.kill(session.id, ENGINE_SWITCHED_REASON);
   }
 }
 
@@ -231,38 +291,25 @@ async function settleBillingFailedTurn(args: RateLimitTurnArgs, info: { signedOu
 
 function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
   const { plan, surface } = args;
+  const link = outputWatch((delta) => surface.delta(delta));
+  const retry = outputWatch((delta) => surface.delta(delta));
   return {
-    onFallbackStart: ({ resumeAt, substitute, model, hop }) => announceFallback(args, resumeAt, substitute, { model, hop }),
-    onFallbackStream: (delta) => surface.delta(delta),
+    onFallbackStart: ({ resumeAt, substitute, model, hop }) => {
+      link.reset();
+      return announceFallback(args, resumeAt, substitute, { model, hop });
+    },
+    onFallbackStream: link.delta,
     // A hop that did not serve the turn still asked for its notices, once each.
     onFallbackFailed: (failed) => postEngineNotices(surface, args.input.session.id, failed.notices),
-    onFallbackComplete: async (fallbackResult, ran) => {
-      await postEngineNotices(surface, args.input.session.id, fallbackResult.notices);
-      // The fallback answered on a DIFFERENT engine, so its native id is filed
-      // under whichever engine the switch landed on — and without a platform
-      // context fingerprint, which belongs to the engine that was limited.
-      const fallbackEngine = getSession(args.input.session.id)?.engine ?? args.input.session.engine;
-      await settleRecoveredTurn(args, fallbackResult, fallbackResult.sessionId?.trim() ? {
-        engine: fallbackEngine,
-        nativeId: fallbackResult.sessionId,
-        meta: { model: plan.model, effortLevel: plan.effortLevel },
-      } : undefined, ran.model);
-    },
+    onFallbackComplete: (result, ran) => settleFallbackAnswer(args, result, ran, link.read(result, ran.carriedLeftBackgroundTaskIds)),
     onWaitingStart: ({ resumeAt, reason, hop, exhausted, signedOut }) => announceWaiting(args, resumeAt, { reason, hop, exhausted, signedOut }),
-    onRetryAttempt: () => surface.waiting(false),
-    onStillLimited: () => surface.waiting(true),
-    onRetryStream: (delta) => surface.delta(delta),
-    onRetrySuccess: async (retryResult) => {
-      await postEngineNotices(surface, args.input.session.id, retryResult.notices);
-      const settled = await settleRecoveredTurn(args, retryResult, !retryResult.error && retryResult.sessionId?.trim() ? {
-        engine: plan.engineName,
-        nativeId: retryResult.sessionId,
-        meta: { model: plan.model, effortLevel: plan.effortLevel, platformContextFingerprint: args.platformContextFingerprint },
-      } : undefined, plan.model, true);
-      if (!settled) return;
-      notifyRateLimitResumed(settled);
-      notifyOperatorChannel(`✅ ${rateLimitEngineLabel(args.input.session.engine)} usage limit cleared. ${describe(args.input.session)} resumed.`, undefined, "resumed");
+    onRetryAttempt: () => {
+      retry.reset();
+      return surface.waiting(false);
     },
+    onStillLimited: () => surface.waiting(true),
+    onRetryStream: retry.delta,
+    onRetrySuccess: (result, ran) => settleRetryAnswer(args, result, retry.read(result, ran.carriedLeftBackgroundTaskIds)),
     prepareRetry: () => awaitRemoteHostForRetry(args.input, plan.engineName),
     onRetryHostNotReady: (info) => announceHostNotReady(args, info),
     onRetryHostUnreachable: ({ error }) => settleUnreachableTurn(args, error),

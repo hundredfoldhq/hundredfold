@@ -49,7 +49,7 @@ describe("searchMessages (FTS5)", () => {
     expect(results[0].snippet).toContain("«quokka»");
   });
 
-  it("does NOT index notification or tool rows", () => {
+  it("does NOT index tool rows or notifications that carry no relayed body", () => {
     mkSession(reg, "s-noise");
     mkMessage(reg, "s-noise", "notification", "antidisestablishmentarianism ping", 2000);
     mkMessage(reg, "s-noise", "tool", "antidisestablishmentarianism tool-output", 2001);
@@ -139,6 +139,8 @@ describe("FTS backfill of pre-existing rows", () => {
     db.exec(
       "CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp INTEGER NOT NULL)",
     );
+    // initDb adds the later columns (meta among them) before it creates the indexes.
+    migrateModule.migrateMessagesSchema(db);
     return db;
   }
   function matchRows(db: Database.Database, q: string): Array<{ sessionId: string; snippet: string }> {
@@ -348,6 +350,7 @@ describe("FTS degrade — fail-safe", () => {
     db.exec(
       "CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp INTEGER NOT NULL)",
     );
+    migrateModule.migrateMessagesSchema(db);
     db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
     const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)");
     ins.run("r1", "leg-recovery", "user", "recovery mongoose question", 1);

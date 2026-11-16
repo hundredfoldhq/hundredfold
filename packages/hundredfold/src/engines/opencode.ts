@@ -1,7 +1,7 @@
 import { withRemoteAttachments } from "../shared/remote-attachments.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, SteerableEngine, SteerOutcome, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
@@ -28,7 +28,7 @@ import { describeOpencodeLaunch } from "./opencode-protocol.js";
 import { opencodeApiOf } from "./opencode-version.js";
 import { withKnownEffort, type ModelEffortLevels } from "./opencode-variant.js";
 import { localOpencodeVersion } from "../shared/opencode-bin-version.js";
-import { mayBeUnserved, unservedTurnResult } from "./opencode-model-served.js";
+import { accountsOnceStaged, awaitsAccountModels, mayBeUnserved, unservedTurnResult } from "./opencode-model-served.js";
 import { resolveBin } from "../shared/resolve-bin.js";
 
 interface LiveProcess extends RemoteRun {
@@ -74,13 +74,15 @@ const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
  * machine, with an `ssh` client standing in for the local process.
  * `REMOTE_ENGINE_NAMES` in shared/models.ts names the adapters that can do that.
  */
-export class OpencodeEngine implements InterruptibleEngine {
+export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
   name = "opencode" as const;
   private liveProcesses = new Map<string, LiveProcess>();
   /** Server-mode turns in flight: no process of their own, only HTTP. The slot
    *  exists from the moment the turn starts — before its server is up — so an
    *  interrupt during a server start is recorded rather than lost. */
   private serverTurns = new Map<string, ServerTurnSlot>();
+  /** Turns waiting for their account's models before anything is launched (`accountsOnceStaged`): live, and stoppable. */
+  private stagingWaits = new Map<string, StagingWait>();
   private serverTurnEndListeners: Array<(sessionId: string) => void> = [];
   private remoteKills = new RemoteKills("opencode");
 
@@ -134,6 +136,7 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   kill(sessionId: string, reason = "Interrupted"): void {
+    if (this.stopStagingWait(sessionId, reason)) return;
     const slot = this.serverTurns.get(sessionId);
     if (slot) {
       logger.info(`Interrupting opencode server turn for session ${sessionId}`);
@@ -161,7 +164,20 @@ export class OpencodeEngine implements InterruptibleEngine {
     this.terminate(live, sessionId);
   }
 
+  /** Stop a turn still waiting for its account's models; false when the session has no such wait. */
+  private stopStagingWait(sessionId: string, reason: string): boolean {
+    const waiting = this.stagingWaits.get(sessionId);
+    if (!waiting) return false;
+    logger.info(`Interrupting opencode turn for session ${sessionId} while it waits for model discovery`);
+    waiting.interrupted ??= reason;
+    waiting.abort.abort();
+    return true;
+  }
+
   killAll(): void {
+    for (const sessionId of [...this.stagingWaits.keys()]) {
+      this.kill(sessionId, "Interrupted: gateway shutting down");
+    }
     for (const sessionId of [...this.serverTurns.keys()]) {
       this.kill(sessionId, "Interrupted: gateway shutting down");
     }
@@ -175,6 +191,32 @@ export class OpencodeEngine implements InterruptibleEngine {
     return this.remoteKills.pending();
   }
 
+  /**
+   * A turn on an OpenCode 2 server can take a steered input (see
+   * OpencodeV2ServerTurn.steer) while its own prompt is being run. A 1.x
+   * turn, a `run`-mode process, a compaction and a session with no turn cannot.
+   */
+  canSteer(sessionId: string): boolean {
+    return this.steerableTurn(sessionId)?.canSteer() ?? false;
+  }
+
+  /** Hand `prompt` to the session's running 2.x turn; `"withdrawn"` at once when there is none. */
+  async steer(sessionId: string, prompt: string): Promise<SteerOutcome> {
+    const turn = this.steerableTurn(sessionId);
+    if (!turn) return "withdrawn";
+    try {
+      return await turn.steer(prompt);
+    } catch (err) {
+      logger.warn(`opencode steer into session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return "withdrawn";
+    }
+  }
+
+  private steerableTurn(sessionId: string): OpencodeV2ServerTurn | undefined {
+    const turn = this.serverTurns.get(sessionId)?.turn;
+    return turn instanceof OpencodeV2ServerTurn ? turn : undefined;
+  }
+
   /** Batch engine: no warm-PTY reuse, every live process is an in-flight turn.
    *  Nothing idle to recycle on org-reload — no-op. */
   killIdle(): void {
@@ -182,6 +224,7 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   isAlive(sessionId: string): boolean {
+    if (this.stagingWaits.has(sessionId)) return true;
     const slot = this.serverTurns.get(sessionId);
     if (slot && !slot.turn?.isSettled()) return true;
     const live = this.liveProcesses.get(sessionId);
@@ -194,14 +237,35 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   async run(requested: EngineRunOpts): Promise<EngineResult> {
+    const trackingId = requested.sessionId || `opencode-${Date.now()}`;
+    const accounts = this.accountsFor(trackingId, requested.model);
+    // An account model whose base's details have not loaded yet (a fresh gateway's first turn) waits for them: staged now,
+    // the account would list no models. Before the effort is resolved, since the same discovery brings the model's levels.
+    if (awaitsAccountModels(requested, accounts)) return await this.runOnceStaged(requested, trackingId, accounts);
+    return await this.runStaged(requested, trackingId, accounts);
+  }
+
+  /** The wait for the account's models, registered so that `kill` stops it and `isAlive` sees it. Stopped, nothing is launched. */
+  private async runOnceStaged(requested: EngineRunOpts, trackingId: string, accounts: NonNullable<ReturnType<OpencodeAccountsReader>>): Promise<EngineResult> {
+    const waiting: StagingWait = { abort: new AbortController() };
+    this.stagingWaits.set(trackingId, waiting);
+    let staged: Awaited<ReturnType<typeof accountsOnceStaged>>;
+    try {
+      staged = await accountsOnceStaged(requested, accounts, () => this.accountsFor(trackingId, requested.model), { signal: waiting.abort.signal });
+    } finally {
+      if (this.stagingWaits.get(trackingId) === waiting) this.stagingWaits.delete(trackingId);
+    }
+    if ("interrupted" in staged) return interruptedBeforePost(requested, waiting.interrupted ?? "Interrupted");
+    if ("result" in staged) return staged.result;
+    return await this.runStaged(requested, trackingId, staged.accounts);
+  }
+
+  private async runStaged(requested: EngineRunOpts, trackingId: string, accounts: ReturnType<OpencodeAccountsReader>): Promise<EngineResult> {
     // From here on `effortLevel` is the variant to send, or nothing.
     const opts = withKnownEffort(requested, this.readEffortLevels());
-    const trackingId = opts.sessionId || `opencode-${Date.now()}`;
     const onStream = opts.onStream || null;
-
     // A model this host's opencode cannot serve fails here, with the reason, rather than inside opencode with none.
     // Only a model an account's 1.x block leaves out waits on the binary; any other turn starts without yielding.
-    const accounts = this.accountsFor(trackingId, opts.model);
     if (mayBeUnserved(opts, accounts)) return await this.runIfServed(opts, trackingId, onStream, accounts);
     return await this.dispatch(opts, trackingId, onStream, accounts);
   }
@@ -606,6 +670,12 @@ export class OpencodeEngine implements InterruptibleEngine {
       logger.debug(`Failed to send ${signal} to opencode process: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+/** A turn waiting for its account's models before it is staged: the interrupt that stopped the wait, and what stops it. */
+interface StagingWait {
+  interrupted?: string;
+  abort: AbortController;
 }
 
 /** A server-mode turn from its start: the interrupt that arrived before it had

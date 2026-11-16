@@ -54,8 +54,11 @@ export function abandonedRetryError(retry: ProviderRetry, now = Date.now()): { n
  *   signs mean it is not the last.
  * - `retry`: opencode will not retry the provider for longer than a turn
  *   waits. Anything that shows the turn moving on cancels it.
+ * - `steer`: the turn's reply is done while an input steered into it has not
+ *   been delivered yet (2.x only). The server takes it in right after the
+ *   step it arrived in, in the same execution, so the turn waits for it.
  */
-export type SettleKind = "idle" | "done" | "retry";
+export type SettleKind = "idle" | "done" | "retry" | "steer";
 
 /** One pending end, at most, with its own timer. */
 export class SettleWait {

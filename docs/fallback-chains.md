@@ -293,6 +293,20 @@ already been sent this exact reply by the session, a turn answered after a
 limit that comes back with the same text is not relayed again: the parent is
 sent a one-line note that nothing is new.
 
+### Background tasks across a hop
+
+A background Bash task, Monitor or background sub-agent lives inside one Claude Code
+process, which a hop releases (and so does the return to the own target, for the
+stand-in's process). They are not carried: re-running a background command would run
+it twice. The gateway records what the released process held, and the next prompt
+the session reads, on whichever target serves the turn, leads with a note naming each
+task by id, kind and command, saying the session moved after a usage limit and its
+process was replaced, and asking it to check the outcome and re-arm any Monitor it
+still needs. A link that fails before it reads the prompt leaves the tasks owed to
+the next link, and to the wait that follows a chain that ran out. No separate nudge
+turn is started for a move. A release that is not a move (an idle eviction, a
+respawn after a crash) still starts one.
+
 ### What is recorded
 
 Each hop is recorded on the session (most recent 20) with its time, from and

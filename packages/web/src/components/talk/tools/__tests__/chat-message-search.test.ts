@@ -30,7 +30,7 @@ afterEach(() => {
 describe("talk_search_chat_messages", () => {
   it("searches only the current chat and returns bounded speakable excerpts", async () => {
     publishPageContext(describeLocation("/", `?session=${CURRENT_SESSION}`))
-    authFetch.mockResolvedValue(response([
+    const all: unknown[] = [
       {
         messageId: "message-private-1",
         sessionId: CURRENT_SESSION,
@@ -49,15 +49,22 @@ describe("talk_search_chat_messages", () => {
         snippet: `matching orb excerpt ${index}`,
       })),
       { role: "notification", timestamp: NOW, snippet: "must not enter Talk output" },
-    ]))
+    ]
+    // The gateway filters by the role asked for, as the real route does.
+    authFetch.mockImplementation(async (path: string) => {
+      const role = new URL(path, "http://gateway.test").searchParams.get("role")
+      return response(all.filter((hit) => (hit as { role: string }).role === role))
+    })
     const before = getPageContext()
 
     const result = await executeToolCall(CHAT_MESSAGE_SEARCH_TOOL.name, JSON.stringify({ query: "ring orb" }))
 
-    expect(authFetch).toHaveBeenCalledWith(
-      `/api/search/messages?q=ring%20orb&sessionId=${encodeURIComponent(CURRENT_SESSION)}&limit=6`,
-      { method: "GET" },
-    )
+    for (const role of ["user", "assistant"]) {
+      expect(authFetch).toHaveBeenCalledWith(
+        `/api/search/messages?q=ring%20orb&sessionId=${encodeURIComponent(CURRENT_SESSION)}&role=${role}&limit=6`,
+        { method: "GET" },
+      )
+    }
     expect(result).toMatchObject({ ok: true, data: { matches: expect.any(Array) } })
     const serialized = JSON.stringify(result)
     const matches = result.ok ? result.data.matches as Array<Record<string, unknown>> : []
@@ -73,6 +80,31 @@ describe("talk_search_chat_messages", () => {
     expect(serialized).not.toContain("must not enter")
     expect(serialized).not.toContain("cross-chat canary")
     expect(getPageContext()).toBe(before)
+  })
+
+  it("still finds an earlier message when newer relayed messages and child replies would fill the limit", async () => {
+    publishPageContext(describeLocation("/", `?session=${CURRENT_SESSION}`))
+    const stored = [
+      { sessionId: CURRENT_SESSION, role: "user", timestamp: NOW - 86_400_000, snippet: "the «lynx» decision" },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        sessionId: CURRENT_SESSION,
+        role: "notification",
+        timestamp: NOW - index * 1_000,
+        snippet: `child reply about the «lynx» ${index}`,
+      })),
+    ]
+    // Like the gateway: filter by the role asked for, newest first, then cut to the limit.
+    authFetch.mockImplementation(async (path: string) => {
+      const params = new URL(path, "http://gateway.test").searchParams
+      const role = params.get("role")
+      const limit = Number(params.get("limit"))
+      const rows = stored.filter((hit) => !role || hit.role === role).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+      return response(rows)
+    })
+
+    const result = await CHAT_MESSAGE_SEARCH_TOOL.execute({ query: "lynx" })
+
+    expect(result).toEqual({ ok: true, data: { matches: [{ role: "user", excerpt: expect.stringContaining("lynx"), when: "yesterday" }] } })
   })
 
   it("discards excerpts if the operator switches chats while the search is in flight", async () => {

@@ -437,6 +437,19 @@ describe("OpencodeEngine in server mode", { timeout: 20_000 }, () => {
     expect(h.pool.get("sess-1")).toBeDefined();
   });
 
+  it("cannot be steered: a 1.x turn takes no input mid-turn, and none is posted for it", async () => {
+    const h = harness();
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    const turn = h.engine.run(runOpts({ prompt: "HANG please" }));
+    await waitFor(async () => Object.keys((await api<Record<string, unknown>>(h.pool, "sess-1", "/session/status")).body ?? {}).length === 1);
+    const posted = (await logOf(h)).filter((e) => e.url.endsWith("/prompt_async")).length;
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    expect(await h.engine.steer("sess-1", "an aside")).toBe("withdrawn");
+    expect((await logOf(h)).filter((e) => e.url.endsWith("/prompt_async"))).toHaveLength(posted);
+    h.engine.kill("sess-1", "Interrupted: operator");
+    await turn;
+  });
+
   it("grants a permission the server asks for, once, as --dangerously-skip-permissions would", async () => {
     const h = harness();
     const deltas: Array<{ type: string; content: string }> = [];

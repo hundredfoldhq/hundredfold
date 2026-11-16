@@ -70,6 +70,18 @@ export function markQueueItemCompleted(itemId: string): void {
     .run(new Date().toISOString(), itemId);
 }
 
+/**
+ * Finish a row that no turn will run, because what it carried was handed to a
+ * turn already running. Only while it is still parked: its message and bubble
+ * stay, and the lane skips it like any row that is no longer pending. Returns
+ * false when the row had already been claimed, finished or cancelled.
+ */
+export function completePendingQueueItem(itemId: string): boolean {
+  const db = initDb();
+  return db.prepare("UPDATE queue_items SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'pending'")
+    .run(new Date().toISOString(), itemId).changes === 1;
+}
+
 export function markRunningQueueItemsCompletedForSession(sessionId: string): number {
   const db = initDb();
   const result = db.prepare(
@@ -162,6 +174,40 @@ export function promotePendingQueueItem(sessionKey: string, itemId: string): boo
     let nextVisible = 0;
     const write = db.prepare("UPDATE queue_items SET position = ? WHERE id = ? AND status = 'pending'");
     pending.forEach((row, index) => write.run(index + 1, row.internal === 0 ? promoted[nextVisible++].id : row.id));
+    return true;
+  }).immediate();
+}
+
+/**
+ * Run one parked row next, whatever it is: the head of the line among every
+ * pending row of the lane, internal ones included, but behind the pending rows
+ * whose delivery asked to reach a running turn just as it did (an operator's
+ * earlier mention), so those keep the order they were sent in.
+ * {@link promotePendingQueueItem} only reorders the operator's own rows and
+ * leaves a callback delivery where it is; this is for a row that must run
+ * before anything queued earlier, such as the operator's mention overtaking a
+ * child's completion callback.
+ *
+ * Only positions move, in one transaction, and the lane is renumbered densely
+ * for the same reason as there. Returns false when the row is not a pending
+ * row of the lane.
+ */
+export function movePendingQueueItemToHead(sessionKey: string, itemId: string): boolean {
+  const db = initDb();
+  return db.transaction(() => {
+    const pending = db.prepare(
+      "SELECT id FROM queue_items WHERE session_key = ? AND status = 'pending' ORDER BY position ASC, created_at ASC, rowid ASC",
+    ).all(sessionKey) as Array<{ id: string }>;
+    if (!pending.some((row) => row.id === itemId)) return false;
+    const reaching = new Set((db.prepare(
+      `SELECT queue_item_id FROM callback_deliveries WHERE json_extract(payload, '$.reachRunningTurn') = 1 AND queue_item_id IN (${pending.map(() => "?").join(", ")})`,
+    ).pluck().all(...pending.map((row) => row.id)) as string[]));
+    // The earlier reaching rows stay first, in their order; the target follows them.
+    const ahead = pending.filter((row) => row.id !== itemId && reaching.has(row.id));
+    const rest = pending.filter((row) => row.id !== itemId && !reaching.has(row.id));
+    const target = pending.find((row) => row.id === itemId)!;
+    const write = db.prepare("UPDATE queue_items SET position = ? WHERE id = ? AND status = 'pending'");
+    [...ahead, target, ...rest].forEach((row, index) => write.run(index + 1, row.id));
     return true;
   }).immediate();
 }

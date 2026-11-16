@@ -7,6 +7,7 @@ import { InteractiveClaudeEngine } from "../claude-interactive.js";
 import { PtyLifecycleManager } from "../pty-lifecycle.js";
 import { HookRegistry, type HookPayload } from "../../gateway/hook-registry.js";
 import type { BackgroundTaskWait } from "../../shared/session-waits.js";
+import { ENGINE_SWITCHED_REASON, type LostBackgroundCause } from "../../shared/engine-switch.js";
 
 function fakeHandle() {
   const h: any = { killed: false, pid: Math.floor(Math.random() * 9999) };
@@ -18,7 +19,7 @@ describe("InteractiveClaudeEngine — background tasks lost with the process", (
   let registry: HookRegistry;
   let lifecycle: PtyLifecycleManager;
   let engine: InteractiveClaudeEngine;
-  let lost: Array<{ sessionId: string; tasks: BackgroundTaskWait[]; deliberate: boolean }>;
+  let lost: Array<{ sessionId: string; tasks: BackgroundTaskWait[]; cause: LostBackgroundCause }>;
 
   const hook = (payload: HookPayload) =>
     (engine as unknown as { handleBackgroundMonitorHook(sessionId: string, hook: HookPayload): void })
@@ -38,7 +39,7 @@ describe("InteractiveClaudeEngine — background tasks lost with the process", (
     lifecycle = new PtyLifecycleManager({ maxLivePtys: 8 });
     engine = new InteractiveClaudeEngine(lifecycle, registry);
     lost = [];
-    engine.onLostBackgroundTasks((sessionId, tasks, deliberate) => lost.push({ sessionId, tasks, deliberate }));
+    engine.onLostBackgroundTasks((sessionId, tasks, cause) => lost.push({ sessionId, tasks, cause }));
     lifecycle.adopt("s1", fakeHandle());
   });
 
@@ -105,27 +106,44 @@ describe("InteractiveClaudeEngine — background tasks lost with the process", (
     expect(lost).toEqual([]);
   });
 
-  it("reports a session stopped on purpose as deliberate, so it is recorded rather than woken", () => {
+  it("reports a session stopped on purpose as stopped, so it is recorded rather than woken", () => {
     launchBash("t-1", "sleep 600");
 
     engine.kill("s1", "Interrupted: stopped by the operator");
 
-    expect(lost.map((entry) => [entry.tasks.map((task) => task.id), entry.deliberate])).toEqual([[["t-1"], true]]);
+    expect(lost.map((entry) => [entry.tasks.map((task) => task.id), entry.cause])).toEqual([[["t-1"], "stopped"]]);
     expect(engine.backgroundTasks("s1").tasks).toEqual([]);
 
     // The next release that is not a kill is reported as a loss to act on.
     lifecycle.adopt("s1", fakeHandle());
     launchBash("t-2", "sleep 600");
     lifecycle.releaseSession("s1");
-    expect(lost.map((entry) => [entry.tasks.map((task) => task.id), entry.deliberate])).toEqual([[["t-1"], true], [["t-2"], false]]);
+    expect(lost.map((entry) => [entry.tasks.map((task) => task.id), entry.cause])).toEqual([[["t-1"], "stopped"], [["t-2"], "ended"]]);
   });
 
-  it("reports the loss at gateway shutdown as deliberate, for the gateway to leave to the restart record", () => {
+  it("reports a kill that hands the session to another account or engine as moved", () => {
+    launchBash("t-1", "sleep 600");
+
+    engine.kill("s1", ENGINE_SWITCHED_REASON);
+
+    expect(lost.map((entry) => [entry.tasks.map((task) => task.id), entry.cause])).toEqual([[["t-1"], "moved"]]);
+
+    // The cause belongs to that release alone: a later kill for another reason is a stop, and an eviction an end.
+    lifecycle.adopt("s1", fakeHandle());
+    launchBash("t-2", "sleep 600");
+    engine.kill("s1", "Interrupted: stopped by the operator");
+    lifecycle.adopt("s1", fakeHandle());
+    launchBash("t-3", "sleep 600");
+    lifecycle.releaseSession("s1");
+    expect(lost.map((entry) => entry.cause)).toEqual(["moved", "stopped", "ended"]);
+  });
+
+  it("reports the loss at gateway shutdown as stopped, for the gateway to leave to the restart record", () => {
     launchBash("t-1", "sleep 600");
 
     engine.killAll();
 
-    expect(lost.map((entry) => entry.deliberate)).toEqual([true]);
+    expect(lost.map((entry) => entry.cause)).toEqual(["stopped"]);
     expect(engine.backgroundTasks("s1").tasks).toEqual([]);
   });
 

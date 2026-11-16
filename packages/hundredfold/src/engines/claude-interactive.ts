@@ -3,6 +3,7 @@ import fs from "node:fs";
 import * as pty from "node-pty";
 import type { CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta, TurnProgress } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { ENGINE_SWITCHED_REASON, type LostBackgroundCause } from "../shared/engine-switch.js";
 import { HUNDREDFOLD_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { cleanupSessionSettings } from "../shared/claude-settings.js";
 import { assertClaudeProfileDirExists, claudeResetSource, ensureClaudeProfileTrust, writeClaudeSessionSettings } from "./claude-profile-launch.js";
@@ -1678,10 +1679,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private taskStore = new BackgroundTaskStore((hundredfoldSessionId) => this.publishBackgroundState(hundredfoldSessionId));
   private backgroundSilenceTimers = new Map<string, NodeJS.Timeout>();
   private backgroundActivityCb?: (hundredfoldSessionId: string, info: UpstreamActivityInfo | null) => void;
-  private lostBackgroundTasksCb?: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], deliberate: boolean) => void;
-  /** Sessions whose PTY kill() is releasing: the session was stopped on purpose, so the
-   *  background tasks that die with it are reported deliberate. Held only for the release. */
-  private deliberateReleases = new Set<string>();
+  private lostBackgroundTasksCb?: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], cause: LostBackgroundCause) => void;
+  /** Sessions whose PTY kill() is releasing, and why: stopped on purpose, or moved to another account
+   *  or engine. The background tasks that die with it are reported with that cause. Held only for the release. */
+  private deliberateReleases = new Map<string, Exclude<LostBackgroundCause, "ended">>();
   /** killAll ran: the gateway is shutting down, and the restart record owns what dies with it. */
   private shuttingDown = false;
   /** Test override for the post-settle clear quiet window (default 10s). */
@@ -1822,9 +1823,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  evicted as idle, or was respawned) while background tasks it launched were
    *  still running. Claude Code never announces those tasks' ends, so nothing
    *  would re-invoke the model; the gateway asks the session to carry on, or
-   *  keeps the tasks for its next turn. `deliberate`: stopped on purpose (kill)
-   *  or the gateway is shutting down, so not woken but not forgotten. */
-  onLostBackgroundTasks(cb: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], deliberate: boolean) => void): void {
+   *  keeps the tasks for its next turn. `cause`: `stopped` (a kill, or the gateway
+   *  shutting down) and `moved` (a kill that handed the session to another account or
+   *  engine) are not woken but not forgotten; `ended` is any other release. */
+  onLostBackgroundTasks(cb: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], cause: LostBackgroundCause) => void): void {
     this.lostBackgroundTasksCb = cb;
   }
 
@@ -1833,13 +1835,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private reportLostBackgroundTasks(hundredfoldSessionId: string): void {
     const tasks = this.taskStore.list(hundredfoldSessionId);
     if (tasks.length === 0) return;
-    const deliberate = this.shuttingDown || this.deliberateReleases.has(hundredfoldSessionId);
+    const cause: LostBackgroundCause = this.shuttingDown ? "stopped" : this.deliberateReleases.get(hundredfoldSessionId) ?? "ended";
     logger.warn(
       `InteractiveClaudeEngine: ${hundredfoldSessionId}'s Claude Code process ended with ${tasks.length} background task(s) `
       + `still running (${tasks.map((task) => task.id).join(", ")}): `
-      + (deliberate ? "it was stopped on purpose, so the session is not asked to carry on" : "reporting them so the session can be asked to carry on"),
+      + (cause === "ended" ? "reporting them so the session can be asked to carry on" : `it was ${cause === "moved" ? "moved to another account or engine" : "stopped on purpose"}, so the session is not asked to carry on`),
     );
-    this.lostBackgroundTasksCb?.(hundredfoldSessionId, tasks, deliberate);
+    this.lostBackgroundTasksCb?.(hundredfoldSessionId, tasks, cause);
   }
 
   /** Per-PTY SSE proxy reported an in-flight change. Always record it (counts
@@ -3500,7 +3502,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     this.cancelLateRecovery(sessionId);
     const e = this.active.get(sessionId);
     e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`);
-    this.deliberateReleases.add(sessionId);
+    this.deliberateReleases.set(sessionId, reason === ENGINE_SWITCHED_REASON ? "moved" : "stopped");
     try {
       this.lifecycle.releaseSession(sessionId);
     } finally {
@@ -3523,6 +3525,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // Nor a PTY with a turn typed in the terminal running, or a gateway turn
     // waiting on one: recycling it would cut off the operator's turn.
     this.lifecycle.releaseIdle((id) => this.active.has(id) || this.terminalWaits.has(id) || this.terminalTurns.has(id));
+  }
+
+  /** Whether releasing this session's PTY now would cut a turn off: one the gateway runs, one it waits on behind the
+   *  terminal, one typed into the terminal, or a background stop in progress. The predicate `killIdle` spares, plus the
+   *  background stop. Separate from `isTurnRunning`, which the reconciler and /stop read. */
+  holdsTurn(sessionId: string): boolean {
+    return this.isTurnRunning(sessionId) || this.terminalTurns.has(sessionId);
   }
 
   /** True only while a turn is in flight (distinct from "PTY is warm"). */

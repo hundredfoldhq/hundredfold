@@ -81,6 +81,55 @@ describe("SessionQueue claims the next row by position", () => {
     expect(ran).toEqual(["running", "b", "callback", "a"]);
   });
 
+  it("moves an internal row to the head of the lane, ahead of visible and internal rows queued earlier", async () => {
+    const lane = "lane-head";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "callback", "b", "mention"], { internal: ["callback", "mention"] });
+    await tick();
+
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("mention")!)).toBe(true);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "mention", "a", "callback", "b"]);
+  });
+
+  it("keeps an earlier mention that also reaches a running turn ahead of the later one, both ahead of everything else", async () => {
+    const lane = "lane-head-mentions";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "first", "callback", "second"], { internal: ["first", "callback", "second"] });
+    await tick();
+    const { initDb } = await import("../../shared/db.js");
+    const insert = initDb().prepare(
+      `INSERT INTO callback_deliveries (id, target_session_id, source_kind, source_id, source_attempt, source_outcome, source_version, delivery_kind, payload, status, queue_item_id, created_at)
+       VALUES (?, 's-claim', 'work-item', 'T-1', ?, 'mention', 1, 'todo-mention', ?, 'accepted', ?, ?)`,
+    );
+    for (const name of ["first", "second"]) {
+      insert.run(`delivery-${name}`, `mention:${name}`, JSON.stringify({ message: name, displayMessage: name, reachRunningTurn: true }), ids.get(name)!, new Date().toISOString());
+    }
+
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("first")!)).toBe(true);
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("second")!)).toBe(true);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "first", "second", "a", "callback"]);
+  });
+
+  it("refuses to move a row that is not parked in the lane, and changes nothing", async () => {
+    const lane = "lane-head-refused";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "b"]);
+    await tick();
+    const elsewhere = reg.enqueueQueueItem("s-claim", "lane-elsewhere", "elsewhere");
+
+    expect(reg.movePendingQueueItemToHead(lane, "no-such-row")).toBe(false);
+    expect(reg.movePendingQueueItemToHead(lane, elsewhere)).toBe(false);
+    reg.cancelQueueItem(ids.get("a")!);
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("a")!)).toBe(false);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "b"]);
+  });
+
   it("settles each caller with its own row's outcome, whichever slot ran it", async () => {
     const lane = "lane-errors";
     const queue = new SessionQueue();

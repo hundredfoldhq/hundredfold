@@ -142,6 +142,8 @@ describe.skipIf(!RUN)("opencode server mode on OpenCode 2", () => {
     const args = Buffer.from(JSON.stringify({ command: "sleep 3", description: "wait" })).toString("base64");
     const running = turn(`wait CALLTOOL=shell ARGS64=${args}`);
     await new Promise((r) => setTimeout(r, 1500));
+    // The previous test's MCP change restarts the session's server, which may still be coming up.
+    await waitFor(() => Boolean(pool.get(sessionId)));
     // As the terminal sends it: no delivery, which 2.x takes as a steer.
     const server = pool.get(sessionId)!;
     const res = await fetch(`${server.apiUrl}/api/session/${resume}/prompt`, {
@@ -159,6 +161,7 @@ describe.skipIf(!RUN)("opencode server mode on OpenCode 2", () => {
     const args = Buffer.from(JSON.stringify({ command: "sleep 3", description: "wait" })).toString("base64");
     const running = turn(`wait CALLTOOL=shell ARGS64=${args}`);
     await new Promise((r) => setTimeout(r, 1500));
+    await waitFor(() => Boolean(pool.get(sessionId)));
     const server = pool.get(sessionId)!;
     const headers = { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}`, "content-type": "application/json" };
     const posted = await fetch(`${server.apiUrl}/api/session/${resume}/prompt`, { method: "POST", headers, body: JSON.stringify({ text: "operator aside", delivery: "queue" }) });
@@ -170,6 +173,117 @@ describe.skipIf(!RUN)("opencode server mode on OpenCode 2", () => {
     const { result } = await running;
     expect(result.error).toBeUndefined();
     expect(result.result).not.toBe("");
+  }, 60_000);
+
+  /** The session's store, oldest first, as `user:<text>`, `assistant`, `idle:<outcome>`. */
+  const storeOf = async (): Promise<string[]> => {
+    const server = pool.get(sessionId)!;
+    const res = await fetch(`${server.apiUrl}/api/session/${resume}/message?limit=60&order=asc`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}` },
+    });
+    const items = ((await res.json()) as { data: Array<Record<string, unknown>> }).data;
+    return items.map((m) => (m.type === "user" ? `user:${String(m.text).slice(0, 40)}` : m.type === "idle" ? `idle:${String(m.outcome)}` : String(m.type)));
+  };
+  const serverCall = async (method: string, route: string, body?: unknown): Promise<{ status: number; json: any }> => {
+    const server = pool.get(sessionId)!;
+    const res = await fetch(`${server.apiUrl}${route}`, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await res.text();
+    return { status: res.status, json: text ? JSON.parse(text) : undefined };
+  };
+  const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 15_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await check())) {
+      if (Date.now() > deadline) throw new Error("timed out waiting");
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  // What 2.0.32 does with a steered input (the engine's SteerableEngine contract rests on it):
+  // - during a tool call it is delivered at the next step of the SAME execution (one idle for
+  //   both inputs), and the model's next upstream request carries it after the tool result;
+  // - during the last step it is delivered right after that step ends (the same millisecond
+  //   as `session.step.ended`), in the same execution, and one more step answers it: a turn
+  //   that ended with the step would lose that answer, so the turn waits for it;
+  // - with no execution running it starts one at once (nothing is held back in the inbox).
+  it("steers an input into a running tool call: the next request of the same execution carries it", async () => {
+    const before = (await storeOf()).filter((e) => e.startsWith("idle:")).length;
+    const args = Buffer.from(JSON.stringify({ command: "sleep 4", description: "wait" })).toString("base64");
+    const mainBefore = mainRequests().length;
+    const running = turn(`steer into me CALLTOOL=shell ARGS64=${args}`);
+    await waitFor(() => mainRequests().length === mainBefore + 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(engine.canSteer(sessionId)).toBe(true);
+    const outcome = await engine.steer(sessionId, "STEERED_MARKER also say hi");
+    const { result } = await running;
+    expect(outcome).toBe("steered");
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("heard the steer");
+    expect(result.numTurns).toBeGreaterThan(1);
+
+    const after = mainRequests().slice(mainBefore);
+    expect(after).toHaveLength(2);
+    // The second request is the model's next step: the tool's result, then the steered text.
+    const roles = (JSON.parse(after[1]!.all) as Array<{ role: string; content: unknown }>);
+    expect(roles.at(-1)).toMatchObject({ role: "user" });
+    expect(JSON.stringify(roles.at(-1)!.content)).toContain("STEERED_MARKER also say hi");
+    expect(roles.at(-2)).toMatchObject({ role: "tool" });
+    // One execution for both: the steered input sits between the turn's steps, one idle closes it.
+    const store = await storeOf();
+    expect(store.filter((e) => e.startsWith("idle:")).length).toBe(before + 1);
+    expect(store.slice(-4)).toEqual(["assistant", "user:STEERED_MARKER also say hi", "assistant", "idle:succeeded"]);
+    expect(engine.canSteer(sessionId)).toBe(false);
+  }, 60_000);
+
+  it("keeps a turn open for an input that arrives during its last step, and answers with the reply to it", async () => {
+    const before = (await storeOf()).filter((e) => e.startsWith("idle:")).length;
+    const mainBefore = mainRequests().length;
+    // SLOW streams its answer for ten seconds; steer a second before it ends.
+    const running = turn("go SLOW");
+    await waitFor(() => mainRequests().length === mainBefore + 1);
+    await new Promise((r) => setTimeout(r, 9000));
+    expect(engine.canSteer(sessionId)).toBe(true);
+    const outcome = engine.steer(sessionId, "STEERED_MARKER one more thing");
+    const { result } = await running;
+    expect(await outcome).toBe("steered");
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("heard the steer");
+    expect(result.numTurns).toBeGreaterThan(1);
+    const store = await storeOf();
+    expect(store.filter((e) => e.startsWith("idle:")).length).toBe(before + 1);
+    expect(store.slice(-4)).toEqual(["assistant", "user:STEERED_MARKER one more thing", "assistant", "idle:succeeded"]);
+  }, 60_000);
+
+  it("starts an execution for a steer that arrives with none running (nothing waits in the inbox)", async () => {
+    await waitFor(async () => Object.keys((await serverCall("GET", "/api/session/active")).json.data).length === 0);
+    const mainBefore = mainRequests().length;
+    const posted = await serverCall("POST", `/api/session/${resume}/prompt`, { id: `msg_${"0".repeat(8)}idlesteer0000000`, text: "STEERED_MARKER while idle", delivery: "steer" });
+    expect(posted.status).toBe(200);
+    await waitFor(async () => (await storeOf()).at(-1) === "idle:succeeded" && mainRequests().length === mainBefore + 1);
+    expect((await serverCall("GET", `/api/session/${resume}/inbox`)).json.data).toEqual([]);
+    expect((await storeOf()).slice(-3)).toEqual(["user:STEERED_MARKER while idle", "assistant", "idle:succeeded"]);
+  }, 60_000);
+
+  it("takes a steered input back out when the turn is stopped before the server delivered it", async () => {
+    const mainBefore = mainRequests().length;
+    const running = turn("go SLOW");
+    await waitFor(() => mainRequests().length === mainBefore + 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    // The server holds a steer until the step it arrived in ends, so this one is still waiting.
+    const outcome = engine.steer(sessionId, "STEERED_MARKER never delivered");
+    await waitFor(async () => ((await serverCall("GET", `/api/session/${resume}/inbox`)).json.data as unknown[]).length === 1);
+    engine.kill(sessionId, USER_STOP_INTERRUPTION_REASON);
+    const { result } = await running;
+    expect(result.error).toBe(USER_STOP_INTERRUPTION_REASON);
+    expect(await outcome).toBe("withdrawn");
+    expect((await serverCall("GET", `/api/session/${resume}/inbox`)).json.data).toEqual([]);
+    // Nothing ran it unattended afterwards.
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(mainRequests().slice(mainBefore).some((r) => r.all.includes("never delivered"))).toBe(false);
+    expect(engine.isAlive(sessionId)).toBe(false);
   }, 60_000);
 
   it("switches the session's model when a turn names another", async () => {

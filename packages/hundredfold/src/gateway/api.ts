@@ -7,7 +7,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress } from "../shared/types.js";
+import { isInterruptibleEngine, isSteerableEngine, reportsTurnProgress } from "../shared/types.js";
 import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
@@ -39,7 +39,7 @@ import { reroutedSessionMeta } from "../sessions/engine-override-window.js";
 import { stripControlChars, hasControlBytes } from "../shared/sanitize.js";
 import { CONNECTOR_ID_REQUIREMENTS, isValidConnectorId } from "../shared/connector-id.js";
 import { initDb } from "../shared/db.js";
-import { countPendingQueueItemsByKey } from "../sessions/queue-item-registry.js";
+import { countPendingQueueItemsByKey, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
 import { withdrawPendingSwitchOfDelivery } from "../sessions/pending-switch.js";
 import {
   listSessions,
@@ -70,6 +70,7 @@ import {
   getMessages,
   getMessagePage,
   enqueueQueueItem,
+  movePendingQueueItemToHead,
   markRunningQueueItemsCompletedForSession,
   shouldHoldParentCompletionQueueDispatch,
   listReleasableParentCompletionQueuesForSource,
@@ -350,10 +351,11 @@ import { handleHeartbeatApi } from "./heartbeat-api.js";
 import { armChildWatch } from "../heartbeats/child-watch.js";
 import { handleSelfCompactionApi } from "./self-compaction-api.js";
 import { handleSessionContextApi } from "./session-context-api.js";
-import { messageDeliveryError, resolveMessageDelivery, shouldInterruptRunningTurn as interruptsRunningTurn } from "./message-interrupt.js";
+import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
+import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { isAutoCompacting } from "../sessions/auto-compaction.js";
-import { isRawEngineCommand } from "../shared/skill-commands.js";
+import { isCompactCommand, isRawEngineCommand } from "../shared/skill-commands.js";
 import { handleTerminalApi, type TerminalApiOptions } from "./terminal-api.js";
 import { isTerminalSession, TERMINAL_HAS_NO_TURN, TERMINAL_REFUSES_MESSAGES } from "../terminals/session.js";
 import { handleWorkItemKeptApi } from "./work-item-kept-api.js";
@@ -4152,7 +4154,11 @@ export async function handleApiRequest(
       // Queued messages drain one per turn, in order, through the serial queue.
       const delivery = resolveMessageDelivery({ delivery: body.delivery, interrupt: body.interrupt });
       const pausableKey = session.sessionKey || session.sourceRef || session.id;
-      const shouldInterruptRunningTurn = interruptsRunningTurn({
+      // The operator's own Todo mention asks to reach a running turn. That is read
+      // from the durable delivery row alone, which only the gateway writes: a
+      // request body naming it would let any caller cut another session's turn.
+      const targetSessionId = session.id;
+      const runningAction = runningTurnAction({
         isNotification,
         prompt: String(prompt),
         interruptOnNewMessage: config.sessions?.interruptOnNewMessage,
@@ -4160,7 +4166,11 @@ export async function handleApiRequest(
         autoCompacting: isAutoCompacting(session.id),
         delivery,
         queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
+        reachRunningTurn: callbackDelivery?.payload.reachRunningTurn === true,
+        // Never into a running /compact: the summary must not take in new input.
+        canSteer: () => isSteerableEngine(engine) && !runningQueuePromptsForSession(targetSessionId).some(isCompactCommand) && engine.canSteer(targetSessionId),
       });
+      const shouldInterruptRunningTurn = runningAction === "interrupt";
       if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
 
       // Persist the message immediately. For notifications, store the clean
@@ -4211,6 +4221,10 @@ export async function handleApiRequest(
           }
         }
         callbackQueueNeedsDispatch = !queue.hasInFlightItem(queueItemId);
+        // A mention that reaches a running turn runs before anything queued earlier,
+        // a child's callback included: the turn ends, or a withdrawn steer is
+        // taken back, and the lane hands over to the head row. Nothing is cut off.
+        if (runningAction === "promote" || runningAction === "steer") movePendingQueueItemToHead(sessionKey, queueItemId);
       } else {
         const claim = claimIncomingTurn({
           sessionId: session.id, sessionKey, prompt, isNotification, role: messageRole, dedupeKey: lateralDedupeKey,
@@ -4358,6 +4372,12 @@ export async function handleApiRequest(
       }
 
       if (!callbackDelivery || callbackQueueNeedsDispatch) {
+        // Handed to the turn running now, which reads it at its next step. The row
+        // still waits behind that turn; its slot asks how the hand-over ended.
+        if (runningAction === "steer" && isSteerableEngine(engine)) {
+          logger.info(`Steering a Todo mention into running session ${session.id}`);
+          registerSteeredDelivery(queueItemId!, Promise.resolve().then(() => engine.steer(session.id, enginePrompt)));
+        }
         dispatchWebSessionRun(session, enginePrompt, engine, context, {
           queueItemId,
           attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined,
