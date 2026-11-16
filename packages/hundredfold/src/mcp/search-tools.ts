@@ -165,7 +165,7 @@ export function buildSearchTools(): HundredfoldMcpTool[] {
       const query = requireString(args, "query", QUERY_CHAR_CAP);
       const role = optionalString(args, "role");
       if (role !== undefined && role !== "user" && role !== "assistant") {
-        throw new HundredfoldMcpToolError(`role must be "user" or "assistant" (only those rows are indexed), got "${role}"`);
+        throw new HundredfoldMcpToolError(`role must be "user" or "assistant" (a relayed message or child reply is a notification: search without a role to find it), got "${role}"`);
       }
       const limit = clampInt(args.limit, SEARCH_LIMIT_DEFAULT, 1, SEARCH_LIMIT_MAX);
       const sessionId = optionalString(args, "sessionId");

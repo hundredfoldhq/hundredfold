@@ -9,6 +9,7 @@ import {
   READ_LAST_DEFAULT,
   LIST_LIMIT_MAX,
 } from "../session-tools.js";
+import { buildSearchTools } from "../search-tools.js";
 import { buildTools } from "../server.js";
 import {
   attachSessionIdentity,
@@ -81,6 +82,12 @@ function stub(
 function tool(name: string): HundredfoldMcpTool {
   const t = buildSessionTools().find((t) => t.name === name);
   if (!t) throw new Error(`no tool ${name}`);
+  return t;
+}
+
+function searchTool(name: string): HundredfoldMcpTool {
+  const t = buildSearchTools().find((t) => t.name === name);
+  if (!t) throw new Error(`no search tool ${name}`);
   return t;
 }
 
@@ -724,6 +731,33 @@ describe("session tools — integration against the real routes/registry", () =>
     expect(read.messages[0].content).toBe(
       "📨 Message relayed from yorio-lead via the operator:\n\nGREEN-LIGHT: clear to merge reps/workspace-conversion.",
     );
+  });
+
+  it("a word past the banner cut of a relayed message is found by search_messages and read back by get_message_context", async () => {
+    const parentId = await createOperatorSession("search relay sender");
+    const spawned = (await tool("spawn_session").handler({ prompt: "child task", engine: "codex" }, ctxFor(parentId))) as { sessionId: string };
+    const searcherId = await createOperatorSession("search relay third party");
+    const body = `${"padding words ".repeat(150)}the rendezvous is at quokkaville harbour tonight.`;
+
+    await tool("send_to_session").handler({ sessionId: spawned.sessionId, message: body }, ctxFor(parentId));
+    const stored = registry.getMessages(spawned.sessionId).at(-1)!;
+    expect(stored.role).toBe("notification");
+    expect(stored.content).not.toContain("quokkaville");
+
+    const found = (await searchTool("search_messages").handler(
+      { query: "quokkaville", sessionId: spawned.sessionId },
+      ctxFor(searcherId),
+    )) as { results: Array<{ messageId: string; role: string; snippet: string }> };
+    expect(found.results).toHaveLength(1);
+    expect(found.results[0]).toMatchObject({ messageId: stored.id, role: "notification" });
+    expect(found.results[0].snippet).toContain("«quokkaville»");
+
+    const context = (await searchTool("get_message_context").handler(
+      { sessionId: spawned.sessionId, messageId: found.results[0].messageId, radius: 1 },
+      ctxFor(searcherId),
+    )) as { messages: Array<{ isAnchor: boolean; content: string }> };
+    const anchor = context.messages.find((m) => m.isAnchor)!;
+    expect(anchor.content).toContain("the rendezvous is at quokkaville harbour tonight.");
   });
 
   it("an operator message WITHOUT role:notification is still a plain user message (unchanged)", async () => {
