@@ -181,6 +181,13 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
         `flock /tmp/l cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
         `eval cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
         `grep -rl x ${GATEWAY_HOME}/docs | xargs rm`,
+        // A read-only tool's own options that run a command or write a file.
+        `rg --pre ./rm-and-cat ${GATEWAY_HOME}/docs`,
+        `git -C ${GATEWAY_HOME} grep -O ./open cp`,
+        `git -C ${GATEWAY_HOME} grep --open-files-in-pager=./open mv`,
+        `git -C ${GATEWAY_HOME} diff --output=${GATEWAY_HOME}/knowledge/cp.diff`,
+        `git -C ${GATEWAY_HOME} log --output ${GATEWAY_HOME}/knowledge/mv.log`,
+        `tree -o ${GATEWAY_HOME}/knowledge/rm.txt ${GATEWAY_HOME}`,
         `find ${GATEWAY_HOME}/docs -name x -delete -o -name y -exec mv {} /tmp \\;`,
       ]) {
         expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");

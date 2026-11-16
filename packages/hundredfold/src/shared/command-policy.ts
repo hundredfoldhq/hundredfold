@@ -83,6 +83,14 @@ const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:[^\s;&|()]*\/)?(?:tee|cp|mv|install|
 const READ_ONLY_TOOLS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "cat", "head", "tail", "ls", "wc", "stat", "du", "tree"]);
 /** `find` actions that run a command or write a file. */
 const FIND_ACTION = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+/** Options by which a read-only tool runs a command or writes a file after all. */
+const READER_ESCAPE: Record<string, RegExp> = {
+  rg: /^--pre(?:=|$)/,
+  ag: /^--pager(?:=|$)/,
+  tree: /^-o/,
+};
+/** `git` options by which a reading subcommand writes a file or runs a command. */
+const GIT_ESCAPE = /^(?:--output(?:=|$)|-O|--open-files-in-pager(?:=|$))/;
 /** `git` subcommands that only read the repository. */
 const GIT_READ_SUBCOMMANDS = new Set(["log", "show", "diff", "grep", "status", "blame", "ls-files", "rev-parse"]);
 /** `git` options that take the next word as their value. */
@@ -112,9 +120,9 @@ function isReadOnlySegment(segment: string): boolean {
   if (start < 0) return false;
   const tool = words[start]!.replace(/^.*\//, "");
   const args = words.slice(start + 1);
-  if (READ_ONLY_TOOLS.has(tool)) return true;
+  if (READ_ONLY_TOOLS.has(tool)) return !args.some((arg) => READER_ESCAPE[tool]?.test(arg));
   if (tool === "find") return !args.some((arg) => FIND_ACTION.test(arg));
-  if (tool === "git") return GIT_READ_SUBCOMMANDS.has(gitSubcommand(args) ?? "");
+  if (tool === "git") return GIT_READ_SUBCOMMANDS.has(gitSubcommand(args) ?? "") && !args.some((arg) => GIT_ESCAPE.test(arg));
   return false;
 }
 
