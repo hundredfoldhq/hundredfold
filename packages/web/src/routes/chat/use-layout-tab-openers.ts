@@ -89,19 +89,22 @@ export function useEmployeeDeepLink(contactEmployee: (name: string) => void, wai
  * runs when the layout can take the tab (`ready`), and the parameter is dropped in place, so a reload or
  * the browser's back never replays it. The address keeps whatever else it carried. `open` says whether
  * it moved the route itself (to the chat the tab opened beside), which leaves the address as it set it.
+ * When the session list the layout hydrates from failed (`failed`, see sessionListFailed) the layout can never be
+ * ready: the link opens nothing and is dropped from the address all the same, rather than staying there.
  */
-export function useTodosOpenIntent(open: () => boolean, ready: boolean) {
+export function useTodosOpenIntent(open: () => boolean, ready: boolean, failed = false) {
   const location = useLocation()
   const navigate = useNavigate()
   const consumed = useRef(false)
   const intent = hasTodosOpenIntent(location.search)
   useEffect(() => {
     if (!intent) consumed.current = false
-    if (!intent || !ready || consumed.current) return
+    if (!intent || consumed.current) return
+    if (!ready && !failed) return
     consumed.current = true
-    if (open()) return
+    if (ready && open()) return
     void navigate({ pathname: location.pathname, search: withoutOpenIntent(location.search), hash: location.hash }, { replace: true, state: location.state })
-  }, [intent, location.hash, location.pathname, location.search, location.state, navigate, open, ready])
+  }, [failed, intent, location.hash, location.pathname, location.search, location.state, navigate, open, ready])
 }
 
 /**
