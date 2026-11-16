@@ -192,13 +192,54 @@ function ftsBackfillStep(database: Database.Database, chunkSize = FTS_BACKFILL_C
   return false;
 }
 
+// Relay bodies are up to 16,000 chars each, so their backfill walks a narrow rowid window per
+// transaction rather than a fixed row count, bounding the bytes one transaction tokenizes and the
+// time it holds the write lock.
+const RELAY_FTS_BACKFILL_SPAN = 200;
+
+/**
+ * Seed one rowid window of pre-existing relay bodies (see migrateRelayFts) into relay_messages_fts, in one
+ * transaction. Resumable through `meta.relay_fts_backfill_rowid`; only rows at or below the watermark are
+ * touched, the insert trigger owns the rest. Returns true once the window reaches the watermark.
+ */
+export function relayFtsBackfillStep(database: Database.Database, span = RELAY_FTS_BACKFILL_SPAN): boolean {
+  if (getMeta(database, 'relay_fts_backfill_done') === '1') return true;
+  // IMMEDIATE: another process may be draining the same database (every process that opens it can schedule
+  // the backfill), and two windows over the same rowids would index a row twice.
+  return database.transaction((): boolean => {
+    if (getMeta(database, 'relay_fts_backfill_done') === '1') return true;
+    const max = Number(getMeta(database, 'relay_fts_backfill_max') ?? '0');
+    const progress = Number(getMeta(database, 'relay_fts_backfill_rowid') ?? '0');
+    if (progress >= max) {
+      setMeta(database, 'relay_fts_backfill_done', '1');
+      return true;
+    }
+    const upper = Math.min(progress + Math.max(1, Math.floor(span)), max);
+    const rows = database
+      .prepare('SELECT rid, body FROM relay_message_bodies WHERE rid > ? AND rid <= ? ORDER BY rid ASC')
+      .all(progress, upper) as Array<{ rid: number; body: string }>;
+    const insert = database.prepare('INSERT INTO relay_messages_fts(rowid, body) VALUES (?, ?)');
+    for (const r of rows) insert.run(r.rid, r.body);
+    setMeta(database, 'relay_fts_backfill_rowid', String(upper));
+    if (upper >= max) setMeta(database, 'relay_fts_backfill_done', '1');
+    return upper >= max;
+  }).immediate();
+}
+
+/** One backfill round over both indexes; true once both are complete. */
+function ftsBackfillRound(database: Database.Database, chunkSize: number): boolean {
+  const messagesDone = ftsBackfillStep(database, chunkSize);
+  const relaysDone = relayFtsBackfillStep(database, Math.min(chunkSize, RELAY_FTS_BACKFILL_SPAN));
+  return messagesDone && relaysDone;
+}
+
 /**
  * Run the FTS backfill to completion synchronously. Exposed for tests and for
  * callers that genuinely want to block; the request path uses
  * `scheduleFtsBackfill` (which yields between chunks) instead.
  */
 export function backfillFtsSync(database: Database.Database, chunkSize = FTS_BACKFILL_CHUNK): void {
-  while (!ftsBackfillStep(database, chunkSize)) {
+  while (!ftsBackfillRound(database, chunkSize)) {
     /* keep draining chunks */
   }
 }
@@ -231,7 +272,7 @@ export function disableFtsForProcess(database: Database.Database, reason?: unkno
     console.error(`[fts] Failed to drop FTS infrastructure during disable: ${dropErr instanceof Error ? dropErr.message : dropErr}`);
   }
   try {
-    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_seeded')").run();
+    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_backfill_done','relay_fts_backfill_rowid','relay_fts_backfill_max')").run();
   } catch {
     // meta table may not exist in edge cases — not a fatal error
   }
@@ -243,7 +284,7 @@ const ftsBackfillPromises = new WeakMap<Database.Database, Promise<void>>();
 /**
  * Kick the one-time FTS backfill off the hot path. startGateway calls this only
  * after listen(); searchMessages calls it as a lazy fallback for library/test
- * consumers. Guarded by the persistent `fts_backfill_done` flag and a per-DB
+ * consumers. Guarded by the persistent `fts_backfill_done` / `relay_fts_backfill_done` flags and a per-DB
  * in-process promise so concurrent callers share one drain. Each chunk is its own
  * transaction with a `setImmediate` yield in between, so a large historical table
  * is seeded without blocking the event loop.
@@ -252,14 +293,16 @@ export function scheduleFtsBackfill(
   database: Database.Database = initDb(),
   chunkSize = FTS_BACKFILL_CHUNK,
 ): Promise<void> {
-  if (!ftsAvailable || getMeta(database, 'fts_backfill_done') === '1') return Promise.resolve();
+  if (!ftsAvailable || (getMeta(database, 'fts_backfill_done') === '1' && getMeta(database, 'relay_fts_backfill_done') === '1')) {
+    return Promise.resolve();
+  }
   const existing = ftsBackfillPromises.get(database);
   if (existing) return existing;
 
   const completion = new Promise<void>((resolve) => {
     const pump = (): void => {
       try {
-        if (ftsBackfillStep(database, chunkSize)) {
+        if (ftsBackfillRound(database, chunkSize)) {
           ftsBackfillPromises.delete(database);
           resolve();
           return;

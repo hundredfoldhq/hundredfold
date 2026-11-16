@@ -153,16 +153,102 @@ describe("searchMessages — relayed messages and child replies", () => {
         .prepare("SELECT m.id AS id FROM relay_messages_fts JOIN messages m ON m.rowid = relay_messages_fts.rowid WHERE relay_messages_fts MATCH ?")
         .all(q) as Array<{ id: string }>).map((r) => r.id);
 
-    it("seeds the existing relay bodies once, ignoring rows that are not relays", () => {
+    it("starts with an empty index: boot only creates it, the chunked backfill fills it", () => {
       const db = legacyWithRelays();
       migrateModule.migrateFtsSchema(db);
-      expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
+      expect(relayHits(db, "numbat")).toEqual([]);
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBeNull();
 
-      // A later boot neither repeats the seed nor duplicates the index.
+      reg.backfillFtsSync(db);
+      expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBe("1");
+
+      // A later boot neither repeats the backfill nor duplicates the index.
       migrateModule.migrateFtsSchema(db);
+      reg.backfillFtsSync(db);
       expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
       expect(() => db.prepare("DELETE FROM messages WHERE id = 'old-relay'").run()).not.toThrow();
       expect(relayHits(db, "numbat")).toEqual([]);
+      db.close();
+    });
+
+    it("backfills in rowid windows, resumes, and indexes every relay once", () => {
+      const db = legacyWithRelays();
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      for (let i = 0; i < 40; i++) {
+        if (i % 3 === 0) ins.run(`bulk-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-reply", employee: "w", childSessionId: "c", fullMessage: `bulk wombat ${i}` }));
+        else ins.run(`bulk-${i}`, "leg", "assistant", `plain ${i}`, 10 + i, null);
+      }
+      migrateModule.migrateFtsSchema(db);
+      // A window of 4 rowids forces many chunks; two full passes must not double-index.
+      reg.backfillFtsSync(db, 4);
+      reg.backfillFtsSync(db, 4);
+      expect(relayHits(db, "wombat")).toHaveLength(14);
+      expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      db.close();
+    });
+
+    it("keeps updates, deletes and new relays safe while the backfill is only partly done", () => {
+      const db = legacyWithRelays();
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      const relayMeta = (text: string): string => JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: text });
+      for (let i = 0; i < 30; i++) ins.run(`part-${i}`, "leg", "notification", "📨", 10 + i, relayMeta(`partial quokka tag${i}`));
+      migrateModule.migrateFtsSchema(db);
+
+      // One window only: the earliest rows are indexed, the later ones are not yet.
+      expect(reg.relayFtsBackfillStep(db, 10)).toBe(false);
+      expect(relayHits(db, "tag0")).toEqual(["part-0"]);
+      expect(relayHits(db, "tag29")).toEqual([]);
+
+      // Rewrite and delete rows on both sides of the watermark, and add a relay after it.
+      expect(() => {
+        db.prepare("UPDATE messages SET meta = ? WHERE id = 'part-0'").run(relayMeta("rewritten ibex"));
+        db.prepare("DELETE FROM messages WHERE id = 'part-1'").run();
+        db.prepare("UPDATE messages SET meta = ? WHERE id = 'part-29'").run(relayMeta("rewritten civet"));
+        db.prepare("DELETE FROM messages WHERE id = 'part-28'").run();
+        ins.run("part-new", "leg", "notification", "📨", 99, relayMeta("fresh genet tag99"));
+      }).not.toThrow();
+      expect(relayHits(db, "tag0")).toEqual([]);
+      expect(relayHits(db, "ibex")).toEqual(["part-0"]);
+      expect(relayHits(db, "tag1")).toEqual([]);
+      expect(relayHits(db, "genet")).toEqual(["part-new"]);
+
+      reg.backfillFtsSync(db, 7);
+      expect(relayHits(db, "civet")).toEqual(["part-29"]);
+      expect(relayHits(db, "tag29")).toEqual([]);
+      expect(relayHits(db, "tag28")).toEqual([]);
+      expect(relayHits(db, "quokka")).toHaveLength(26); // 30 - part-0 rewritten - part-1 and part-28 deleted - part-29 rewritten
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      db.close();
+    });
+
+    it("a gateway that serves writes before the yielded backfill starts stays consistent", async () => {
+      const db = legacyWithRelays();
+      migrateModule.migrateFtsSchema(db);
+      expect(() => db.prepare("DELETE FROM messages WHERE id = 'old-relay'").run()).not.toThrow();
+      await reg.scheduleFtsBackfill(db, 4);
+      expect(relayHits(db, "numbat")).toEqual([]);
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBe("1");
+      db.close();
+    });
+
+    it("two connections draining the same database index every relay once", () => {
+      const db = legacyWithRelays();
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      for (let i = 0; i < 40; i++) ins.run(`two-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-error", employee: "w", childSessionId: "c", fullMessage: `shared marmot tag${i}` }));
+      migrateModule.migrateFtsSchema(db);
+      const other = new Database(db.name);
+      other.pragma("busy_timeout = 5000");
+      // Each connection takes a window in turn, as two processes sharing the file would.
+      for (let guard = 0; guard < 100; guard++) {
+        const a = reg.relayFtsBackfillStep(db, 5);
+        const b = reg.relayFtsBackfillStep(other, 5);
+        if (a && b) break;
+      }
+      other.close();
+      expect(relayHits(db, "marmot")).toHaveLength(40);
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
       db.close();
     });
 
@@ -171,9 +257,10 @@ describe("searchMessages — relayed messages and child replies", () => {
       migrateModule.migrateFtsSchema(db);
       reg.disableFtsForProcess(db, "test");
       expect(() => db.prepare("SELECT 1 FROM relay_messages_fts").get()).toThrow(/no such table/);
-      expect(migrateModule.getMeta(db, "relay_fts_seeded")).toBeNull();
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBeNull();
 
       migrateModule.migrateFtsSchema(db);
+      reg.backfillFtsSync(db);
       expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
       db.close();
     });

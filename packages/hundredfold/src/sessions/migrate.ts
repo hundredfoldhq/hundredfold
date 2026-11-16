@@ -266,19 +266,29 @@ function relayBodySql(row: 'new' | 'old' | ''): string {
   const r = row ? `${row}.role` : 'role';
   return `CASE WHEN ${r} = 'notification' THEN CASE WHEN json_valid(${m}) THEN CASE WHEN json_extract(${m}, '$.kind') IN (${RELAY_KINDS_SQL}) AND json_type(${m}, '$.fullMessage') = 'text' THEN json_extract(${m}, '$.fullMessage') END END END`;
 }
+// The same watermark guard messages_fts uses: while the backfill is in flight, a delete or update only
+// touches the index for rowids it already holds (backfilled ones, or rows newer than the watermark that
+// the insert trigger owns). An FTS 'delete' of a row that is not indexed corrupts the index.
+function relayGuardSql(row: 'new' | 'old'): string {
+  return `(
+    COALESCE((SELECT value = '1' FROM meta WHERE key = 'relay_fts_backfill_done'), 0)
+    OR ${row}.rowid <= COALESCE(CAST((SELECT value FROM meta WHERE key = 'relay_fts_backfill_rowid') AS INTEGER), 0)
+    OR ${row}.rowid > COALESCE(CAST((SELECT value FROM meta WHERE key = 'relay_fts_backfill_max') AS INTEGER), 0)
+  )`;
+}
 const CREATE_RELAY_FTS = `
 CREATE VIEW IF NOT EXISTS relay_message_bodies AS
 SELECT rowid AS rid, ${relayBodySql('')} AS body FROM messages WHERE ${relayBodySql('')} IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS relay_messages_fts USING fts5(body, content='relay_message_bodies', content_rowid='rid', tokenize='unicode61');
-CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ai AFTER INSERT ON messages WHEN new.role = 'notification' BEGIN
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ai AFTER INSERT ON messages WHEN new.role = 'notification' AND ${relayGuardSql('new')} BEGIN
   INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE ${relayBodySql('new')} IS NOT NULL;
 END;
-CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ad AFTER DELETE ON messages WHEN old.role = 'notification' BEGIN
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ad AFTER DELETE ON messages WHEN old.role = 'notification' AND ${relayGuardSql('old')} BEGIN
   INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE ${relayBodySql('old')} IS NOT NULL;
 END;
 CREATE TRIGGER IF NOT EXISTS relay_messages_fts_au AFTER UPDATE ON messages WHEN old.role = 'notification' OR new.role = 'notification' BEGIN
-  INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE ${relayBodySql('old')} IS NOT NULL;
-  INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE ${relayBodySql('new')} IS NOT NULL;
+  INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE old.role = 'notification' AND ${relayGuardSql('old')} AND ${relayBodySql('old')} IS NOT NULL;
+  INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE new.role = 'notification' AND ${relayGuardSql('new')} AND ${relayBodySql('new')} IS NOT NULL;
 END;
 `;
 
@@ -416,11 +426,11 @@ export function setMeta(database: Database.Database, key: string, value: string)
 }
 
 /**
- * Create the relay-body index and seed it from the notification rows already
- * stored. The triggers and the seed share the caller's transaction, so no write
- * lands between them and the AD/AU triggers can always delete what they index.
- * The seed scans `messages` once (a rebuild reads only relay rows into the
- * index); `meta.relay_fts_seeded` keeps later boots from repeating it.
+ * Create the relay-body index and pin its backfill watermark. Cheap and atomic, so it is safe in the
+ * boot transaction. Relay rows that already exist are NOT indexed here: `relayFtsBackfillStep` (run
+ * after listen(), with the messages_fts backfill) seeds them in small yielded chunks, so a large
+ * history never holds the write lock past the busy timeout. Rows above the watermark belong to the
+ * insert trigger. Idempotent.
  */
 function migrateRelayFts(database: Database.Database): void {
   database.exec(`
@@ -429,9 +439,10 @@ function migrateRelayFts(database: Database.Database): void {
     DROP TRIGGER IF EXISTS relay_messages_fts_au;
   `);
   database.exec(CREATE_RELAY_FTS);
-  if (getMeta(database, 'relay_fts_seeded') !== '1') {
-    database.exec("INSERT INTO relay_messages_fts(relay_messages_fts) VALUES('rebuild')");
-    setMeta(database, 'relay_fts_seeded', '1');
+  if (getMeta(database, 'relay_fts_backfill_done') !== '1' && getMeta(database, 'relay_fts_backfill_max') === null) {
+    const row = database.prepare('SELECT MAX(rowid) AS m FROM messages').get() as { m: number | null };
+    setMeta(database, 'relay_fts_backfill_max', String(row.m ?? 0));
+    setMeta(database, 'relay_fts_backfill_rowid', '0');
   }
 }
 
