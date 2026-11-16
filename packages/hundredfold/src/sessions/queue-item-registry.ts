@@ -70,6 +70,18 @@ export function markQueueItemCompleted(itemId: string): void {
     .run(new Date().toISOString(), itemId);
 }
 
+/**
+ * Finish a row that no turn will run, because what it carried was handed to a
+ * turn already running. Only while it is still parked: its message and bubble
+ * stay, and the lane skips it like any row that is no longer pending. Returns
+ * false when the row had already been claimed, finished or cancelled.
+ */
+export function completePendingQueueItem(itemId: string): boolean {
+  const db = initDb();
+  return db.prepare("UPDATE queue_items SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'pending'")
+    .run(new Date().toISOString(), itemId).changes === 1;
+}
+
 export function markRunningQueueItemsCompletedForSession(sessionId: string): number {
   const db = initDb();
   const result = db.prepare(

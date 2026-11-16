@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   api,
   callbacks,
@@ -20,6 +20,8 @@ import { sessionHeaders } from "./todo-mentions-harness.js";
 import { installTodoCommentRouting } from "../todo-comment-routing.js";
 import { addComment } from "../../work-items/comments.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../../sessions/interruption-reasons.js";
+import { setSteerSettleTimeoutForTest } from "../../sessions/steered-deliveries.js";
+import { resumePendingWebQueueItems } from "../callback-queue-recovery.js";
 import type { Engine, EngineRunOpts, SteerOutcome } from "../../shared/types.js";
 
 /**
@@ -44,6 +46,7 @@ beforeAll(() => {
   dbModule.initDb();
 });
 /** Comments, links and claims reference Todos and sessions, which the shared reset does not clear. */
+afterEach(() => setSteerSettleTimeoutForTest());
 beforeEach(() => {
   callbacks.__resetCallbackRetrySweepForTest();
   const db = dbModule.initDb();
@@ -129,6 +132,8 @@ async function busyTodo(options: FakeEngineOptions & { config?: Record<string, u
 /** Let any hand-over or interruption a mistaken policy would make happen. */
 const quiet = () => new Promise((resolve) => setTimeout(resolve, 60));
 
+const mentionRowId = () => dbModule.initDb().prepare("SELECT queue_item_id FROM callback_deliveries WHERE delivery_kind = 'todo-mention'").pluck().get() as string;
+
 describe("an operator's mention into a busy session", () => {
   it("(a) interrupts a turn that cannot be steered, and runs before a child callback queued earlier", async () => {
     const busy = await busyTodo();
@@ -183,13 +188,56 @@ describe("an operator's mention into a busy session", () => {
       expect(busy.events.filter((event) => event.event === "session:interrupted")).toEqual([]);
 
       busy.settleSteer("steered");
+      // Settled in the store as soon as the turn has taken it in, while that turn is still going.
+      await eventually(() => expect(registry.getQueueItem(mentionRowId())?.status).toBe("completed"));
+      expect(registry.getMessages(busy.session.id).some((message) => message.role === "notification" && message.content.includes("please look at the failing check"))).toBe(true);
       busy.releaseNext();
       await busy.settled();
       await quiet();
       expect(busy.prompts).toEqual(["long running turn"]);
-      const rowId = dbModule.initDb().prepare("SELECT queue_item_id FROM callback_deliveries WHERE delivery_kind = 'todo-mention'").pluck().get() as string;
-      const row = registry.getQueueItem(rowId)!;
-      expect(row.status).toBe("completed");
+    });
+  });
+
+  it("(b) a restart after the steer was taken in does not replay the mention as a turn", async () => {
+    const busy = await busyTodo({ steerable: true });
+    await withRouteBackedFetch(busy.context, {}, async () => {
+      await busy.operatorComment("@alpha please look at the failing check");
+      await eventually(() => expect(busy.steers).toHaveLength(1));
+      busy.settleSteer("steered");
+      await eventually(() => expect(registry.getQueueItem(mentionRowId())?.status).toBe("completed"));
+
+      // The gateway goes away mid-turn and comes back: the turn that was running is replayed, the mention is not.
+      const rebooted = fakeEngine();
+      registry.recoverStaleQueueItems();
+      resumePendingWebQueueItems(makeContext(rebooted.engine, new queueModule.SessionQueue()));
+      await eventually(() => expect(rebooted.prompts).toEqual(["long running turn"]));
+      await quiet();
+      expect(rebooted.prompts).toEqual(["long running turn"]);
+      expect(registry.getQueueItem(mentionRowId())?.status).toBe("completed");
+      rebooted.releaseNext();
+      busy.releaseNext();
+    });
+  });
+
+  it("(b) runs the mention anyway when the turn never reports what became of the hand-over", async () => {
+    setSteerSettleTimeoutForTest(80);
+    const busy = await busyTodo({ steerable: true });
+    await withRouteBackedFetch(busy.context, {}, async () => {
+      await busy.operatorComment("@alpha please look at the failing check");
+      await eventually(() => expect(busy.steers).toHaveLength(1));
+
+      busy.releaseNext();
+
+      await eventually(() => expect(busy.prompts).toHaveLength(2));
+      expect(busy.prompts[1]).toContain("please look at the failing check");
+      // A late answer neither settles the row a second time nor disturbs the turn it is running in.
+      busy.settleSteer("steered");
+      await quiet();
+      expect(registry.getQueueItem(mentionRowId())?.status).toBe("running");
+      busy.releaseNext();
+      await busy.settled();
+      expect(registry.getQueueItem(mentionRowId())?.status).toBe("completed");
+      expect(busy.prompts).toHaveLength(2);
     });
   });
 
