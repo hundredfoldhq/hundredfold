@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { writeAutoStartRow } from "../../work-items/auto-start.js";
+import { employeeSessionsTable } from "../../work-items/employee-sessions.js";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-child-watch-"));
 process.env.HUNDREDFOLD_HOME = home;
@@ -242,6 +243,18 @@ describe("openChildrenOf", () => {
     expect(watch.openChildrenOf(owner).todoIds).toEqual([]);
     const other = orchestrator("principal");
     db.prepare("UPDATE sessions SET work_item_id = ? WHERE id = ?").run(delegated.id, other);
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([delegated.id]);
+  });
+
+  it("still watches an executing child of its own employee that a delegation recorded for another session", () => {
+    const owner = orchestrator("principal");
+    const delegated = childTodo(owner, "executing", "principal");
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([]);
+    const other = orchestrator("principal");
+    employeeSessionsTable().prepare(`
+      INSERT INTO work_item_employee_sessions (work_item_id, employee, session_id, delegator_session_id, delegated_at, updated_at)
+      VALUES (?, 'principal', ?, ?, ?, ?)
+    `).run(delegated.id, other, owner, new Date().toISOString(), new Date().toISOString());
     expect(watch.openChildrenOf(owner).todoIds).toEqual([delegated.id]);
   });
 

@@ -870,7 +870,7 @@ describe("notifyParentSession — a heartbeat turn that found nothing", () => {
     ["with a full stop", "NO_CHANGE."],
     ["in bold", "**NO_CHANGE**"],
     ["in code", "`NO_CHANGE`"],
-    ["followed by a reason", "NO_CHANGE\n\nStill waiting on the reboot."],
+    ["padded with whitespace", "\n  NO_CHANGE  \n"],
   ])("keeps a %s no-change reply in the child's chat and does not wake the parent", async (_label, result) => {
     registryHolds(heartbeatChild);
     notifyParentSession(heartbeatChild, { result });
@@ -906,9 +906,13 @@ describe("notifyParentSession — a heartbeat turn that found nothing", () => {
     }
   });
 
-  it("does not take a reply that merely mentions the token for the no-change reply", async () => {
+  it.each([
+    ["mentions the token", "The child replied NO_CHANGE twice, so I nudged it."],
+    ["goes on past the token", "NO_CHANGE on the Todo, but CI on the PR went red."],
+    ["adds a line after the token", "NO_CHANGE\n\nStill waiting on the reboot."],
+  ])("relays a reply that %s: it says something", async (_label, result) => {
     registryHolds(heartbeatChild);
-    notifyParentSession(heartbeatChild, { result: "The child replied NO_CHANGE twice, so I nudged it." });
+    notifyParentSession(heartbeatChild, { result });
     await new Promise((r) => setTimeout(r, 50));
     expect(fetchSpy).toHaveBeenCalledOnce();
   });

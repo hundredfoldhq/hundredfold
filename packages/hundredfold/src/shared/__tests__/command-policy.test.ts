@@ -141,6 +141,35 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
       }
     });
 
+    it("does not take a write command's name, as an argument, for the command", () => {
+      for (const cmd of [
+        `grep -rn install ${GATEWAY_HOME}/docs 2>/dev/null`,
+        `grep -rnw "cp" ${GATEWAY_HOME}/knowledge`,
+        `grep -c rm ${GATEWAY_HOME}/org/a.yaml`,
+        `ls ${GATEWAY_HOME}/docs | grep -e mkdir -e ln`,
+        `git -C ${GATEWAY_HOME} log --grep touch`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("allow");
+      }
+    });
+
+    it("still refuses a write command wherever it runs", () => {
+      for (const cmd of [
+        `FOO=1 cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `/bin/cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `sudo -u agent cp note.md ${GATEWAY_HOME}/knowledge/x.md`,
+        `nice -n 10 rsync -a out/ ${GATEWAY_HOME}/docs/`,
+        `find ${GATEWAY_HOME}/docs -name '*.tmp' -exec rm {} +`,
+        `ls ${GATEWAY_HOME}/docs | xargs -0 rm`,
+        `echo hi | tee -a ${GATEWAY_HOME}/knowledge/x.md`,
+        `cd /tmp && mkdir -p ${GATEWAY_HOME}/org/new`,
+        `echo $(touch ${GATEWAY_HOME}/knowledge/x.md)`,
+        `if true; then rm ${GATEWAY_HOME}/knowledge/x.md; fi`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");
+      }
+    });
+
     it("still refuses a redirect whose target is an off-mount home", () => {
       for (const cmd of [
         `grep x ${MOUNT}/docs/a.md > ${GATEWAY_HOME}/knowledge/x.md`,

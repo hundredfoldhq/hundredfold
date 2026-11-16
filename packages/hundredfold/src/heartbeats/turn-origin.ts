@@ -9,7 +9,7 @@ import type { Session } from "../shared/types.js";
  * has moved, and the session says so. That reply is the session's own business:
  * relayed to the session it reports to, it wakes that one as well, every tick,
  * to read "no change". A session cannot end a turn with no text, so it marks the
- * quiet result instead, by replying with {@link HEARTBEAT_NO_CHANGE_REPLY}, and
+ * quiet result instead, by replying with just {@link HEARTBEAT_NO_CHANGE_REPLY}, and
  * the gateway keeps that reply in the session's own chat.
  *
  * The token counts only on a turn a heartbeat started, so the same word in an
@@ -18,7 +18,7 @@ import type { Session } from "../shared/types.js";
 export const HEARTBEAT_NO_CHANGE_REPLY = "NO_CHANGE";
 
 const META_KEY = "heartbeatTurnAttempt";
-const NO_CHANGE = new RegExp(`^[\\s*_\`"'>.-]*${HEARTBEAT_NO_CHANGE_REPLY}\\b`);
+const NO_CHANGE = new RegExp(`^[\\s*_\`"'>.-]*${HEARTBEAT_NO_CHANGE_REPLY}[\\s*_\`"'.!-]*$`);
 
 /** Whether a queue row is a heartbeat tick and nothing else. */
 export function isHeartbeatQueueItem(queueItemId: string | undefined): boolean {
@@ -48,7 +48,8 @@ export function isHeartbeatTurn(session: Pick<Session, "attemptToken" | "transpo
   return !!session.attemptToken && session.transportMeta?.[META_KEY] === session.attemptToken;
 }
 
-/** Whether `text` is the no-change reply: the token leads it, bare or in light markdown. */
+/** Whether `text` is the no-change reply: the token and nothing else, bare or in light markdown. A reply
+ *  that goes on past the token says something, so it is relayed. */
 export function isNoChangeReply(text: string | null | undefined): boolean {
   return NO_CHANGE.test(text ?? "");
 }

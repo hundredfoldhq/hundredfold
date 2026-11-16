@@ -76,7 +76,30 @@ const STAGE_FARM_SEGMENT = new RegExp(
 );
 
 /** Commands that create or overwrite a file named in their arguments. */
-const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)\b/i;
+const WRITE_COMMAND_NAME = /^(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)$/i;
+/** Words that run the command after them: a write word anywhere after one of these is a write. */
+const COMMAND_RUNNER = /^(?:sudo|doas|env|nice|ionice|nohup|time|timeout|stdbuf|exec|command|builtin|xargs|parallel|watch|then|do|else|-exec|-execdir|-ok|-okdir)$/i;
+/** `VAR=value` before a command. */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Whether a write command runs anywhere in `text`: as the first word of a
+ * pipeline segment (after any `VAR=value`), or after a word that runs the next
+ * command (`sudo`, `xargs`, `find -exec`…), flags and all. The same word as an
+ * argument (`grep -rn install docs`, `npm install`) is not a write.
+ */
+function runsWriteCommand(text: string): boolean {
+  return text.split(/[;&|()`\n]/).some((segment) => {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    let afterRunner = false;
+    for (const [index, word] of words.entries()) {
+      const name = word.replace(/^.*\//, "");
+      if (WRITE_COMMAND_NAME.test(name) && (afterRunner || words.slice(0, index).every((w) => ENV_ASSIGNMENT.test(w)))) return true;
+      if (COMMAND_RUNNER.test(word)) afterRunner = true;
+    }
+    return false;
+  });
+}
 /** `> path` / `>> path`, where the target is absolute or home-relative.
  *  `$HOME`/`${HOME}` count as home-relative: without them a plain
  *  `echo x > $HOME/.hundredfold/knowledge/y.md` never even reached the containment
@@ -218,7 +241,7 @@ export function evaluateCommandPolicy(command: string, opts?: CommandPolicyOptio
  * reads the home and writes nothing, and `cat <home>/x > /tmp/y` writes /tmp.
  */
 function writeCandidateTokens(text: string): string[] {
-  if (WRITE_COMMAND.test(text) || SED_IN_PLACE.test(text)) return absolutePathTokens(text);
+  if (runsWriteCommand(text) || SED_IN_PLACE.test(text)) return absolutePathTokens(text);
   if (!WRITE_REDIRECT.test(text)) return [];
   return [...text.matchAll(REDIRECT_TARGET)]
     .map((match) => match[1]!.replace(/^['"]/, ""))
@@ -231,7 +254,7 @@ function remoteContainmentReason(text: string, opts: CommandPolicyOptions | unde
   const mount = opts?.remoteMountRoot?.trim();
   if (!mount) return undefined;
   // Write intent is only the gate: a command still has to *name* an offending
-  // path before it is refused, so `npm install` (which trips WRITE_COMMAND)
+  // path before it is refused, so `mkdir -p /srv/work/x` (a write command)
   // never blocks on its own.
   for (const token of writeCandidateTokens(text)) {
     const reason = offendingHomePath(token, mount, opts ?? {});
