@@ -3950,14 +3950,25 @@ export async function handleApiRequest(
         // Whoever may stop a session may start it again by messaging it; anyone
         // else is told it was not delivered, so it never wakes a handed-over folder.
         if (isStoppedByUser(session) && !sessionIsWithinReach(session, caller.id) && refuseStoppedSession(res, session)) return;
+        const callerIsAboveTarget = isAboveSession(session, caller.id);
+        const targetSessionId = params.id;
         const plan = prepareLateralSend({
           caller,
           targetSessionId: params.id,
           message: String(rawMessage),
           guards: sessionCommGuards,
           callerParentSessionId: callerParentId,
-          callerCoordinatorSessionId: coordinatorSessionId(caller, session.id, (candidate) => !isSpentDispatcher(candidate)),
-          parentLink: callerParentId === session.id || targetParentId === caller.id,
+          // Named only in a refusal, so worked out only then: a live session
+          // above the caller, other than the peer, whose pair with the caller
+          // still has room (an escalation to it is pair-charged, below).
+          callerCoordinatorSessionId: () =>
+            coordinatorSessionId(caller, targetSessionId, (candidate) =>
+              !isSpentDispatcher(candidate)
+              && sessionCommGuards.pairCount(caller.id, candidate.id) < sessionCommGuards.pairMaxMessages()),
+          // A send between a session and one above it, either way, is a reply or
+          // an escalation inside one piece of work, never a relay.
+          parentLink: callerParentId === session.id || targetParentId === caller.id
+            || callerIsAboveTarget || isAboveSession(caller, session.id),
         });
         if (!plan.ok) {
           res.writeHead(plan.status, { "Content-Type": "application/json" });
@@ -3981,16 +3992,21 @@ export async function handleApiRequest(
         }
         // A message from a session above the target (its parent, its delegator
         // or further up) is an instruction from whoever owns the work: it resets
-        // the target's chain and its pair counts with everyone but the sender,
-        // so a coordinator can let a long review carry on. Applied before the
-        // delivery is recorded, so this message still counts in its own pair.
-        if (isAboveSession(session, caller.id)) sessionCommGuards.resetFromCoordinator(params.id, caller.id);
-        // A parent/child message or a reply is not a relay hop: it counts against
-        // the pair budget and never deepens the receiver's chain, so a spawned
-        // session starts at hop 1 and a producer and reviewer can go round after
-        // round. Conservative on later failure (e.g. engine unavailable): the tag
-        // may be recorded for an undelivered message, which only ever tightens
-        // the budget, never loosens it.
+        // the target's chain and its pair counts with every session not above
+        // it, so a coordinator can let a long review carry on. Pairs with the
+        // sessions above the target are kept, so coordinators cannot reset each
+        // other's pairs and every reset is paid for. Applied before the delivery
+        // is recorded, so this message still counts in its own pair.
+        if (callerIsAboveTarget) {
+          const target = session;
+          sessionCommGuards.resetFromCoordinator(params.id, (otherId) => isAboveSession(target, otherId));
+        }
+        // A message to or from a session above, or a reply, is not a relay hop:
+        // it counts against the pair budget and never takes the receiver's chain
+        // deeper than the deeper of the two, so a spawned session starts at hop 1
+        // and a producer and reviewer can go round after round. Conservative on
+        // later failure (e.g. engine unavailable): the tag may be recorded for an
+        // undelivered message, which only ever tightens the budget.
         if (plan.parentLink) sessionCommGuards.recordPairDelivery(caller.id, params.id, plan.hops);
         else sessionCommGuards.recordLateralDelivery(caller.id, params.id, plan);
       } else if (body.role === "notification" && isStoppedByUser(session)) {
