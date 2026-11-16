@@ -81,15 +81,16 @@ function world(script: (call: number) => EngineResult | Promise<EngineResult>) {
     kill: (id: string, reason?: string) => real.kill(id, reason),
     isAlive: (id: string) => real.isAlive(id),
     killAll: () => real.killAll(),
-    isTurnRunning: (id: string) => real.isTurnRunning(id),
+    holdsTurn: (id: string) => real.holdsTurn(id),
   } as unknown as Engine;
   const engines = new Map<string, Engine>([["claude", claude]]);
   const stopWiring = releaseEngineOnMove(engines);
+  const typeIntoTerminal = (sessionId: string) => (real as unknown as { observeHook(id: string, hook: unknown): void }).observeHook(sessionId, { hook_event_name: "UserPromptSubmit", prompt: "typed by the operator" });
   const arm = (sessionId: string) => {
     lifecycle.adopt(sessionId, fakeHandle() as never);
     (real as unknown as { handleBackgroundMonitorHook(id: string, hook: unknown): void }).handleBackgroundMonitorHook(sessionId, MONITOR);
   };
-  return { engines, calls, arm, dispose: () => { stopWiring(); registry.dispose(); } };
+  return { engines, calls, arm, typeIntoTerminal, dispose: () => { stopWiring(); registry.dispose(); } };
 }
 
 function recordingSurface() {
@@ -184,7 +185,7 @@ describe("the revert that moves a session off its stand-in", () => {
   it("does not release the stand-in's process while a turn runs on it", () => {
     const id = onStandIn("web:revert-busy", new Date(Date.now() + 3600_000));
     const kill = vi.fn();
-    const busy = { name: "claude", run: async () => ({ sessionId: "", result: "" }), kill, isAlive: () => true, killAll: () => {}, isTurnRunning: () => true } as unknown as Engine;
+    const busy = { name: "claude", run: async () => ({ sessionId: "", result: "" }), kill, isAlive: () => true, killAll: () => {}, holdsTurn: () => true } as unknown as Engine;
     const stop = releaseEngineOnMove(new Map([["claude", busy]]));
     expire(id);
 
@@ -196,10 +197,37 @@ describe("the revert that moves a session off its stand-in", () => {
     stop();
   });
 
+  it("does not release a process with a turn typed into its terminal, which the engine's own idle recycle spares too", () => {
+    const id = onStandIn("web:revert-terminal-turn", new Date(Date.now() + 3600_000));
+    const { arm, typeIntoTerminal, dispose } = world(() => ({ sessionId: "", result: "" }));
+    arm(id);
+    typeIntoTerminal(id);
+    expire(id);
+
+    const back = maybeRevertEngineOverride(reg.getSession(id)!);
+
+    expect(back.engineSessionId).toBe("a-thread");
+    expect(owed(id)).toBeUndefined();
+    dispose();
+  });
+
+  it("does not interrupt an engine that cannot say whether a turn runs: for it a kill is the turn interrupt", () => {
+    const id = onStandIn("web:revert-silent-engine", new Date(Date.now() + 3600_000));
+    const kill = vi.fn();
+    const silent = { name: "claude", run: async () => ({ sessionId: "", result: "" }), kill, isAlive: () => true, killAll: () => {} } as unknown as Engine;
+    const stop = releaseEngineOnMove(new Map([["claude", silent]]));
+    expire(id);
+
+    maybeRevertEngineOverride(reg.getSession(id)!);
+
+    expect(kill).not.toHaveBeenCalled();
+    stop();
+  });
+
   it("releases an idle stand-in's process as a move, and never one on another engine's behalf", () => {
     const id = onStandIn("web:revert-idle", new Date(Date.now() + 3600_000));
     const kill = vi.fn();
-    const idle = { name: "claude", run: async () => ({ sessionId: "", result: "" }), kill, isAlive: () => true, killAll: () => {}, isTurnRunning: () => false } as unknown as Engine;
+    const idle = { name: "claude", run: async () => ({ sessionId: "", result: "" }), kill, isAlive: () => true, killAll: () => {}, holdsTurn: () => false } as unknown as Engine;
     const other = vi.fn();
     const stop = releaseEngineOnMove(new Map<string, Engine>([["claude", idle], ["codex", { name: "codex", run: async () => ({ sessionId: "", result: "" }), kill: other, isAlive: () => true, killAll: () => {} } as unknown as Engine]]));
     expire(id);

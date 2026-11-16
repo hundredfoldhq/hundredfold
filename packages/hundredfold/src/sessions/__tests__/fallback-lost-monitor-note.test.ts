@@ -59,7 +59,7 @@ function world(script: (call: Call, n: number, opts: EngineRunOpts) => EngineRes
     kill: (id: string, reason?: string) => real.kill(id, reason),
     isAlive: (id: string) => real.isAlive(id),
     killAll: () => real.killAll(),
-    isTurnRunning: (id: string) => real.isTurnRunning(id),
+    holdsTurn: (id: string) => real.holdsTurn(id),
   } as Partial<Engine>);
   const engines = new Map<string, Engine>([["claude", claude], ["opencode", scriptedEngine("opencode")]]);
   const arm = (sessionId: string) => {
@@ -158,6 +158,48 @@ describe("a Monitor held when a usage limit moves the turn along the chain", () 
     expect(owed(second)?.map((entry) => entry.id)).toEqual(["mon-1"]);
     streamedFirst.dispose();
     silent.dispose();
+  });
+
+  it("does not count one link's output as the next link's: a link that failed silently after another streamed leaves it owed", async () => {
+    const { engines, calls, arm, dispose } = world((call, _n, opts) => {
+      if (who(call) === "B/sonnet") {
+        opts.onStream?.({ type: "text", content: "partial answer" });
+        return limited();
+      }
+      return who(call) === "x-provider/model-x" ? { sessionId: "", result: "", error: "connection dropped" } : limited();
+    });
+    const id = newSession({ ref: "web:streamed-then-silent" });
+    arm(id);
+
+    await runOne(id, engines);
+
+    expect(calls.map(who)).toEqual(["A/opus", "B/sonnet", "x-provider/model-x"]);
+    expect(calls[2]!.prompt).toMatch(NOTE_LEAD);
+    expect(owed(id)?.map((entry) => entry.id)).toEqual(["mon-1"]);
+    dispose();
+  });
+
+  it("does not count one retry's output as the next retry's either", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { engines, calls, arm, dispose } = world((_call, n, opts) => {
+      if (n < 3) return limited(resetsIn(600));
+      if (n === 3) {
+        opts.onStream?.({ type: "text", content: "partial answer" });
+        return limited(resetsIn(600));
+      }
+      return { sessionId: "", result: "", error: "connection dropped" };
+    });
+    const id = newSession({ ref: "web:retry-streamed-then-silent" });
+    arm(id);
+
+    const turn = runOne(id, engines, employee({ persona: "Ships releases.", fallback: [CLAUDE_B] }));
+    await vi.advanceTimersByTimeAsync(40 * 60_000);
+    await turn;
+
+    expect(calls).toHaveLength(4);
+    expect(calls[3]!.prompt).toMatch(NOTE_LEAD);
+    expect(owed(id)?.map((entry) => entry.id)).toEqual(["mon-1"]);
+    dispose();
   });
 
   it("is kept across a chain that ran out, and carried by the retry that waits out the limit", async () => {

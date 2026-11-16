@@ -3527,6 +3527,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     this.lifecycle.releaseIdle((id) => this.active.has(id) || this.terminalWaits.has(id) || this.terminalTurns.has(id));
   }
 
+  /** Whether releasing this session's PTY now would cut a turn off: one the gateway runs, one it waits on behind the
+   *  terminal, one typed into the terminal, or a background stop in progress. The predicate `killIdle` spares, plus the
+   *  background stop. Separate from `isTurnRunning`, which the reconciler and /stop read. */
+  holdsTurn(sessionId: string): boolean {
+    return this.isTurnRunning(sessionId) || this.terminalTurns.has(sessionId);
+  }
+
   /** True only while a turn is in flight (distinct from "PTY is warm"). */
   isTurnRunning(sessionId: string): boolean {
     // A turn waiting behind one typed in the terminal is still a turn: "send
