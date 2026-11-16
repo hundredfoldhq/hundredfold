@@ -93,6 +93,27 @@ describe("SessionQueue claims the next row by position", () => {
     expect(ran).toEqual(["running", "mention", "a", "callback", "b"]);
   });
 
+  it("keeps an earlier mention that also reaches a running turn ahead of the later one, both ahead of everything else", async () => {
+    const lane = "lane-head-mentions";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "first", "callback", "second"], { internal: ["first", "callback", "second"] });
+    await tick();
+    const { initDb } = await import("../../shared/db.js");
+    const insert = initDb().prepare(
+      `INSERT INTO callback_deliveries (id, target_session_id, source_kind, source_id, source_attempt, source_outcome, source_version, delivery_kind, payload, status, queue_item_id, created_at)
+       VALUES (?, 's-claim', 'work-item', 'T-1', ?, 'mention', 1, 'todo-mention', ?, 'accepted', ?, ?)`,
+    );
+    for (const name of ["first", "second"]) {
+      insert.run(`delivery-${name}`, `mention:${name}`, JSON.stringify({ message: name, displayMessage: name, reachRunningTurn: true }), ids.get(name)!, new Date().toISOString());
+    }
+
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("first")!)).toBe(true);
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("second")!)).toBe(true);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "first", "second", "a", "callback"]);
+  });
+
   it("refuses to move a row that is not parked in the lane, and changes nothing", async () => {
     const lane = "lane-head-refused";
     const { ran, ids, release, done } = parkedLane(lane, ["a", "b"]);

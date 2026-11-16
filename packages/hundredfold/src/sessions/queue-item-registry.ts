@@ -180,10 +180,13 @@ export function promotePendingQueueItem(sessionKey: string, itemId: string): boo
 
 /**
  * Run one parked row next, whatever it is: the head of the line among every
- * pending row of the lane, internal ones included. {@link promotePendingQueueItem}
- * only reorders the operator's own rows and leaves a callback delivery where it
- * is; this is for a row that must run before anything queued earlier, such as
- * the operator's mention overtaking a child's completion callback.
+ * pending row of the lane, internal ones included, but behind the pending rows
+ * whose delivery asked to reach a running turn just as it did (an operator's
+ * earlier mention), so those keep the order they were sent in.
+ * {@link promotePendingQueueItem} only reorders the operator's own rows and
+ * leaves a callback delivery where it is; this is for a row that must run
+ * before anything queued earlier, such as the operator's mention overtaking a
+ * child's completion callback.
  *
  * Only positions move, in one transaction, and the lane is renumbered densely
  * for the same reason as there. Returns false when the row is not a pending
@@ -196,8 +199,15 @@ export function movePendingQueueItemToHead(sessionKey: string, itemId: string): 
       "SELECT id FROM queue_items WHERE session_key = ? AND status = 'pending' ORDER BY position ASC, created_at ASC, rowid ASC",
     ).all(sessionKey) as Array<{ id: string }>;
     if (!pending.some((row) => row.id === itemId)) return false;
+    const reaching = new Set((db.prepare(
+      `SELECT queue_item_id FROM callback_deliveries WHERE json_extract(payload, '$.reachRunningTurn') = 1 AND queue_item_id IN (${pending.map(() => "?").join(", ")})`,
+    ).pluck().all(...pending.map((row) => row.id)) as string[]));
+    // The earlier reaching rows stay first, in their order; the target follows them.
+    const ahead = pending.filter((row) => row.id !== itemId && reaching.has(row.id));
+    const rest = pending.filter((row) => row.id !== itemId && !reaching.has(row.id));
+    const target = pending.find((row) => row.id === itemId)!;
     const write = db.prepare("UPDATE queue_items SET position = ? WHERE id = ? AND status = 'pending'");
-    rotatePendingToFront(pending, itemId).forEach((row, index) => write.run(index + 1, row.id));
+    [...ahead, target, ...rest].forEach((row, index) => write.run(index + 1, row.id));
     return true;
   }).immediate();
 }

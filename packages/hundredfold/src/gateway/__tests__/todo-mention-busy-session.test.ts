@@ -171,24 +171,32 @@ describe("an operator's mention into a busy session", () => {
     });
   });
 
-  it("(a) two operator mentions in a row kill nothing", async () => {
+  it("(a) two operator mentions in a row kill nothing, and run in the order they were sent, ahead of an earlier child callback", async () => {
     const busy = await busyTodo();
     await withRouteBackedFetch(busy.context, {}, async () => {
+      callbacks.notifyParentSession(completeChildAttempt(createChild(busy.session.id, "busy-two-mentions-child").id), { result: "child finished its part" });
+      await eventually(() => expect(busy.pendingPrompts().some((prompt) => prompt.includes("child finished its part"))).toBe(true));
       await busy.operatorComment("@alpha first request");
-      await eventually(() => expect(busy.pendingPrompts()).toHaveLength(1));
-      await busy.operatorComment("@alpha second request");
       await eventually(() => expect(busy.pendingPrompts()).toHaveLength(2));
+      await busy.operatorComment("@alpha second request");
+      await eventually(() => expect(busy.pendingPrompts()).toHaveLength(3));
       await quiet();
       expect(busy.kills).toEqual([]);
       expect(busy.prompts).toEqual(["long running turn"]);
+      const lane = busy.laneOrder();
+      expect(lane[0]).toContain("first request");
+      expect(lane[1]).toContain("second request");
+      expect(lane[2]).toContain("child finished its part");
 
       busy.releaseNext();
-      // The second mention heads the lane (it arrived last), and the first follows: neither turn is cut off.
       await eventually(() => expect(busy.prompts).toHaveLength(2));
       busy.releaseNext();
       await eventually(() => expect(busy.prompts).toHaveLength(3));
-      expect(busy.prompts.slice(1).join("\n")).toContain("first request");
-      expect(busy.prompts.slice(1).join("\n")).toContain("second request");
+      busy.releaseNext();
+      await eventually(() => expect(busy.prompts).toHaveLength(4));
+      expect(busy.prompts[1]).toContain("first request");
+      expect(busy.prompts[2]).toContain("second request");
+      expect(busy.prompts[3]).toContain("child finished its part");
       busy.releaseNext();
       await busy.settled();
       expect(busy.kills).toEqual([]);
