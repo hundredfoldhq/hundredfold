@@ -156,6 +156,8 @@ export interface RateLimitHandlerOpts extends RemoteTarget {
   attemptToken: string;
   /** The original prompt that hit the rate limit — used unchanged for retries. */
   prompt: string;
+  /** The prompt a retry after the wait sends, asked for when the retry fires (and again on each later retry, so it should settle on one answer); `prompt` when absent. */
+  retryPrompt?: () => string;
   systemPrompt?: string;
   /** Explicit refresh for retries on the same resumed native transcript. Never
    *  forwarded to a different fallback engine. */

@@ -47,6 +47,7 @@ import { getSession, updateSessionForAttempt, nextEngineSessionFields } from "./
 import { runtimeSessionSource } from "./context.js";
 import { handBackDue, ownTargetClearedCheck, withOwnClearWake } from "./rate-limit-own-clear.js";
 import { EARLY_RESET_POLL_MS, earlyResetWatch, type EarlyReset } from "./rate-limit-early-reset.js";
+import { stampSessionPause } from "./pause-notice.js";
 import { HostRetryStreak, HOST_RETRY_WINDOW_MS, hostNotReadyFromThrown, isHostNotReadyError } from "./rate-limit-host-retry.js";
 
 const WAIT_CANCEL_POLL_MS = 5000;
@@ -160,6 +161,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     await hooks.onCancelled?.();
     return { kind: "cancelled" };
   }
+  stampSessionPause(session.id, "usage-limit");
 
   await hooks.onWaitingStart?.({
     resumeAt: resumeAt ?? null, rateLimit, ...(targetReason ? { reason: targetReason } : {}), ...(walk.hop ? { hop: walk.hop } : {}),
@@ -290,7 +292,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       let retryResult: EngineResult;
       try {
         retryResult = await engine.run({
-          prompt,
+          prompt: opts.retryPrompt?.() ?? prompt,
           resumeSessionId: currentSession.engineSessionId ?? undefined,
           systemPrompt,
           platformContextRefresh,

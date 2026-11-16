@@ -21,6 +21,7 @@ import { isTerminalSession, TERMINAL_REFUSES_MESSAGES } from "../../terminals/se
 import { readUnseenInterruptedPrompts } from "./superseded.js";
 import { withLeftBackgroundNote } from "../left-background-tasks.js";
 import { resolveBoardReminder } from "./board-reminder.js";
+import { takeTurnPauseNotice } from "../pause-notice.js";
 import { findBuiltinMcp } from "../../mcp/builtin-name.js";
 import type { TurnHierarchy, TurnInput, TurnPlan, TurnPreflight } from "./types.js";
 export { warnIfNearUsageLimit } from "./usage-warning.js";
@@ -179,6 +180,7 @@ export function preflightTurn(input: TurnInput): TurnPreflight {
     runtimeSource,
     ...turnPrompt,
     boardReminder: resolveBoardReminder(input.config, baseContextOptions.hundredfoldMcpAttached === true),
+    pauseNotice: takeTurnPauseNotice(session.id, input.prompt, turnPrompt.promptToRun),
     compaction,
     prepareContext: contextPreparer(baseContextOptions, resumeRef, rawCommand),
   };

@@ -462,6 +462,26 @@ describe("syncExternalTurn", () => {
     expect(ext.transcriptEntryText(entry(withBoardReminder("", DEFAULT_BOARD_REMINDER)))).toBeNull();
   });
 
+  it("keeps the pause notice, with the board reminder after it, out of a reconciled user row", async () => {
+    const { withBoardReminder, DEFAULT_BOARD_REMINDER } = await import("../../sessions/turn/board-reminder.js");
+    const { withPauseNotice } = await import("../../sessions/pause-notice.js");
+    const notice = "[Gateway notice] While this session was paused (compaction), TST-1 moved executing → blocked (by reconciler). If that is wrong, correct it with update_work_item; otherwise carry on.";
+    const id = makeSession();
+    reg.insertMessage(id, "user", "please look at the Todo");
+    reg.insertMessage(id, "assistant", "On it.");
+    const future = (ms: number) => new Date(Date.now() + ms).toISOString();
+    const file = writeTranscript([
+      { type: "user", text: withBoardReminder(withPauseNotice("please look at the Todo", notice), DEFAULT_BOARD_REMINDER), ts: future(1_000) },
+      { type: "assistant", text: "On it. Done.", ts: future(2_000) },
+    ]);
+    const n = ext.syncExternalTurn(id, emit, { hook_event_name: "Stop", transcript_path: file, last_assistant_message: "On it. Done." });
+    expect(n).toBe(0);
+    expect(reg.getMessages(id).map((m) => [m.role, m.content])).toEqual([
+      ["user", "please look at the Todo"],
+      ["assistant", "On it. Done."],
+    ]);
+  });
+
   it("does not import an internal child callback prompt as a user message", () => {
     const id = makeSession();
     reg.insertMessage(id, "notification", "📩 worker replied in child session child-1");

@@ -12,6 +12,7 @@ import { settleTurn, type SettleTurnInput } from "./completion.js";
 import { formatResumeTime, turnDisplayText } from "./text.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
+import { takeTurnPauseNotice, withPauseNotice } from "../pause-notice.js";
 import { chainExhaustedNotice, hopNoticeText, signedOutClause, withSignedOut, type ChainExhausted } from "../fallback-hop.js";
 import type { FallbackHop, FallbackHopNoticeMeta } from "../../shared/fallback-chain-wire.js";
 import type { JsonObject } from "../../shared/types.js";
@@ -271,6 +272,20 @@ function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
 }
 
 /**
+ * The prompt a retry after the usage-limit wait sends: the same turn resuming,
+ * so it takes the notice the wait stamped when the retry fires, falling back to
+ * the one this turn already carried (an attempt the limit refused never showed it
+ * to the model). Built once, so a retry the limit refuses again sends the same text.
+ */
+function usageLimitRetryPrompt(input: TurnInput, plan: TurnPlan): () => string {
+  let built: string | undefined;
+  return () => built ??= withBoardReminder(
+    withPauseNotice(input.prompt, takeTurnPauseNotice(input.session.id, input.prompt, input.prompt) ?? plan.pauseNotice),
+    plan.boardReminder,
+  );
+}
+
+/**
  * The rate-limit branch of a turn: hand off to the wait/retry/fallback handler
  * and settle whichever of its outcomes lands. Returns the session to re-run the
  * turn on when a wait on a substitute Claude account handed it back to its own
@@ -281,7 +296,8 @@ export async function runRateLimitTurn(args: RateLimitTurnArgs): Promise<Session
   const outcome = await handleRateLimit({
     session: input.session,
     attemptToken: input.attemptToken,
-    prompt: withBoardReminder(input.prompt, plan.boardReminder),
+    prompt: withBoardReminder(withPauseNotice(input.prompt, plan.pauseNotice), plan.boardReminder),
+    retryPrompt: usageLimitRetryPrompt(input, plan),
     systemPrompt: args.systemPrompt,
     platformContextRefresh: args.platformContextRefresh,
     engineConfig: plan.engineConfig,

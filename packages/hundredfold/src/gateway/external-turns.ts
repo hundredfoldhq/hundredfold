@@ -8,6 +8,7 @@ import type { HookPayload } from "./hook-registry.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { Employee, Session } from "../shared/types.js";
 import { withoutBoardReminder } from "../sessions/turn/board-reminder.js";
+import { withoutPauseNotice } from "../sessions/pause-notice.js";
 import { withoutLeftBackgroundNote } from "../sessions/left-background-tasks.js";
 
 /**
@@ -117,8 +118,8 @@ export function transcriptEntryText(obj: any): { role: "user" | "assistant"; con
   }
   if (typeof content !== "string" || !content.trim()) return null;
   if (isControlText(content)) return null;
-  // The gateway appends the board reminder to the prompt it sends; the session's message is what the sender wrote.
-  if (obj.type === "user") content = withoutLeftBackgroundNote(withoutBoardReminder(content));
+  // The gateway appends the board reminder and a pause notice to the prompt it sends; the session's message is what the sender wrote.
+  if (obj.type === "user") content = withoutLeftBackgroundNote(withoutPauseNotice(withoutBoardReminder(content)));
   if (!content.trim()) return null;
   return { role: obj.type, content: content.trim() };
 }

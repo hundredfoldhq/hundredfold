@@ -118,6 +118,8 @@ export interface TurnPlan {
   carriedLeftBackgroundTaskIds: string[];
   /** Appended to the prompt when the engine is called (board-reminder.ts); undefined carries none. */
   boardReminder?: string;
+  /** The one line telling a resumed session its Todos moved while it was paused (pause-notice.ts); appended after the prompt, before the reminder. */
+  pauseNotice?: string;
   /** This turn is `/compact`: the engine's own compaction, not a prompt. */
   compaction: boolean;
   /** Built per model attempt, because a model fallback re-fingerprints context. */
