@@ -74,6 +74,18 @@ export function withPauseStamp<T extends Record<string, unknown>>(meta: T, kind:
   return PAUSED_AT_META_KEY in meta ? meta : { ...meta, [PAUSED_AT_META_KEY]: { at: at.toISOString(), kind } };
 }
 
+/**
+ * Drop the stamp without a notice. An operator stop ends the gateway's pause:
+ * whatever moves after it happened while the session was stopped, not paused,
+ * and a session that is never resumed must not carry the stamp into a turn
+ * days later that would report every move since as part of the pause.
+ */
+export function clearSessionPause(sessionId: string): void {
+  initDb()
+    .prepare(`UPDATE sessions SET transport_meta = NULLIF(json_remove(transport_meta, '$.${PAUSED_AT_META_KEY}'), '{}') WHERE id = ? AND json_type(transport_meta, '$.${PAUSED_AT_META_KEY}') IS NOT NULL`)
+    .run(sessionId);
+}
+
 /** A pause as stamped: when it began and why. */
 export interface PauseStamp {
   at: string;
@@ -106,15 +118,25 @@ function consumeStamp(sessionId: string): PauseStamp | undefined {
   return parseStamp(row.stamp);
 }
 
-/** The Todos this session works: those with an open run, and those whose run ended after the pause began (a block closes its run). */
+/**
+ * The Todos this session works: the Todo it is linked to as its executor, and
+ * any it has a run on that was open when the pause began. The link is what
+ * lasts: a run closes once the session's first turn settles and later turns of
+ * the same session open none, so a pause after that (the second compaction of
+ * a long session, say) finds its Todo only through the link. A run that ended
+ * after the pause began still counts, because a block closes its run.
+ */
 function todosWorkedSince(sessionId: string, at: string): string[] {
   const rows = initDb()
     .prepare(
-      `SELECT DISTINCT work_item_id FROM work_item_runs
+      `SELECT work_item_id FROM sessions
+        WHERE id = ? AND work_item_id IS NOT NULL AND COALESCE(work_item_role, 'execute') NOT IN ('review', 'consult')
+       UNION
+       SELECT work_item_id FROM work_item_runs
         WHERE session_id = ? AND (ended_at IS NULL OR ended_at >= ?)
-        ORDER BY work_item_id`,
+       ORDER BY work_item_id`,
     )
-    .all(sessionId, at) as Array<{ work_item_id: string }>;
+    .all(sessionId, sessionId, at) as Array<{ work_item_id: string }>;
   return rows.map((row) => row.work_item_id);
 }
 

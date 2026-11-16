@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { initDb } from "../../shared/db.js";
 import { createSession } from "../registry.js";
-import { createWorkItem } from "../../work-items/store.js";
+import { createWorkItem, linkSession } from "../../work-items/store.js";
 import { transition } from "../../work-items/transitions.js";
 import { closeWorkItemRun, listWorkItemRuns, openWorkItemRun } from "../../work-items/runs.js";
 import type { JsonObject } from "../../shared/types.js";
@@ -21,6 +21,20 @@ export async function workedTodo(sessionId: string): Promise<string> {
   const item = createWorkItem({ title: `todo ${randomUUID()}` });
   transition(item.id, "executing", `session:${sessionId}`);
   openWorkItemRun({ workItemId: item.id, sessionId });
+  return item.id;
+}
+
+/**
+ * A Todo this session executes, linked as its executor, whose first run has
+ * already closed: the shape of any session past its first settled turn, since
+ * later turns open no run.
+ */
+export async function linkedTodoRunClosed(sessionId: string, role: "execute" | "review" | "consult" = "execute"): Promise<string> {
+  const item = createWorkItem({ title: `todo ${randomUUID()}` });
+  linkSession(item.id, sessionId, null, role);
+  transition(item.id, "executing", `session:${sessionId}`);
+  openWorkItemRun({ workItemId: item.id, sessionId });
+  closeRun(sessionId, item.id);
   return item.id;
 }
 

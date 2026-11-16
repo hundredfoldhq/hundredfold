@@ -164,7 +164,7 @@ describe("takePauseNotice", () => {
     expect(notice.takePauseNotice(session)).toContain(`${todo} moved executing → blocked`);
   });
 
-  it("leaves out a Todo the session finished with before the pause", async () => {
+  it("leaves out a Todo whose run closed before the pause when the session is not linked to it", async () => {
     const session = fx.newSession();
     const todo = await fx.workedTodo(session);
     fx.closeRun(session, todo);
@@ -172,6 +172,43 @@ describe("takePauseNotice", () => {
     notice.stampSessionPause(session, "restart");
     await fx.tick();
     fx.move(todo, "blocked", "reconciler");
+    expect(notice.takePauseNotice(session)).toBeUndefined();
+  });
+
+  it.each(KINDS)("finds the Todo a session is linked to after its first run has closed (%s)", async (kind) => {
+    const session = fx.newSession();
+    const todo = await fx.linkedTodoRunClosed(session);
+    await fx.tick();
+    notice.stampSessionPause(session, kind);
+    await fx.tick();
+    fx.move(todo, "blocked", "operator");
+
+    const line = notice.takePauseNotice(session);
+
+    expect(line).toContain(`(${LABELS[kind]})`);
+    expect(line).toContain(`${todo} moved executing → blocked (by operator)`);
+  });
+
+  it.each(["review", "consult"] as const)("does not count a %s link as a Todo the session works", async (role) => {
+    const session = fx.newSession();
+    const todo = await fx.linkedTodoRunClosed(session, role);
+    await fx.tick();
+    notice.stampSessionPause(session, "compaction");
+    await fx.tick();
+    fx.move(todo, "blocked", "operator");
+    expect(notice.takePauseNotice(session)).toBeUndefined();
+  });
+
+  it("forgets a pause the operator ended by stopping the session", async () => {
+    const { markSessionStopped } = await import("../stopped-marker.js");
+    const session = fx.newSession();
+    const todo = await fx.linkedTodoRunClosed(session);
+    notice.stampSessionPause(session, "usage-limit");
+    await fx.tick();
+    markSessionStopped(session);
+    fx.move(todo, "blocked", "operator");
+
+    expect(fx.stampOf(session)).toBeUndefined();
     expect(notice.takePauseNotice(session)).toBeUndefined();
   });
 
