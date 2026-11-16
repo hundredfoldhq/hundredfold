@@ -9,6 +9,7 @@ import {
   queueModule,
   registry,
   resetCallbackState,
+  workItems,
   type ApiContext,
 } from "./helpers/callback-harness.js";
 import { makeResponse, withRouteBackedFetch } from "./helpers/callback-requests.js";
@@ -19,7 +20,9 @@ import {
   TOOL_CALL_HEADER,
   TOOL_CALL_HEADER_VALUE,
 } from "../../mcp/identity.js";
+import { runtimeActivity } from "../../sessions/background-work.js";
 import { noticeTargetSessionId } from "../../sessions/turn-requester.js";
+import { recordNewDelegateSession } from "../../work-items/employee-session-delegation.js";
 import type { Engine, EngineRunOpts } from "../../shared/types.js";
 
 /**
@@ -172,5 +175,28 @@ describe("a reused spawned session reports to whoever asked", () => {
     });
     expect(replyNotices(spawner.id, other.id)).toHaveLength(0);
     expect(noticeTargetSessionId(registry.getSession(other.id)!)).toBeNull();
+  });
+
+  it("answers the sender, not the delegator, for a Todo session waiting on its own work", async () => {
+    // The employee's session on a Todo reports to its delegator, and its reply to
+    // a turn it is still working on is normally held. A turn another session
+    // asked for is an answer to that session: it goes out to it, and the
+    // delegator is not woken.
+    const { context, reviewer, other } = await setUp();
+    const delegator = createParent("reuse-delegator");
+    const item = workItems.createWorkItem({ title: "Reviewed work", status: "executing", source: "delegation" });
+    workItems.linkSession(item.id, reviewer.id);
+    recordNewDelegateSession(item.id, "worker", reviewer.id, delegator.id);
+    runtimeActivity.set(reviewer.id, { activeStreams: 0, lastActivityAt: Date.now(), activeMonitors: 1 });
+    try {
+      await withRouteBackedFetch(context, {}, async () => {
+        await post(context, reviewer.id, { message: "please review change 2" }, toolHeaders(other.id));
+        await eventually(() => expect(replyNotices(other.id, reviewer.id)).toHaveLength(1));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+    } finally {
+      runtimeActivity.delete(reviewer.id);
+    }
+    expect(replyNotices(delegator.id, reviewer.id)).toHaveLength(0);
   });
 });

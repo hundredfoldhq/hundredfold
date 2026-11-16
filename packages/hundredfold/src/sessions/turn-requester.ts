@@ -52,9 +52,11 @@ export function recordTurnRequester(session: Pick<Session, "id" | "attemptToken"
 }
 
 function requesterOfAttempt(session: NoticeSession): string | undefined {
+  // The record is read fresh, but judged against the attempt of the session as
+  // given: a notice for a turn that has ended must not pick up a newer turn's.
   const fresh = getSession(session.id) ?? session;
   const record = fresh.transportMeta?.[TURN_REQUESTER_KEY] as { attempt?: unknown; sessionId?: unknown } | null | undefined;
-  if (!record || record.attempt !== fresh.attemptToken) return undefined;
+  if (!record || record.attempt !== (session.attemptToken ?? fresh.attemptToken)) return undefined;
   return typeof record.sessionId === "string" ? record.sessionId : undefined;
 }
 
