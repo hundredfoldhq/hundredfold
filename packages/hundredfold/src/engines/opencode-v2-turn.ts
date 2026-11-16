@@ -18,7 +18,7 @@ import { fallbackModelNotice, requestedModel, stepModel } from "./opencode-fallb
 import { abandonedRetryError, providerFailureReason, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
 import { isAbortError, record, runLinesFromStoredReply, str, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
 import { cancelledV2Requests, HUNDREDFOLD_V2_PROMPT_METADATA, hundredfoldSessionNotes, type HundredfoldSessionNotes } from "./opencode-v2-history.js";
-import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2CancelInbox, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes } from "./opencode-v2-api.js";
+import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes, v2WithdrawInbox } from "./opencode-v2-api.js";
 import { RESEED_PREAMBLE } from "./opencode-server-compaction.js";
 import { sameModelRef, unsupportedServerFlags, variantOf, type V2ModelRef } from "./opencode-variant.js";
 
@@ -112,6 +112,8 @@ export class OpencodeV2ServerTurn {
   private delivered = false;
   /** Inputs steered into the turn (see steer) the server has not yet delivered. */
   private readonly pendingSteers = new Map<string, PendingSteer>();
+  /** The turn is waiting for a steer past the end of its execution (see onExecutionEnded). */
+  private afterExecutionSteer = false;
   /** Every input posted by steer, delivered or not: the store lists a delivered
    *  one as a user item, which does not end the turn's replies (ownStoredReplies). */
   private readonly steeredIds = new Set<string>();
@@ -217,7 +219,7 @@ export class OpencodeV2ServerTurn {
     const outcome = new Promise<SteerOutcome>((r) => { resolve = r; });
     // Known before the post, so its events and the end of the turn find it.
     const posting = new AbortController();
-    const pending: PendingSteer = { resolve, posted: Promise.resolve(false), abortPost: () => posting.abort() };
+    const pending: PendingSteer = { resolve, posted: Promise.resolve(false), failed: false, abortPost: () => posting.abort() };
     this.pendingSteers.set(id, pending);
     this.steeredIds.add(id);
     pending.posted = v2Request(this.server, "POST", sessionRoute(this.sessionId, "/prompt"), {
@@ -226,6 +228,8 @@ export class OpencodeV2ServerTurn {
       metadata: HUNDREDFOLD_V2_PROMPT_METADATA,
       delivery: "steer",
     }, AbortSignal.any([posting.signal, AbortSignal.timeout(V2_REQUEST_TIMEOUT_MS)])).then(() => true, (err: unknown) => {
+      // From here nothing is on its way to the turn: it is being taken back, not waited for.
+      pending.failed = true;
       logger.warn(`opencode server turn could not steer an input into ${this.sessionId}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     });
@@ -242,8 +246,10 @@ export class OpencodeV2ServerTurn {
   /** Take an undelivered steered input back out of the inbox, within the end-of-turn bound. */
   private async takeBack(id: string): Promise<SteerOutcome> {
     try {
-      const cancelled = await within(v2CancelInbox(this.server, this.sessionId, id), SERVER_TURN_TIMING.steerWithdrawMs);
-      return cancelled ? "withdrawn" : "steered";
+      // Only an input found gone from the inbox was taken by the server: a delete
+      // that failed with the input still listed (or the inbox unreadable) is not.
+      const outcome = await within(v2WithdrawInbox(this.server, this.sessionId, id), SERVER_TURN_TIMING.steerWithdrawMs);
+      return outcome === "delivered" ? "steered" : "withdrawn";
     } catch {
       return "withdrawn";
     }
@@ -674,6 +680,10 @@ export class OpencodeV2ServerTurn {
     if (steered) {
       this.pendingSteers.delete(id);
       steered.resolve("steered");
+      // One taken in after the execution ended started an execution of its own: its
+      // steps are the turn's reply, as for one taken in mid-turn.
+      if (this.afterExecutionSteer) this.ownInput = true;
+      this.afterExecutionSteer = false;
       // Delivered: the step that answers it is next, and the execution's end ends the turn.
       this.settle.cancel("steer");
       logger.info(`opencode server turn in ${this.sessionId} had its steered input taken in (${id})`);
@@ -756,7 +766,10 @@ export class OpencodeV2ServerTurn {
   private onExecutionEnded(): void {
     if (!this.posting) return;
     this.ownInput = false;
-    if (this.lastAnswer === "text" && !this.newestOwnOpen) return this.finish();
+    // A steer whose post the server has not answered may still land: with no execution
+    // running the server starts one for it at once, so it is waited for like one
+    // that arrives during the last step, not left to run unwatched after the turn.
+    if (this.lastAnswer === "text" && !this.newestOwnOpen) return this.endOrAwaitSteer(true);
     this.settle.arm("idle", SERVER_TURN_TIMING.closeWaitMs);
   }
 
@@ -773,9 +786,12 @@ export class OpencodeV2ServerTurn {
    * `onSettled` ends it, and settleSteers takes back what never came). The
    * answer is then the turn's, as for a steer that arrived mid-tool.
    */
-  private endOrAwaitSteer(): void {
-    if (this.pendingSteers.size) this.settle.arm("steer", SERVER_TURN_TIMING.steerWaitMs);
-    else this.finish();
+  private endOrAwaitSteer(executionEnded = false): void {
+    // An input whose post already failed is being taken back; nothing of it is coming.
+    if ([...this.pendingSteers.values()].some((steer) => !steer.failed)) {
+      this.afterExecutionSteer = executionEnded;
+      this.settle.arm("steer", SERVER_TURN_TIMING.steerWaitMs);
+    } else this.finish();
   }
 
   /** The session is running the turn's input: a session-wide event (a
@@ -867,6 +883,8 @@ interface PendingSteer {
   resolve: (outcome: SteerOutcome) => void;
   /** Whether the server took the post. */
   posted: Promise<boolean>;
+  /** The post failed: the input is being taken back and is not on its way. */
+  failed: boolean;
   /** Give up on a post the server has not answered. */
   abortPost: () => void;
 }

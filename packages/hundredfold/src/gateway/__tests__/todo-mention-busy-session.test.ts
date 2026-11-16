@@ -171,7 +171,7 @@ describe("an operator's mention into a busy session", () => {
     });
   });
 
-  it("(a) two operator mentions in a row kill nothing, and the first runs first", async () => {
+  it("(a) two operator mentions in a row kill nothing", async () => {
     const busy = await busyTodo();
     await withRouteBackedFetch(busy.context, {}, async () => {
       await busy.operatorComment("@alpha first request");

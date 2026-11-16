@@ -88,6 +88,18 @@ describe("steered deliveries", () => {
     expect(await steered.settleSteeredDelivery(id)).toBeUndefined();
   });
 
+  it("forgets a withdrawn hand-over whose row was cancelled afterwards, when the next one is registered", async () => {
+    const id = row("withdrawn-then-cancelled");
+    steered.registerSteeredDelivery(id, Promise.resolve("withdrawn"));
+    await flush();
+    expect(reg.getQueueItem(id)?.status).toBe("pending");
+    reg.cancelQueueItem(id);
+
+    steered.registerSteeredDelivery(row("next"), Promise.resolve("withdrawn"));
+
+    expect(await steered.settleSteeredDelivery(id)).toBeUndefined();
+  });
+
   it("stops waiting after the bound, runs the row and warns it may be answered twice; a late taken-in changes nothing", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     steered.setSteerSettleTimeoutForTest(20);

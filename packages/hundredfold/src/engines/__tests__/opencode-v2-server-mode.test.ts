@@ -719,6 +719,122 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     });
   });
 
+  // A delete the server answers with an error tells nothing about whether it took the input:
+  // only an input found gone from the inbox was taken, anything else must still run.
+  describe.each([
+    ["the input is still listed", "listed", "withdrawn"],
+    ["the server took the input after all", "taken", "steered"],
+    ["the inbox cannot be read afterwards either", "unreadable", "withdrawn"],
+  ] as const)("a failed delete of an undelivered steer when %s", (_name, mode, expected) => {
+    it(`is ${expected}`, async () => {
+      const h = harness();
+      const id = await sessionWithServer(h);
+      const real = globalThis.fetch;
+      let deleteAnswered = false;
+      const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const method = init?.method ?? "GET";
+        if (method === "DELETE" && /\/inbox\/[^/]+$/.test(String(input))) {
+          if (mode === "taken") await real(input, init);
+          deleteAnswered = true;
+          return new Response("boom", { status: 500 });
+        }
+        if (mode === "unreadable" && deleteAnswered && method === "GET" && String(input).endsWith("/inbox")) return new Response("boom", { status: 500 });
+        return real(input, init);
+      });
+      try {
+        const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+        await waitDelivered(h);
+        const outcome = h.engine.steer("sess-1", STEER);
+        await waitFor(async () => (await inboxOf(h, id)).length === 1);
+        const steerId = (await inboxOf(h, id))[0]!.id;
+        h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+        expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
+        expect(await outcome).toBe(expected);
+        expect(deleteAnswered).toBe(true);
+        // The input the server still holds is left for the caller to run; nothing is replayed twice.
+        spy.mockRestore();
+        expect((await inboxOf(h, id)).map((item) => item.id)).toEqual(mode === "taken" ? [] : [steerId]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  it("catches a steer whose post lands after the turn's execution ended: delivered, and answered within the turn", async () => {
+    SERVER_TURN_TIMING.steerWaitMs = 1500;
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const real = globalThis.fetch;
+    // The post is held on the client until the turn's own execution has ended (its step takes 2 s).
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "POST" && String(input).endsWith("/prompt") && String(init.body).includes('"steer"')) {
+        await new Promise((r) => setTimeout(r, 2400));
+      }
+      return real(input, init);
+    });
+    try {
+      const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
+      await waitDelivered(h);
+      const outcome = h.engine.steer("sess-1", STEER);
+      const result = await turn;
+      expect(result.error).toBeUndefined();
+      expect(await outcome).toBe("steered");
+      // The steer's own reply is the turn's, and the server has nothing left running unwatched.
+      expect(result.result).toBe(`fake:${STEER}`);
+      expect(await running(h)).toEqual([]);
+      expect((await steerPosts(h))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("stays open for the step that answers a last-step steer even when that step outlasts the wait for the steer", async () => {
+    SERVER_TURN_TIMING.steerWaitMs = 300;
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
+    await waitDelivered(h);
+    // Delivered right after the first step (2 s); its own step then takes 2 s more, well past the 300 ms wait.
+    const outcome = h.engine.steer("sess-1", "late aside SLOW");
+    const result = await turn;
+    expect(await outcome).toBe("steered");
+    // The turn did not end with the wait for delivery: nothing is still running when it returns.
+    expect(await running(h)).toEqual([]);
+    expect(result.numTurns).toBe(2);
+  });
+
+  it("does not hold a finished turn open for a steer whose post failed and is being taken back", async () => {
+    SERVER_TURN_TIMING.steerWaitMs = 2500;
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const real = globalThis.fetch;
+    let held = false;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "POST" && String(input).endsWith("/prompt") && String(init.body).includes('"steer"')) {
+        return new Response("boom", { status: 500 });
+      }
+      // The take-back's read of the inbox is slow, so the entry is still there when the reply ends (2 s in).
+      if (!held && (init?.method ?? "GET") === "GET" && String(input).endsWith("/inbox")) {
+        held = true;
+        await new Promise((r) => setTimeout(r, 2300));
+      }
+      return real(input, init);
+    });
+    try {
+      const startedAt = Date.now();
+      const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
+      await waitDelivered(h);
+      const outcome = h.engine.steer("sess-1", STEER);
+      const result = await turn;
+      // Nothing was coming for it: the turn ended with its reply, not after the 2.5 s wait for a steer.
+      expect(Date.now() - startedAt).toBeLessThan(3300);
+      expect(result.result).toBe("fake:slow");
+      expect(await outcome).toBe("withdrawn");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("is withdrawn when the post fails, and the turn goes on unaffected", async () => {
     const h = harness();
     const id = await sessionWithServer(h);

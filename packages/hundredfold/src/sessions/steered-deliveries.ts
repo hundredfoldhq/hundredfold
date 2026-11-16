@@ -27,9 +27,22 @@ export function setSteerSettleTimeoutForTest(ms: number = STEER_SETTLE_TIMEOUT_M
 
 /** Remember the hand-over made for this queue row. A rejection counts as taken back. */
 export function registerSteeredDelivery(queueItemId: string, outcome: Promise<SteerOutcome>): void {
+  forgetDeadRows();
   const settled = outcome.catch(() => "withdrawn" as const);
   steered.set(queueItemId, settled);
   void settled.then((result) => onOutcome(queueItemId, result));
+}
+
+/**
+ * A withdrawn row waits in the map for its slot, and a row cancelled or cleared
+ * meanwhile never reaches one: forget what no row can run any more, each time a
+ * new hand-over is registered.
+ */
+function forgetDeadRows(): void {
+  for (const id of [...steered.keys()]) {
+    const status = getQueueItem(id)?.status;
+    if (status !== "pending" && status !== "running") steered.delete(id);
+  }
 }
 
 /**
