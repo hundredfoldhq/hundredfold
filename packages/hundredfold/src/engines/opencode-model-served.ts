@@ -5,6 +5,9 @@ import { resolveBin } from "../shared/resolve-bin.js";
 import { opencodeApiOf } from "./opencode-version.js";
 import { gatherFacts } from "./remote-stage.js";
 import type { OpencodeAccountStaging } from "./opencode-accounts.js";
+import { opencodeClonesSettled } from "../shared/opencode-catalogue.js";
+import { DETAILS_TIMEOUT_MS } from "../shared/opencode-discovery.js";
+import { logger } from "../shared/logger.js";
 
 /**
  * Whether the opencode a turn would run on can serve the turn's own model, before anything is launched.
@@ -38,4 +41,38 @@ export function mayBeUnserved(opts: EngineRunOpts, accounts: OpencodeAccountStag
 export async function unservedTurnResult(opts: EngineRunOpts, accounts: OpencodeAccountStaging | undefined): Promise<EngineResult | undefined> {
   const error = await unservedTurnModel(opts, accounts);
   return error === undefined ? undefined : { sessionId: opts.resumeSessionId || "", result: "", error, conversationIntact: true };
+}
+
+/** Whether the turn's own model is a declared account's whose base has no model details yet, so that its block would stage no
+ *  models and opencode would refuse the turn as `provider.no-route`. Synchronous, so every other turn starts without waiting. */
+export function awaitsAccountModels(opts: EngineRunOpts, accounts: OpencodeAccountStaging | undefined): accounts is OpencodeAccountStaging {
+  return !!accounts && !!opts.model && accounts.unstaged(opts.model) !== undefined;
+}
+
+/**
+ * The accounts to stage a turn with once its own account's models are known.
+ *
+ * On a fresh gateway the first turn can start before the first detailed model discovery has landed (it takes seconds, and
+ * the gateway serves before it ends). An account cloned from its base then has no models, its staged block lists none, and
+ * opencode refuses the turn as `provider.no-route`, which holds the model as if the account could not use it. So the turn
+ * waits, bounded, for discovery to bring the base's models, then reads the accounts again (`read`: the turn's own reader).
+ *
+ * @returns the accounts to go on with, or the failed result when the account still has no models: discovery ended without
+ *  them or did not finish in time. Nothing ran, so the conversation is intact, and the error names no failure class, so
+ *  the model is not held.
+ */
+export async function accountsOnceStaged(
+  opts: EngineRunOpts,
+  accounts: OpencodeAccountStaging,
+  read: () => OpencodeAccountStaging | undefined,
+  timeoutMs = DETAILS_TIMEOUT_MS,
+): Promise<{ accounts: OpencodeAccountStaging | undefined } | { result: EngineResult }> {
+  const { base } = accounts.unstaged(opts.model!)!;
+  logger.info(`opencode: waiting for model discovery to load "${base}" before staging ${opts.model}`);
+  await opencodeClonesSettled(base, timeoutMs);
+  const again = read();
+  const still = again?.unstaged(opts.model!);
+  if (still === undefined) return { accounts: again };
+  logger.warn(still.error);
+  return { result: { sessionId: opts.resumeSessionId || "", result: "", error: still.error, conversationIntact: true } };
 }

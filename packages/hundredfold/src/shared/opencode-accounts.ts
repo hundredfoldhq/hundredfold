@@ -169,6 +169,13 @@ export function unservedModelError(model: string, account: string): string {
   return `${model} is not served by account "${account}" on OpenCode 1.x (models on another endpoint need OpenCode 2)`;
 }
 
+/** The error of a turn on an account model whose base's model details have not loaded, so the account has no models to stage.
+ *  Worded to be read as no failure class in particular (engine-failure.ts): nothing is wrong with the model or the key, and the
+ *  model is not held; the next turn, once discovery has landed, runs. */
+export function unstagedModelError(model: string, account: string, base: string): string {
+  return `${model} cannot start yet: account "${account}" takes its models from "${base}", and opencode model discovery has not loaded that provider's models on this host`;
+}
+
 /** What the problem checks read of the host. */
 export interface AccountProblemInputs {
   /** opencode's catalogue on this host, before account models are added. Null: not known yet. */

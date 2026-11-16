@@ -28,7 +28,7 @@ import { describeOpencodeLaunch } from "./opencode-protocol.js";
 import { opencodeApiOf } from "./opencode-version.js";
 import { withKnownEffort, type ModelEffortLevels } from "./opencode-variant.js";
 import { localOpencodeVersion } from "../shared/opencode-bin-version.js";
-import { mayBeUnserved, unservedTurnResult } from "./opencode-model-served.js";
+import { accountsOnceStaged, awaitsAccountModels, mayBeUnserved, unservedTurnResult } from "./opencode-model-served.js";
 import { resolveBin } from "../shared/resolve-bin.js";
 
 interface LiveProcess extends RemoteRun {
@@ -194,14 +194,24 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   async run(requested: EngineRunOpts): Promise<EngineResult> {
+    const trackingId = requested.sessionId || `opencode-${Date.now()}`;
+    const accounts = this.accountsFor(trackingId, requested.model);
+    // An account model whose base's details have not loaded yet (a fresh gateway's first turn) waits for them: staged now,
+    // the account would list no models. Before the effort is resolved, since the same discovery brings the model's levels.
+    if (awaitsAccountModels(requested, accounts)) {
+      const staged = await accountsOnceStaged(requested, accounts, () => this.accountsFor(trackingId, requested.model));
+      if ("result" in staged) return staged.result;
+      return await this.runStaged(requested, trackingId, staged.accounts);
+    }
+    return await this.runStaged(requested, trackingId, accounts);
+  }
+
+  private async runStaged(requested: EngineRunOpts, trackingId: string, accounts: ReturnType<OpencodeAccountsReader>): Promise<EngineResult> {
     // From here on `effortLevel` is the variant to send, or nothing.
     const opts = withKnownEffort(requested, this.readEffortLevels());
-    const trackingId = opts.sessionId || `opencode-${Date.now()}`;
     const onStream = opts.onStream || null;
-
     // A model this host's opencode cannot serve fails here, with the reason, rather than inside opencode with none.
     // Only a model an account's 1.x block leaves out waits on the binary; any other turn starts without yielding.
-    const accounts = this.accountsFor(trackingId, opts.model);
     if (mayBeUnserved(opts, accounts)) return await this.runIfServed(opts, trackingId, onStream, accounts);
     return await this.dispatch(opts, trackingId, onStream, accounts);
   }

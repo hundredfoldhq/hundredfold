@@ -207,6 +207,17 @@ same on 1.x and 2.x:
   id, its model list, and a short sha256 of its resolved key, so that a key
   rotation or an account change restarts the warm server. The key itself is
   never part of the fingerprint.
+- **Before the base's models are known, a turn waits.** The block is built from
+  the clone records, which only a detailed discovery brings, and a fresh
+  gateway serves turns before its first discovery lands. A turn whose own model
+  belongs to an account with no records yet waits for discovery
+  (`opencodeClonesSettled`, bounded by the details timeout), while a refresh is
+  running or a first one's details are still to come, and is then staged as
+  later turns are. Staged earlier, its block would list no models, and opencode
+  would refuse the turn as `provider.no-route`, holding the model as one the
+  account cannot use. If discovery ends without the base's models, the turn
+  fails before opencode is launched, saying the account's models have not
+  loaded; that error carries no failure class, so nothing is held.
 - Model discovery itself never stages accounts. Account models come from
   cloning.
 
