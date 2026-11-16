@@ -6,6 +6,7 @@ import {
   type LayoutNode,
   type SplitLayout,
 } from './split-layout'
+import { isMalformedTodoBoardTabId } from './tab-kind'
 
 /** Its own key: the upstream working set keeps `hundredfold-chat-working-set`, which this layout also
  * writes (as its projection) so the two never disagree about membership. */
@@ -30,7 +31,7 @@ function reviveGroup(value: Record<string, unknown>, id: string, seenSessions: S
   const tabs: string[] = []
   for (const tab of Array.isArray(value.tabs) ? value.tabs : []) {
     const sessionId = typeof tab === 'string' ? tab.trim() : ''
-    if (!sessionId || seenSessions.has(sessionId)) continue
+    if (!sessionId || seenSessions.has(sessionId) || isMalformedTodoBoardTabId(sessionId)) continue
     seenSessions.add(sessionId)
     tabs.push(sessionId)
   }
