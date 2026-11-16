@@ -43,6 +43,11 @@ function impliedByAssignment(event: WorkItemEventWire): boolean {
   return event.kind === "person_changed" && event.detail?.withAgent === true
 }
 
+/** A move between top level and sub-task level changes where the Todo sits in the tree, so it is a line of its own, not a quiet update. */
+function isMove(event: WorkItemEventWire): boolean {
+  return event.kind === "note" && (event.detail?.reparented != null || event.detail?.childReparented != null)
+}
+
 export function buildFeed(
   events: WorkItemEventWire[],
   comments: WorkItemCommentWire[],
@@ -65,8 +70,9 @@ export function buildFeed(
   }
   for (const entry of entries) {
     // Only an ordinary audit event is quiet enough to fold away. A comment, a
-    // run boundary, and the birth whisper each end the stretch and stand alone.
-    if (entry.kind === "event" && entry.event.kind !== "created") {
+    // run boundary, a move in the tree, and the birth whisper each end the
+    // stretch and stand alone.
+    if (entry.kind === "event" && entry.event.kind !== "created" && !isMove(entry.event)) {
       quiet.push(entry.event)
       continue
     }

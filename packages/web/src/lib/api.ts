@@ -845,6 +845,12 @@ export const api = {
   /** Todos v2 slice 6: roster-validated assignment; status is unchanged. `@operator` assigns to the operator. */
   assignWorkItem: (id: string, assignee: string, origin?: WriteOriginWire) =>
     post<{ workItem: WorkItemFullWire }>(`/api/work-items/${encodeURIComponent(id)}/assign`, { assignee }, origin),
+  /** Make a Todo a sub-task of another (`parentId`), or detach it to top level (null). Its own sub-tasks move with it; the gateway refuses cycles and the other unsafe moves with a 4xx whose message says why. */
+  reparentWorkItem: (id: string, parentId: string | null) =>
+    put<{ id: string; parentId: string | null; rootId: string; depth: number; version: number; changed: boolean; moved: string[] }>(
+      `/api/work-items/${encodeURIComponent(id)}/parent`,
+      { parentId },
+    ),
   /** Non-deleting archive: the row and its audit survive as `cancelled`. */
   archiveWorkItem: (id: string) =>
     post<{ workItem: WorkItemFullWire }>(`/api/work-items/${encodeURIComponent(id)}/archive`, {}),
