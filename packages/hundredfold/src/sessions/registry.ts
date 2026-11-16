@@ -15,7 +15,7 @@ import { initDb } from '../shared/db.js';
 import { recordEngineSpend } from './engine-spend.js';
 import { stripControlChars } from '../shared/sanitize.js';
 import { AUTO_COMPACT_BUDGET_HOLD_KEY } from '../shared/auto-compact-config.js';
-import { getMeta, setMeta, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
+import { DROP_RELAY_FTS, getMeta, setMeta, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
 import { parseTodoId } from '../work-items/id.js';
 import { toWorkItemLinkRole } from '../work-items/link-role.js';
 import { scopedDepartmentOf } from '../work-items/department-scope.js';
@@ -225,12 +225,13 @@ export function disableFtsForProcess(database: Database.Database, reason?: unkno
       DROP TRIGGER IF EXISTS messages_fts_ad;
       DROP TRIGGER IF EXISTS messages_fts_au;
       DROP TABLE IF EXISTS messages_fts;
+      ${DROP_RELAY_FTS}
     `);
   } catch (dropErr) {
     console.error(`[fts] Failed to drop FTS infrastructure during disable: ${dropErr instanceof Error ? dropErr.message : dropErr}`);
   }
   try {
-    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max')").run();
+    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_seeded')").run();
   } catch {
     // meta table may not exist in edge cases — not a fatal error
   }
@@ -329,7 +330,8 @@ function sanitizeFtsQuery(query: string): string {
 }
 
 /**
- * Full-text search over user/assistant message bodies, newest-first. `snippet`
+ * Full-text search over user/assistant message bodies and over the bodies of
+ * relayed messages and child replies (notifications), newest-first. `snippet`
  * wraps matched terms in «»; results are capped by `limit` (default 50). Triggers
  * the one-time backfill on first call so older history becomes searchable.
  *
@@ -378,24 +380,30 @@ export function searchMessages(query: string, limit = 50, filter?: MessageSearch
   }
   if (filter?.scopeDepartment) { conditions.push('s.scope_department = ?'); values.push(filter.scopeDepartment); }
   const extra = conditions.length ? ` AND ${conditions.join(' AND ')}` : '';
-  try {
-    return db
-      .prepare(
-        `SELECT m.id AS messageId,
+  // Relayed messages and child replies are found by the body they carry, not their banner. They are
+  // notification rows, so a user/assistant role filter leaves them out.
+  const withRelays = !filter?.role;
+  const hitColumns = (snippetTable: string): string => `m.id AS messageId,
                 m.session_id AS sessionId,
-                snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
+                snippet(${snippetTable}, 0, '«', '»', '…', 12) AS snippet,
                 m.role AS role,
                 m.timestamp AS timestamp,
                 s.employee AS employee,
-                s.engine AS engine
-         FROM messages_fts
-         JOIN messages m ON m.rowid = messages_fts.rowid
-         LEFT JOIN sessions s ON s.id = m.session_id
-         WHERE messages_fts MATCH ?${extra}
-         ORDER BY m.timestamp DESC
-         LIMIT ?`,
-      )
-      .all(match, ...values, cap) as MessageSearchResult[];
+                s.engine AS engine`;
+  const hitQuery = (table: string): string => `SELECT * FROM (
+           SELECT ${hitColumns(table)}
+           FROM ${table}
+           JOIN messages m ON m.rowid = ${table}.rowid
+           LEFT JOIN sessions s ON s.id = m.session_id
+           WHERE ${table} MATCH ?${extra}
+           ORDER BY m.timestamp DESC
+           LIMIT ?)`;
+  const sql = withRelays
+    ? `SELECT * FROM (${hitQuery('messages_fts')} UNION ALL ${hitQuery('relay_messages_fts')}) ORDER BY timestamp DESC LIMIT ?`
+    : `${hitQuery('messages_fts')} ORDER BY timestamp DESC`;
+  const branchArgs = [match, ...values, cap];
+  try {
+    return db.prepare(sql).all(...(withRelays ? [...branchArgs, ...branchArgs, cap] : branchArgs)) as MessageSearchResult[];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('no such table')) return [];

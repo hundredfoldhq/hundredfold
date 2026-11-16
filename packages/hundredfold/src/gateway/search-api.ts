@@ -50,7 +50,7 @@ export function messageSearchFilter(url: URL): ReadResult<MessageSearchFilter> {
   const role = readCleanSearchParam(url, "role");
   if (role) {
     if (role !== "user" && role !== "assistant") {
-      return { ok: false, error: `role must be "user" or "assistant" (only those rows are indexed), got "${role}"` };
+      return { ok: false, error: `role must be "user" or "assistant" (a relayed message or child reply is a notification: search without a role to find it), got "${role}"` };
     }
     filter.role = role;
   }
@@ -67,7 +67,8 @@ export function messageSearchFilter(url: URL): ReadResult<MessageSearchFilter> {
 
 /**
  * GET /api/search/messages — GRS-020a company-reference search: FTS5 over
- * user/assistant message bodies (injection-safe — the store sanitizes the
+ * user/assistant message bodies and the bodies of relayed messages and
+ * child replies (injection-safe — the store sanitizes the
  * query into quoted phrases), AND-composed bound-param filters, newest-first.
  * GRS-020a-fix hardening: control bytes are stripped from every string param
  * (an embedded NUL made FTS5 throw — finding 2) and the query length is
