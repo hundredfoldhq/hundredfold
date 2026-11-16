@@ -200,8 +200,8 @@ describe("consumeRestartResumeCandidates", () => {
     const candidates = restartResume.consumeRestartResumeCandidates();
     expect(candidates.resumable).toEqual([]);
     expect(candidates.replaying.map((s) => s.id)).toEqual([marked.id]);
-    // Its mark is still consumed, so it cannot resurface on a later restart.
-    expect(registry.getSession(marked.id)?.transportMeta ?? null).toBeNull();
+    // Its mark is still consumed, so it cannot resurface on a later restart; only the pause stamp, which its next turn consumes, is left.
+    expect(registry.getSession(marked.id)?.transportMeta ?? null).toEqual({ pausedAt: { at: expect.any(String), kind: "restart" } });
   });
 
   it("returns each candidate once and nothing on a second boot", () => {

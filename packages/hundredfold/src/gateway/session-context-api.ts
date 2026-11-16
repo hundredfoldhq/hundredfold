@@ -9,6 +9,7 @@ import { reportedSessionStatus } from "../sessions/background-work.js";
 import { compactCommandRefusal } from "../sessions/compact-command.js";
 import { listPendingQueueItemIdsForSession, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
 import { claimSelfCompaction, getEngineSessionRef, getSession, releaseSelfCompaction } from "../sessions/registry.js";
+import { stampSessionPause } from "../sessions/pause-notice.js";
 import {
   compactionUnsupported,
   isCompactCommand,
@@ -184,6 +185,7 @@ async function requestCompact(res: ServerResponse, session: Session, options: Se
     if (error instanceof CompactionTurnRefusedAsStopped) return refusalResponse(res, refusal("stopped", reason));
     return json(res, { error: `Nothing was queued: ${reason}` }, 502);
   }
+  stampSessionPause(session.id, "compaction", new Date(claim.at));
   logger.info(`[context-meter] ${session.id} (${session.engine}) manual compaction queued`);
   json(res, { status: "queued", sessionId: session.id, engine: session.engine }, 202);
 }

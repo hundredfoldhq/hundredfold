@@ -6,6 +6,7 @@ import { json, type ParsedRoute } from "./route-helpers.js";
 import type { CallerIdentity } from "./session-comm-guards.js";
 import { internalGatewayConnection, internalGatewayHeaders } from "../sessions/callback-connection.js";
 import { deliverClaimedSessionDelivery } from "../sessions/callbacks.js";
+import { stampSessionPause } from "../sessions/pause-notice.js";
 import {
   claimSelfCompaction,
   claimSessionDelivery,
@@ -217,6 +218,7 @@ async function requestCompaction(
   const claim = claimWithQueueCheck(res, session, options);
   if (!claim) return;
   if (!await queueCompactionTurn(res, session, claim.at, buildCompactCommand(handoff.handoff), options)) return;
+  stampSessionPause(session.id, "compaction", new Date(claim.at));
   const suppressed = suppressStopgapCallback(session);
   await scheduleResume(res, session, { claimedAt: claim.at, message: buildResumeMessage(handoff.handoff), suppressed }, options);
 }
@@ -274,6 +276,7 @@ async function requestSwitch(
     removePendingSwitch(session.id, claim.at);
     return;
   }
+  stampSessionPause(session.id, "compaction", new Date(claim.at));
   const suppressed = suppressStopgapCallback(session);
   await scheduleResume(res, session, { claimedAt: claim.at, message: buildResumeMessage(handoff.handoff), suppressed, pending }, options);
 }

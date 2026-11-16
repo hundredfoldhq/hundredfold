@@ -103,7 +103,7 @@ async function runPlannedTurn(run: TurnRun): Promise<TurnInput | undefined> {
     const { attempt, model } = await runEngineOrStartAfresh(run);
     run.heartbeat.stop();
     const handedBack = await concludeTurn(run, attempt, model);
-    return handedBack ? { ...run.input, session: handedBack } : undefined;
+    return handedBack ? { ...run.input, session: handedBack, carriedPauseStamp: run.plan.pauseStamp ?? run.input.carriedPauseStamp } : undefined;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     logger.error(`Session ${run.input.session.id} error: ${errMsg}`);

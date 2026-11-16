@@ -48,6 +48,7 @@ import { withLeftBackgroundTasksNote } from "./left-background-tasks.js";
 import { runtimeSessionSource } from "./context.js";
 import { handBackDue, ownTargetClearedCheck, withOwnClearWake } from "./rate-limit-own-clear.js";
 import { EARLY_RESET_POLL_MS, earlyResetWatch, type EarlyReset } from "./rate-limit-early-reset.js";
+import { stampSessionPause } from "./pause-notice.js";
 import { HostRetryStreak, HOST_RETRY_WINDOW_MS, hostNotReadyFromThrown, isHostNotReadyError } from "./rate-limit-host-retry.js";
 
 const WAIT_CANCEL_POLL_MS = 5000;
@@ -161,6 +162,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     await hooks.onCancelled?.();
     return { kind: "cancelled" };
   }
+  stampSessionPause(session.id, "usage-limit");
 
   await hooks.onWaitingStart?.({
     resumeAt: resumeAt ?? null, rateLimit, ...(targetReason ? { reason: targetReason } : {}), ...(walk.hop ? { hop: walk.hop } : {}),
@@ -291,7 +293,8 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       let retryResult: EngineResult;
       // The process that held the session's background tasks may have been released since the turn began (a hop that failed before
       // the wait): the retry leads with the note, and settle clears what it carried once the engine has read it.
-      const { promptToRun: retryPrompt, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? currentSession, prompt);
+      // The retry also carries any pause notice the wait earned (`retryPrompt`), built now that the wait is over.
+      const { promptToRun: retryPrompt, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? currentSession, opts.retryPrompt?.() ?? prompt);
       try {
         retryResult = await engine.run({
           prompt: retryPrompt,

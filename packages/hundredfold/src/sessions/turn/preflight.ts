@@ -21,6 +21,7 @@ import { isTerminalSession, TERMINAL_REFUSES_MESSAGES } from "../../terminals/se
 import { readUnseenInterruptedPrompts } from "./superseded.js";
 import { withLeftBackgroundNote } from "../left-background-tasks.js";
 import { resolveBoardReminder } from "./board-reminder.js";
+import { takeTurnPause } from "../pause-notice.js";
 import { findBuiltinMcp } from "../../mcp/builtin-name.js";
 import type { TurnHierarchy, TurnInput, TurnPlan, TurnPreflight } from "./types.js";
 export { warnIfNearUsageLimit } from "./usage-warning.js";
@@ -179,9 +180,15 @@ export function preflightTurn(input: TurnInput): TurnPreflight {
     runtimeSource,
     ...turnPrompt,
     boardReminder: resolveBoardReminder(input.config, baseContextOptions.hundredfoldMcpAttached === true),
+    ...pauseFields(takeTurnPause(session.id, input.prompt, turnPrompt.promptToRun, input.carriedPauseStamp)),
     compaction,
     prepareContext: contextPreparer(baseContextOptions, resumeRef, rawCommand),
   };
+}
+
+/** The plan's pause fields: the notice the turn carries and the pause it was made from. */
+function pauseFields(pause: ReturnType<typeof takeTurnPause>): Pick<TurnPlan, "pauseNotice" | "pauseStamp"> {
+  return { pauseNotice: pause.notice, pauseStamp: pause.stamp };
 }
 
 /**

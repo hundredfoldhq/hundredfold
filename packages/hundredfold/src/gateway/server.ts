@@ -59,6 +59,7 @@ import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids, recordedByAnotherHome, gatewayBaseUrl } from "./gateway-info.js";
 import { authenticateGatewayRequest, authRequiredForRequest, ensureGatewayAuthToken, shouldRequireGatewayAuth, validateGatewayExposure, verifyGatewayAuth } from "./auth.js";
 import { reconcileWorkItemsOnStartup, startWorkItemReconciler } from "../work-items/reconcile.js";
+import { registerLiveSessionQueue } from "../sessions/owed-turns.js";
 import { setTodoLiveEmitter, setTodoStatusChangeListener } from "../work-items/live-events.js";
 import { cleanupSessionSettings } from "../shared/claude-settings.js";
 import { bootClaudeProfiles } from "./claude-profile-boot.js";
@@ -1301,6 +1302,14 @@ export async function startGateway(
   // keep the stagger they were planned with instead of being flushed at once.
   resumeRestartInterruptedSessions(restartRecordGateway);
 
+  // The replay and the nudge plan are done: from here a queue row counts toward a
+  // Todo's in-flight evidence only while the live queue holds it (sessions/owed-turns.ts).
+  // Before this the evidence reads the rows themselves, the turns the boot is about to start.
+  registerLiveSessionQueue({
+    holds: (itemId) => sessionManager.getQueue().hasInFlightItem(itemId),
+    isPaused: (sessionKey) => sessionManager.getQueue().isPaused(sessionKey),
+  });
+
   // Prevent macOS from sleeping while the gateway is running
   let caffeinate: ChildProcess | null = null;
   if (process.platform === "darwin") {
@@ -1322,7 +1331,7 @@ export async function startGateway(
     shuttingDown = true;
 
     // Stop the periodic sweeps before we start marking sessions interrupted below — a mid-shutdown sweep must not race the teardown.
-    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopSessionSchedulers();
+    registerLiveSessionQueue(undefined); stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopSessionSchedulers();
     backgroundRefreshes.stop(); stopCommentRouting(); stopBoardHooks();
 
     // Stop caffeinate

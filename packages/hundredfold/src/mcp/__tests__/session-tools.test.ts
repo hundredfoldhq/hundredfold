@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +24,7 @@ import {
 import { HundredfoldMcpToolError, type HundredfoldMcpContext, type HundredfoldMcpTool } from "../toolkit.js";
 import { sessionCommGuards, LATERAL_MAX_HOPS } from "../../gateway/session-comm-guards.js";
 import type { ResolvedMcpConfig } from "../../shared/types.js";
+import { registerLiveSessionQueue } from "../../sessions/owed-turns.js";
 
 /**
  * GRS-017a — the sessions MCP tool group + the caller-identity seam.
@@ -569,6 +570,16 @@ function ctxFor(callerSessionId?: string): HundredfoldMcpContext {
   };
 }
 
+/**
+ * These tests mark a session `running` whose first message no engine ever ran,
+ * so its queue row still reads `pending` in the database. A real interrupted
+ * turn is not held by the live queue either (a reset drops it, a delete ends
+ * it), and a row the queue does not hold is not a turn the gateway owes.
+ */
+function emptyLiveQueue(): void {
+  registerLiveSessionQueue({ holds: () => false, isPaused: () => false });
+}
+
 /** Create a session the operator way (no header) and return its id. */
 async function createOperatorSession(prompt: string): Promise<string> {
   const resp = await apiFetch()("http://gateway.test/api/sessions", {
@@ -586,6 +597,10 @@ beforeAll(async () => {
   workItems = await import("../../work-items/store.js");
   workItemReconcile = await import("../../work-items/reconcile.js");
 }, 60_000);
+
+afterEach(() => {
+  registerLiveSessionQueue(undefined);
+});
 
 beforeEach(() => {
   sessionCommGuards.reset();
@@ -620,6 +635,7 @@ describe("session tools — integration against the real routes/registry", () =>
     workItems.linkSession(item.id, sessionId);
     registry.accumulateSessionCost(sessionId, 4.25, 3);
     registry.updateSession(sessionId, { status: "running" });
+    emptyLiveQueue();
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}`, {
       method: "DELETE",
@@ -646,6 +662,7 @@ describe("session tools — integration against the real routes/registry", () =>
     });
     workItems.linkSession(item.id, sessionId);
     registry.updateSession(sessionId, { status: "running" });
+    emptyLiveQueue();
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}/${action}`, {
       method: "POST",

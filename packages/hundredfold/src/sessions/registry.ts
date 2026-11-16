@@ -26,6 +26,7 @@ import { ptySnapshotStore } from '../engines/pty-snapshot.js';
 import { isLegacyWorkflowPhaseRow, isLegacyWorkflowPhaseSession, LEGACY_WORKFLOW_PHASE_SQL } from './legacy-workflow-phase.js';
 import { clearSessionStopped, stoppedMarkerKey } from './stopped-marker.js';
 import { agentReadableContent, readFullMessageMeta, type FullMessageFields } from '../shared/full-message.js';
+import { pausedAtMetaSql, pausedAtParam } from './pause-notice.js';
 
 export const RESTART_ACK_META_KEY = "restartAcknowledgedAt";
 /** Stamped on a session the gateway itself interrupted, so the next boot can tell it apart from one that was already idle. Consumed in sessions/restart-resume.ts. */
@@ -1919,8 +1920,8 @@ export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
   return db.prepare(
-    `UPDATE sessions SET status = 'interrupted', attempt_outcome = 'interrupted', attempt_terminal_version = attempt_terminal_version + 1, last_activity = ?, transport_meta = json_set(COALESCE(transport_meta, '{}'), '$.${RESTART_RESUME_META_KEY}', ?), last_error = CASE status WHEN 'waiting' THEN 'Interrupted: gateway restarted while session was waiting to retry' ELSE 'Interrupted: gateway restarted while session was running' END WHERE status IN ('running', 'waiting') AND workflow_kind IS NULL`,
-  ).run(now, now).changes;
+    `UPDATE sessions SET status = 'interrupted', attempt_outcome = 'interrupted', attempt_terminal_version = attempt_terminal_version + 1, last_activity = ?, transport_meta = json_set(${pausedAtMetaSql()}, '$.${RESTART_RESUME_META_KEY}', ?), last_error = CASE status WHEN 'waiting' THEN 'Interrupted: gateway restarted while session was waiting to retry' ELSE 'Interrupted: gateway restarted while session was running' END WHERE status IN ('running', 'waiting') AND workflow_kind IS NULL`,
+  ).run(now, pausedAtParam("restart"), now).changes;
 }
 
 /**

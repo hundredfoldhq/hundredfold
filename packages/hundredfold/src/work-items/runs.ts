@@ -4,7 +4,7 @@ import { isRateLimitMessage } from '../shared/rateLimit.js';
 import type { JsonObject, SessionAttemptOutcome } from '../shared/types.js';
 import { TODO_RUN_OUTCOMES, type TodoRunOutcome } from './runs-schema.js';
 import { LEGACY_WORKFLOW_PHASE_SQL } from '../sessions/legacy-workflow-phase.js';
-import { settledAttemptOutcome } from '../sessions/restart-resume-window.js';
+import { settledOutcomeUnlessTurnOwed } from '../sessions/owed-turns.js';
 
 /**
  * The Todo run ledger — one row per work attempt.
@@ -288,18 +288,19 @@ export function runOutcomeForReceipt(receipt: SessionAttemptOutcome, error: stri
 export function closeRunsForSettledSessions(endedAt: string = new Date().toISOString()): number {
   const settled = initDb()
     .prepare(
-      `SELECT runs.id AS id, sessions.attempt_outcome AS outcome, sessions.last_error AS error,
+      `SELECT runs.id AS id, runs.session_id AS sessionId, sessions.attempt_outcome AS outcome, sessions.last_error AS error,
               sessions.transport_meta AS meta, sessions.attempt_token AS token, sessions.attempt_terminal_version AS version
          FROM work_item_runs AS runs JOIN sessions ON sessions.id = runs.session_id
         WHERE runs.ended_at IS NULL AND sessions.attempt_outcome IS NOT NULL`,
     )
-    .all() as { id: string; outcome: SessionAttemptOutcome; error: string | null; meta: string | null; token: string | null; version: number }[];
+    .all() as { id: string; sessionId: string; outcome: SessionAttemptOutcome; error: string | null; meta: string | null; token: string | null; version: number }[];
   let closed = 0;
   for (const run of settled) {
-    // A turn the gateway is about to resume after a restart has not ended: its
-    // real settle closes the run (sessions/restart-resume-window.ts).
-    const outcome = settledAttemptOutcome({
-      attemptOutcome: run.outcome, transportMeta: parseMeta(run.meta), attemptToken: run.token, attemptTerminalVersion: run.version,
+    // A turn the gateway is about to resume after a restart, or still owes the
+    // session on its own (a self-compaction's resume), has not ended: its real
+    // settle closes the run (sessions/restart-resume-window.ts, sessions/owed-turns.ts).
+    const outcome = settledOutcomeUnlessTurnOwed({
+      id: run.sessionId, attemptOutcome: run.outcome, transportMeta: parseMeta(run.meta), attemptToken: run.token, attemptTerminalVersion: run.version,
     });
     if (!outcome) continue;
     closeWorkItemRun(run.id, { outcome: runOutcomeForReceipt(outcome, run.error), endedAt });

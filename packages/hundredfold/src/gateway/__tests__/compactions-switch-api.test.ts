@@ -192,6 +192,22 @@ describe("scheduled (202)", () => {
     expect(deliveries(me)).toEqual([{ status: "accepted" }]);
   });
 
+  it("stamps a compaction pause at the claim for a switch, and none when the switch is refused", async () => {
+    const me = newSession();
+    failLoopback = (index) => index === 0;
+    expect((await post(me, { profile: "alpha" })).status).toBe(502);
+    expect(registry.getSession(me)!.transportMeta?.pausedAt).toBeUndefined();
+
+    failLoopback = undefined;
+    expect((await post(me, { profile: "alpha" })).status).toBe(202);
+    const claimedAt = registry.getSession(me)!.transportMeta?.selfCompactionAt as number;
+    expect(registry.getSession(me)!.transportMeta?.pausedAt).toEqual({ at: new Date(claimedAt).toISOString(), kind: "compaction" });
+
+    const refused = newSession();
+    expect((await post(refused, { profile: "no-such-profile" })).status).toBeGreaterThanOrEqual(400);
+    expect(registry.getSession(refused)!.transportMeta?.pausedAt).toBeUndefined();
+  });
+
   it("is a conversation continued in place for a model-only switch on Claude, and a new one for another engine", async () => {
     const same = await post(newSession(), { model: "sonnet" });
     expect(same.body.switch).toMatchObject({ conversation: "same", compaction: "queued", to: { engine: "claude", model: "sonnet" } });

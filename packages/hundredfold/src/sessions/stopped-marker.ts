@@ -6,6 +6,7 @@
 // a deliberate start get that far.
 import { initDb } from "../shared/db.js";
 import type { Session } from "../shared/types.js";
+import { clearSessionPause } from "./pause-notice.js";
 
 const KEY_PREFIX = "session-stopped:";
 
@@ -14,9 +15,10 @@ export function stoppedMarkerKey(sessionId: string): string {
   return `${KEY_PREFIX}${sessionId}`;
 }
 
-/** Record that `sessionId` was stopped on purpose. */
+/** Record that `sessionId` was stopped on purpose. A stop also ends any pause the gateway stamped on it. */
 export function markSessionStopped(sessionId: string): void {
   initDb().prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(stoppedMarkerKey(sessionId), new Date().toISOString());
+  clearSessionPause(sessionId);
 }
 
 /** Forget it: someone started the session on purpose, or it was deleted. */
