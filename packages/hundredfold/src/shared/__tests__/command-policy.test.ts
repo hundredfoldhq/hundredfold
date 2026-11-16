@@ -127,6 +127,33 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
       expect(evaluateCommandPolicy(`grep -r todo /home/agent/.${OLD.codename}/docs`, REMOTE).action).toBe("allow");
     });
 
+    it("does not take a redirect elsewhere for a write to the home the command reads", () => {
+      // A redirect alone used to open the gate for every path in the line, so a
+      // read of the gateway's own home with stderr discarded was refused as a write.
+      for (const cmd of [
+        `grep -rn todo ${GATEWAY_HOME}/knowledge 2>/dev/null`,
+        `ls ${GATEWAY_HOME}/docs &>/dev/null`,
+        `grep -c x /home/agent/.${OLD.codename}/org/a.yaml >/dev/stderr`,
+        `cat ${GATEWAY_HOME}/knowledge/x.md > /tmp/x.md`,
+        `cat ${GATEWAY_HOME}/knowledge/x.md >> ${MOUNT}/knowledge/x.md`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("allow");
+      }
+    });
+
+    it("still refuses a redirect whose target is an off-mount home", () => {
+      for (const cmd of [
+        `grep x ${MOUNT}/docs/a.md > ${GATEWAY_HOME}/knowledge/x.md`,
+        `echo hi 2>/dev/null >> /home/agent/.${OLD.codename}/docs/x.md`,
+        `echo hi >| ${GATEWAY_HOME}/knowledge/x.md`,
+        `echo hi > "${GATEWAY_HOME}/knowledge/x.md"`,
+        `echo hi > /dev/../home/agent/.${OLD.codename}/knowledge/x.md`,
+        `grep -rn todo ${GATEWAY_HOME}/docs 2>/dev/null | tee ${GATEWAY_HOME}/knowledge/x.md`,
+      ]) {
+        expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");
+      }
+    });
+
     it("does not fire on a write-shaped command that names no instance home", () => {
       expect(evaluateCommandPolicy("npm install --prefix /srv/work/repo", REMOTE).action).toBe("allow");
       expect(evaluateCommandPolicy("pnpm build 2>/dev/null", REMOTE).action).toBe("allow");

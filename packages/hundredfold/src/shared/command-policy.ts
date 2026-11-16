@@ -81,7 +81,11 @@ const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:tee|cp|mv|install|mkdir|rmdir|touch|
  *  `$HOME`/`${HOME}` count as home-relative: without them a plain
  *  `echo x > $HOME/.hundredfold/knowledge/y.md` never even reached the containment
  *  check, because nothing in the line looked like a write to a path. */
-const WRITE_REDIRECT = />>?\s*['"]?(?:[~/]|\$\{?HOME\}?\/)/;
+const WRITE_REDIRECT = />>?\|?\s*['"]?(?:[~/]|\$\{?HOME\}?\/)/;
+/** The target of each `>`/`>>`/`>|` redirect (an `&>` or `2>` one included). */
+const REDIRECT_TARGET = />>?\|?\s*((?:['"])?(?:~|\$HOME|\$\{HOME\})?\/[^\s'"();|&]*)/g;
+/** A device such as `/dev/null` or `/dev/stderr`: writing to it writes no file. */
+const DEVICE_PATH = /^\/dev\//;
 /** In-place edit: the file is both the input and the output. */
 const SED_IN_PLACE = /\bsed\b[^|;&]*\s-i\b/i;
 
@@ -207,16 +211,29 @@ export function evaluateCommandPolicy(command: string, opts?: CommandPolicyOptio
   return { action: "allow" };
 }
 
+/**
+ * The paths a command may write. A write command (`cp`, `tee`, `sed -i`…) can
+ * write any path it names, so all of them are judged. When a redirect is the
+ * only sign of a write, only its targets are: `grep x <home>/docs 2>/dev/null`
+ * reads the home and writes nothing, and `cat <home>/x > /tmp/y` writes /tmp.
+ */
+function writeCandidateTokens(text: string): string[] {
+  if (WRITE_COMMAND.test(text) || SED_IN_PLACE.test(text)) return absolutePathTokens(text);
+  if (!WRITE_REDIRECT.test(text)) return [];
+  return [...text.matchAll(REDIRECT_TARGET)]
+    .map((match) => match[1]!.replace(/^['"]/, ""))
+    .filter((target) => !DEVICE_PATH.test(path.posix.normalize(target)));
+}
+
 /** The remote half of {@link evaluateCommandPolicy}, split out because the
  *  combined function exceeds the complexity cap in eslint.config.mjs. */
 function remoteContainmentReason(text: string, opts: CommandPolicyOptions | undefined): string | undefined {
   const mount = opts?.remoteMountRoot?.trim();
   if (!mount) return undefined;
-  if (!WRITE_COMMAND.test(text) && !WRITE_REDIRECT.test(text) && !SED_IN_PLACE.test(text)) return undefined;
   // Write intent is only the gate: a command still has to *name* an offending
   // path before it is refused, so `npm install` (which trips WRITE_COMMAND)
   // never blocks on its own.
-  for (const token of absolutePathTokens(text)) {
+  for (const token of writeCandidateTokens(text)) {
     const reason = offendingHomePath(token, mount, opts ?? {});
     if (reason) return reason;
   }
