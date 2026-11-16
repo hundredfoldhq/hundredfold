@@ -24,6 +24,7 @@ vi.mock("../../shared/paths.js", async (importOriginal) => ({
 const { chooseSubstituteOrReason } = await import("../rate-limit-substitute.js");
 const { invalidateModelRegistry } = await import("../../shared/models.js");
 const { recordEngineUnavailable } = await import("../../shared/engine-health.js");
+const { recordOpencodeFailure } = await import("../../shared/engine-health-opencode.js");
 const { makeSession } = await import("./helpers/session-fixture.js");
 import type { HundredfoldConfig, Session } from "../../shared/types.js";
 
@@ -87,5 +88,31 @@ describe("a session that runs the engine's configured model", () => {
     expect(choose(unpinned("opencode-go-b/pro")).choice).toMatchObject({ model: "opencode-go-b/pro" });
     spend("opencode/opencode-go-c");
     expect(choose(unpinned("opencode-go-c/flash")).reason).toMatch(/has hit its own usage limit/);
+  });
+});
+
+describe("a chosen opencode fallback target on a provider whose key was rejected", () => {
+  const EXPIRED = "provider.auth: This API key has expired. Create a new API key in OpenCode Console. (HTTP 401)";
+  const onGoB = (model: string) => makeSession({ engine: "opencode", model: "opencode-go-b/flash", fallbackTarget: { engine: "opencode", model } });
+  // A dead key's credential is read from opencode's own database; never the machine's real one.
+  beforeEach(() => {
+    const data = path.join(tmp, "xdg-data");
+    fs.mkdirSync(data, { recursive: true });
+    vi.stubEnv("XDG_DATA_HOME", data);
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+    return () => vi.unstubAllEnvs();
+  });
+  const signOut = (key: string) => recordOpencodeFailure({ healthKey: key, model: "opencode-go-b/flash", error: EXPIRED, config });
+
+  it("is refused within the provider the session is on: the dead key is every model's", () => {
+    signOut("opencode/opencode-go-b");
+    const out = choose(onGoB("opencode-go-b/pro"));
+    expect(out.choice).toBeUndefined();
+    expect(out.reason).toBe("the chosen fallback opencode (opencode-go-b/pro) is signed out");
+  });
+
+  it("is still taken within the provider when only the old model is held", () => {
+    recordOpencodeFailure({ healthKey: "opencode/opencode-go-b", model: "opencode-go-b/flash", error: "provider.auth: Upstream request failed: Model access is disabled (HTTP 403)", config });
+    expect(choose(onGoB("opencode-go-b/pro")).choice).toMatchObject({ model: "opencode-go-b/pro" });
   });
 });

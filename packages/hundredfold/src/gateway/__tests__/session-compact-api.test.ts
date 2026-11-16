@@ -139,6 +139,19 @@ describe("POST /api/sessions/:id/compact", () => {
     expect((await h.request("POST", `/api/sessions/${s.id}/compact`)).status).toBe(202);
   });
 
+  it("stamps a compaction pause at the claim once the turn is queued, and none when it could not be", async () => {
+    const s = h.newSession("claude");
+    const pausedAt = () => h.registry.getSession(s.id)!.transportMeta?.pausedAt;
+
+    h.setFailLoopback(true);
+    expect((await h.request("POST", `/api/sessions/${s.id}/compact`)).status).toBe(502);
+    expect(pausedAt()).toBeUndefined();
+
+    h.setFailLoopback(false);
+    expect((await h.request("POST", `/api/sessions/${s.id}/compact`)).status).toBe(202);
+    expect(pausedAt()).toEqual({ at: new Date(h.selfCompactionAt(s.id) as number).toISOString(), kind: "compaction" });
+  });
+
   it("answers 404 for an unknown session", async () => {
     expect((await h.request("POST", "/api/sessions/no-such-session/compact")).status).toBe(404);
   });

@@ -2,7 +2,7 @@ import type { EngineName } from "../shared/models.js";
 import { engineAvailable, getModelRegistry, hasDynamicModelCatalog, isKnownEngine } from "../shared/models.js";
 import { sshDestination } from "../shared/remote-target.js";
 import type { EngineHealthReading } from "../shared/engine-health.js";
-import { isLinkExhausted } from "../shared/fallback-chain-health.js";
+import { isLinkExhausted, isLinkSignedOut } from "../shared/fallback-chain-health.js";
 import {
   sessionFallbackTargetShapeError, parseStoredFallbackTarget, type StoredFallbackTarget,
 } from "../shared/session-fallback-config.js";
@@ -139,12 +139,14 @@ function modelRefusal(input: ChooseSubstituteInput, health: EngineHealthReading,
   const { config, session, employee } = input;
   const offered = getModelRegistry(config)[target.engine]?.models ?? [];
   if (!offered.some((m) => m.id === target.model) && !hasDynamicModelCatalog(target.engine)) return "names a model that is no longer offered";
+  const link = { engine: target.engine, model: target.model, account: target.engine };
+  const reading = substituteHealth(health, employee, session);
   if (session.engine === target.engine) {
     if (session.model === target.model) return "is the model that just hit its limit";
-    if (!otherOpencodeProvider(config, session, target)) return undefined;
+    // A dead key is the provider's, not the old model's: every model on it is refused the same way.
+    if (!otherOpencodeProvider(config, session, target)) return isLinkSignedOut(reading, link) ? "is signed out" : undefined;
   }
-  const link = { engine: target.engine, model: target.model, account: target.engine };
-  return isLinkExhausted(substituteHealth(health, employee, session), link) ? "has hit its own usage limit" : undefined;
+  return isLinkExhausted(reading, link) ? "has hit its own usage limit" : undefined;
 }
 
 /**

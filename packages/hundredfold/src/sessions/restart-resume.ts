@@ -22,6 +22,7 @@ import {
 import { recordRestartInterruption, recordRestartResume, type RestartRecordGateway } from "./restart-record.js";
 import { isBoardWalkTurn } from "../board-walk/started-sessions.js";
 import { clearRestartResumeDue, stampRestartResumeDue } from "./restart-resume-window.js";
+import { withPauseStamp } from "./pause-notice.js";
 
 /**
  * A restart can strand any number of conversational sessions at once. Waking
@@ -165,7 +166,7 @@ export function interruptRunningSessionsForShutdown(gateway: RestartRecordGatewa
       attemptOutcome: "interrupted",
       lastActivity: now,
       lastError: "Interrupted: gateway shutting down gracefully",
-      transportMeta: { ...existingTransportMeta(session), [RESTART_RESUME_META_KEY]: now },
+      transportMeta: { ...withPauseStamp(existingTransportMeta(session), "restart"), [RESTART_RESUME_META_KEY]: now },
     });
     recordRestartInterruption(gateway, session, "shutdown", "restart-resume");
     logger.info(`Marked session ${session.id} as interrupted for resume`);

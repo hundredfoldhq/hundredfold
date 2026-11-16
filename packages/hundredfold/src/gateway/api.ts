@@ -7,7 +7,8 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, reportsTurnProgress } from "../shared/types.js";
+import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -165,7 +166,7 @@ import { resolveMessageAudiences, speechContextApplies } from "./speech-context.
 import { isJsonMediaType } from "./media-type.js";
 import { recoverPendingSessionDeliveries } from "../sessions/callbacks.js";
 import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_KEY } from "../sessions/delegation-completion-contract.js";
-import { callerMayActOnSession, sessionIsWithinReach } from "./session-reach-guard.js";
+import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
@@ -2203,8 +2204,9 @@ export async function handleApiRequest(
 
     // GET /api/sessions/:id/context?message=<id>&radius=<n> — GRS-020a: the
     // bounded ±radius window around a message anchor (a search hit), so a hit
-    // becomes readable in place. Message bodies are returned as stored; the
-    // session field is the COMPACT summary (GRS-020a-fix finding 5).
+    // becomes readable in place. Message bodies are returned as stored, except
+    // that a notification reads as the full body it carries rather than its
+    // banner; the session field is the COMPACT summary (GRS-020a-fix finding 5).
     params = matchRoute("/api/sessions/:id/context", pathname);
     if (method === "GET" && params) {
       const session = getSession(params.id);
@@ -3951,13 +3953,25 @@ export async function handleApiRequest(
         // Whoever may stop a session may start it again by messaging it; anyone
         // else is told it was not delivered, so it never wakes a handed-over folder.
         if (isStoppedByUser(session) && !sessionIsWithinReach(session, caller.id) && refuseStoppedSession(res, session)) return;
+        const callerIsAboveTarget = isAboveSession(session, caller.id);
+        const targetSessionId = params.id;
         const plan = prepareLateralSend({
           caller,
           targetSessionId: params.id,
           message: String(rawMessage),
           guards: sessionCommGuards,
           callerParentSessionId: callerParentId,
-          parentLink: callerParentId === session.id || targetParentId === caller.id,
+          // Named only in a refusal, so worked out only then: a live session
+          // above the caller, other than the peer, whose pair with the caller
+          // still has room (an escalation to it is pair-charged, below).
+          callerCoordinatorSessionId: () =>
+            coordinatorSessionId(caller, targetSessionId, (candidate) =>
+              !isSpentDispatcher(candidate)
+              && sessionCommGuards.pairCount(caller.id, candidate.id) < sessionCommGuards.pairMaxMessages()),
+          // A send between a session and one above it, either way, is a reply or
+          // an escalation inside one piece of work, never a relay.
+          parentLink: callerParentId === session.id || targetParentId === caller.id
+            || callerIsAboveTarget || isAboveSession(caller, session.id),
         });
         if (!plan.ok) {
           res.writeHead(plan.status, { "Content-Type": "application/json" });
@@ -3980,13 +3994,25 @@ export async function handleApiRequest(
           // attempt so notifyParentSession suppresses that redundant callback.
           recordChildReportedToParent(caller.id, caller.attemptToken);
         }
-        // A parent/child message is not a relay hop: it counts against the pair
-        // budget and leaves the receiver's chain untouched, so a spawned session
-        // starts at hop 1. Conservative on later failure (e.g. engine
-        // unavailable): the tag may be recorded for an undelivered message, which
-        // only ever tightens the budget, never loosens it.
+        // A message from a session above the target (its parent, its delegator
+        // or further up) is an instruction from whoever owns the work: it resets
+        // the target's chain and its pair counts with every session not above
+        // it, so a coordinator can let a long review carry on. Pairs with the
+        // sessions above the target are kept, so coordinators cannot reset each
+        // other's pairs and every reset is paid for. Applied before the delivery
+        // is recorded, so this message still counts in its own pair.
+        if (callerIsAboveTarget) {
+          const target = session;
+          sessionCommGuards.resetFromCoordinator(params.id, (otherId) => isAboveSession(target, otherId));
+        }
+        // A message to or from a session above, or a reply, is not a relay hop:
+        // it counts against the pair budget and never takes the receiver's chain
+        // deeper than the deeper of the two, so a spawned session starts at hop 1
+        // and a producer and reviewer can go round after round. Conservative on
+        // later failure (e.g. engine unavailable): the tag may be recorded for an
+        // undelivered message, which only ever tightens the budget.
         if (plan.parentLink) sessionCommGuards.recordPairDelivery(caller.id, params.id, plan.hops);
-        else sessionCommGuards.recordDelivery(params.id, plan.hops);
+        else sessionCommGuards.recordLateralDelivery(caller.id, params.id, plan);
       } else if (body.role === "notification" && isStoppedByUser(session)) {
         // No session sent it (a compaction turn, an operator relay): never a deliberate start.
         return void refuseStoppedSession(res, session);
@@ -4019,9 +4045,10 @@ export async function handleApiRequest(
           kind: "agent-relay",
           ...(relayFromSessionId ? { fromSessionId: relayFromSessionId } : {}),
           fromLabel,
+          viaOperator: true,
           hops: 1,
           maxHops: sessionCommGuards.maxHops(),
-          fullMessage: relayBody.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+          ...fullMessageMeta(relayBody),
         };
       } else if (body.role !== "notification") {
         // A genuine user/operator message resets the target's relay-hop chain —
@@ -4053,9 +4080,8 @@ export async function handleApiRequest(
         const employee = typeof rawMeta.employee === "string" ? stripControlChars(rawMeta.employee).trim().slice(0, 160) : "";
         const employeeDisplay = typeof rawMeta.employeeDisplay === "string" ? stripControlChars(rawMeta.employeeDisplay).trim().slice(0, 160) : "";
         const childSessionId = typeof rawMeta.childSessionId === "string" ? stripControlChars(rawMeta.childSessionId).trim().slice(0, 160) : "";
-        const fullMessage = typeof rawMeta.fullMessage === "string"
-          ? rawMeta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)
-          : undefined;
+        const full = readFullMessageMeta(rawMeta);
+        const fullMessage = full?.fullMessage;
         if (rawMeta.kind === "agent-relay") {
           const fromSessionId = typeof rawMeta.fromSessionId === "string" ? stripControlChars(rawMeta.fromSessionId).trim().slice(0, 160) : "";
           const fromLabel = typeof rawMeta.fromLabel === "string" ? stripControlChars(rawMeta.fromLabel).trim().slice(0, 160) : "";
@@ -4071,9 +4097,10 @@ export async function handleApiRequest(
               ...(fromSessionId ? { fromSessionId } : {}),
               fromLabel,
               ...(fromEmployee ? { fromEmployee } : {}),
+              ...(rawMeta.viaOperator === true ? { viaOperator: true } : {}),
               hops,
               maxHops,
-              fullMessage,
+              ...full,
             };
           }
         } else if (kind && employee && childSessionId) {
@@ -4082,7 +4109,7 @@ export async function handleApiRequest(
             employee,
             ...(employeeDisplay ? { employeeDisplay } : {}),
             childSessionId,
-            ...(fullMessage !== undefined ? { fullMessage } : {}),
+            ...full,
           };
         } else if (rawMeta.kind === "manager-visibility" && employee && childSessionId) {
           const manager = typeof rawMeta.manager === "string" ? stripControlChars(rawMeta.manager).trim().slice(0, 160) : "";

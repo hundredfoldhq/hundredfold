@@ -45,6 +45,8 @@ const { handleRateLimit } = await import("../rate-limit-handler.js");
 const { currentClaudeAccount } = await import("../session-account.js");
 const { recordEngineUnavailable } = await import("../../shared/engine-health.js");
 const { claudeProfileFromDir } = await import("../../shared/claude-profile.js");
+const pauseFixture = await import("./pause-notice-fixture.js");
+const { stampSessionPause } = await import("../pause-notice.js");
 
 const friend = claudeProfileFromDir(path.join(tmp, "claude-friend"));
 const FRIEND_ACCOUNT = `claude:${friend.key}`;
@@ -170,6 +172,25 @@ describe("a nested account swap whose substitute hits its weekly limit", () => {
     expectBackOnOwnAccount(id, calls, seen.receipts);
     // The parent was told it paused, so it is told it resumed.
     expect(resumed.sessions).toEqual([id]);
+  }, 15_000);
+
+  it("carries the pause notice the limited attempt took into the re-run on the own account", async () => {
+    const id = nestedSession("web:handback-notice", new Date(Date.now() + 1_500));
+    const todo = await pauseFixture.workedTodo(id);
+    stampSessionPause(id, "restart");
+    await pauseFixture.tick();
+    pauseFixture.move(todo, "blocked", "reconciler");
+    const { engine, calls } = claudeEngine((call) => call === 1 ? weeklyLimit() : { sessionId: "a-thread", result: "done on the own account" });
+    const { surface } = recordingSurface();
+
+    await runOne(id, engine, surface);
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.prompt.split("[Gateway notice]").length - 1).toBe(1);
+      expect(call.prompt).toContain(`${todo} moved executing → blocked (by reconciler)`);
+    }
+    expect(pauseFixture.stampOf(id)).toBeUndefined();
   }, 15_000);
 
   it("hands back at once when until passed while the limited turn was running", async () => {

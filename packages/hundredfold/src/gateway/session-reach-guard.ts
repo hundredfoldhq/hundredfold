@@ -36,3 +36,49 @@ export function callerMayActOnSession(
   }
   return true;
 }
+
+/**
+ * Whether `callerId` is above `session`: a session it was spawned under
+ * (directly or transitively), or one on the chain of sessions it reports to.
+ * A message from such a session is an instruction from whoever owns the work,
+ * which resets the target's session-comm budgets (session-comm-guards.ts).
+ */
+export function isAboveSession(session: Session, callerId: string): boolean {
+  if (session.id === callerId) return false;
+  if (isDescendantOf(session.id, callerId, getSession)) return true;
+  const seen = new Set<string>([session.id]);
+  let current: Session | undefined = session;
+  for (let depth = 0; depth < 64 && current; depth++) {
+    const up = reportingParentSessionId(current);
+    if (!up || seen.has(up)) return false;
+    if (up === callerId) return true;
+    seen.add(up);
+    current = getSession(up);
+  }
+  return false;
+}
+
+/**
+ * The nearest session above `session`, on the chain it reports to, that is not
+ * `peerId` and can still message it (`canMessage`): the session a budget
+ * refusal tells the caller to ask, because a message from it resets the
+ * caller's budgets. Null when there is none, and the operator is the way on.
+ */
+export function coordinatorSessionId(
+  session: Session,
+  peerId: string,
+  canMessage: (candidate: Session) => boolean,
+): string | null {
+  const seen = new Set<string>([session.id]);
+  let current: Session | undefined = session;
+  for (let depth = 0; depth < 64 && current; depth++) {
+    const up = reportingParentSessionId(current);
+    if (!up || seen.has(up)) return null;
+    seen.add(up);
+    const candidate = getSession(up);
+    if (!candidate) return null;
+    if (up !== peerId && canMessage(candidate)) return up;
+    current = candidate;
+  }
+  return null;
+}

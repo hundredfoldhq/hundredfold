@@ -10,6 +10,7 @@
 import type { Employee, Engine, EngineResult, HundredfoldConfig, RemoteTarget, ResolvedMcpConfig, Session, StreamDelta } from "../shared/types.js";
 import type { EngineName } from "../shared/models.js";
 import type { FallbackHop } from "../shared/fallback-chain-wire.js";
+import type { ChainExhausted } from "./fallback-hop.js";
 
 /** What detectRateLimit returned for the original turn. */
 export interface RateLimitInfo {
@@ -78,9 +79,10 @@ export interface RateLimitHandlerHooks {
    *
    * `reason` is set when nothing in the session's fallback chain could take the turn (its own
    * fallback target could not, or every link was tried), so the notice can say why it waited
-   * instead of switching; `hop` is then the record that the chain ran out.
+   * instead of switching; `hop` is then the record that the chain ran out. `signedOut` names the fallback links that
+   * are signed out (their key or login refused), which the operator has to renew.
    */
-  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }) => void | Promise<void>;
+  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: ChainExhausted; signedOut?: string[] }) => void | Promise<void>;
 
   /**
    * Called each retry iteration BEFORE the retry engine.run — switch UI back
@@ -128,8 +130,12 @@ export interface RateLimitHandlerHooks {
    * mark session errored, emit completion event with the timeout error.
    */
   onTimeout?: () => void | Promise<void>;
-  /** The chain could not serve a spent balance and the turn is not parked. */
-  onBillingFailure?: () => void | Promise<void>;
+  /**
+   * The chain could not serve a spent balance, a dead key or a model the account is not enabled for, and
+   * the turn is not parked. `signedOut` names the fallback links the walk found signed out (their key or
+   * login rejected), so the failure says so as well as the own target's error.
+   */
+  onBillingFailure?: (info?: { signedOut?: string[] }) => void | Promise<void>;
 
   /**
    * Called when the session was deleted/cancelled while waiting. The handler
@@ -150,6 +156,8 @@ export interface RateLimitHandlerOpts extends RemoteTarget {
   attemptToken: string;
   /** The original prompt that hit the rate limit — used unchanged for retries. */
   prompt: string;
+  /** The prompt a retry after the wait sends, asked for when the retry fires (and again on each later retry, so it should settle on one answer); `prompt` when absent. */
+  retryPrompt?: () => string;
   systemPrompt?: string;
   /** Explicit refresh for retries on the same resumed native transcript. Never
    *  forwarded to a different fallback engine. */

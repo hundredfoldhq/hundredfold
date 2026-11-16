@@ -98,8 +98,8 @@ describe("the restart record on shutdown", () => {
 
     restartResume.consumeRestartResumeCandidates();
 
-    // The DB has forgotten which restart interrupted it; the record has not.
-    expect(registry.getSession(worker.id)?.transportMeta ?? null).toBeNull();
+    // The DB has forgotten which restart interrupted it (only the pause stamp, which the next turn consumes, is left); the record has not.
+    expect(registry.getSession(worker.id)?.transportMeta ?? null).toEqual({ pausedAt: { at: expect.any(String), kind: "restart" } });
     expect(lines().map((entry) => entry.sessionId)).toEqual([worker.id]);
   });
 
