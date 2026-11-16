@@ -832,6 +832,26 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
 }
 
 /**
+ * The text of the newest message `childId` put in front of `parentId`, whether
+ * the automatic reply callback or its own send_to_session: what the parent has
+ * already been told by that child, for a caller that must not tell it again.
+ */
+export function lastMessageFromChild(parentId: string, childId: string): string | undefined {
+  const db = initDb();
+  const row = db.prepare(`
+    SELECT json_extract(meta, '$.fullMessage') AS full
+    FROM messages
+    WHERE session_id = ?
+      AND role = 'notification'
+      AND ((json_extract(meta, '$.kind') = 'child-reply' AND json_extract(meta, '$.childSessionId') = ?)
+        OR (json_extract(meta, '$.kind') = 'agent-relay' AND json_extract(meta, '$.fromSessionId') = ?))
+    ORDER BY timestamp DESC, rowid DESC
+    LIMIT 1
+  `).get(parentId, childId, childId) as { full?: string | null } | undefined;
+  return typeof row?.full === 'string' ? row.full : undefined;
+}
+
+/**
  * A child's reply that was held back from its parent because the turn only
  * waited on the child's own background work. Persisted with the session so a
  * restart, which forgets the in-memory background state, can still hand the

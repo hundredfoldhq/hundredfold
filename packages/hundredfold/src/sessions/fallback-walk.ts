@@ -205,7 +205,7 @@ async function flipOnto(w: Walk, found: Found, hop: FallbackHop): Promise<Engine
 /** The prompt the link is sent: what its thread missed when it has one, the conversation so far when it has not. */
 function promptFor(w: Walk, substitution: EngineSubstitution): string {
   const { session, prompt } = w.input.opts;
-  return substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id);
+  return substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id, prompt);
 }
 
 async function launch(w: Walk, found: Found, hop: FallbackHop): Promise<WalkOutcome | undefined> {
