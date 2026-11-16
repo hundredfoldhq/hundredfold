@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, renderHook, screen, waitFor } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation, type RouteObject } from 'react-router-dom'
-import type { ReactNode } from 'react'
-import { useTodoBoardOpenIntent, useTodoBoardTabPinner } from '../use-layout-tab-openers'
+import { useState, type ReactNode } from 'react'
+import { sessionListFailed, useTodoBoardOpenIntent, useTodoBoardTabPinner } from '../use-layout-tab-openers'
 
 /* The `?open=todo-board:<id>` link, on a data router: its navigations are asynchronous, so a drop of the intent that
  * raced another move would show here (a MemoryRouter would hide it). */
@@ -19,8 +19,8 @@ function mount(entry: string, ui: ReactNode) {
   return router
 }
 
-function Intent({ open, ready, mobile }: { open: (id: string) => boolean; ready: boolean; mobile: boolean }) {
-  useTodoBoardOpenIntent({ open, ready, mobile })
+function Intent({ open, ready, mobile, failed }: { open: (id: string) => boolean; ready: boolean; mobile: boolean; failed?: boolean }) {
+  useTodoBoardOpenIntent({ open, ready, mobile, failed })
   return null
 }
 
@@ -44,6 +44,30 @@ describe('the sub-board tab link', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(open).not.toHaveBeenCalled()
     expect(router.state.location.search).toBe('?open=todo-board:ACM-7')
+  })
+
+  it('drops the link from the address, opening nothing, when the session list failed and the layout can never be ready', async () => {
+    const open = vi.fn(() => false)
+    const router = mount('/?session=s1&open=todo-board:ACM-7', <Intent open={open} ready={false} mobile={false} failed />)
+    await waitFor(() => expect(where()).toBe('/?session=s1'))
+    expect(open).not.toHaveBeenCalled()
+    expect(router.state.historyAction).toBe('REPLACE')
+  })
+
+  it('drops the link when the session list fails only after the link was held waiting for the layout', async () => {
+    const open = vi.fn(() => false)
+    let fail: () => void = () => {}
+    function Late() {
+      const [failed, setFailed] = useState(false)
+      fail = () => setFailed(true)
+      return <Intent open={open} ready={false} mobile={false} failed={failed} />
+    }
+    const router = mount('/?open=todo-board:ACM-7', <Late />)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(router.state.location.search).toBe('?open=todo-board:ACM-7')
+    act(() => fail())
+    await waitFor(() => expect(where()).toBe('/'))
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('opens nothing for a link that names no Todo, and drops it from the address all the same', async () => {
@@ -98,5 +122,18 @@ describe('the pinner the chat page hands the board pop-up', () => {
     const { result } = renderHook(() => useTodoBoardTabPinner(pin, { mobile: true, hydrated: true }), { wrapper })
     expect(result.current('ACM-7')).toBe(false)
     expect(pin).not.toHaveBeenCalled()
+  })
+})
+
+describe('when the session list counts as failed', () => {
+  it('is failed only when the query errored and holds no list to hydrate the layout from', () => {
+    expect(sessionListFailed({ isError: true, data: undefined })).toBe(true)
+    expect(sessionListFailed({ isError: false, data: undefined })).toBe(false)
+    expect(sessionListFailed({ isError: false, data: [] })).toBe(false)
+  })
+
+  it('is not failed when a background refetch errored but the earlier list is still held', () => {
+    expect(sessionListFailed({ isError: true, data: [] })).toBe(false)
+    expect(sessionListFailed({ isError: true, data: [{ id: 's1' }] })).toBe(false)
   })
 })
