@@ -670,6 +670,8 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
   ])("a steer post that %s", (_name, reachesServer) => {
     it("is abandoned at the bound and taken back out: withdrawn, and nothing runs it unattended", async () => {
       SERVER_TURN_TIMING.steerWithdrawMs = 300;
+      // Longer than the stop takes, so the turn's end meets a post that is still unanswered.
+      const HOLD_MS = 4000;
       const h = harness();
       const id = await sessionWithServer(h);
       const real = globalThis.fetch;
@@ -678,10 +680,10 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
           // The post is held on the client: either after the server has it, or before it is sent.
           if (reachesServer) {
             const res = await real(input, init);
-            await new Promise((r) => setTimeout(r, 1500));
+            await new Promise((r) => setTimeout(r, HOLD_MS));
             return res;
           }
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, HOLD_MS));
         }
         return real(input, init);
       });
@@ -694,7 +696,7 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
         expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
         expect(await outcome).toBe("withdrawn");
         // Past the point the held post is released: the server never runs the input.
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, HOLD_MS));
         expect(await inboxOf(h, id)).toEqual([]);
         const items = (await call(h, `/api/session/${id}/message?limit=10&order=desc`)).body.data as any[];
         expect(items.some((m) => m.type === "user" && m.text === STEER)).toBe(false);
