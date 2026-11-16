@@ -664,14 +664,16 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     }
   });
 
+  // `holdMs` is how long the client holds the post: shorter than the stop takes (the turn is
+  // stopping when it is released) or longer (the turn has ended, and the bound gave up on it).
   describe.each([
-    ["reaches the server before the turn ends but is not answered in time", true],
-    ["never reaches the server", false],
-  ])("a steer post that %s", (_name, reachesServer) => {
+    ["is held past the turn's end after the server took it", true, 4000],
+    ["is held past the turn's end and never reaches the server", false, 4000],
+    ["is released while the turn is being stopped", false, 1500],
+  ])("a steer post that %s", (_name, reachesServer, holdMs) => {
     it("is abandoned at the bound and taken back out: withdrawn, and nothing runs it unattended", async () => {
       SERVER_TURN_TIMING.steerWithdrawMs = 300;
-      // Longer than the stop takes, so the turn's end meets a post that is still unanswered.
-      const HOLD_MS = 4000;
+      const HOLD_MS = holdMs;
       const h = harness();
       const id = await sessionWithServer(h);
       const real = globalThis.fetch;
