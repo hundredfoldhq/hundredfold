@@ -81,6 +81,34 @@ describe("SessionQueue claims the next row by position", () => {
     expect(ran).toEqual(["running", "b", "callback", "a"]);
   });
 
+  it("moves an internal row to the head of the lane, ahead of visible and internal rows queued earlier", async () => {
+    const lane = "lane-head";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "callback", "b", "mention"], { internal: ["callback", "mention"] });
+    await tick();
+
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("mention")!)).toBe(true);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "mention", "a", "callback", "b"]);
+  });
+
+  it("refuses to move a row that is not parked in the lane, and changes nothing", async () => {
+    const lane = "lane-head-refused";
+    const { ran, ids, release, done } = parkedLane(lane, ["a", "b"]);
+    await tick();
+    const elsewhere = reg.enqueueQueueItem("s-claim", "lane-elsewhere", "elsewhere");
+
+    expect(reg.movePendingQueueItemToHead(lane, "no-such-row")).toBe(false);
+    expect(reg.movePendingQueueItemToHead(lane, elsewhere)).toBe(false);
+    reg.cancelQueueItem(ids.get("a")!);
+    expect(reg.movePendingQueueItemToHead(lane, ids.get("a")!)).toBe(false);
+
+    release();
+    await done();
+    expect(ran).toEqual(["running", "b"]);
+  });
+
   it("settles each caller with its own row's outcome, whichever slot ran it", async () => {
     const lane = "lane-errors";
     const queue = new SessionQueue();

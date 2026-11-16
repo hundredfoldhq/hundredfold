@@ -7,7 +7,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, isSteerableEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -69,6 +69,7 @@ import {
   getMessages,
   getMessagePage,
   enqueueQueueItem,
+  movePendingQueueItemToHead,
   markRunningQueueItemsCompletedForSession,
   shouldHoldParentCompletionQueueDispatch,
   listReleasableParentCompletionQueuesForSource,
@@ -348,7 +349,8 @@ import { handleHeartbeatApi } from "./heartbeat-api.js";
 import { armChildWatch } from "../heartbeats/child-watch.js";
 import { handleSelfCompactionApi } from "./self-compaction-api.js";
 import { handleSessionContextApi } from "./session-context-api.js";
-import { messageDeliveryError, resolveMessageDelivery, shouldInterruptRunningTurn as interruptsRunningTurn } from "./message-interrupt.js";
+import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
+import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { isAutoCompacting } from "../sessions/auto-compaction.js";
 import { isRawEngineCommand } from "../shared/skill-commands.js";
@@ -4123,7 +4125,11 @@ export async function handleApiRequest(
       // Queued messages drain one per turn, in order, through the serial queue.
       const delivery = resolveMessageDelivery({ delivery: body.delivery, interrupt: body.interrupt });
       const pausableKey = session.sessionKey || session.sourceRef || session.id;
-      const shouldInterruptRunningTurn = interruptsRunningTurn({
+      // The operator's own Todo mention asks to reach a running turn. That is read
+      // from the durable delivery row alone, which only the gateway writes: a
+      // request body naming it would let any caller cut another session's turn.
+      const targetSessionId = session.id;
+      const runningAction = runningTurnAction({
         isNotification,
         prompt: String(prompt),
         interruptOnNewMessage: config.sessions?.interruptOnNewMessage,
@@ -4131,7 +4137,10 @@ export async function handleApiRequest(
         autoCompacting: isAutoCompacting(session.id),
         delivery,
         queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
+        reachRunningTurn: callbackDelivery?.payload.reachRunningTurn === true,
+        canSteer: () => isSteerableEngine(engine) && engine.canSteer(targetSessionId),
       });
+      const shouldInterruptRunningTurn = runningAction === "interrupt";
       if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
 
       // Persist the message immediately. For notifications, store the clean
@@ -4182,6 +4191,9 @@ export async function handleApiRequest(
           }
         }
         callbackQueueNeedsDispatch = !queue.hasInFlightItem(queueItemId);
+        // An interrupting mention runs before anything queued earlier, a child's
+        // callback included: the turn it cuts off hands the lane to the head row.
+        if (shouldInterruptRunningTurn) movePendingQueueItemToHead(sessionKey, queueItemId);
       } else {
         const claim = claimIncomingTurn({
           sessionId: session.id, sessionKey, prompt, isNotification, role: messageRole, dedupeKey: lateralDedupeKey,
@@ -4285,7 +4297,7 @@ export async function handleApiRequest(
           engine.kill(session.id, USER_MESSAGE_INTERRUPTION_REASON);
           // SessionQueue serializes per-session; the new turn enqueued below will
           // wait for the killed run()'s promise to settle before starting.
-          context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
+          context.emit("session:interrupted", { sessionId: session.id, reason: callbackDelivery ? "todo mention" : "new message" });
         }
       }
 
@@ -4329,6 +4341,12 @@ export async function handleApiRequest(
       }
 
       if (!callbackDelivery || callbackQueueNeedsDispatch) {
+        // Handed to the turn running now, which reads it at its next step. The row
+        // still waits behind that turn; its slot asks how the hand-over ended.
+        if (runningAction === "steer" && isSteerableEngine(engine)) {
+          logger.info(`Steering a Todo mention into running session ${session.id}`);
+          registerSteeredDelivery(queueItemId!, Promise.resolve().then(() => engine.steer(session.id, enginePrompt)));
+        }
         dispatchWebSessionRun(session, enginePrompt, engine, context, {
           queueItemId,
           attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined,

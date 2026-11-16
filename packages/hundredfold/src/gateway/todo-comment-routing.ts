@@ -53,6 +53,11 @@ function authorLabel(comment: WorkItemComment): string {
   return isMemberIdentity(comment.author) ? memberLabel(comment.author) : comment.author;
 }
 
+/** Whether the operator wrote the comment. The remote MCP connector is the operator's own door, though its comments carry its session. */
+function writtenByOperator(comment: WorkItemComment): boolean {
+  return comment.authorKind === "operator" || isRemoteMcpSession(comment.sessionId ? getSession(comment.sessionId) : undefined);
+}
+
 function threadHint(comment: WorkItemComment): string {
   return `Reply on the thread with comment_work_item { id: "${comment.workItemId}", body: "<reply>", `
     + `parentCommentId: "${comment.id}" }. Mention @<employee> in a comment to bring someone else in.`;
@@ -64,7 +69,8 @@ function mentionPrompt(item: WorkItem, comment: WorkItemComment): string {
     + `Read the Todo with get_work_item { id: "${item.id}" } and its thread with list_work_item_comments { id: "${item.id}" }. `
     + `${threadHint(comment)}\n\n`
     + `Unless you are already working this Todo, you are being consulted, not handed the work: whoever holds it `
-    + `keeps it unless it is delegated to you. Decide what the comment needs from you, and answer on the thread.`;
+    + `keeps it unless it is delegated to you. Decide what the comment needs from you, and answer on the thread. `
+    + `If this reached you in the middle of other work, answer it and then carry on with that work.`;
 }
 
 function replyPrompt(item: WorkItem, comment: WorkItemComment): string {
@@ -129,6 +135,8 @@ function wakeTarget(context: ApiContext, item: WorkItem, comment: WorkItemCommen
     deliveryKind: "todo-mention",
     message: mentionPrompt(item, comment),
     displayMessage: `🏷️ ${item.id} · ${authorLabel(comment)}\n${comment.body}`,
+    // The operator's mention reaches a turn already running; nobody else's does.
+    ...(writtenByOperator(comment) ? { reachRunningTurn: true as const } : {}),
   };
   if (!employee) return wakeRootOnTodo(context, input);
   const owner = owningEmployeeSession(item, employee.name);
@@ -151,8 +159,7 @@ function wakeOne(context: ApiContext, item: WorkItem, comment: WorkItemComment, 
 
 /** A mention no employee answers to: the root's, or a name that is nobody's. */
 function wakeUnrostered(context: ApiContext, item: WorkItem, comment: WorkItemComment, name: string, root: RootMention | null): CommentWake | undefined {
-  // The remote MCP connector is the operator's own door, though its comments carry its session.
-  const byOperator = comment.authorKind === "operator" || isRemoteMcpSession(comment.sessionId ? getSession(comment.sessionId) : undefined);
+  const byOperator = writtenByOperator(comment);
   if (root?.mention !== name) {
     if (byOperator) reportFailedWake(comment, name, `No employee or org root is named "${name}".`);
     return undefined;

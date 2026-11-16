@@ -2970,7 +2970,7 @@ export function acceptSessionDelivery(
 export {
   enqueueQueueItem, markQueueItemRunning, markQueueItemCompleted, markRunningQueueItemsCompletedForSession,
   getQueueItem, cancelQueueItem, withdrawPendingQueueItem, getQueueItems, withdrawAllPendingQueueItems, recoverStaleQueueItems,
-  listAllPendingQueueItems, listPendingQueueItemIdsForSession, editPendingQueueItem, promotePendingQueueItem, type QueueItem,
+  listAllPendingQueueItems, listPendingQueueItemIdsForSession, editPendingQueueItem, promotePendingQueueItem, movePendingQueueItemToHead, type QueueItem,
 } from './queue-item-registry.js';
 // ── File management ──────────────────────────────────────────────────
 // Kept re-exported here so the many callers that reach for a file through the

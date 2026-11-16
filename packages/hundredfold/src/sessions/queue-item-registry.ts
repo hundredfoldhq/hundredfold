@@ -166,6 +166,30 @@ export function promotePendingQueueItem(sessionKey: string, itemId: string): boo
   }).immediate();
 }
 
+/**
+ * Run one parked row next, whatever it is: the head of the line among every
+ * pending row of the lane, internal ones included. {@link promotePendingQueueItem}
+ * only reorders the operator's own rows and leaves a callback delivery where it
+ * is; this is for a row that must run before anything queued earlier, such as
+ * the operator's mention overtaking a child's completion callback.
+ *
+ * Only positions move, in one transaction, and the lane is renumbered densely
+ * for the same reason as there. Returns false when the row is not a pending
+ * row of the lane.
+ */
+export function movePendingQueueItemToHead(sessionKey: string, itemId: string): boolean {
+  const db = initDb();
+  return db.transaction(() => {
+    const pending = db.prepare(
+      "SELECT id FROM queue_items WHERE session_key = ? AND status = 'pending' ORDER BY position ASC, created_at ASC, rowid ASC",
+    ).all(sessionKey) as Array<{ id: string }>;
+    if (!pending.some((row) => row.id === itemId)) return false;
+    const write = db.prepare("UPDATE queue_items SET position = ? WHERE id = ? AND status = 'pending'");
+    rotatePendingToFront(pending, itemId).forEach((row, index) => write.run(index + 1, row.id));
+    return true;
+  }).immediate();
+}
+
 export function getQueueItems(sessionKey: string): QueueItem[] {
   const db = initDb();
   const rows = db.prepare(
