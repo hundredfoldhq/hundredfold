@@ -55,6 +55,14 @@ describe("wrapServersWithScrub (pure spec transform)", () => {
     expect(out.remote).toBe(servers.remote);
   });
 
+  it("wraps a server that names both a command and a url: a command is what an engine launches", () => {
+    const both = { command: "node", args: ["x.js"], url: "http://127.0.0.1:1/sse", type: "sse" } as unknown as McpServerConfig;
+    const wrapped = wrapServersWithScrub({ both }).both as McpServerStdioConfig & { url?: string };
+    expect(wrapped.command).toBe(process.execPath);
+    expect(wrapped.args?.slice(1)).toEqual(["node", "x.js"]);
+    expect(wrapped.url).toBe("http://127.0.0.1:1/sse");
+  });
+
   it("wraps a server with no args/env and defaults args to just the real command", () => {
     const out = wrapServersWithScrub({ fetch: { command: "npx" } });
     const wrapped = out.fetch as McpServerStdioConfig;
@@ -191,6 +199,25 @@ fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({
     });
     expect(code).toBe(0);
     expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ a: null, b: null, list: null, keep: "yes" });
+  }, 20_000);
+
+  it("never passes the opencode server password to the child, even with no scrub list", async () => {
+    const outFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "scrub-pw-")), "env.json");
+    const dumpScript = path.join(path.dirname(outFile), "dump.mjs");
+    fs.writeFileSync(dumpScript, `import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({
+  names: Object.keys(process.env).filter((k) => k.includes("OPENCODE_SERVER")),
+  keep: process.env.ACME_UNLISTED ?? null,
+}));`);
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, [DIST_SCRUB, process.execPath, dumpScript], {
+        env: { ...process.env, OPENCODE_SERVER_PASSWORD: "server-pw", ACME_UNLISTED: "yes" },
+        stdio: "ignore",
+      });
+      child.on("exit", (c) => resolve(c ?? -1));
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ names: [], keep: "yes" });
   }, 20_000);
 
   it("propagates a non-zero child exit code", async () => {

@@ -23,6 +23,7 @@ process.on("exit", () => fs.writeFileSync(${JSON.stringify(outFile)}, JSON.strin
   a: process.env.ACME_LISTED_KEY_A ?? null,
   b: process.env.ACME_LISTED_KEY_B ?? null,
   list: process.env.HUNDREDFOLD_SCRUB_ENV ?? null,
+  pw: process.env.OPENCODE_SERVER_PASSWORD ?? null,
   keep: process.env.ACME_UNLISTED ?? null,
 })));`);
     try {
@@ -36,6 +37,7 @@ process.on("exit", () => fs.writeFileSync(${JSON.stringify(outFile)}, JSON.strin
             ACME_LISTED_KEY_A: "sk-a",
             ACME_LISTED_KEY_B: "sk-b",
             HUNDREDFOLD_SCRUB_ENV: "ACME_LISTED_KEY_A,ACME_LISTED_KEY_B",
+            OPENCODE_SERVER_PASSWORD: "server-pw",
             ACME_UNLISTED: "yes",
           },
           // stdin closed: the stdio server ends as soon as it has started.
@@ -44,7 +46,7 @@ process.on("exit", () => fs.writeFileSync(${JSON.stringify(outFile)}, JSON.strin
         child.on("exit", (c) => resolve(c ?? -1));
       });
       expect(code).toBe(0);
-      expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ a: null, b: null, list: null, keep: "yes" });
+      expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ a: null, b: null, list: null, pw: null, keep: "yes" });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
