@@ -30,6 +30,7 @@ import { OpencodeEngine } from "../opencode.js";
 import { OpencodeServerPool, basicAuthHeader } from "../opencode-server.js";
 import { cancelledRequestsNotice, SERVER_TURN_TIMING } from "../opencode-server-turn.js";
 import { RESEED_PREAMBLE } from "../opencode-server-compaction.js";
+import { ownStoredReplies } from "../opencode-v2-turn.js";
 import { buildOpencodeViewArgs } from "../opencode-protocol.js";
 import { clearOpencodeVersionCache } from "../../shared/opencode-bin-version.js";
 import { isDeadSessionError } from "../../shared/rateLimit.js";
@@ -522,6 +523,169 @@ describe("an operator input that arrives while the turn runs", { timeout: 30_000
   });
 });
 
+describe("steering an input into a running turn", { timeout: 30_000 }, () => {
+  const STEER = "please also look at the failing test";
+
+  async function sessionWithServer(h: Harness): Promise<string> {
+    const first = await h.engine.run(runOpts({ prompt: "hello" }));
+    expect(first.error).toBeUndefined();
+    return first.sessionId!;
+  }
+
+  const steerPosts = async (h: Harness) => promptsOf(await logOf(h)).filter((e) => e.body?.delivery === "steer");
+  const inboxOf = async (h: Harness, id: string) => (await call(h, `/api/session/${id}/inbox`)).body.data as Array<{ id: string }>;
+
+  it("is steered at the next step of the same execution, and the turn answers with what followed", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = streamed(h, { resumeSessionId: id, prompt: "run it SLOWTOOL" });
+    await waitDelivered(h);
+    expect(h.engine.canSteer("sess-1")).toBe(true);
+    expect(await h.engine.steer("sess-1", STEER)).toBe("steered");
+    const { result, deltas } = await turn;
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("tool done");
+    expect(deltas.some((d) => d.type === "tool_result")).toBe(true);
+
+    const posts = await steerPosts(h);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toMatchObject({ text: STEER, metadata: { hundredfold: "prompt" }, delivery: "steer" });
+    const turnPrompt = promptsOf(await logOf(h)).find((e) => /SLOWTOOL/.test(String(e.body?.text)) && e.body?.delivery === "queue");
+    expect(posts[0]!.body!.id).toMatch(/^msg_/);
+    expect(posts[0]!.body!.id).not.toBe(turnPrompt!.body!.id);
+    // One execution: the steered input sits between the turn's steps, and one idle closes both.
+    const items = (await call(h, `/api/session/${id}/message?limit=10&order=desc`)).body.data as any[];
+    const order = [...items].reverse().map((m) => (m.type === "user" ? `user:${m.text}` : m.type));
+    expect(order.slice(-5)).toEqual(["user:run it SLOWTOOL", "assistant", `user:${STEER}`, "assistant", "idle"]);
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+  });
+
+  it("keeps the turn open for an input that arrives during its last step, and answers with the reply to it", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = streamed(h, { resumeSessionId: id, prompt: "SLOW answer" });
+    await waitDelivered(h);
+    const outcome = h.engine.steer("sess-1", "late aside");
+    const { result } = await turn;
+    expect(await outcome).toBe("steered");
+    // The server takes the input in right after the step it arrived in, and answers it.
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("fake:late aside");
+    expect(result.numTurns).toBe(2);
+  });
+
+  it("does not take a steered input for someone else's queued one, even when the terminal toggles it to queue", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = streamed(h, { resumeSessionId: id, prompt: "run it SLOWTOOL" });
+    await waitDelivered(h);
+    const outcome = h.engine.steer("sess-1", STEER);
+    await waitFor(async () => (await inboxOf(h, id)).length === 1);
+    const steerId = (await inboxOf(h, id))[0]!.id;
+    await call(h, `/api/session/${id}/inbox/${steerId}`, { method: "PATCH", body: { delivery: "queue" } });
+    const { result } = await turn;
+    expect(await outcome).toBe("steered");
+    // Its delivery did not end the turn's input: the step that answered it is the turn's reply.
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe(`fake:${STEER}`);
+  });
+
+  it("takes an input back out of the inbox when the turn is stopped before it was delivered", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+    await waitDelivered(h);
+    const outcome = h.engine.steer("sess-1", STEER);
+    await waitFor(async () => (await inboxOf(h, id)).length === 1);
+    const steerId = (await inboxOf(h, id))[0]!.id;
+    h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+    // The turn no longer takes inputs the moment it is being stopped.
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    expect(await h.engine.steer("sess-1", "too late")).toBe("withdrawn");
+    expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
+    expect(await outcome).toBe("withdrawn");
+    const log = await logOf(h);
+    expect(log.some((e) => e.method === "DELETE" && e.path === `/api/session/${id}/inbox/${steerId}`)).toBe(true);
+    expect(await inboxOf(h, id)).toEqual([]);
+    // Nothing was posted for the refused one.
+    expect(await steerPosts(h)).toHaveLength(1);
+  });
+
+  it("is steered, not withdrawn, when the turn ends and the input is no longer in the inbox", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+    await waitDelivered(h);
+    const outcome = h.engine.steer("sess-1", STEER);
+    await waitFor(async () => (await inboxOf(h, id)).length === 1);
+    const steerId = (await inboxOf(h, id))[0]!.id;
+    // Taken by the server (as if delivered to something else) without the turn hearing of it.
+    await call(h, `/api/session/${id}/inbox/${steerId}`, { method: "DELETE" });
+    h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+    await turn;
+    expect(await outcome).toBe("steered");
+    // The engine did not try to cancel what was already gone.
+    expect((await logOf(h)).filter((e) => e.method === "DELETE" && e.path.endsWith(`/inbox/${steerId}`))).toHaveLength(1);
+  });
+
+  it("is withdrawn when the server cannot be reached to take the input back", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+    await waitDelivered(h);
+    const outcome = h.engine.steer("sess-1", STEER);
+    await waitFor(async () => (await inboxOf(h, id)).length === 1);
+    process.kill(h.pool.get("sess-1")!.proc.pid!, "SIGKILL");
+    const result = await turn;
+    expect(result.error).toBeTruthy();
+    expect(await outcome).toBe("withdrawn");
+  });
+
+  it("is withdrawn when the post fails, and the turn goes on unaffected", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const real = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "POST" && String(input).endsWith("/prompt") && String(init.body).includes('"steer"')) {
+        return new Response("boom", { status: 500 });
+      }
+      return real(input, init);
+    });
+    try {
+      const turn = streamed(h, { resumeSessionId: id, prompt: "run it SLOWTOOL" });
+      await waitDelivered(h);
+      expect(await h.engine.steer("sess-1", STEER)).toBe("withdrawn");
+      const { result } = await turn;
+      expect(result.error).toBeUndefined();
+      expect(result.result).toBe("tool done");
+      expect(await inboxOf(h, id)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("cannot be steered with no turn, before its own prompt is delivered, once it ended or while it is stopped", async () => {
+    process.env.FAKE_V2_OPERATOR_BUSY_MS = "1200";
+    const h = harness();
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    expect(await h.engine.steer("sess-1", STEER)).toBe("withdrawn");
+
+    const turn = h.engine.run(runOpts({ prompt: "HANG after the operator" }));
+    await waitFor(async () => promptsOf(await logOf(h)).length === 1);
+    // Posted, and waiting behind the operator's own input: nothing of the turn runs yet.
+    await waitFor(async () => (await running(h)).length === 1);
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    expect(await h.engine.steer("sess-1", STEER)).toBe("withdrawn");
+    expect(await steerPosts(h)).toHaveLength(0);
+    // Once the operator's input is done and the prompt delivered, it can.
+    await waitFor(() => h.engine.canSteer("sess-1"));
+    h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+    await turn;
+    expect(h.engine.canSteer("sess-1")).toBe(false);
+    expect(await h.engine.steer("sess-1", STEER)).toBe("withdrawn");
+  });
+});
+
 describe("what a turn answers to the server's questions", { timeout: 30_000 }, () => {
   it("grants a permission its own step asks for, once", async () => {
     const h = harness();
@@ -942,5 +1106,16 @@ describe("the terminal view of an OpenCode 2 session", () => {
     await streamed(h);
     const server = h.pool.get("sess-1")!;
     expect(buildOpencodeViewArgs(server.hostUrl, "ses_test0001", server.api)).toEqual(["--server", server.hostUrl, "-s", "ses_test0001"]);
+  });
+});
+
+describe("the replies of a turn that had an input steered into it", () => {
+  const assistant = (id: string) => ({ id, type: "assistant" });
+  const user = (id: string) => ({ id, type: "user" });
+
+  it("run on past the steered input, and stop at someone else's", () => {
+    const newestFirst = [assistant("a4"), user("operator"), assistant("a3"), user("steered"), assistant("a2"), assistant("a1"), user("prompt")];
+    expect(ownStoredReplies(newestFirst, "prompt").map((m) => m.id)).toEqual(["a1", "a2"]);
+    expect(ownStoredReplies(newestFirst, "prompt", new Set(["steered"])).map((m) => m.id)).toEqual(["a1", "a2", "a3"]);
   });
 });

@@ -7,6 +7,8 @@
  *   CALLTOOL=<name>  the same with the named tool, and the arguments in
  *             ARGS64=<base64 JSON> (none without it)
  *   SLOW      streams forty words, 250 ms apart (time to stop the turn)
+ *   STEERED_MARKER  in the newest user message (an input steered into a running turn):
+ *             answers "heard the steer", whatever else the turn was doing
  *   E400ONCE  answers the first request 400 `{"model":…}` (a pre-stream 400)
  * Anything else answers "hello from mock". A compaction request answers with
  * a summary in the template opencode asks for; a request without tools (the
@@ -74,6 +76,7 @@ function answer(req, res, body) {
   appendFileSync(LOG, `${JSON.stringify({ url: req.url, model: body.model, hasTools, tools, lastRole: last?.role, lastUser, all: JSON.stringify(messages) })}\n`);
   if (lastUser.includes("summarize the conversation")) return text(res, [SUMMARY], 0);
   if (!hasTools) return text(res, ["Mock title"], 0);
+  if (lastUser.includes("STEERED_MARKER")) return text(res, ["heard the steer"], 0);
   if (lastUser.includes("E400ONCE") && !failedOnce) {
     failedOnce = true;
     return fail(res, 400, { model: body.model });
