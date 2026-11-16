@@ -172,11 +172,12 @@ export class OpencodeV2ServerTurn {
 
   /**
    * A new input can be handed to this turn now: its own prompt has been
-   * delivered and its input is still the one running, and nothing is ending it
-   * (settled, being stopped, failed).
+   * delivered and is still the input running (`ownInput`), and the turn is not
+   * over (settled) or being stopped (`interrupting`, which a kill and a
+   * timeout both set at once).
    */
   canSteer(): boolean {
-    return this.ownInput && this.delivered && !this.settled && !this.interrupting && !this.terminationReason && this.failure === null;
+    return this.ownInput && !this.settled && !this.interrupting;
   }
 
   /**
@@ -627,7 +628,7 @@ export class OpencodeV2ServerTurn {
   /** Note which inputs others queue (see onDelivered). */
   private onEnqueued(data: Record<string, unknown>): void {
     const id = str(data.inboxID);
-    if (id && id !== this.promptId && !this.steeredIds.has(id) && record(data.item)?.delivery === "queue") this.queuedByOthers.add(id);
+    if (id && id !== this.promptId && record(data.item)?.delivery === "queue") this.queuedByOthers.add(id);
   }
 
   /** An input waiting in the inbox was switched between steer and queue (the

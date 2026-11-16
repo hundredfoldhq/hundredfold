@@ -197,8 +197,8 @@ export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
   }
 
   private steerableTurn(sessionId: string): OpencodeV2ServerTurn | undefined {
-    const slot = this.serverTurns.get(sessionId);
-    return !slot?.interrupted && slot?.turn instanceof OpencodeV2ServerTurn ? slot.turn : undefined;
+    const turn = this.serverTurns.get(sessionId)?.turn;
+    return turn instanceof OpencodeV2ServerTurn ? turn : undefined;
   }
 
   /** Batch engine: no warm-PTY reuse, every live process is an in-flight turn.

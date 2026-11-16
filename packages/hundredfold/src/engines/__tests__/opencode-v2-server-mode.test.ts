@@ -641,6 +641,41 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     expect(await outcome).toBe("withdrawn");
   });
 
+  it("takes no input once the turn is over, while its end is still taking back what it never heard delivered", async () => {
+    SERVER_TURN_TIMING.steerWaitMs = 200;
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const real = globalThis.fetch;
+    let armed = false;
+    let reading!: () => void;
+    const readingInbox = new Promise<void>((resolve) => { reading = resolve; });
+    // The end of the turn reads the inbox; hold that read so the turn is settled but has not returned.
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (armed && (init?.method ?? "GET") === "GET" && String(input).endsWith("/inbox")) {
+        reading();
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      return real(input, init);
+    });
+    try {
+      const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
+      await waitDelivered(h);
+      const outcome = h.engine.steer("sess-1", STEER);
+      await waitFor(async () => (await inboxOf(h, id)).length === 1);
+      // Gone from the inbox before it could be delivered: the turn's reply ends with it still pending.
+      await call(h, `/api/session/${id}/inbox/${(await inboxOf(h, id))[0]!.id}`, { method: "DELETE" });
+      armed = true;
+      await readingInbox;
+      expect(h.engine.isAlive("sess-1")).toBe(false);
+      expect(h.engine.canSteer("sess-1")).toBe(false);
+      expect(await h.engine.steer("sess-1", "too late")).toBe("withdrawn");
+      expect((await turn).result).toBe("fake:slow");
+      expect(await outcome).toBe("steered");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("is withdrawn when the post fails, and the turn goes on unaffected", async () => {
     const h = harness();
     const id = await sessionWithServer(h);
