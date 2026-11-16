@@ -163,8 +163,9 @@ export type SteerOutcome = "steered" | "withdrawn";
 /**
  * An engine that can hand a new input to a turn already running, so the model
  * reads it at its next step rather than after the whole turn. The gateway
- * prefers this to interrupting the turn, which loses nothing that way; an
- * engine without it is interrupted instead.
+ * hands an operator's Todo mention to a turn this way; for an engine without
+ * it the mention waits at the head of the session's queue, never cutting the
+ * running turn off.
  */
 export interface SteerableEngine extends Engine {
   /** Whether a turn that can take a steered input is running in this session now. */
@@ -516,8 +517,9 @@ export interface SessionDeliveryPayload {
   meta?: JsonObject;
   block?: ChatBlockEnvelope;
   /** The operator asked for this one (their `@employee` on a Todo): a turn
-   *  running when it arrives takes it at its next step, or is interrupted for
-   *  it, rather than finishing first. Set only by the gateway's own writers. */
+   *  running when it arrives takes it at its next step when its engine can, and
+   *  otherwise it runs next, ahead of anything queued earlier, without cutting
+   *  the turn off. Set only by the gateway's own writers. */
   reachRunningTurn?: true;
 }
 

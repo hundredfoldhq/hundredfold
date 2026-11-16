@@ -35,7 +35,8 @@ export interface TodoSessionDelivery {
   message: string;
   displayMessage: string;
   /** The operator's own mention: a turn running in the live session takes it at
-   *  its next step, or is interrupted for it. Only a delivery into a session that
+   *  its next step when its engine can, and otherwise it runs next, ahead of
+   *  anything queued earlier; the turn is never cut off. Only a delivery into a session that
    *  is already running can use it; a new session has no turn to reach. */
   reachRunningTurn?: true;
 }

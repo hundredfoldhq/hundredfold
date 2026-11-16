@@ -316,6 +316,29 @@ describe("an operator's mention into a busy session", () => {
     });
   });
 
+  it("(c) a withdrawn steer runs next, ahead of a child callback queued earlier", async () => {
+    const busy = await busyTodo({ steerable: true });
+    await withRouteBackedFetch(busy.context, {}, async () => {
+      callbacks.notifyParentSession(completeChildAttempt(createChild(busy.session.id, "busy-withdrawn-child").id), { result: "child finished its part" });
+      await eventually(() => expect(busy.pendingPrompts().some((prompt) => prompt.includes("child finished its part"))).toBe(true));
+      await busy.operatorComment("@alpha please look at the failing check");
+      await eventually(() => expect(busy.steers).toHaveLength(1));
+      expect(busy.laneOrder()[0]).toContain("please look at the failing check");
+
+      busy.settleSteer("withdrawn");
+      busy.releaseNext();
+
+      await eventually(() => expect(busy.prompts).toHaveLength(2));
+      expect(busy.prompts[1]).toContain("please look at the failing check");
+      busy.releaseNext();
+      await eventually(() => expect(busy.prompts).toHaveLength(3));
+      expect(busy.prompts[2]).toContain("child finished its part");
+      busy.releaseNext();
+      await busy.settled();
+      expect(busy.kills).toEqual([]);
+    });
+  });
+
   it("(c) runs the mention too when the engine's hand-over fails outright", async () => {
     const busy = await busyTodo({ steerable: true });
     (busy.engine as unknown as { steer: () => Promise<SteerOutcome> }).steer = () => Promise.reject(new Error("engine went away"));

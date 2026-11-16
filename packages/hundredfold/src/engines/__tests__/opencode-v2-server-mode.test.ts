@@ -788,18 +788,19 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     }
   });
 
-  it("stays open for the step that answers a last-step steer even when that step outlasts the wait for the steer", async () => {
+  it("stays open for a last-step steer's answer when its step starts only after the wait for the steer would have expired", async () => {
     SERVER_TURN_TIMING.steerWaitMs = 300;
     const h = harness();
     const id = await sessionWithServer(h);
     const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
     await waitDelivered(h);
-    // Delivered right after the first step (2 s); its own step then takes 2 s more, well past the 300 ms wait.
-    const outcome = h.engine.steer("sess-1", "late aside SLOW");
+    // Delivered right after the first step (2 s); its own step starts 1.2 s later, well past the 300 ms wait.
+    const outcome = h.engine.steer("sess-1", "late aside LATESTART");
     const result = await turn;
     expect(await outcome).toBe("steered");
     // The turn did not end with the wait for delivery: nothing is still running when it returns.
     expect(await running(h)).toEqual([]);
+    expect(result.result).toBe("fake:latestart");
     expect(result.numTurns).toBe(2);
   });
 
