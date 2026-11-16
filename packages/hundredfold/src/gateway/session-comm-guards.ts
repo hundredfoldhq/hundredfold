@@ -1,4 +1,5 @@
-import { STRUCTURED_MESSAGE_BODY_MAX_CHARS, type Session } from "../shared/types.js";
+import type { Session } from "../shared/types.js";
+import { fullMessageMeta } from "../shared/full-message.js";
 import { CALLER_SESSION_CAPABILITY_HEADER, CALLER_SESSION_HEADER, TOOL_CALL_HEADER } from "../mcp/identity.js";
 
 /**
@@ -255,6 +256,8 @@ export interface AgentRelayMeta {
   hops: number;
   maxHops: number;
   fullMessage: string;
+  /** The body's real length, present only when `fullMessage` is a clipped copy. */
+  fullMessageChars?: number;
 }
 
 /** One-line word-boundary trim for the human-facing banner. */
@@ -318,7 +321,7 @@ export function prepareLateralSend(opts: {
     ...(caller.employee ? { fromEmployee: caller.employee } : {}),
     hops: verdict.hops,
     maxHops: hopCap,
-    fullMessage: message.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+    ...fullMessageMeta(message),
   };
   return { ok: true, prompt, displayMessage, hops: verdict.hops, meta, parentLink: opts.parentLink === true };
 }
