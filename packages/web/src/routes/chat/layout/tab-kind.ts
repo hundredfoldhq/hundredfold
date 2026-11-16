@@ -37,8 +37,14 @@ export function isTodosTabId(tabId: string): boolean {
   return tabId === TODOS_TAB_ID
 }
 
+/** A sub-board tab: the prefix and a valid Todo id, the same test parseTodoBoardTabId makes. */
 export function isTodoBoardTabId(tabId: string): boolean {
-  return tabId.startsWith(TODO_BOARD_TAB_PREFIX)
+  return parseTodoBoardTabId(tabId) !== null
+}
+
+/** A `todo-board:` id that names no valid Todo, so no tab can show it: nothing a stored layout should keep. */
+export function isMalformedTodoBoardTabId(tabId: string): boolean {
+  return tabId.startsWith(TODO_BOARD_TAB_PREFIX) && !isTodoBoardTabId(tabId)
 }
 
 export function isNewChatTabId(tabId: string): boolean {
@@ -78,7 +84,7 @@ export function todoBoardTabId(todoId: string): string {
 
 /** The Todo a sub-board tab shows, or null for any other id and for one that names no valid Todo id. */
 export function parseTodoBoardTabId(tabId: string): string | null {
-  if (!isTodoBoardTabId(tabId)) return null
+  if (!tabId.startsWith(TODO_BOARD_TAB_PREFIX)) return null
   const todoId = tabId.slice(TODO_BOARD_TAB_PREFIX.length)
   return isTodoId(todoId) ? todoId : null
 }

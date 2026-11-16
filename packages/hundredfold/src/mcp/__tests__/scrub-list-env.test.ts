@@ -21,4 +21,13 @@ describe("scrubListedEnv", () => {
     scrubListedEnv(env);
     expect(env).toEqual({ A_KEY: "1" });
   });
+
+  it("always drops the opencode server password, with or without a list", () => {
+    const bare: NodeJS.ProcessEnv = { OPENCODE_SERVER_PASSWORD: "pw", A_KEY: "1" };
+    scrubListedEnv(bare);
+    expect(bare).toEqual({ A_KEY: "1" });
+    const listed: NodeJS.ProcessEnv = { OPENCODE_SERVER_PASSWORD: "pw", HUNDREDFOLD_SCRUB_ENV: "A_KEY", A_KEY: "1", C_KEY: "3" };
+    scrubListedEnv(listed);
+    expect(listed).toEqual({ C_KEY: "3" });
+  });
 });

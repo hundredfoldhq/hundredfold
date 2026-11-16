@@ -714,8 +714,16 @@ describe("session tools — integration against the real routes/registry", () =>
     expect(banner.content).toContain("📨");
     expect(banner.content).toContain("GREEN-LIGHT: clear to merge");
     const meta = typeof banner.meta === "string" ? JSON.parse(banner.meta) : banner.meta;
-    expect(meta).toMatchObject({ kind: "agent-relay", fromLabel: "yorio-lead", hops: 1 });
+    expect(meta).toMatchObject({ kind: "agent-relay", fromLabel: "yorio-lead", viaOperator: true, hops: 1 });
     expect(meta.fromSessionId).toBeUndefined();
+
+    // The target reads it back as the engine read it: relayed via the operator, body whole.
+    const read = (await tool("read_session").handler({ sessionId: target, last: 1 }, ctxFor(target))) as {
+      messages: Array<{ content: string }>;
+    };
+    expect(read.messages[0].content).toBe(
+      "📨 Message relayed from yorio-lead via the operator:\n\nGREEN-LIGHT: clear to merge reps/workspace-conversion.",
+    );
   });
 
   it("an operator message WITHOUT role:notification is still a plain user message (unchanged)", async () => {

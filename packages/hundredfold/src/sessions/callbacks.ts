@@ -5,6 +5,7 @@ import {
   claimSessionDelivery,
   claimSessionDeliveryAttempt,
   consumeChildReportedToParent,
+  lastMessageFromChild,
   recordSessionDeliveryFailure,
   ensureCallbackAttemptToken,
   listDelegationCompletionNudgedSessions,
@@ -12,12 +13,14 @@ import {
   markDelegationCompletionSurfaced,
 } from "./registry.js";
 import { logger } from "../shared/logger.js";
-import { STRUCTURED_MESSAGE_BODY_MAX_CHARS, type Session } from "../shared/types.js";
+import type { Session } from "../shared/types.js";
+import { fullMessageMeta } from "../shared/full-message.js";
 import type { ChatBlockEnvelope, JsonObject } from "../shared/types.js";
 import { enforceDelegationCompletionContract } from "./delegation-completion-contract.js";
 import { isRemoteMcpSession } from "./remote-mcp-session.js";
 import { __resetHeldRepliesForTest, holdsInterimRelay, recoverHeldInterimReplies, releaseHeldReply, reviewHeldInterimReply, setHeldReplyRelay } from "./held-replies.js";
 import { withReportingParent } from "../work-items/employee-session-delegation.js";
+import { withNoticeTarget } from "./turn-requester.js";
 import type { SessionDeliveryPayload } from "../shared/types.js";
 import { releaseChildWatchIfSettled } from "../heartbeats/child-watch.js";
 import { isSpentDispatcher } from "../gateway/work-item-authority.js";
@@ -99,7 +102,8 @@ export function notifyManagerVisibility(
 /** Tell the parent a child replied, fire-and-forget. Turn settlement awaits the
  *  variant below, so a source-drain hold cannot release before the final
  *  durable callback is accepted. "The parent" is the session the child reports
- *  to: the delegator of the last delegation that landed in it, if one did. */
+ *  to: whoever sent the message this turn answers, when another session did;
+ *  else the delegator of the last delegation that landed in it, if one did. */
 export function notifyParentSession(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
@@ -112,9 +116,13 @@ export function notifyParentSession(
 export async function notifyParentSessionAndWait(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
-  options?: { alwaysNotify?: boolean },
+  options?: {
+    alwaysNotify?: boolean;
+    /** The turn was answered after a usage limit: on a fallback target, or on the same one once the limit lifted. */
+    afterLimit?: boolean;
+  },
 ): Promise<void> {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   // The marker is consumed by the settle that matches it whether or not a
@@ -126,6 +134,10 @@ export async function notifyParentSessionAndWait(
   if (!result.error && (!hasMeaningfulReply(result.result) || relayed)) {
     reviewHeldInterimReply(childSession.id);
     return;
+  }
+  if (!result.error && options?.afterLimit && repeatsDeliveredReply(childSession, result.result)) {
+    logger.info(`[callbacks] Child ${childSession.id} answered after a usage limit with the reply it already gave parent ${childSession.parentSessionId}; sending a short note instead of the same text`);
+    result = { ...result, result: REPEATED_REPLY_NOTE };
   }
   if (!result.error && holdsInterimRelay(childSession, result.result ?? "", { ...options, settledTurn: true })) return;
 
@@ -156,7 +168,7 @@ export async function notifyParentOfExternalTurn(
   turnKey: string,
   options?: { alwaysNotify?: boolean },
 ): Promise<void> {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
   const relayed = consumeExplicitRelay(childSession);
   if (relayed) releaseHeldReply(childSession.id);
@@ -278,7 +290,7 @@ export function notifyRateLimited(
   childSession: Session,
   estimatedResumeTime?: string, // ISO timestamp or human-readable
 ): void {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   _sendNotification(childSession, {
@@ -298,7 +310,7 @@ export function notifyRateLimited(
 export function notifyRateLimitResumed(
   childSession: Session,
 ): void {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   if (isSpentDispatcher(getSession(childSession.parentSessionId))) return;
@@ -502,8 +514,25 @@ function childNotificationMeta(
     employee,
     employeeDisplay,
     childSessionId: childSession.id,
-    fullMessage: fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+    ...fullMessageMeta(fullMessage),
   };
+}
+
+/** What the parent is sent in place of a reply that repeats, word for word, the one it already has. */
+export const REPEATED_REPLY_NOTE =
+  "↩️ No new reply: this session's answer is the same, word for word, as the reply it already sent you. The earlier reply stands; nothing here to act on.";
+
+/**
+ * Whether `text` is the reply this child last put in front of its parent, so
+ * relaying it again would only make the parent check that it says nothing new.
+ * Compared as the parent stored it, which clips a long reply.
+ */
+function repeatsDeliveredReply(childSession: Session, text: string | null | undefined): boolean {
+  const parentId = childSession.parentSessionId;
+  const reply = text?.trim();
+  if (!parentId || !reply) return false;
+  const delivered = lastMessageFromChild(parentId, childSession.id)?.trim();
+  return delivered !== undefined && delivered === reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
 }
 
 function hasMeaningfulReply(result: string | null | undefined): boolean {

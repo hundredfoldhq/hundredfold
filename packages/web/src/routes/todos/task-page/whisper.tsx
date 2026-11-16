@@ -61,6 +61,8 @@ const WHISPERS: Record<string, WhisperRule> = {
       typeof detail.source === "string" ? `, ${detail.source}` : ""}`,
   }),
   note: (detail) => {
+    const moved = reparentedWhisper(detail)
+    if (moved) return moved
     if (detail.assignee === OPERATOR_ASSIGNEE) return { Icon: Pencil, text: "assigned it to the operator" }
     if (typeof detail.assignee === "string") return { Icon: Pencil, text: `assigned ${detail.assignee}` }
     if ("assignee" in detail && detail.assignee === null) return { Icon: Pencil, text: "unassigned it" }
@@ -91,6 +93,22 @@ const WHISPERS: Record<string, WhisperRule> = {
   relation_added: { Icon: Link2, text: "linked a related todo" },
   relation_removed: { Icon: Link2, text: "removed a relation" },
   session_linked: { Icon: Link2, text: "linked a session" },
+}
+
+/** A move between top level and sub-task level, read from the `note` the gateway writes for it: on the Todo that moved,
+ *  on each sub-task that moved with it, and on the old and new parents. */
+function reparentedWhisper(detail: Record<string, unknown>): Whisper | undefined {
+  const moved = detail.reparented as { from?: unknown; to?: unknown; with?: unknown } | undefined
+  if (moved) return movedWhisper(moved)
+  const child = detail.childReparented as { child?: unknown; to?: unknown } | undefined
+  if (typeof child?.child !== "string") return undefined
+  return { Icon: CornerDownRight, text: `moved sub-task ${child.child} ${typeof child.to === "string" ? `under ${child.to}` : "to top level"}` }
+}
+
+function movedWhisper(moved: { from?: unknown; to?: unknown; with?: unknown }): Whisper {
+  if (typeof moved.with === "string") return { Icon: CornerDownRight, text: `moved along with ${moved.with}` }
+  if (typeof moved.to === "string") return { Icon: CornerDownRight, text: `made it a sub-task of ${moved.to}` }
+  return { Icon: CornerDownRight, text: `moved it to top level${typeof moved.from === "string" ? `, out of ${moved.from}` : ""}` }
 }
 
 export function whisperOf(event: WorkItemEventWire): Whisper {

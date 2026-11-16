@@ -1,5 +1,6 @@
 import { assertBoundCaller, gatewayRequest, HundredfoldMcpToolError, type HundredfoldMcpContext, type HundredfoldMcpTool } from "./toolkit.js";
 import { SESSION_FALLBACK_MODES } from "../shared/session-fallback-config.js";
+import { agentReadableContent } from "../shared/full-message.js";
 
 /**
  * GRS-017a — the SESSIONS tool group of the `hundredfold` MCP server: agents spawn,
@@ -14,7 +15,9 @@ import { SESSION_FALLBACK_MODES } from "../shared/session-fallback-config.js";
  *
  * Domain-specific rules this module owns:
  *   - SESSION READING: `last` is a non-negative integer, where 0 requests the
- *     whole transcript. Message bodies are returned as stored.
+ *     whole transcript. Message bodies are returned as stored, except
+ *     that a notification reads as the full body it carries (its meta's
+ *     `fullMessage`) under a one-line heading, not as the web UI's banner.
  *   - PROTOCOL TEACHING lives in exactly two places (schema-budget rule "one
  *     teaching description per domain"): the spawn tool's description/hint
  *     carries the end-turn-and-await-callback protocol; everything else stays
@@ -119,7 +122,7 @@ interface SessionRecord {
   lastError?: string | null;
   parentSessionId?: string | null;
   stopped?: boolean;
-  messages?: Array<{ role?: string; content?: string; timestamp?: number }>;
+  messages?: Array<{ role?: string; content?: string; timestamp?: number; meta?: unknown }>;
 }
 
 function summarize(s: SessionRecord): Record<string, unknown> {
@@ -287,9 +290,10 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
       const { status, body } = await gatewayRequest(ctx, "GET", `${sessionPath(sessionId)}?last=${last}`);
       if (status >= 400) throw gatewayFailure(`reading session "${sessionId}"`, status, body);
       const s = (body ?? {}) as SessionRecord;
+      // A notification's `content` is the web UI's short banner; the agent reads the body it carries.
       const messages = (Array.isArray(s.messages) ? s.messages : []).map((m) => ({
         role: m.role,
-        content: typeof m.content === "string" ? m.content : "",
+        content: agentReadableContent(m),
         timestamp: m.timestamp,
       }));
       return {

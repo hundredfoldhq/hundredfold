@@ -69,6 +69,7 @@ async function settleRecoveredTurn(
       ...(typeof recovered.contextTokens === "number" ? { lastContextTokens: recovered.contextTokens } : {}),
     }, recordServed && !recovered.error),
     employee: args.input.employee,
+    afterLimit: true,
     surface: args.surface,
   });
   if (text) await args.surface.reply(text);

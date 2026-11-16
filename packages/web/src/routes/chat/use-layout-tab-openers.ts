@@ -105,13 +105,23 @@ export function useTodosOpenIntent(open: () => boolean, ready: boolean) {
 }
 
 /**
+ * The session list failed with nothing to hydrate the layout from. A failed background refetch keeps the
+ * list it already had (and the layout still hydrates from it), so an errored query that holds data is not a failure here.
+ */
+export function sessionListFailed(query: { isError: boolean; data?: unknown }): boolean {
+  return query.isError && !query.data
+}
+
+/**
  * The `?open=todo-board:<id>` link (lib/todos-tab-entry.ts): an intent to pin that Todo's sub-board as a tab, consumed
  * the same way: `open` says whether it moved the route itself (to the chat the tab opened beside), which leaves the
  * address as it set it. A phone has no tab to put it in, so it takes the intent to the Todo's page with the board pop-up
  * open, which is full-screen there; the intent is dropped from the address by that very move (a replace), never replayed.
- * A link naming no valid Todo opens nothing and is dropped from the address all the same.
+ * A link naming no valid Todo opens nothing and is dropped from the address all the same, and so is one the layout can
+ * never take because the session list it hydrates from failed (`failed`): nothing is left to wait for, and the link must
+ * not stay in the address.
  */
-export function useTodoBoardOpenIntent({ open, ready, mobile }: { open: (todoId: string) => boolean; ready: boolean; mobile: boolean }) {
+export function useTodoBoardOpenIntent({ open, ready, mobile, failed = false }: { open: (todoId: string) => boolean; ready: boolean; mobile: boolean; failed?: boolean }) {
   const location = useLocation()
   const navigate = useNavigate()
   const consumed = useRef<string | null>(null)
@@ -129,19 +139,19 @@ export function useTodoBoardOpenIntent({ open, ready, mobile }: { open: (todoId:
       void navigate({ pathname: todoPath(todoId), search: '?view=board' }, { replace: true })
       return
     }
-    if (!ready) return
+    if (!ready && !failed) return
     consumed.current = todoId
-    if (open(todoId)) return
+    if (ready && open(todoId)) return
     void navigate({ pathname: location.pathname, search: withoutOpenIntent(location.search), hash: location.hash }, { replace: true, state: location.state })
-  }, [location.hash, location.pathname, location.search, location.state, mobile, navigate, open, ready, stray, todoId])
+  }, [location.hash, location.pathname, location.search, location.state, failed, mobile, navigate, open, ready, stray, todoId])
 }
 
 /**
  * A Todo's sub-board pinned as a tab: the page's opener for the board pop-up's "Pin as tab", and the `?open=` link that asks
  * for the same. False on a phone, which has no tab to pin it in.
  */
-export function useTodoBoardTabPinner(pinTodoBoard: (todoId: string) => boolean, { mobile, hydrated }: { mobile: boolean; hydrated: boolean }): PinTodoBoardTab {
-  useTodoBoardOpenIntent({ open: pinTodoBoard, ready: hydrated, mobile })
+export function useTodoBoardTabPinner(pinTodoBoard: (todoId: string) => boolean, { mobile, hydrated, failed = false }: { mobile: boolean; hydrated: boolean; failed?: boolean }): PinTodoBoardTab {
+  useTodoBoardOpenIntent({ open: pinTodoBoard, ready: hydrated, mobile, failed })
   return useCallback((todoId) => {
     if (mobile) return false
     pinTodoBoard(todoId)

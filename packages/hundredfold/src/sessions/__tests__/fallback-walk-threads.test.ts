@@ -78,8 +78,11 @@ describe("what a hop's thread carries (docs/fallback-chains.md, Context across a
     await handleRateLimit(limitedTurn(id, employee({ fallback: [CLAUDE_B] }), engines).opts);
 
     expect(calls[0]!.resume).toBeUndefined();
-    expect(calls[0]!.prompt).toMatch(/^Continue this conversation and respond to the last USER message\./);
+    expect(calls[0]!.prompt).toMatch(/^Continue this conversation and respond to the current message\./);
     expect(calls[0]!.prompt).toContain("ASSISTANT: drafted on A");
+    // The current message is asked once, after the transcript, not also as its last line.
+    expect(calls[0]!.prompt.endsWith("CURRENT MESSAGE:\nnow publish them")).toBe(true);
+    expect(calls[0]!.prompt.match(/now publish them/g)).toHaveLength(1);
     expect(calls[0]!.prompt).not.toContain("a-thread");
   });
 

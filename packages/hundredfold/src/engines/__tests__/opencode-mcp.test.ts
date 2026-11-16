@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import { resolveMcpServers } from "../../mcp/resolver.js";
+import { SCRUB_ENTRY_BASENAME } from "../../mcp/env-scrub.js";
 import {
   OPENCODE_WALK_AGENT,
   boardWalkAgentPermission,
@@ -200,5 +202,21 @@ describe("writeOpencodeSessionConfig — the staged attach artifact", () => {
   it("stages nothing at all for a session with no servers", () => {
     // No file, no OPENCODE_CONFIG, opencode's own config left untouched.
     expect(writeOpencodeSessionConfig(undefined, SID)).toEqual({ staged: false });
+  });
+});
+
+describe("a custom server that names both a command and a url", () => {
+  it("is launched by opencode through the scrub launcher, never from its raw command", () => {
+    const resolved = resolveMcpServers(
+      { gateway: { enabled: false }, browser: { enabled: false }, custom: { both: { url: "http://127.0.0.1:1/sse", command: "node", args: ["x.js"] } } } as never,
+      undefined,
+      "opencode",
+    );
+    const projected = projectOpencodeMcpServer(resolved.mcpServers.both as unknown as Record<string, unknown>);
+    expect(projected?.type).toBe("local");
+    const argv = (projected as { command: string[] }).command;
+    expect(argv[0]).toBe(process.execPath);
+    expect(argv[1]).toContain(SCRUB_ENTRY_BASENAME);
+    expect(argv.slice(2)).toEqual(["node", "x.js"]);
   });
 });
