@@ -664,6 +664,50 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     }
   });
 
+  describe.each([
+    ["reaches the server before the turn ends but is not answered in time", true],
+    ["never reaches the server", false],
+  ])("a steer post that %s", (_name, reachesServer) => {
+    it("is abandoned at the bound and taken back out: withdrawn, and nothing runs it unattended", async () => {
+      SERVER_TURN_TIMING.steerWithdrawMs = 300;
+      const h = harness();
+      const id = await sessionWithServer(h);
+      const real = globalThis.fetch;
+      const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        if (init?.method === "POST" && String(input).endsWith("/prompt") && String(init.body).includes('"steer"')) {
+          // The post is held on the client: either after the server has it, or before it is sent.
+          if (reachesServer) {
+            const res = await real(input, init);
+            await new Promise((r) => setTimeout(r, 1500));
+            return res;
+          }
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+        return real(input, init);
+      });
+      try {
+        const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+        await waitDelivered(h);
+        const outcome = h.engine.steer("sess-1", STEER);
+        await new Promise((r) => setTimeout(r, 200));
+        h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+        expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
+        expect(await outcome).toBe("withdrawn");
+        // Past the point the held post is released: the server never runs the input.
+        await new Promise((r) => setTimeout(r, 2000));
+        expect(await inboxOf(h, id)).toEqual([]);
+        const items = (await call(h, `/api/session/${id}/message?limit=10&order=desc`)).body.data as any[];
+        expect(items.some((m) => m.type === "user" && m.text === STEER)).toBe(false);
+        expect(await running(h)).toEqual([]);
+        const log = await logOf(h);
+        expect((await steerPosts(h)).length).toBe(reachesServer ? 1 : 0);
+        expect(log.filter((e) => e.method === "DELETE").length).toBe(reachesServer ? 1 : 0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   it("is withdrawn when the post fails, and the turn goes on unaffected", async () => {
     const h = harness();
     const id = await sessionWithServer(h);

@@ -110,6 +110,8 @@ export const SERVER_TURN_TIMING = {
   retryGraceMs: 15_000,
   /** How long a 2.x turn whose reply is done waits for an input steered into it to be delivered. */
   steerWaitMs: 2_000,
+  /** The longest the end of a 2.x turn waits on the server to take back its undelivered steered inputs, or on the post of one. */
+  steerWithdrawMs: 5_000,
 };
 
 /** A parsed SSE event from the server's `/event` stream. */
