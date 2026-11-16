@@ -10,6 +10,7 @@ export const SKIP_REASON_TEXT: Record<FallbackSkipReason, string> = {
   scoped: "A department-scoped session runs on Claude accounts only",
   remote: "Cannot run on the session's host",
   exhausted: "At its limit; tried only when nothing else is left",
+  "signed-out": "Its provider rejected the key; skipped until the key changes",
   "model-not-served": "This engine does not serve that model",
   "profile-unknown": "No declared account has that name",
 }

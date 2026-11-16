@@ -124,6 +124,67 @@ describe("an expired key (401)", () => {
   });
 });
 
+describe("an expired key on a chain with several models of one provider", () => {
+  const GO_Y = { engine: "opencode", model: "opencode-go/y" };
+  const GO_Z = { engine: "opencode", model: "opencode-go/z" };
+  const onOneProvider = (fallback: object[]) => ({ name: "worker-oc", engine: "opencode", model: GO.model, fallback }) as Employee;
+  function turnOn(error: string, employee: Employee, engines: Map<string, Engine>, rateLimit: Record<string, unknown>) {
+    const id = newSession({ ref: "web:oc", engine: "opencode", model: GO.model, employeeName: "worker-oc" });
+    const turn = limitedTurn(id, employee, engines);
+    const opts = { ...turn.opts, rateLimit, originalResult: failed(error), hooks: { ...turn.opts.hooks, onBillingFailure: vi.fn() } };
+    return { id, opts: opts as typeof turn.opts };
+  }
+
+  it("sends no request to the provider's other models and fails the turn", async () => {
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const { id, opts } = turnOn(EXPIRED, onOneProvider([GO_Y, GO_Z]), engines, { refused: "auth" });
+
+    expect(await handleRateLimit(opts)).toMatchObject({ kind: "billing" });
+    expect(calls).toEqual([]);
+    // Nothing was tried, so no run began: as with a chain whose links are all ruled out for the session.
+    expect(hopsOf(id)).toEqual([]);
+  });
+
+  it("goes straight to the next provider", async () => {
+    const { engines, calls } = scripted((call) => answer(`served by ${call.model}`));
+    const { id, opts } = turnOn(EXPIRED, onOneProvider([GO_Y, GO_Z, ROUTER]), engines, { refused: "auth" });
+
+    expect(await handleRateLimit(opts)).toMatchObject({ kind: "fallback", result: { result: "served by openrouter/x" } });
+    expect(calls.map((call) => call.model)).toEqual([ROUTER.model]);
+    expect(hopsOf(id)[0]).toMatchObject({ to: key(ROUTER), skipped: [{ key: key(GO_Y), reason: "signed-out" }, { key: key(GO_Z), reason: "signed-out" }] });
+  });
+
+  it("stops at one failing request when a fallback link's provider turns out dead too", async () => {
+    // The own provider is spent (402), the link's key is dead: its second model is never asked.
+    const GO_B_Y = { engine: "opencode", model: "opencode-go-b/y" };
+    const { engines, calls } = scripted((call) => (call.model?.startsWith("opencode-go-b/") ? failed(EXPIRED) : answer(`served by ${call.model}`)));
+    const { opts } = turnOn(FUNDS, onOneProvider([GO_B, GO_B_Y, ROUTER]), engines, { billing: true });
+
+    expect(await handleRateLimit(opts)).toMatchObject({ kind: "fallback", result: { result: "served by openrouter/x" } });
+    expect(calls.map((call) => call.model)).toEqual([GO_B.model, ROUTER.model]);
+  });
+
+  it("names the dead provider's untried models in the hop that records the chain ran out", async () => {
+    const GO_B_Y = { engine: "opencode", model: "opencode-go-b/y" };
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const { id, opts } = turnOn(FUNDS, onOneProvider([GO_B, GO_B_Y]), engines, { billing: true });
+
+    await handleRateLimit(opts);
+
+    expect(calls.map((call) => call.model)).toEqual([GO_B.model]);
+    // Newest first: the hop that ran out.
+    expect(hopsOf(id)[0]).toMatchObject({ to: null, reason: "auth", skipped: [{ key: key(GO_B_Y), reason: "signed-out" }] });
+  });
+
+  it("still tries the provider's other models when the refusal was one model's (403)", async () => {
+    const { engines, calls } = scripted((call) => answer(`served by ${call.model}`));
+    const { opts } = turnOn(NO_ACCESS, onOneProvider([GO_Y, ROUTER]), engines, { refused: "model-access" });
+
+    expect(await handleRateLimit(opts)).toMatchObject({ kind: "fallback", result: { result: "served by opencode-go/y" } });
+    expect(calls.map((call) => call.model)).toEqual([GO_Y.model]);
+  });
+});
+
 describe("a model the account cannot use (403)", () => {
   it("hops the turn and holds that model out, not the provider", async () => {
     const { engines, calls } = scripted((call) => answer(`served by ${call.model}`));
