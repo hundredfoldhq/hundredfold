@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectivePosition, nextFallbackLink } from "../fallback-chain-next.js";
+import { effectivePosition, linksLeftOver, nextFallbackLink } from "../fallback-chain-next.js";
 import type { ResolvedFallbackLink } from "../fallback-chain-wire.js";
 
 /** Which link a limit moves a session to next: untried, usable, healthy; then, failing that, healthy or not. */
@@ -103,5 +103,53 @@ describe("effectivePosition", () => {
 
   it("keeps a recorded position on a tried link behind others: the walk went back to a link it had passed over", () => {
     expect(effectivePosition(chain, { position: 1, tried: [own.key, "grok||", "pi||", "codex||"] })).toBe(1);
+  });
+});
+
+describe("a signed-out opencode provider", () => {
+  const signedOut = { state: "exhausted" as const, failureClass: "auth" as const };
+  const oc = (model: string) => link("opencode", { key: `opencode||${model}`, account: "opencode", model });
+  const ownOc = oc("go-b/qwen");
+  const sameProvider = [ownOc, oc("go-b/deepseek"), oc("go-b/kimi")];
+
+  it("rules out every link on that provider, even when nothing else is left", () => {
+    const cursor = { position: 0, tried: [ownOc.key] };
+    expect(nextFallbackLink(sameProvider, cursor, { "opencode/go-b": signedOut }, now)).toBeUndefined();
+    expect(linksLeftOver(sameProvider, cursor, { "opencode/go-b": signedOut }, now)).toEqual([
+      { key: "opencode||go-b/deepseek", reason: "signed-out" },
+      { key: "opencode||go-b/kimi", reason: "signed-out" },
+    ]);
+  });
+
+  it("passes over its links to the next provider, and names them", () => {
+    const links = [...sameProvider, oc("router/x")];
+    expect(nextFallbackLink(links, { position: 0, tried: [ownOc.key] }, { "opencode/go-b": signedOut }, now)).toMatchObject({
+      index: 3, skipped: [{ key: "opencode||go-b/deepseek", reason: "signed-out" }, { key: "opencode||go-b/kimi", reason: "signed-out" }],
+    });
+  });
+
+  it("is never the link the walk comes back for", () => {
+    // go-b/deepseek sits behind the cursor, untried: a limit would bring the walk back to it, a dead key does not.
+    const links = [...sameProvider, oc("router/x")];
+    const cursor = { position: 3, tried: [ownOc.key, "opencode||router/x"] };
+    expect(nextFallbackLink(links, cursor, { "opencode/go-b": signedOut }, now)).toBeUndefined();
+    expect(nextFallbackLink(links, cursor, { "opencode/go-b": spent }, now)).toMatchObject({ index: 1 });
+  });
+
+  it("keeps a model held alone, a spent allowance and a lifted hold advisory", () => {
+    const cursor = { position: 0, tried: [ownOc.key] };
+    const modelOnly = { state: "exhausted" as const, failureClass: "model-access" as const, until: spent.until };
+    const quota = { ...spent, failureClass: "quota" as const };
+    expect(nextFallbackLink(sameProvider, cursor, { "opencode/go-b/deepseek": modelOnly, "opencode/go-b/kimi": modelOnly }, now)?.index).toBe(1);
+    expect(nextFallbackLink(sameProvider, cursor, { "opencode/go-b": quota }, now)?.index).toBe(1);
+    // A changed credential reads back as ok (readEngineHealth), and the provider is tried again.
+    expect(nextFallbackLink(sameProvider, cursor, { "opencode/go-b": { state: "ok" } }, now)?.index).toBe(1);
+  });
+
+  it("is about opencode providers only: an auth record on another key stays advisory", () => {
+    const cursor = { position: 0, tried: [own.key] };
+    expect(nextFallbackLink(chain, cursor, { codex: signedOut, grok: signedOut, pi: signedOut }, now)?.link.engine).toBe("codex");
+    const links = [own, oc("go-b/deepseek")];
+    expect(nextFallbackLink(links, cursor, { opencode: signedOut }, now)?.index).toBe(1);
   });
 });
