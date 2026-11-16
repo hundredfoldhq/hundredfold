@@ -17,7 +17,9 @@ export function readFullMessageMeta(meta: Record<string, unknown>): { fullMessag
   if (typeof meta.fullMessage !== "string") return undefined;
   const fullMessage = meta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
   const chars = meta.fullMessageChars;
-  const clipped = typeof chars === "number" && Number.isSafeInteger(chars) && chars > fullMessage.length;
+  // Only a copy cut at the cap can be a clipped one.
+  const clipped = fullMessage.length === STRUCTURED_MESSAGE_BODY_MAX_CHARS
+    && typeof chars === "number" && Number.isSafeInteger(chars) && chars > fullMessage.length;
   return clipped ? { fullMessage, fullMessageChars: chars } : { fullMessage };
 }
 
@@ -41,7 +43,9 @@ function notificationHeading(content: string, meta: Record<string, unknown>): st
   if (meta.kind === "agent-relay") {
     const fromLabel = metaString(meta, "fromLabel") || "another session";
     const fromSessionId = metaString(meta, "fromSessionId");
-    return fromSessionId ? `📨 Message from session ${fromSessionId} (${fromLabel}):` : `📨 Message from ${fromLabel}:`;
+    const via = meta.viaOperator === true ? " via the operator" : "";
+    const verb = via ? "relayed from" : "from";
+    return fromSessionId ? `📨 Message ${verb} session ${fromSessionId} (${fromLabel})${via}:` : `📨 Message ${verb} ${fromLabel}${via}:`;
   }
   // A child callback's banner opens with who replied ("📩 X replied"); the rest of it is the clipped body.
   const heading = content.split("\n", 1)[0]!.trim() || "📩 Notification:";
@@ -49,20 +53,30 @@ function notificationHeading(content: string, meta: Record<string, unknown>): st
   return childSessionId && !heading.includes(childSessionId) ? `${heading} (child session ${childSessionId})` : heading;
 }
 
+/** Where a reader finds the rest of a body the store had to clip. */
+function clippedNote(meta: Record<string, unknown>, full: { fullMessage: string; fullMessageChars?: number }): string {
+  const held = full.fullMessage.length.toLocaleString("en-US");
+  if (full.fullMessageChars === undefined && full.fullMessage.length < STRUCTURED_MESSAGE_BODY_MAX_CHARS) return "";
+  const extent = full.fullMessageChars === undefined
+    ? `This stored copy holds the first ${held} characters and may have been clipped.`
+    : `This stored copy holds the first ${held} of ${full.fullMessageChars.toLocaleString("en-US")} characters.`;
+  const childSessionId = metaString(meta, "childSessionId");
+  const rest = meta.kind !== "agent-relay" && childSessionId
+    ? `The full text is in child session ${childSessionId}: read_session { sessionId: "${childSessionId}" }.`
+    : "The whole message goes to the receiving session's engine; only this copy is kept to read back.";
+  return `\n\n[${extent} ${rest}]`;
+}
+
 /**
  * The text an agent should read for one logged message. A notification that
  * kept its body reads as a one-line heading plus the whole body; a body the
- * store had to clip says so, with where the whole text went. Everything else
- * is its `content` unchanged.
+ * store had to clip says so, and where the rest is. Everything else is its
+ * `content` unchanged.
  */
 export function agentReadableContent(message: LoggedMessageLike): string {
   const content = typeof message.content === "string" ? message.content : "";
   const meta = message.role === "notification" ? metaObject(message.meta) : undefined;
   const full = meta ? readFullMessageMeta(meta) : undefined;
   if (!meta || !full?.fullMessage.trim()) return content;
-  const clippedNote = full.fullMessageChars === undefined
-    ? ""
-    : `\n\n[This stored copy holds the first ${full.fullMessage.length.toLocaleString("en-US")} of ${full.fullMessageChars.toLocaleString("en-US")} characters. `
-      + "The receiving session was handed the whole message when it was delivered.]";
-  return `${notificationHeading(content, meta)}\n\n${full.fullMessage}${clippedNote}`;
+  return `${notificationHeading(content, meta)}\n\n${full.fullMessage}${clippedNote(meta, full)}`;
 }

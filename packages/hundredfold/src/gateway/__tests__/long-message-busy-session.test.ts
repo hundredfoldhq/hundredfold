@@ -23,6 +23,7 @@ import { STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../../shared/types.js";
  */
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-long-message-"));
+const priorHome = process.env.HUNDREDFOLD_HOME;
 process.env.HUNDREDFOLD_HOME = tmpHome;
 fs.mkdirSync(path.join(tmpHome, "org"), { recursive: true });
 fs.writeFileSync(
@@ -194,6 +195,9 @@ beforeAll(async () => {
 
 afterAll(() => {
   globalThis.fetch = processFetch;
+  if (priorHome === undefined) delete process.env.HUNDREDFOLD_HOME;
+  else process.env.HUNDREDFOLD_HOME = priorHome;
+  fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -284,7 +288,7 @@ describe("a long send_to_session message reaches its target whole", () => {
     expect(relayed).toContain(message.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS));
     expect(relayed).toContain(
       `[This stored copy holds the first 16,000 of ${message.length.toLocaleString("en-US")} characters. `
-      + "The receiving session was handed the whole message when it was delivered.]",
+      + "The whole message goes to the receiving session's engine; only this copy is kept to read back.]",
     );
 
     turnsRunning.delete(targetId);

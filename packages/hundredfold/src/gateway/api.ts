@@ -2203,8 +2203,9 @@ export async function handleApiRequest(
 
     // GET /api/sessions/:id/context?message=<id>&radius=<n> — GRS-020a: the
     // bounded ±radius window around a message anchor (a search hit), so a hit
-    // becomes readable in place. Message bodies are returned as stored; the
-    // session field is the COMPACT summary (GRS-020a-fix finding 5).
+    // becomes readable in place. Message bodies are returned as stored, except
+    // that a notification reads as the full body it carries rather than its
+    // banner; the session field is the COMPACT summary (GRS-020a-fix finding 5).
     params = matchRoute("/api/sessions/:id/context", pathname);
     if (method === "GET" && params) {
       const session = getSession(params.id);
@@ -4018,6 +4019,7 @@ export async function handleApiRequest(
           kind: "agent-relay",
           ...(relayFromSessionId ? { fromSessionId: relayFromSessionId } : {}),
           fromLabel,
+          viaOperator: true,
           hops: 1,
           maxHops: sessionCommGuards.maxHops(),
           ...fullMessageMeta(relayBody),
@@ -4069,6 +4071,7 @@ export async function handleApiRequest(
               ...(fromSessionId ? { fromSessionId } : {}),
               fromLabel,
               ...(fromEmployee ? { fromEmployee } : {}),
+              ...(rawMeta.viaOperator === true ? { viaOperator: true } : {}),
               hops,
               maxHops,
               ...full,

@@ -15,7 +15,9 @@ import { agentReadableContent } from "../shared/full-message.js";
  *
  * Domain-specific rules this module owns:
  *   - SESSION READING: `last` is a non-negative integer, where 0 requests the
- *     whole transcript. Message bodies are returned as stored.
+ *     whole transcript. Message bodies are returned as stored, except
+ *     that a notification reads as the full body it carries (its meta's
+ *     `fullMessage`) under a one-line heading, not as the web UI's banner.
  *   - PROTOCOL TEACHING lives in exactly two places (schema-budget rule "one
  *     teaching description per domain"): the spawn tool's description/hint
  *     carries the end-turn-and-await-callback protocol; everything else stays
