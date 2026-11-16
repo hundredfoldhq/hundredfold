@@ -398,6 +398,60 @@ describe("searchMessages — relayed messages and child replies", () => {
       db.close();
     }, 120_000);
 
+    it("a boot cannot slip between disable's drops and its progress reset", () => {
+      const db = legacyWithRelays();
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      for (let i = 0; i < 10; i++) {
+        ins.run(`mix-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `mixed wombat ${i}` }));
+        ins.run(`mix-a-${i}`, "leg", "assistant", `mixed echidna ${i}`, 40 + i, null);
+      }
+      // A finished index: its watermark stays in meta, which is the stale state the interleave trips over.
+      migrateModule.migrateFtsSchema(db);
+      reg.backfillFtsSync(db, 5);
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_max")).not.toBeNull();
+
+      // A second process, no busy wait, booting at the exact point between disable's two steps: just before the
+      // meta DELETE runs. Unfixed, the drops are already committed here, so its boot recreates both indexes and
+      // pins no watermark (the stale one is still in meta) and the DELETE then removes the stale one.
+      const other = new Database(db.name, { timeout: 0 });
+      let midBoot: unknown = "did not run";
+      const realPrepare = db.prepare.bind(db);
+      db.prepare = ((sql: string) => {
+        if (sql.startsWith("DELETE FROM meta")) {
+          db.prepare = realPrepare as typeof db.prepare;
+          try {
+            migrateModule.migrateFtsSchema(other);
+            midBoot = "booted";
+          } catch (e) {
+            midBoot = e;
+          }
+        }
+        return realPrepare(sql);
+      }) as typeof db.prepare;
+
+      reg.disableFtsForProcess(db, "test");
+      // The interleaved boot is shut out until disable has committed; it sees the old state or the disabled one.
+      expect(midBoot).toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) });
+
+      // Right after disable, before anything reboots: an old, pre-watermark row deletes cleanly. Unfixed, the
+      // mixed state left triggers with no watermark here, and this threw "database disk image is malformed".
+      expect(() => db.prepare("DELETE FROM messages WHERE id = 'old-relay'").run()).not.toThrow();
+
+      // The boot that was shut out retries once disable is done, and rebuilds both indexes from scratch.
+      migrateModule.migrateFtsSchema(other);
+      reg.backfillFtsSync(other, 5);
+      other.close();
+
+      // The relay index is whole afterwards, and further old rows still delete cleanly.
+      expect(() => db.prepare("DELETE FROM messages WHERE id = 'mix-r-3'").run()).not.toThrow();
+      expect(() => db.prepare("DELETE FROM messages WHERE id = 'mix-a-3'").run()).not.toThrow();
+      expect(relayHits(db, "wombat")).toHaveLength(9);
+      expect(relayHits(db, "numbat")).toEqual([]);
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'echidna'").get()).toEqual({ n: 9 });
+      db.close();
+    });
+
     it("is rebuilt on the next boot after FTS was disabled for the process", () => {
       const db = legacyWithRelays();
       migrateModule.migrateFtsSchema(db);
