@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation, type RouteObject } from 'react-router-dom'
 import { useState, type ReactNode } from 'react'
-import { useTodoBoardOpenIntent, useTodoBoardTabPinner } from '../use-layout-tab-openers'
+import { sessionListFailed, useTodoBoardOpenIntent, useTodoBoardTabPinner } from '../use-layout-tab-openers'
 
 /* The `?open=todo-board:<id>` link, on a data router: its navigations are asynchronous, so a drop of the intent that
  * raced another move would show here (a MemoryRouter would hide it). */
@@ -122,5 +122,18 @@ describe('the pinner the chat page hands the board pop-up', () => {
     const { result } = renderHook(() => useTodoBoardTabPinner(pin, { mobile: true, hydrated: true }), { wrapper })
     expect(result.current('ACM-7')).toBe(false)
     expect(pin).not.toHaveBeenCalled()
+  })
+})
+
+describe('when the session list counts as failed', () => {
+  it('is failed only when the query errored and holds no list to hydrate the layout from', () => {
+    expect(sessionListFailed({ isError: true, data: undefined })).toBe(true)
+    expect(sessionListFailed({ isError: false, data: undefined })).toBe(false)
+    expect(sessionListFailed({ isError: false, data: [] })).toBe(false)
+  })
+
+  it('is not failed when a background refetch errored but the earlier list is still held', () => {
+    expect(sessionListFailed({ isError: true, data: [] })).toBe(false)
+    expect(sessionListFailed({ isError: true, data: [{ id: 's1' }] })).toBe(false)
   })
 })

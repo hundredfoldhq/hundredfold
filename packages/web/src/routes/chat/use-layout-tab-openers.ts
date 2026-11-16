@@ -105,6 +105,14 @@ export function useTodosOpenIntent(open: () => boolean, ready: boolean) {
 }
 
 /**
+ * The session list failed with nothing to hydrate the layout from. A failed background refetch keeps the
+ * list it already had (and the layout still hydrates from it), so an errored query that holds data is not a failure here.
+ */
+export function sessionListFailed(query: { isError: boolean; data?: unknown }): boolean {
+  return query.isError && !query.data
+}
+
+/**
  * The `?open=todo-board:<id>` link (lib/todos-tab-entry.ts): an intent to pin that Todo's sub-board as a tab, consumed
  * the same way: `open` says whether it moved the route itself (to the chat the tab opened beside), which leaves the
  * address as it set it. A phone has no tab to put it in, so it takes the intent to the Todo's page with the board pop-up
