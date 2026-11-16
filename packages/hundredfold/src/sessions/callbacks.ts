@@ -14,7 +14,7 @@ import {
 } from "./registry.js";
 import { logger } from "../shared/logger.js";
 import type { Session } from "../shared/types.js";
-import { fullMessageMeta } from "../shared/full-message.js";
+import { fullMessageDigest, fullMessageMeta } from "../shared/full-message.js";
 import type { ChatBlockEnvelope, JsonObject } from "../shared/types.js";
 import { enforceDelegationCompletionContract } from "./delegation-completion-contract.js";
 import { isRemoteMcpSession } from "./remote-mcp-session.js";
@@ -525,14 +525,18 @@ export const REPEATED_REPLY_NOTE =
 /**
  * Whether `text` is the reply this child last put in front of its parent, so
  * relaying it again would only make the parent check that it says nothing new.
- * Compared as the parent stored it, which clips a long reply.
+ * A copy the parent stored whole is compared whole. A clipped copy is compared
+ * by the digest of the whole message stored beside it; one without a digest
+ * cannot say what was cut off, so the reply goes through.
  */
 function repeatsDeliveredReply(childSession: Session, text: string | null | undefined): boolean {
   const parentId = childSession.parentSessionId;
   const reply = text?.trim();
   if (!parentId || !reply) return false;
-  const delivered = lastMessageFromChild(parentId, childSession.id)?.trim();
-  return delivered !== undefined && delivered === reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
+  const delivered = lastMessageFromChild(parentId, childSession.id);
+  if (!delivered) return false;
+  if (delivered.fullMessageChars === undefined) return delivered.fullMessage.trim() === reply;
+  return delivered.fullMessageSha256 === fullMessageDigest(reply);
 }
 
 function hasMeaningfulReply(result: string | null | undefined): boolean {

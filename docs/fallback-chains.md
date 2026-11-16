@@ -126,7 +126,16 @@ reset, as before.
   resumes there. It reads `waiting` (its `lastError` names the own target and
   when it reopens, e.g. "claude · work · opus usage limit, resumes …"), its last
   hop has no target, and the notice says plainly that no hop is left and what
-  was tried. If a stand-in held the session when it ran out, the wait ends
+  was tried. A fallback link that is signed out (its key or login refused,
+  in this turn or an earlier one that left its provider held as signed out)
+  is named in the `lastError`, the notice and the operator alert, since no
+  reset renews it: "…; fallback opencode · go-b/mimo is signed out: its key or
+  login needs replacing". It stays named in `lastError` while the session waits on the limit. A
+  turn whose own target was refused (a dead key, a spent balance, a model it
+  cannot use) fails instead of waiting, and its error, reply and alert name a
+  signed-out link the same way, after the provider's own words. A remote
+  profile that is only not ready on its host is not called signed out.
+  If a stand-in held the session when it ran out, the wait ends
   where the stand-in's window does (the own target's reset), and the turn runs
   again on the own target. See [session statuses](session-statuses.md) for what
   `waiting` means and how to read it.

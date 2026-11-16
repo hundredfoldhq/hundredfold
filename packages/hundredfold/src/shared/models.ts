@@ -11,7 +11,7 @@ import { keepClaudeCatalogAfter, logClaudeCatalogShortfall, readClaudeCredential
 import { resolveBin, isInstalled } from "./resolve-bin.js";
 import { discoverPiModels } from "./pi-models.js";
 import { withConfiguredOverrides } from "./opencode-models.js";
-import { opencodeCatalogue, opencodeClones, opencodeLocalApi, refreshOpencodeCatalogue, setOpencodeLocalApi } from "./opencode-catalogue.js";
+import { beginOpencodeRefresh, opencodeCatalogue, opencodeClones, opencodeLocalApi, refreshOpencodeCatalogue, setOpencodeLocalApi } from "./opencode-catalogue.js";
 import { localOpencodeVersion } from "./opencode-bin-version.js";
 import { opencodeApiOf } from "../engines/opencode-version.js";
 import { stagedOpencodeAccounts } from "./opencode-accounts-config.js";
@@ -364,10 +364,16 @@ export async function refreshOpencodeModels(
   const bin = engineAvailable(config, "opencode") ? resolveBin("opencode", engineBinOverride(config, "opencode")) : null;
   // The models of every base provider an account names are kept in full, to stage the account's provider block from.
   const cloneProviders = [...new Set(stagedOpencodeAccounts(config).map((account) => account.base!))];
-  // The binary's generation decides which account models the registry lists (a 1.x binary cannot serve the ones off the main endpoint). Only read when an account could be affected, and left unknown when the binary cannot say.
-  const version = bin && cloneProviders.length > 0 ? await localOpencodeVersion(bin) : undefined;
-  setOpencodeLocalApi(version === undefined ? undefined : opencodeApiOf(version));
-  await refreshOpencodeCatalogue(bin, invalidateModelRegistry, opts.secondLook, opts.env, cloneProviders);
+  // Begun here, not after the version probe below: a turn on an account model that starts in between waits for the details too.
+  const end = beginOpencodeRefresh(bin);
+  try {
+    // The binary's generation decides which account models the registry lists (a 1.x binary cannot serve the ones off the main endpoint). Only read when an account could be affected, and left unknown when the binary cannot say.
+    const version = bin && cloneProviders.length > 0 ? await localOpencodeVersion(bin) : undefined;
+    setOpencodeLocalApi(version === undefined ? undefined : opencodeApiOf(version));
+    await refreshOpencodeCatalogue(bin, invalidateModelRegistry, opts.secondLook, opts.env, cloneProviders);
+  } finally {
+    end();
+  }
 }
 
 /**

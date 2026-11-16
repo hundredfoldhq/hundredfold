@@ -279,6 +279,7 @@ describe("opencode 2.x `run` turn on a declared account", () => {
   const staging = {
     providers: () => ({}),
     unservedModel: () => undefined,
+    unstaged: () => undefined,
     env: { [KEY]: "sk-run-cost-b" },
     fingerprint: "fp",
     scrub: [KEY, "ACME_GO_C_KEY"],

@@ -100,12 +100,20 @@ export function newSession(opts: { ref: string; employeeName?: string; model?: s
   return s.id;
 }
 
-export function recordingHooks() {
+/**
+ * Hooks that record what the walk announced. Given the session, the start of a hop also writes the
+ * notice the dashboard surface writes then (`rate-limit-turn.ts` noticeHop → a `notification` row),
+ * before the link's prompt is built, so a suite sees the transcript a real hop builds that prompt from.
+ */
+export function recordingHooks(sessionId?: string) {
   const seen = { starts: [] as Array<{ substitute: string; model?: string; hop?: FallbackHop }>, waiting: [] as Array<{ reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }>, completes: [] as Array<{ engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }>, failed: [] as EngineResult[] };
   return {
     seen,
     hooks: {
-      onFallbackStart: (info: { substitute: string; model?: string; hop?: FallbackHop }) => { seen.starts.push(info); },
+      onFallbackStart: (info: { substitute: string; model?: string; hop?: FallbackHop }) => {
+        seen.starts.push(info);
+        if (sessionId) reg.insertMessage(sessionId, "notification", `⚠️ usage limit reached. Switching to ${info.substitute} for now.`, undefined, undefined, undefined, info.hop ? { fallbackHop: info.hop } as never : undefined);
+      },
       onFallbackFailed: (result: EngineResult) => { seen.failed.push(result); },
       onFallbackComplete: (_result: EngineResult, ran: { engine: string; model?: string; carriedLeftBackgroundTaskIds: string[] }) => { seen.completes.push(ran); },
       onWaitingStart: (info: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string } }) => { seen.waiting.push(info); },
@@ -116,7 +124,7 @@ export function recordingHooks() {
 /** The limited turn of session `id`, as the runner hands it to `handleRateLimit`. */
 export function limitedTurn(id: string, who: Employee | undefined, engines: Map<string, Engine>, extra: { prompt?: string; resetsAt?: number } = {}) {
   const started = reg.beginSessionAttempt(id)!;
-  const { seen, hooks } = recordingHooks();
+  const { seen, hooks } = recordingHooks(id);
   const session = reg.getSession(id)!;
   const opts = {
     session, attemptToken: started.attemptToken!, prompt: extra.prompt ?? "now publish them", engineConfig: { model: session.model ?? undefined }, config, engines, employee: who,

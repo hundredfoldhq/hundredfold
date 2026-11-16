@@ -31,6 +31,8 @@ let confirming = false;
 /** The refresh whose detailed answer the snapshot holds. */
 let detailedBy = 0;
 const listeners = new Set<() => void>();
+/** Turns waiting for a base provider's clone records (see {@link opencodeClonesSettled}): told whenever the records change or the wait for details ends. */
+const cloneWaiters = new Set<() => void>();
 
 /** One refresh's landing: its generation, its binary, and what to tell when
  *  the snapshot changes (the registry's cache). */
@@ -74,6 +76,28 @@ export function opencodeClones(): OpencodeClones {
   return clones;
 }
 
+/** Refreshes begun and not yet finished, late details included. */
+let refreshing = 0;
+
+/** Mark a refresh of `bin` as begun, before the caller's first `await`, and
+ *  return what ends it (once; later calls do nothing). From here until it ends,
+ *  a turn on an account whose base has no clone records waits for them rather
+ *  than being staged with no models (see {@link opencodeClonesSettled}).
+ *  {@link refreshOpencodeCatalogue} marks its own; this is also for a caller
+ *  with work to await before it gets there. */
+export function beginOpencodeRefresh(bin: string | null): () => void {
+  if (bin === null) return () => {};
+  if (!detailed) beginPending();
+  refreshing += 1;
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    refreshing -= 1;
+    wakeCloneWaiters();
+  };
+}
+
 /** Discover the models `bin` (null: opencode is not installed) can reach and
  *  keep them. Resolves once the catalogue to serve now is in; details that
  *  outlive the discovery timeout land later and tell {@link onLateOpencodeDetails}.
@@ -89,19 +113,24 @@ export async function refreshOpencodeCatalogue(
   cloneProviders: readonly string[] = [],
 ): Promise<void> {
   generation += 1;
-  if (!detailed && bin !== null) beginPending();
+  const end = beginOpencodeRefresh(bin);
   const at = newLanding({ refresh: generation, bin: bin ?? "", changed, secondLook, env, cloneProviders });
   if (bin === null) return land(at, null, false);
   try {
     const discovery = await discoverOpencodeModels(bin, { env, clones: at.clones });
     logger.info(`opencode model discovery: ${discovery.models.length} model(s)`);
     const { details } = discovery;
-    if (!details) return land(at, discovery.models, discovery.detailed);
+    if (!details) {
+      land(at, discovery.models, discovery.detailed);
+      end();
+      return;
+    }
     standIn(at, discovery.models);
-    void details.then((models) => landLate(at, models));
+    void details.then((models) => landLate(at, models)).finally(end);
   } catch (err) {
     logger.warn(`opencode model discovery failed: ${err instanceof Error ? err.message : err}`);
     land(at, null, false);
+    end();
   }
 }
 
@@ -135,7 +164,16 @@ function beginPending(): void {
  */
 /** The records of a plain list say nothing: the last detailed ones stay until a detailed answer replaces them, or until there is nothing left to serve. */
 function keepClones(at: Landing, models: ModelInfo[] | null, isDetailed: boolean): void {
-  if (isDetailed || models === null) clones = at.clones.models;
+  if (isDetailed || models === null) setClones(at.clones.models);
+}
+
+function setClones(next: OpencodeClones): void {
+  clones = next;
+  wakeCloneWaiters();
+}
+
+function wakeCloneWaiters(): void {
+  for (const waiter of [...cloneWaiters]) waiter();
 }
 
 function land(at: Landing, models: ModelInfo[] | null, isDetailed: boolean): void {
@@ -166,7 +204,7 @@ async function confirm(at: Landing): Promise<void> {
     snapshot = models;
     detailed = true;
     detailedBy = at.refresh;
-    clones = second.models;
+    setClones(second.models);
     at.changed();
   }
   logger.info(`opencode model discovery: ${models ? `second look found ${models.length} model(s)` : "the second look found nothing; keeping the first answer"}`);
@@ -192,6 +230,7 @@ function settle(): void {
   if (!pending) return;
   pending.resolve();
   pending = undefined;
+  wakeCloneWaiters();
 }
 
 function announce(): void {
@@ -219,4 +258,36 @@ export function effortLevelsPending(engine: string, modelId?: string): boolean {
  *  once when it is not pending. */
 export async function effortLevelsSettled(engine: string, timeoutMs: number, modelId?: string): Promise<void> {
   if (effortLevelsPending(engine, modelId) && pending) await settledWithin(pending.promise, timeoutMs);
+}
+
+/** Whether a turn on an account cloning `base` should wait for discovery: no
+ *  record of the base's models is kept yet, and a refresh that may bring them is
+ *  still running (or a first one's details are still to come). False once the
+ *  records are in, and false when no refresh is running (the base may simply not be in the catalogue, or discovery failed):
+ *  then waiting would bring nothing. */
+export function opencodeClonesPending(base: string): boolean {
+  return !clones.has(base) && (pending !== undefined || refreshing > 0);
+}
+
+/** Resolves once {@link opencodeClonesPending} clears for `base`, or after
+ *  `timeoutMs`, or when `signal` aborts; at once when it is not pending. A fresh gateway's first turn on
+ *  an account model can start before the first detailed discovery lands, and an
+ *  account staged then has no models, which opencode refuses as `provider.no-route`. */
+export async function opencodeClonesSettled(base: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+  if (!opencodeClonesPending(base) || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      cloneWaiters.delete(check);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const check = (): void => {
+      if (!opencodeClonesPending(base)) done();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    timer.unref?.();
+    cloneWaiters.add(check);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
