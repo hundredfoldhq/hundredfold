@@ -53,6 +53,7 @@ inside an operator home. It tears everything down on exit.
 | j | an own target still limited at the reset is probed once; the next turns, inside the new window, do not probe it again |
 | k | a stand-in held by a window an hour out returns to its own target at the next turn once `hundredfold limits --clear` clears that target |
 | l | a session whose chain ran out on its stand-in, waiting for the stand-in's reset, hands back to its own target within a minute of that target being cleared |
+| m | a message from another session (sent as `send_to_session` sends it) whose turn hits a limit on A reaches B, which starts fresh, in full |
 
 Every scenario runs and counts. `--pending a,b` marks scenarios that wait on runtime work not
 yet merged (none today: the default list is empty): a pending scenario is reported, never

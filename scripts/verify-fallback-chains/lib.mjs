@@ -39,10 +39,10 @@ export class Harness {
     this.counter = 0;
   }
 
-  async api(method, route, body) {
+  async api(method, route, body, headers = {}) {
     const response = await fetch(`${this.args.baseUrl}${route}`, {
       method,
-      headers: { authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();

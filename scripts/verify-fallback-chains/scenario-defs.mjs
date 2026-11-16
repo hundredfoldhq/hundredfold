@@ -285,6 +285,41 @@ async function exhaustedWaitHandsBack(h) {
   expectEqual("back on its own target", [done.engine, done.fallback?.chain?.position, done.transportMeta?.engineOverride], ["claude", 0, undefined]);
 }
 
+/**
+ * A message one session sends another (send_to_session) that is the turn a limit interrupts reaches
+ * the account the session moves to. It is stored in the transcript as its banner only, so a fresh
+ * run on the new account has to be handed the message itself, not just the conversation before it.
+ */
+async function relayedMessageAcrossHop(h) {
+  const { claudeB } = h.links();
+  await h.putConfig({ engines: { claude: { accounts: { A: { fallback: [claudeB] } } } } });
+  h.writeScenario({ claude: { "profile-a|opus": ["ok", "rate-limit"], "*": "ok" } });
+  const senderTag = h.newTag();
+  const sender = await h.startSession({ employee: h.layout.employees.onDefault, tag: senderTag });
+  await h.settled(sender);
+  const tag = h.newTag();
+  const target = await h.startSession({ employee: h.layout.employees.onA, tag });
+  await h.settled(target);
+
+  const relayMark = `fc-mark-${tag.slice(-6)}relay`;
+  const { deriveExistingSessionCapability } = await import(path.join(process.env.HUNDREDFOLD_REPO, "packages/hundredfold/dist/src/mcp/identity.js"));
+  const { wireHeader } = await import(path.join(process.env.HUNDREDFOLD_REPO, "packages/hundredfold/dist/src/shared/wire-names.js"));
+  const capability = deriveExistingSessionCapability(sender, path.join(h.args.home, "secrets", "mcp-session-capability.key"));
+  expectTrue("the sender's capability can be derived", capability);
+  const sent = await h.api("POST", `/api/sessions/${target}/message`, { message: `Round two is ready. ${tag} ${relayMark}` }, {
+    [wireHeader("caller-session")]: sender,
+    [wireHeader("session-capability")]: capability,
+  });
+  expectEqual("the relayed send is accepted", [sent.status, sent.body?.status], [200, "queued"]);
+  await h.settled(target);
+
+  const rows = h.rowsFor(tag);
+  const underB = rows.filter((row) => row.profile === "profile-b");
+  expectTrue("the relayed turn moved to B", underB.length === 1, walkOf(rows));
+  expectEqual("B starts fresh: no --resume", underB[0].resume, null);
+  expectTrue("B is handed the relayed message", underB[0].marks.includes(relayMark), JSON.stringify({ marks: underB[0].marks, head: underB[0].promptHead }));
+}
+
 export const SCENARIOS = [
   { id: "a", title: "four-link chain walks hop by hop, each hop on its own profile and model", run: fourLinkWalk },
   { id: "b", title: "every link limited: each target once, then the session waits on its own", run: everyLinkLimited },
@@ -298,4 +333,5 @@ export const SCENARIOS = [
   { id: "j", title: "an own target still limited at the reset is probed once, then left alone for the new window", run: stillLimitedAtReset },
   { id: "k", title: "a held stand-in returns at the next turn once its own target is cleared", run: heldReturnsOnClear },
   { id: "l", title: "a chain-exhausted wait hands back when its own target is cleared", run: exhaustedWaitHandsBack },
+  { id: "m", title: "a message from another session that a limit interrupts reaches the account the session moves to", run: relayedMessageAcrossHop },
 ];
