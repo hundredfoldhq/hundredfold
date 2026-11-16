@@ -563,7 +563,6 @@ function ctxFor(callerSessionId?: string): HundredfoldMcpContext {
   };
 }
 
-/** Create a session the operator way (no header) and return its id. */
 /**
  * These tests mark a session `running` whose first message no engine ever ran,
  * so its queue row still reads `pending` in the database. A real interrupted
@@ -574,6 +573,7 @@ function emptyLiveQueue(): void {
   registerLiveSessionQueue({ holds: () => false, isPaused: () => false });
 }
 
+/** Create a session the operator way (no header) and return its id. */
 async function createOperatorSession(prompt: string): Promise<string> {
   const resp = await apiFetch()("http://gateway.test/api/sessions", {
     method: "POST",
