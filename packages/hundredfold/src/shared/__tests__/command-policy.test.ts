@@ -148,6 +148,10 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
         `grep -c rm ${GATEWAY_HOME}/org/a.yaml`,
         `ls ${GATEWAY_HOME}/docs | grep -e mkdir -e ln`,
         `git -C ${GATEWAY_HOME} log --grep touch`,
+        `/usr/bin/grep -c mv ${GATEWAY_HOME}/docs/a.md`,
+        `LC_ALL=C rg -n "rm -rf" ${GATEWAY_HOME}/docs`,
+        `find ${GATEWAY_HOME}/docs -name install`,
+        `cat ${GATEWAY_HOME}/docs/a.md | grep cp | wc -l`,
       ]) {
         expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("allow");
       }
@@ -165,6 +169,19 @@ describe("remote HUNDREDFOLD_HOME containment", () => {
         `cd /tmp && mkdir -p ${GATEWAY_HOME}/org/new`,
         `echo $(touch ${GATEWAY_HOME}/knowledge/x.md)`,
         `if true; then rm ${GATEWAY_HOME}/knowledge/x.md; fi`,
+        // A command word the policy does not know is judged as a write, never cleared.
+        `if cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md; then echo ok; fi`,
+        `while rm ${GATEWAY_HOME}/knowledge/lock; do sleep 1; done`,
+        `{ cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md; }`,
+        `! mkdir ${GATEWAY_HOME}/knowledge/lock`,
+        `/usr/bin/env cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `/usr/bin/sudo cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `git -C ${GATEWAY_HOME}/knowledge mv a.md b.md`,
+        `git -C ${GATEWAY_HOME}/knowledge rm a.md`,
+        `flock /tmp/l cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `eval cp /tmp/a ${GATEWAY_HOME}/knowledge/a.md`,
+        `grep -rl x ${GATEWAY_HOME}/docs | xargs rm`,
+        `find ${GATEWAY_HOME}/docs -name x -delete -o -name y -exec mv {} /tmp \\;`,
       ]) {
         expect(evaluateCommandPolicy(cmd, REMOTE).action, cmd).toBe("block");
       }

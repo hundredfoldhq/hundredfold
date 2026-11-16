@@ -75,30 +75,56 @@ const STAGE_FARM_SEGMENT = new RegExp(
   `(?:^|/)(?:${[REMOTE_STAGE_DIR_NAME, LEGACY_REMOTE_STAGE_DIR_NAME].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?:/|$)`,
 );
 
-/** Commands that create or overwrite a file named in their arguments. */
-const WRITE_COMMAND_NAME = /^(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)$/i;
-/** Words that run the command after them: a write word anywhere after one of these is a write. */
-const COMMAND_RUNNER = /^(?:sudo|doas|env|nice|ionice|nohup|time|timeout|stdbuf|exec|command|builtin|xargs|parallel|watch|then|do|else|-exec|-execdir|-ok|-okdir)$/i;
+/** Commands that create or overwrite a file named in their arguments. Matched
+ *  anywhere a word starts, by path too (`/bin/cp`), on purpose: a write this layer cannot place is
+ *  judged as a write. Only {@link isReadOnlySegment} clears a match. */
+const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:[^\s;&|()]*\/)?(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)\b/i;
+/** Tools that write no file of their own, whatever words they are given. */
+const READ_ONLY_TOOLS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "cat", "head", "tail", "ls", "wc", "stat", "du", "tree"]);
+/** `find` actions that run a command or write a file. */
+const FIND_ACTION = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+/** `git` subcommands that only read the repository. */
+const GIT_READ_SUBCOMMANDS = new Set(["log", "show", "diff", "grep", "status", "blame", "ls-files", "rev-parse"]);
+/** `git` options that take the next word as their value. */
+const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
 /** `VAR=value` before a command. */
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/** The subcommand of a `git` invocation, its global options skipped. */
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (GIT_VALUE_OPTIONS.has(arg)) i++;
+    else if (!arg.startsWith("-")) return arg;
+  }
+  return undefined;
+}
+
 /**
- * Whether a write command runs anywhere in `text`: as the first word of a
- * pipeline segment (after any `VAR=value`), or after a word that runs the next
- * command (`sudo`, `xargs`, `find -exec`…), flags and all. The same word as an
- * argument (`grep -rn install docs`, `npm install`) is not a write.
+ * Whether a pipeline segment is a known read: its command (by basename, after
+ * any `VAR=value`) is a read-only tool, `find` with no action that writes or runs
+ * anything, or a reading `git` subcommand. Anything else, a command this does not
+ * know included, is not cleared, so the broad write match still judges it.
+ */
+function isReadOnlySegment(segment: string): boolean {
+  const words = segment.trim().split(/\s+/).filter(Boolean);
+  const start = words.findIndex((word) => !ENV_ASSIGNMENT.test(word));
+  if (start < 0) return false;
+  const tool = words[start]!.replace(/^.*\//, "");
+  const args = words.slice(start + 1);
+  if (READ_ONLY_TOOLS.has(tool)) return true;
+  if (tool === "find") return !args.some((arg) => FIND_ACTION.test(arg));
+  if (tool === "git") return GIT_READ_SUBCOMMANDS.has(gitSubcommand(args) ?? "");
+  return false;
+}
+
+/**
+ * Whether `text` may run a write command: the broad match in any pipeline
+ * segment that is not a known read. `grep -rn install docs` is a read; `ls x |
+ * xargs rm`, `if cp …`, `git mv …` and every command this does not know are not.
  */
 function runsWriteCommand(text: string): boolean {
-  return text.split(/[;&|()`\n]/).some((segment) => {
-    const words = segment.trim().split(/\s+/).filter(Boolean);
-    let afterRunner = false;
-    for (const [index, word] of words.entries()) {
-      const name = word.replace(/^.*\//, "");
-      if (WRITE_COMMAND_NAME.test(name) && (afterRunner || words.slice(0, index).every((w) => ENV_ASSIGNMENT.test(w)))) return true;
-      if (COMMAND_RUNNER.test(word)) afterRunner = true;
-    }
-    return false;
-  });
+  return text.split(/[;&|()`\n]/).some((segment) => WRITE_COMMAND.test(segment) && !isReadOnlySegment(segment));
 }
 /** `> path` / `>> path`, where the target is absolute or home-relative.
  *  `$HOME`/`${HOME}` count as home-relative: without them a plain
