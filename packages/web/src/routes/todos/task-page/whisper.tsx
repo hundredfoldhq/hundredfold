@@ -106,7 +106,7 @@ function reparentedWhisper(detail: Record<string, unknown>): Whisper | undefined
 }
 
 function movedWhisper(moved: { from?: unknown; to?: unknown; with?: unknown }): Whisper {
-  if (typeof moved.with === "string") return { Icon: CornerDownRight, text: `moved with ${moved.with}` }
+  if (typeof moved.with === "string") return { Icon: CornerDownRight, text: `moved along with ${moved.with}` }
   if (typeof moved.to === "string") return { Icon: CornerDownRight, text: `made it a sub-task of ${moved.to}` }
   return { Icon: CornerDownRight, text: `moved it to top level${typeof moved.from === "string" ? `, out of ${moved.from}` : ""}` }
 }

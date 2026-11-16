@@ -21,6 +21,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 const { ApiError } = await import("@/lib/api")
 const { ParentRailRow } = await import("../task-page/parent-rail-row")
 const { whisperOf } = await import("../task-page/whisper")
+const { buildFeed } = await import("../task-page/activity-feed")
 
 function node(id: string, title: string, children: WorkItemTreeNodeWire[] = [], parentId: string | null = null): WorkItemTreeNodeWire {
   return { id, title, parentId, rootId: "AAA-1", status: "backlog", children } as unknown as WorkItemTreeNodeWire
@@ -119,12 +120,22 @@ describe("history lines for a move", () => {
   it("reads a move under a parent, a detach, and the sub-tasks that came along", () => {
     expect(whisperOf(event({ reparented: { from: null, to: "AAA-1", rootFrom: "AAA-2", rootTo: "AAA-1", depth: 1 } })).text).toBe("made it a sub-task of AAA-1")
     expect(whisperOf(event({ reparented: { from: "AAA-1", to: null, rootFrom: "AAA-1", rootTo: "AAA-2", depth: 0 } })).text).toBe("moved it to top level, out of AAA-1")
-    expect(whisperOf(event({ reparented: { with: "AAA-2", rootFrom: "AAA-1", rootTo: "AAA-2" } })).text).toBe("moved with AAA-2")
+    expect(whisperOf(event({ reparented: { with: "AAA-2", rootFrom: "AAA-1", rootTo: "AAA-2" } })).text).toBe("moved along with AAA-2")
   })
 
   it("reads a sub-task arriving at or leaving a parent", () => {
     expect(whisperOf(event({ childReparented: { child: "AAA-2", from: null, to: "AAA-1" } })).text).toBe("moved sub-task AAA-2 under AAA-1")
     expect(whisperOf(event({ childReparented: { child: "AAA-2", from: "AAA-1", to: null } })).text).toBe("moved sub-task AAA-2 to top level")
+  })
+
+  it("never folds a move into the quiet updates", () => {
+    const quiet = (id: string, detail: Record<string, unknown> | null = null): WorkItemEventWire => ({ ...event({}), id, detail, createdAt: `2026-11-16T10:00:0${id}.000Z` })
+    const blocks = buildFeed(
+      [quiet("1", { updatedFields: ["a"] }), quiet("2", { reparented: { from: null, to: "AAA-1" } }), quiet("3", { updatedFields: ["b"] }), quiet("4", { updatedFields: ["c"] })],
+      [],
+      [],
+    )
+    expect(blocks.some((block) => block.kind === "event" && block.event.id === "2")).toBe(true)
   })
 
   it("keeps the older note readings", () => {

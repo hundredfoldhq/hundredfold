@@ -160,7 +160,7 @@ function CandidateRow({ candidate, disabled, underItem, onPick }: {
   return (
     <button type="button" data-testid={`parent-result-${candidate.id}`} disabled={disabled} onClick={onPick} className={ROW_CLASS}>
       <StatusCircle status={candidate.status} size={16} />
-      <span className="text-[11px] text-[var(--text-tertiary)]" style={MONO}>{candidate.id}</span>
+      <span className="flex-none whitespace-nowrap text-[11px] text-[var(--text-tertiary)]" style={MONO}>{candidate.id}</span>
       <span className="min-w-0 truncate font-medium text-[var(--text-primary)]">{candidate.title}</span>
       {underItem && <span className="ml-auto flex-none text-[11px] text-[var(--text-quaternary)]">sub-task</span>}
     </button>
