@@ -899,30 +899,49 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
   `).run(attemptToken, id);
 }
 
+/** What kind of message from a child the parent last had. */
+export type MessageFromChildKind = "child-reply" | "child-error" | "agent-relay";
+
+export interface MessageFromChild extends FullMessageFields {
+  kind: MessageFromChildKind;
+}
+
 /**
- * The newest message `childId` put in front of `parentId`, whether the
- * automatic reply callback or its own send_to_session: what the parent has
- * already been told by that child, for a caller that must not tell it again.
+ * The newest message `childId` put in front of `parentId`: the automatic reply
+ * callback, its automatic error callback, or its own send_to_session. This is
+ * what the parent was last told by that child, for a caller that must not tell
+ * it again.
+ *
+ * "Last told" is the newest of those three, whatever its kind, so a caller can
+ * see that the child's last word was an error rather than a reply (`kind`).
+ * That is deliberate: the parent heard the error after any earlier reply, so
+ * the earlier reply no longer describes the child's state. Lifecycle notices
+ * (rate-limited, resumed) are not in the set: they store no body, and they say
+ * nothing about what the child answered, so they neither count as told nor
+ * move the newest message. The set must stay in step with what the callback
+ * writers record (`childNotificationMeta` in callbacks.ts, the relay row).
+ *
  * The stored body is clipped for a long message, with the whole one's length
  * and digest beside it. A message whose stored body is exactly `exceptBody` is
  * passed over, so a placeholder the gateway stored in place of a reply is not
  * mistaken for what the child said.
  */
-export function lastMessageFromChild(parentId: string, childId: string, exceptBody?: string): FullMessageFields | undefined {
+export function lastMessageFromChild(parentId: string, childId: string, exceptBody?: string): MessageFromChild | undefined {
   const db = initDb();
   const row = db.prepare(`
     SELECT meta
     FROM messages
     WHERE session_id = ?
       AND role = 'notification'
-      AND ((json_extract(meta, '$.kind') = 'child-reply' AND json_extract(meta, '$.childSessionId') = ?)
+      AND ((json_extract(meta, '$.kind') IN ('child-reply', 'child-error') AND json_extract(meta, '$.childSessionId') = ?)
         OR (json_extract(meta, '$.kind') = 'agent-relay' AND json_extract(meta, '$.fromSessionId') = ?))
       AND (? IS NULL OR COALESCE(json_extract(meta, '$.fullMessage'), '') <> ?)
     ORDER BY timestamp DESC, rowid DESC
     LIMIT 1
   `).get(parentId, childId, childId, exceptBody ?? null, exceptBody ?? null) as { meta?: string | null } | undefined;
   const meta = parseMetaColumn(row?.meta ?? null);
-  return meta ? readFullMessageMeta(meta) : undefined;
+  const fields = meta ? readFullMessageMeta(meta) : undefined;
+  return meta && fields ? { ...fields, kind: meta["kind"] as MessageFromChildKind } : undefined;
 }
 
 /**

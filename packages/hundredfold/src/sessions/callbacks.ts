@@ -538,6 +538,13 @@ function repeatsDeliveredReply(childSession: Session, text: string | null | unde
   // the reply it stood for is the one to compare against.
   const delivered = lastMessageFromChild(parentId, childSession.id, REPEATED_REPLY_NOTE);
   if (!delivered) return false;
+  // Rule for "last told": the newest thing the child said to the parent. If that
+  // was an error, the parent's picture is "it could not finish", and an earlier
+  // reply no longer stands: a reply after an error is the first word of the
+  // child's recovery, so it goes out in full, never as a note pointing back to a
+  // reply from before the failure. (Rate-limit and resume notices are not
+  // replies; the lookup passes over them, so the earlier reply still stands.)
+  if (delivered.kind === "child-error") return false;
   if (delivered.fullMessageChars === undefined) return delivered.fullMessage.trim() === reply;
   return delivered.fullMessageSha256 === fullMessageDigest(reply);
 }
