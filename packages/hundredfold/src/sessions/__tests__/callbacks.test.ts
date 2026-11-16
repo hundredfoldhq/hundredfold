@@ -846,6 +846,74 @@ describe("notifyParentSession — alwaysNotify suppression", () => {
   });
 });
 
+describe("notifyParentSession — a heartbeat turn that found nothing", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+  const parent = makeSession({ id: "parent-001", parentSessionId: null, status: "idle" });
+  const heartbeatChild = makeSession({ attemptToken: "attempt-hb", transportMeta: { heartbeatTurnAttempt: "attempt-hb" } });
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  function registryHolds(child: Session) {
+    vi.mocked(getSession).mockImplementation((id: string) => (id === child.id ? child : parent));
+  }
+
+  it.each([
+    ["bare", "NO_CHANGE"],
+    ["with a full stop", "NO_CHANGE."],
+    ["in bold", "**NO_CHANGE**"],
+    ["in code", "`NO_CHANGE`"],
+    ["followed by a reason", "NO_CHANGE\n\nStill waiting on the reboot."],
+  ])("keeps a %s no-change reply in the child's chat and does not wake the parent", async (_label, result) => {
+    registryHolds(heartbeatChild);
+    notifyParentSession(heartbeatChild, { result });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(claimSessionDelivery).not.toHaveBeenCalled();
+  });
+
+  it("still wakes the parent for a heartbeat turn that reports something", async () => {
+    registryHolds(heartbeatChild);
+    notifyParentSession(heartbeatChild, { result: "LON-1 settled; I accepted it and moved my Todo to review." });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("still wakes the parent for a heartbeat turn that ends in an error", async () => {
+    registryHolds(heartbeatChild);
+    notifyParentSession(heartbeatChild, { result: "NO_CHANGE", error: "engine crashed" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("relays the token on a turn no heartbeat started, or one a previous heartbeat marked", async () => {
+    for (const child of [
+      makeSession({ id: "child-plain", attemptToken: "attempt-2" }),
+      makeSession({ id: "child-stale", attemptToken: "attempt-3", transportMeta: { heartbeatTurnAttempt: "attempt-2" } }),
+    ]) {
+      registryHolds(child);
+      fetchSpy.mockClear();
+      notifyParentSession(child, { result: "NO_CHANGE" });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fetchSpy, child.id).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("does not take a reply that merely mentions the token for the no-change reply", async () => {
+    registryHolds(heartbeatChild);
+    notifyParentSession(heartbeatChild, { result: "The child replied NO_CHANGE twice, so I nudged it." });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+});
+
 describe("notifyParentOfExternalTurn", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
