@@ -15,7 +15,7 @@ import { initDb } from '../shared/db.js';
 import { recordEngineSpend } from './engine-spend.js';
 import { stripControlChars } from '../shared/sanitize.js';
 import { AUTO_COMPACT_BUDGET_HOLD_KEY } from '../shared/auto-compact-config.js';
-import { DROP_RELAY_FTS, getMeta, setMeta, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
+import { DROP_RELAY_FTS, getMeta, setMeta, runImmediateMigrationWithRetry, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
 import { parseTodoId } from '../work-items/id.js';
 import { toWorkItemLinkRole } from '../work-items/link-role.js';
 import { scopedDepartmentOf } from '../work-items/department-scope.js';
@@ -256,6 +256,10 @@ export function backfillFtsSync(database: Database.Database, chunkSize = FTS_BAC
 // False when the FTS boot drain fails: `searchMessages` then returns [] without touching the table.
 let ftsAvailable = true;
 
+/** Every backfill progress key, messages and relays. */
+const RESET_FTS_PROGRESS_SQL =
+  "DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_backfill_done','relay_fts_backfill_rowid','relay_fts_backfill_max')";
+
 /**
  * Drop all FTS infrastructure from `database` and reset the backfill progress flags so
  * the NEXT boot retries the migration + backfill from scratch. Sets `ftsAvailable =
@@ -269,7 +273,13 @@ let ftsAvailable = true;
 export function disableFtsForProcess(database: Database.Database, reason?: unknown): void {
   const msg = reason instanceof Error ? reason.message : reason != null ? String(reason) : 'explicit disable';
   console.error(`[fts] Boot drain failed (${msg}). Disabling FTS for this process — next boot will retry.`);
-  try {
+  // One IMMEDIATE transaction for the drops AND the progress reset. Run apart, another process booting between
+  // them would migrateFtsSchema a fresh index, find the stale `*_backfill_max` still present and pin no new
+  // watermark; our DELETE would then remove the stale one, the trigger guards would fall back to `rowid > 0`,
+  // and the AD/AU triggers would send FTS 'delete' commands for rows that were never indexed (the next delete
+  // of an old row throws "database disk image is malformed"). Inside the transaction a peer sees either the old
+  // state or the fully disabled one. Already in a caller's transaction: that one gives the same guarantee.
+  const disable = (): void => {
     database.exec(`
       DROP TRIGGER IF EXISTS messages_fts_ai;
       DROP TRIGGER IF EXISTS messages_fts_ad;
@@ -277,13 +287,23 @@ export function disableFtsForProcess(database: Database.Database, reason?: unkno
       DROP TABLE IF EXISTS messages_fts;
       ${DROP_RELAY_FTS}
     `);
+    try {
+      database.prepare(RESET_FTS_PROGRESS_SQL).run();
+    } catch {
+      // meta table may not exist in edge cases — not a fatal error, and a failed statement leaves the drops intact
+    }
+  };
+  try {
+    if (database.inTransaction) disable();
+    else runImmediateMigrationWithRetry(database.transaction(disable));
   } catch (dropErr) {
     console.error(`[fts] Failed to drop FTS infrastructure during disable: ${dropErr instanceof Error ? dropErr.message : dropErr}`);
-  }
-  try {
-    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_backfill_done','relay_fts_backfill_rowid','relay_fts_backfill_max')").run();
-  } catch {
-    // meta table may not exist in edge cases — not a fatal error
+    // Nothing was dropped (the transaction rolled back). Still reset progress so the next boot starts from scratch.
+    try {
+      database.prepare(RESET_FTS_PROGRESS_SQL).run();
+    } catch {
+      // as above
+    }
   }
   ftsAvailable = false;
 }
