@@ -10,6 +10,7 @@ import {
 import { dispatchWebSessionRun } from "./web-session-dispatch.js";
 import { isStoppedByUser } from "../sessions/stopped-marker.js";
 import { withdrawPendingQueueItemsForStop } from "../sessions/queue-stop.js";
+import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
   coalescePendingParentCompletionQueueItems();
@@ -48,6 +49,14 @@ function resumePendingQueueItem(item: QueueItem, context: ApiContext): boolean {
   let session = replayableSession(item.sessionId);
   if (!session) {
     dropUnreplayableRow(item, context);
+    return false;
+  }
+  // A child-watch wake that went stale while the gateway was down is dropped
+  // here, before the session is marked running for a turn that will not happen.
+  const staleWake = staleChildWatchWakeReason(item.id);
+  if (staleWake) {
+    cancelQueueItem(item.id);
+    logger.info(`Dropped stale child-watch wake ${item.id} for session ${session.id} on replay: ${staleWake}`);
     return false;
   }
   // Ordinary non-web queue ownership remains connector-specific. Callback

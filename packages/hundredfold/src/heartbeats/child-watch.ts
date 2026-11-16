@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { initDb } from "../shared/db.js";
 import { logger } from "../shared/logger.js";
-import { getSession, listChildSessions, listSessionsByWorkItem } from "../sessions/registry.js";
+import { getSession, getSessionDeliveryByQueueItemId, listChildSessions, listSessionsByWorkItem } from "../sessions/registry.js";
 import { TODO_DISPATCHER_NAME } from "../gateway/system-employees.js";
 import { isSessionInFlight } from "../work-items/open-delegations.js";
 import { walkWillStart } from "../work-items/quiet-children.js";
 import { employeeSessionsTable } from "../work-items/employee-sessions.js";
-import { disarmHeartbeat } from "./store.js";
+import { disarmHeartbeat, getHeartbeat } from "./store.js";
 import { HEARTBEAT_NO_CHANGE_REPLY } from "./turn-origin.js";
 import type { Heartbeat } from "./types.js";
 
@@ -150,6 +150,60 @@ export function childWatchSettledReason(heartbeat: Pick<Heartbeat, "purpose" | "
   if (isTodoDispatcher(heartbeat.ownerSessionId)) return CHILD_WATCH_DISARM_REASON;
   const { todoIds, sessionIds } = openChildrenOf(heartbeat.ownerSessionId);
   return todoIds.length === 0 && sessionIds.length === 0 ? CHILD_WATCH_DISARM_REASON : null;
+}
+
+/** Whether a later tick of the same heartbeat sits in a queue row that has not started: the backlog an older build left, which one turn answers. */
+function hasNewerQueuedWake(deliveryId: string, heartbeatId: string): boolean {
+  return initDb().prepare(`
+    SELECT 1
+    FROM callback_deliveries d
+    JOIN queue_items q ON q.id = d.queue_item_id
+    WHERE d.source_kind = 'heartbeat' AND d.delivery_kind = 'heartbeat' AND d.source_id = ?
+      AND q.status = 'pending'
+      AND d.rowid > (SELECT rowid FROM callback_deliveries WHERE id = ?)
+    LIMIT 1
+  `).get(heartbeatId, deliveryId) !== undefined;
+}
+
+/** The child-watch heartbeat whose tick sits in queue row `queueItemId`, with that tick's delivery id; null for any other row. */
+function childWatchTickOfQueueItem(queueItemId: string): { deliveryId: string; heartbeat: Heartbeat } | null {
+  const delivery = getSessionDeliveryByQueueItemId(queueItemId);
+  if (!delivery || delivery.deliveryKind !== "heartbeat" || delivery.sourceKind !== "heartbeat") return null;
+  const heartbeat = getHeartbeat(delivery.sourceId);
+  return heartbeat?.purpose === CHILD_WATCH_PURPOSE ? { deliveryId: delivery.id, heartbeat } : null;
+}
+
+/** Why a heartbeat that has a tick waiting is spent, else null. */
+function spentReason(heartbeat: Heartbeat, now: number): string | null {
+  if (heartbeat.status === "disarmed") return `heartbeat disarmed (${heartbeat.disarmedReason ?? "no reason recorded"})`;
+  if (heartbeat.expiresAt !== null && heartbeat.expiresAt <= now) return "heartbeat expired";
+  return childWatchSettledReason(heartbeat);
+}
+
+/**
+ * Why the child-watch wake parked on queue row `queueItemId` should not run now,
+ * else null. A wake is judged when it was queued, but it can wait for hours
+ * behind a session that cannot run (an engine out of usage, a gateway down),
+ * and by the time its turn comes the heartbeat may be disarmed and the children
+ * settled. Running it then costs a full model turn and changes nothing, so the
+ * dispatch asks again just before it starts the turn. A wake with a newer one of
+ * the same heartbeat queued behind it is dropped too: the newest says it all.
+ * Anything that is not a child-watch tick (another heartbeat, a callback, a
+ * person's message) is null.
+ */
+export function staleChildWatchWakeReason(queueItemId: string | undefined, now = Date.now()): string | null {
+  if (!queueItemId) return null;
+  try {
+    const tick = childWatchTickOfQueueItem(queueItemId);
+    if (!tick) return null;
+    const spent = spentReason(tick.heartbeat, now);
+    if (spent) return spent;
+    return hasNewerQueuedWake(tick.deliveryId, tick.heartbeat.id) ? "a newer wake of the same heartbeat is queued behind it" : null;
+  } catch (error) {
+    // Never block a turn on a failed look-up: a wake that runs for nothing is the cheaper mistake.
+    logger.warn(`[heartbeats] could not judge queued child-watch wake ${queueItemId}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 /**
