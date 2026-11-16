@@ -148,6 +148,10 @@ describe("an operator's mention into a busy session", () => {
       expect(busy.prompts[2]).toContain("child finished its part");
       busy.releaseNext();
       await busy.settled();
+      // The cut-off turn settles quietly: only the mention's turn and the callback's reply, never a stale third.
+      await eventually(() => expect(registry.getMessages(busy.session.id).filter((message) => message.role === "assistant")).toHaveLength(2));
+      await quiet();
+      expect(registry.getMessages(busy.session.id).filter((message) => message.role === "assistant")).toHaveLength(2);
     });
   });
 
