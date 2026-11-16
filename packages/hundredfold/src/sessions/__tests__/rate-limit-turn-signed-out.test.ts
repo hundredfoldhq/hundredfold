@@ -50,6 +50,8 @@ beforeEach(() => {
   operator.length = 0;
 });
 
+const LINK_2 = "opencode · opencode-go-b/kimi-k3";
+
 describe("a refused turn whose walk found a fallback link signed out", () => {
   it("fails with the own target's error and the signed-out link named, in the session's error, the reply and the operator alert", async () => {
     const reply = vi.fn(async (_text: string) => {});
@@ -58,30 +60,77 @@ describe("a refused turn whose walk found a fallback link signed out", () => {
     await hooks.onBillingFailure!({ signedOut: [LINK] });
 
     const error = settleTurn.mock.calls[0]![0].error as string;
-    expect(error).toBe(`opencode provider does not serve this model for the account: ${NO_ROUTE}; fallback ${LINK} is signed out: its key or login was rejected and needs replacing`);
-    expect(reply.mock.calls[0]![0]).toMatch(new RegExp(`The fallback ${LINK} is signed out: its key or login was rejected and needs replacing\\.$`));
-    expect(operator[0]).toContain(`${LINK} is signed out`);
+    expect(error).toBe(`opencode provider does not serve this model for the account: ${NO_ROUTE}; fallback ${LINK} is signed out: its key or login needs replacing`);
+    expect(reply.mock.calls[0]![0]).toBe(
+      `The provider does not serve this model for the account and no fallback could serve this turn: the fallback ${LINK} is signed out: its key or login needs replacing. Enable the model or pick another, or replace its key, then try again.`,
+    );
+    expect(operator[0]).toContain(`fallback ${LINK} is signed out`);
+  });
+
+  it("speaks of several links in the plural", async () => {
+    const reply = vi.fn(async (_text: string) => {});
+    const hooks = await hooksFor(turnArgs(reply));
+
+    await hooks.onBillingFailure!({ signedOut: [LINK, LINK_2] });
+
+    expect(settleTurn.mock.calls[0]![0].error).toMatch(new RegExp(`; fallbacks ${LINK}, ${LINK_2} are signed out: their key or login needs replacing$`));
+    expect(reply.mock.calls[0]![0]).toMatch(/, or replace their keys, then try again\.$/);
   });
 
   it("keeps its own wording when no link was signed out", async () => {
-    const hooks = await hooksFor(turnArgs());
+    const reply = vi.fn(async (_text: string) => {});
+    const hooks = await hooksFor(turnArgs(reply));
 
     await hooks.onBillingFailure!();
 
     expect(settleTurn.mock.calls[0]![0].error).toBe(`opencode provider does not serve this model for the account: ${NO_ROUTE}`);
+    expect(reply.mock.calls[0]![0]).toBe("The provider does not serve this model for the account and no fallback could serve this turn. Enable the model or pick another, then try again.");
+  });
+});
+
+describe("a wait whose chain has a signed-out link", () => {
+  function waitingSurface() {
+    const notice = vi.fn(async (_text: string, _meta?: unknown) => {});
+    const args = turnArgs();
+    (args.surface as unknown as { notice: typeof notice }).notice = notice;
+    return { args, notice };
+  }
+
+  it("names the link in the operator alert and the notice, whether or not a run ran out", async () => {
+    const { args, notice } = waitingSurface();
+    const hooks = await hooksFor(args);
+
+    await hooks.onWaitingStart!({ resumeAt: null, rateLimit: {}, signedOut: [LINK] });
+
+    expect(operator[0]).toMatch(new RegExp(`paused\\. Fallback ${LINK} is signed out: its key or login needs replacing\\.$`));
+    expect(notice.mock.calls[0]![0]).toBe(`⏳ opencode usage limit reached. Fallback ${LINK} is signed out: its key or login needs replacing. I'll continue automatically.`);
+  });
+
+  it("keeps its old wording without one", async () => {
+    const { args, notice } = waitingSurface();
+    const hooks = await hooksFor(args);
+
+    await hooks.onWaitingStart!({ resumeAt: null, rateLimit: {} });
+    await hooks.onWaitingStart!({ resumeAt: null, rateLimit: {}, reason: "the chosen fallback is limited too" });
+
+    expect(operator[0]).toMatch(/paused\.$/);
+    expect(notice.mock.calls.map((call) => call[0])).toEqual([
+      "⏳ opencode usage limit reached — I'll continue automatically.",
+      "⏳ opencode usage limit reached. Not switching: the chosen fallback is limited too. I'll continue automatically.",
+    ]);
   });
 });
 
 describe("the wait after a chain that ran out on a signed-out link", () => {
   it("does not say every target is at its limit, and names the link that needs its key replaced", async () => {
     const { chainExhaustedNotice, chainExhaustedLastError } = await import("../fallback-hop.js");
-    const exhausted = { tried: [LINK], own: "opencode · opencode-go-b/glm-5.3", signedOut: [LINK] };
+    const exhausted = { tried: [LINK], own: "opencode · opencode-go-b/glm-5.3" };
 
-    expect(chainExhaustedNotice(exhausted, null)).toBe(
-      `⏳ No target in this session's chain could take the turn (tried: ${LINK}). ${LINK.charAt(0).toUpperCase()}${LINK.slice(1)} is signed out: its key or login was rejected and needs replacing. Waiting for opencode · opencode-go-b/glm-5.3 to reset (time unknown).`,
+    expect(chainExhaustedNotice(exhausted, null, [LINK])).toBe(
+      `⏳ No target in this session's chain could take the turn (tried: ${LINK}). Fallback ${LINK} is signed out: its key or login needs replacing. Waiting for opencode · opencode-go-b/glm-5.3 to reset (time unknown).`,
     );
-    expect(chainExhaustedNotice({ tried: [LINK], own: exhausted.own }, null)).toMatch(/^⏳ Every target in this session's chain is at its limit/);
-    expect(chainExhaustedLastError(exhausted.own, null, [LINK, "opencode · opencode-go-b/kimi-k3"]))
-      .toBe(`opencode · opencode-go-b/glm-5.3 usage limit, reset time unknown; ${LINK}, opencode · opencode-go-b/kimi-k3 are signed out: their key or login was rejected and needs replacing`);
+    expect(chainExhaustedNotice(exhausted, null)).toMatch(/^⏳ Every target in this session's chain is at its limit/);
+    expect(chainExhaustedLastError(exhausted.own, null, [LINK, LINK_2]))
+      .toBe(`opencode · opencode-go-b/glm-5.3 usage limit, reset time unknown; fallbacks ${LINK}, ${LINK_2} are signed out: their key or login needs replacing`);
   });
 });

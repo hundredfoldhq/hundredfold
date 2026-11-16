@@ -12,7 +12,7 @@ import { settleTurn, type SettleTurnInput } from "./completion.js";
 import { formatResumeTime, turnDisplayText } from "./text.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
-import { chainExhaustedNotice, hopNoticeText, signedOutClause } from "../fallback-hop.js";
+import { chainExhaustedNotice, hopNoticeText, signedOutClause, withSignedOut, type ChainExhausted } from "../fallback-hop.js";
 import type { FallbackHop, FallbackHopNoticeMeta } from "../../shared/fallback-chain-wire.js";
 import type { JsonObject } from "../../shared/types.js";
 import { postEngineNotices } from "./engine-notices.js";
@@ -108,24 +108,32 @@ async function announceFallback(
 }
 
 async function announceWaiting(
-  args: RateLimitTurnArgs, resumeAt: Date | null, why: { reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string; signedOut?: string[] } } = {},
+  args: RateLimitTurnArgs, resumeAt: Date | null, why: { reason?: string; hop?: FallbackHop; exhausted?: ChainExhausted; signedOut?: string[] } = {},
 ): Promise<void> {
-  const { reason, hop, exhausted } = why;
+  const { reason, hop, exhausted, signedOut } = why;
   const session = args.input.session;
   const engineLabel = rateLimitEngineLabel(session.engine);
   const resumeText = formatResumeTime(resumeAt);
-  notifyOperatorChannel(`⚠️ ${engineLabel} usage limit reached. ${describe(session)} paused${resumeText ? ` until ${resumeText}` : ""}.`, undefined, "paused");
+  // The operator is the one who can replace a signed-out link's key, so the alert names it.
+  const paused = `⚠️ ${engineLabel} usage limit reached. ${describe(session)} paused${resumeText ? ` until ${resumeText}` : ""}`;
+  notifyOperatorChannel(`${withSignedOut(paused, signedOut, ". ")}.`, undefined, "paused");
   await args.surface.waiting(true);
   notifyRateLimited(
     getSession(session.id) ?? session,
     resumeAt ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : undefined,
   );
   // A chain that ran out says plainly that no hop is left; any other wait keeps its wording.
-  const text = exhausted
-    ? chainExhaustedNotice(exhausted, resumeAt)
-    : `⏳ ${engineLabel} usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}${reason ? `. Not switching: ${reason}.` : " —"} I'll continue automatically.`;
+  const text = exhausted ? chainExhaustedNotice(exhausted, resumeAt, signedOut) : waitingNotice(engineLabel, resumeText, reason, signedOut);
   if (hop) await noticeHop(args, text, hop);
   else await args.surface.notice(text);
+}
+
+/** The notice for any other wait: when it resets, why it did not switch, and which fallback links are signed out. */
+function waitingNotice(engineLabel: string, resumeText: string | null, reason: string | undefined, signedOut: readonly string[] | undefined): string {
+  const head = `⏳ ${engineLabel} usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}`;
+  if (!reason && !signedOut?.length) return `${head} — I'll continue automatically.`;
+  const why = withSignedOut(reason ? `${head}. Not switching: ${reason}` : head, signedOut, ". ");
+  return `${why}. I'll continue automatically.`;
 }
 
 /** The limit never lifted inside the deadline: settle out of `waiting`. */
@@ -182,11 +190,19 @@ function refusedError(label: string, refused: Refusal, provider: string): string
   return `${label} account is out of credit: ${provider}`;
 }
 
-/** What the reply tells the person to do about a refused own target. */
-function refusedReply(refused: Refusal): string {
-  if (refused === "auth") return "The provider rejected its API key and no fallback could serve this turn. Sign in again or add a fallback, then try again.";
-  if (refused === "model-access") return "The provider does not serve this model for the account and no fallback could serve this turn. Enable the model or pick another, then try again.";
-  return "The provider reports an insufficient balance and no fallback could serve this turn. Top up the account or add a fallback, then try again.";
+const REFUSED_REPLY: Record<"auth" | "model-access" | "billing", { why: string; fix: string; orFallback: boolean }> = {
+  auth: { why: "The provider rejected its API key", fix: "Sign in again", orFallback: true },
+  "model-access": { why: "The provider does not serve this model for the account", fix: "Enable the model or pick another", orFallback: false },
+  billing: { why: "The provider reports an insufficient balance", fix: "Top up the account", orFallback: true },
+};
+
+/** What the reply tells the person to do about a refused own target, and about a fallback link that is signed out. */
+function refusedReply(refused: Refusal, signedOut: readonly string[] | undefined): string {
+  const { why, fix, orFallback } = REFUSED_REPLY[refused === "auth" || refused === "model-access" ? refused : "billing"];
+  if (!signedOut?.length) return `${why} and no fallback could serve this turn. ${fix}${orFallback ? " or add a fallback" : ""}, then try again.`;
+  // There is a fallback, and it is the signed-out link: its key is the other fix.
+  const theirs = signedOut.length > 1 ? "their keys" : "its key";
+  return `${why} and no fallback could serve this turn: the ${signedOutClause(signedOut)}. ${fix}, or replace ${theirs}, then try again.`;
 }
 
 /** A prepaid balance ran dry, a key is dead, or a model is not enabled for the account, and no fallback
@@ -198,8 +214,7 @@ async function settleBillingFailedTurn(args: RateLimitTurnArgs, info: { signedOu
   const provider = args.originalResult.error?.replace(/\s+/g, " ").trim().slice(0, 400) || "the provider reported an insufficient balance";
   const refused = classifyOpencodeFailure(args.originalResult.error)?.kind;
   const own = refusedError(rateLimitEngineLabel(session.engine), refused, provider);
-  const signedOut = info.signedOut?.length ? signedOutClause(info.signedOut) : undefined;
-  const billingError = signedOut ? `${own}; fallback ${signedOut}` : own;
+  const billingError = withSignedOut(own, info.signedOut);
   notifyOperatorChannel(`❌ ${billingError}. ${describe(session)} has been stopped.`, undefined, "stopped");
   await settleTurn({
     sessionId: session.id,
@@ -210,7 +225,7 @@ async function settleBillingFailedTurn(args: RateLimitTurnArgs, info: { signedOu
     employee: args.input.employee,
     surface: args.surface,
   });
-  await args.surface.reply(signedOut ? `${refusedReply(refused)} The fallback ${signedOut}.` : refusedReply(refused));
+  await args.surface.reply(refusedReply(refused, info.signedOut));
 }
 
 function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
@@ -232,7 +247,7 @@ function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
         meta: { model: plan.model, effortLevel: plan.effortLevel },
       } : undefined, ran.model);
     },
-    onWaitingStart: ({ resumeAt, reason, hop, exhausted }) => announceWaiting(args, resumeAt, { reason, hop, exhausted }),
+    onWaitingStart: ({ resumeAt, reason, hop, exhausted, signedOut }) => announceWaiting(args, resumeAt, { reason, hop, exhausted, signedOut }),
     onRetryAttempt: () => surface.waiting(false),
     onStillLimited: () => surface.waiting(true),
     onRetryStream: (delta) => surface.delta(delta),

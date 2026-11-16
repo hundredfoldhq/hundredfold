@@ -10,6 +10,7 @@
 import type { Employee, Engine, EngineResult, HundredfoldConfig, RemoteTarget, ResolvedMcpConfig, Session, StreamDelta } from "../shared/types.js";
 import type { EngineName } from "../shared/models.js";
 import type { FallbackHop } from "../shared/fallback-chain-wire.js";
+import type { ChainExhausted } from "./fallback-hop.js";
 
 /** What detectRateLimit returned for the original turn. */
 export interface RateLimitInfo {
@@ -78,9 +79,10 @@ export interface RateLimitHandlerHooks {
    *
    * `reason` is set when nothing in the session's fallback chain could take the turn (its own
    * fallback target could not, or every link was tried), so the notice can say why it waited
-   * instead of switching; `hop` is then the record that the chain ran out.
+   * instead of switching; `hop` is then the record that the chain ran out. `signedOut` names the fallback links that
+   * are signed out (their key or login refused), which the operator has to renew.
    */
-  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: { tried: string[]; own: string; signedOut?: string[] } }) => void | Promise<void>;
+  onWaitingStart?: (info: { resumeAt: Date | null; rateLimit: RateLimitInfo; reason?: string; hop?: FallbackHop; exhausted?: ChainExhausted; signedOut?: string[] }) => void | Promise<void>;
 
   /**
    * Called each retry iteration BEFORE the retry engine.run — switch UI back

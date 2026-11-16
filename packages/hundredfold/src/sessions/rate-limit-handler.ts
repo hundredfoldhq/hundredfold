@@ -40,7 +40,7 @@ import { quotaHoldEndsAtSeconds, recordTurnServed } from "../shared/engine-healt
 import { rateLimitAccount, recordAccountRateLimit } from "./rate-limit-account.js";
 import { walkFallbackChain } from "./fallback-walk.js";
 import { beginLimitProbe, endLimitProbe } from "./limit-probe.js";
-import { chainExhaustedLastError } from "./fallback-hop.js";
+import { chainExhaustedLastError, withSignedOut } from "./fallback-hop.js";
 import { standingOverrideUntil } from "./engine-override.js";
 import { earlier, handBack, handBackAt as accountHandBackAt } from "./rate-limit-handback.js";
 import { getSession, updateSessionForAttempt, nextEngineSessionFields } from "./registry.js";
@@ -110,13 +110,15 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   // is not enabled for, so there is nothing to wait out: the chain was the only way past it, and
   // with none left the turn fails to be seen.
   if (rateLimit.billing || rateLimit.refused) {
-    const signedOut = walk.signedOut ? `; signed out: ${walk.signedOut.join(", ")}` : "";
-    logger.warn(`Session ${session.id} hit a ${engineLabel} ${rateLimit.refused ?? "billing"} failure and no fallback link could serve it${signedOut}; failing the turn instead of waiting`);
+    const signedOutNote = walk.signedOut ? `; signed out: ${walk.signedOut.join(", ")}` : "";
+    logger.warn(`Session ${session.id} hit a ${engineLabel} ${rateLimit.refused ?? "billing"} failure and no fallback link could serve it${signedOutNote}; failing the turn instead of waiting`);
     // The own target's failure is not the whole story: a link that was refused its key needs the operator too.
     await hooks.onBillingFailure?.(walk.signedOut ? { signedOut: walk.signedOut } : {});
     return { kind: "billing" };
   }
   const targetReason = walk.reason;
+  // A signed-out fallback link stays named for the whole wait: no reset renews it, and every retry rewrites lastError.
+  const { signedOut } = walk;
   // Nothing usable in the chain — fall through to wait-and-retry.
 
   // ── Branch B: wait-and-retry on the original engine ────────────────────────
@@ -150,16 +152,19 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     status: "waiting",
     lastActivity: new Date().toISOString(),
     // A chain that ran out names the own target and when it reopens; any other wait keeps its wording.
-    lastError: walk.exhausted ? chainExhaustedLastError(walk.exhausted.own, resumeAt, walk.exhausted.signedOut) : (resumeAt
+    lastError: walk.exhausted ? chainExhaustedLastError(walk.exhausted.own, resumeAt, signedOut) : withSignedOut((resumeAt
       ? `${engineLabel} usage limit — resumes ${resumeAt.toISOString()}`
-      : `${engineLabel} usage limit — waiting for reset`) + (targetReason ? `; ${targetReason}` : ""),
+      : `${engineLabel} usage limit — waiting for reset`) + (targetReason ? `; ${targetReason}` : ""), signedOut),
   });
   if (!enteredWaiting) {
     await hooks.onCancelled?.();
     return { kind: "cancelled" };
   }
 
-  await hooks.onWaitingStart?.({ resumeAt: resumeAt ?? null, rateLimit, ...(targetReason ? { reason: targetReason } : {}), ...(walk.hop ? { hop: walk.hop } : {}), ...(walk.exhausted ? { exhausted: walk.exhausted } : {}) });
+  await hooks.onWaitingStart?.({
+    resumeAt: resumeAt ?? null, rateLimit, ...(targetReason ? { reason: targetReason } : {}), ...(walk.hop ? { hop: walk.hop } : {}),
+    ...(walk.exhausted ? { exhausted: walk.exhausted } : {}), ...(signedOut ? { signedOut } : {}),
+  });
 
   // Keep lastActivity fresh while waiting (UI / status endpoints).
   const heartbeat = setInterval(() => {
@@ -204,7 +209,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     const earlyReset = earlyResetWatch(session.engine, account);
     const resetWake = earlyReset ? (endMs: number): number | undefined => {
       const wake = earlyReset.wakeAt(endMs);
-      if (wake) noteEarlyReset(session.id, attemptToken, engineLabel, wake.reset);
+      if (wake) noteEarlyReset(session.id, attemptToken, engineLabel, wake.reset, signedOut);
       return wake?.atMs;
     } : undefined;
     const earlyWake = withOwnClearWake(resetWake, ownCleared, handBackAt);
@@ -351,9 +356,9 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
           ...(retryResult.sessionId?.trim() ? nextEngineSessionFields(currentSession, currentSession.engine, retryResult.sessionId) : {}),
           status: "waiting",
           lastActivity: new Date().toISOString(),
-          lastError: nextResumeAt
+          lastError: withSignedOut(nextResumeAt
             ? `${engineLabel} usage limit — resumes ${nextResumeAt.toISOString()}`
-            : `${engineLabel} usage limit — waiting for reset`,
+            : `${engineLabel} usage limit — waiting for reset`, signedOut),
         });
         if (!waitingAgain) {
           await hooks.onCancelled?.();
@@ -399,7 +404,7 @@ function noteHandBack(sessionId: string, due: "window" | "own-target-cleared"): 
 }
 
 /** Say why a wait ended early, in the log and on the session's status line. */
-function noteEarlyReset(sessionId: string, attemptToken: string, engineLabel: string, reset: EarlyReset): void {
+function noteEarlyReset(sessionId: string, attemptToken: string, engineLabel: string, reset: EarlyReset, signedOut?: readonly string[]): void {
   const readAt = reset.readAt.toISOString();
   if (reset.kind === "lifted") {
     logger.info(`Session ${sessionId}: ${engineLabel} usage reading at ${readAt} shows the limit lifted before its stated reset; retrying now`);
@@ -407,7 +412,7 @@ function noteEarlyReset(sessionId: string, attemptToken: string, engineLabel: st
   }
   const reopensAt = reset.reopensAt.toISOString();
   logger.info(`Session ${sessionId}: ${engineLabel} usage reading at ${readAt} moves the reset earlier, to ${reopensAt}`);
-  updateSessionForAttempt(sessionId, attemptToken, { lastError: `${engineLabel} usage limit — resumes ${reopensAt}` }, ["waiting"]);
+  updateSessionForAttempt(sessionId, attemptToken, { lastError: withSignedOut(`${engineLabel} usage limit — resumes ${reopensAt}`, signedOut) }, ["waiting"]);
 }
 
 /**

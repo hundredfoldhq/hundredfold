@@ -135,6 +135,27 @@ describe("failures that move a fallback link on, and the own target's that do no
     expect(readEngineHealth()[`claude:${claudeProfileFromDir(DIR_B).key}`]).toBeUndefined();
   });
 
+  it("names a Claude link whose login was refused when the chain then runs out, but not a profile that is only not ready", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { RemoteProfileNotReadyError } = await import("../../shared/remote-profile-error.js");
+    const waitedOn = async (onB: () => ReturnType<typeof limited>) => {
+      const { engines } = scripted((call) => (who(call) === "B/sonnet" ? onB() : limited()));
+      const id = newSession({ ref: `web:walk-${Math.random()}` });
+      const { opts, seen } = limitedTurn(id, employee(), engines);
+      const outcome = handleRateLimit(opts);
+      await vi.advanceTimersByTimeAsync(0);
+      const waiting = seen.waiting[0] as { signedOut?: string[] };
+      reg.updateSession(id, { status: "idle" } as never);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await outcome;
+      return waiting;
+    };
+
+    expect((await waitedOn(() => failed("API Error: authentication_failed"))).signedOut).toEqual(["claude · B · sonnet"]);
+    // Not ready on its host (no consent, not mounted): the walk moves on as for a login that is down, but no key was refused.
+    expect(await waitedOn(() => { throw new RemoteProfileNotReadyError("profile B is not ready on build-box"); })).not.toHaveProperty("signedOut");
+  });
+
   it("passes over a profile that is signed out without launching it, and names why", async () => {
     signedOut.dirs.add(DIR_B);
     const { engines, calls } = scripted((call) => (who(call) === "x-provider/model-x" ? answer("on X") : limited()));

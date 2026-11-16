@@ -128,56 +128,87 @@ describe("a walk that ends on a link whose key was rejected", () => {
   // The own target fails one way; the next link's provider answers 401, and the rest of the chain is on that provider.
   const GO_B_Y = { engine: "opencode", model: "opencode-go-b/y" };
   const B_LABEL = `opencode · ${GO_B.model}`;
+  const B_Y_LABEL = `opencode · ${GO_B_Y.model}`;
+  const CLAUSE = `fallbacks ${B_LABEL}, ${B_Y_LABEL} are signed out: their key or login needs replacing`;
   const deadLinkWorker = (): Employee => ({ name: "worker-oc", engine: "opencode", model: GO.model, fallback: [GO_B, GO_B_Y] }) as Employee;
   const turnOnDeadLink = (engines: Map<string, Engine>) => {
-    const id = newSession({ ref: "web:oc", engine: "opencode", model: GO.model, employeeName: "worker-oc" });
+    const id = newSession({ ref: `web:oc-${Math.random()}`, engine: "opencode", model: GO.model, employeeName: "worker-oc" });
     return { id, ...limitedTurn(id, deadLinkWorker(), engines) };
   };
-
-  it("fails a refused own target naming the signed-out link, not only the own target's error", async () => {
-    const { engines, calls } = scripted(() => failed(EXPIRED));
+  const refusedTurn = (engines: Map<string, Engine>) => {
     const turn = turnOnDeadLink(engines);
     const onBillingFailure = vi.fn();
     const opts = { ...turn.opts, rateLimit: { refused: "model-access" }, originalResult: failed(NO_ROUTE), hooks: { ...turn.opts.hooks, onBillingFailure } } as typeof turn.opts;
+    return { ...turn, opts, onBillingFailure };
+  };
+  /** Start a limited turn, let the walk end, and read the wait it entered; `end` stops the wait. */
+  async function waitingTurn(engines: Map<string, Engine>) {
+    const turn = turnOnDeadLink(engines);
+    const outcome = handleRateLimit(turn.opts);
+    await vi.advanceTimersByTimeAsync(0);
+    const end = async () => {
+      reg.updateSession(turn.id, { status: "idle" } as never);
+      await vi.advanceTimersByTimeAsync(10_000);
+      return await outcome;
+    };
+    return { ...turn, waiting: turn.seen.waiting[0] as { exhausted?: unknown; signedOut?: string[] }, end };
+  }
+  const fakeClock = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
 
-    expect(await handleRateLimit(opts)).toMatchObject({ kind: "billing" });
+  it("fails a refused own target naming the signed-out links, not only the own target's error", async () => {
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const turn = refusedTurn(engines);
+
+    expect(await handleRateLimit(turn.opts)).toMatchObject({ kind: "billing" });
     expect(calls.map((call) => call.model)).toEqual([GO_B.model]);
-    expect(onBillingFailure).toHaveBeenCalledWith({ signedOut: [B_LABEL] });
+    // The link that answered 401, and the provider's other model it now holds out with it.
+    expect(turn.onBillingFailure).toHaveBeenCalledWith({ signedOut: [B_LABEL, B_Y_LABEL] });
     expect(hopsOf(turn.id)[0]).toMatchObject({ to: null, reason: "auth", skipped: [{ key: key(GO_B_Y), reason: "signed-out" }] });
   });
 
-  it("waits on a limited own target with the signed-out link in its lastError and notice", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  it("names them again on the next turn, which sends the dead key no request", async () => {
     const { engines, calls } = scripted(() => failed(EXPIRED));
-    const turn = turnOnDeadLink(engines);
+    await handleRateLimit(refusedTurn(engines).opts);
+    const second = refusedTurn(engines);
 
-    const outcome = handleRateLimit(turn.opts);
-    await vi.advanceTimersByTimeAsync(0);
+    expect(await handleRateLimit(second.opts)).toMatchObject({ kind: "billing" });
+    expect(calls).toHaveLength(1);
+    expect(second.onBillingFailure).toHaveBeenCalledWith({ signedOut: [B_LABEL, B_Y_LABEL] });
+  });
+
+  it("waits on a limited own target with the signed-out links in its lastError and notice", async () => {
+    fakeClock();
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    const turn = await waitingTurn(engines);
 
     expect(calls.map((call) => call.model)).toEqual([GO_B.model]);
     expect(reg.getSession(turn.id)!.status).toBe("waiting");
-    expect(turn.seen.waiting[0]!.exhausted).toEqual({ tried: [B_LABEL], own: `opencode · ${GO.model}`, signedOut: [B_LABEL] });
-    expect(reg.getSession(turn.id)!.lastError).toMatch(
-      new RegExp(`^opencode · opencode-go/x usage limit, resumes .+; opencode · opencode-go-b/x is signed out: its key or login was rejected and needs replacing$`),
-    );
-    reg.updateSession(turn.id, { status: "idle" } as never);
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(await outcome).toMatchObject({ kind: "cancelled" });
+    expect(turn.waiting).toMatchObject({ exhausted: { tried: [B_LABEL], own: `opencode · ${GO.model}` }, signedOut: [B_LABEL, B_Y_LABEL] });
+    expect(reg.getSession(turn.id)!.lastError).toMatch(new RegExp(`^opencode · opencode-go/x usage limit, resumes .+; ${CLAUSE}$`));
+    expect(await turn.end()).toMatchObject({ kind: "cancelled" });
+  });
+
+  it("names them on the next limited turn too, which tries nothing and so has no run that ran out", async () => {
+    fakeClock();
+    const { engines, calls } = scripted(() => failed(EXPIRED));
+    await (await waitingTurn(engines)).end();
+    const second = await waitingTurn(engines);
+
+    expect(calls).toHaveLength(1);
+    expect(second.waiting.exhausted).toBeUndefined();
+    expect(second.waiting.signedOut).toEqual([B_LABEL, B_Y_LABEL]);
+    expect(reg.getSession(second.id)!.lastError).toMatch(new RegExp(`^opencode usage limit — resumes .+; ${CLAUSE}$`));
+    await second.end();
   });
 
   it("says nothing of signing out when the link failed another way", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    fakeClock();
     const { engines } = scripted(() => limited());
-    const turn = turnOnDeadLink(engines);
+    const turn = await waitingTurn(engines);
 
-    const outcome = handleRateLimit(turn.opts);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(turn.seen.waiting[0]!.exhausted).not.toHaveProperty("signedOut");
+    expect(turn.waiting).not.toHaveProperty("signedOut");
     expect(reg.getSession(turn.id)!.lastError).not.toMatch(/signed out/);
-    reg.updateSession(turn.id, { status: "idle" } as never);
-    await vi.advanceTimersByTimeAsync(10_000);
-    await outcome;
+    await turn.end();
   });
 });
 
