@@ -53,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  owedTurns.registerLiveSessionQueue(undefined);
   vi.useRealTimers();
 });
 
@@ -343,6 +344,96 @@ describe("a session the operator stopped", () => {
     resumeDelivery(s, "pending");
 
     expect(owedTurns.gatewayOwesTurn(s.sessionId)).toBe(true);
+  });
+});
+
+describe("with the live queue registered", () => {
+  const held = new Set<string>();
+  const paused = new Set<string>();
+
+  beforeEach(() => {
+    held.clear();
+    paused.clear();
+    owedTurns.registerLiveSessionQueue({ holds: (id) => held.has(id), isPaused: (key) => paused.has(key) });
+  });
+
+  it("stays executing while the live queue holds a running row the engine is still starting", () => {
+    const s = executingTodo();
+    settle(s, "failed");
+    held.add(queueRow(s, "running"));
+
+    sweep();
+
+    expect(statusOf(s)).toBe("executing");
+    expect(registry.getSession(s.sessionId)?.status).not.toBe("running");
+  });
+
+  it("stays executing while the live queue holds a pending row", () => {
+    const s = executingTodo();
+    settle(s, "failed");
+    held.add(queueRow(s, "pending"));
+
+    sweep();
+
+    expect(statusOf(s)).toBe("executing");
+  });
+
+  it("blocks when the row is stranded in the database and the live queue dropped it, as after a reset", () => {
+    const s = executingTodo();
+    settle(s, "interrupted");
+    queueRow(s, "pending");
+
+    sweep();
+
+    expect(statusOf(s)).toBe("blocked");
+    expect(runOutcome(s)).toMatchObject({ outcome: "abandoned" });
+  });
+
+  it("blocks while the operator has the lane paused, and returns to executing once it is resumed", () => {
+    const s = executingTodo();
+    settle(s, "failed");
+    held.add(queueRow(s, "pending"));
+    paused.add(`web:${s.sessionId}`);
+
+    sweep();
+    expect(statusOf(s)).toBe("blocked");
+
+    paused.clear();
+    turnStarts(s);
+    sweep();
+    expect(statusOf(s)).toBe("executing");
+  });
+
+  it("stays executing for a pending outbox delivery even when the live queue holds no row", () => {
+    const s = executingTodo();
+    settle(s, "failed");
+    resumeDelivery(s, "pending");
+
+    sweep();
+
+    expect(statusOf(s)).toBe("executing");
+  });
+
+  it("blocks a stopped session whose row the live queue still holds", () => {
+    const s = executingTodo();
+    settle(s, "interrupted");
+    held.add(queueRow(s, "pending"));
+    stopped.markSessionStopped(s.sessionId);
+
+    sweep();
+
+    expect(statusOf(s)).toBe("blocked");
+  });
+
+  it("does not count another session's row that shares nothing with this lane", () => {
+    const s = executingTodo();
+    const other = executingTodo();
+    settle(s, "failed");
+    held.add(queueRow(other, "pending"));
+
+    sweep();
+
+    expect(statusOf(s)).toBe("blocked");
   });
 });
 

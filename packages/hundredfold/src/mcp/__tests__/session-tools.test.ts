@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +23,7 @@ import {
 import { HundredfoldMcpToolError, type HundredfoldMcpContext, type HundredfoldMcpTool } from "../toolkit.js";
 import { sessionCommGuards, LATERAL_MAX_HOPS } from "../../gateway/session-comm-guards.js";
 import type { ResolvedMcpConfig } from "../../shared/types.js";
+import { registerLiveSessionQueue } from "../../sessions/owed-turns.js";
 
 /**
  * GRS-017a — the sessions MCP tool group + the caller-identity seam.
@@ -564,14 +565,13 @@ function ctxFor(callerSessionId?: string): HundredfoldMcpContext {
 
 /** Create a session the operator way (no header) and return its id. */
 /**
- * The turn these tests mark `running` is the session's first message, which no
- * engine ever ran here, so its queue row would still read `pending` and the
- * gateway would still owe the session that turn. A real interrupted turn has
- * settled its row; do the same, so the receipt is the only evidence left.
+ * These tests mark a session `running` whose first message no engine ever ran,
+ * so its queue row still reads `pending` in the database. A real interrupted
+ * turn is not held by the live queue either (a reset drops it, a delete ends
+ * it), and a row the queue does not hold is not a turn the gateway owes.
  */
-async function settleFirstQueueRow(sessionId: string): Promise<void> {
-  const { initDb } = await import("../../shared/db.js");
-  initDb().prepare("UPDATE queue_items SET status = 'completed' WHERE session_id = ?").run(sessionId);
+function emptyLiveQueue(): void {
+  registerLiveSessionQueue({ holds: () => false, isPaused: () => false });
 }
 
 async function createOperatorSession(prompt: string): Promise<string> {
@@ -590,6 +590,10 @@ beforeAll(async () => {
   workItems = await import("../../work-items/store.js");
   workItemReconcile = await import("../../work-items/reconcile.js");
 }, 60_000);
+
+afterEach(() => {
+  registerLiveSessionQueue(undefined);
+});
 
 beforeEach(() => {
   sessionCommGuards.reset();
@@ -624,7 +628,7 @@ describe("session tools — integration against the real routes/registry", () =>
     workItems.linkSession(item.id, sessionId);
     registry.accumulateSessionCost(sessionId, 4.25, 3);
     registry.updateSession(sessionId, { status: "running" });
-    await settleFirstQueueRow(sessionId);
+    emptyLiveQueue();
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}`, {
       method: "DELETE",
@@ -651,7 +655,7 @@ describe("session tools — integration against the real routes/registry", () =>
     });
     workItems.linkSession(item.id, sessionId);
     registry.updateSession(sessionId, { status: "running" });
-    await settleFirstQueueRow(sessionId);
+    emptyLiveQueue();
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}/${action}`, {
       method: "POST",

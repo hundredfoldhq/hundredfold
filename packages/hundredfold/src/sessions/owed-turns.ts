@@ -3,6 +3,28 @@ import type { SessionAttemptOutcome } from "../shared/types.js";
 import { hasStoppedMark } from "./stopped-marker.js";
 import { settledAttemptOutcome, type RestartResumeEvidence } from "./restart-resume-window.js";
 
+/** What the in-process session queue says about the rows the database holds. */
+export interface LiveSessionQueue {
+  /** The queue still has this row in hand, so it will run it without anyone asking. */
+  holds(queueItemId: string): boolean;
+  /** The operator paused the lane: nothing runs from it until the operator resumes it. */
+  isPaused(sessionKey: string): boolean;
+}
+
+let liveQueue: LiveSessionQueue | undefined;
+
+/**
+ * Register the live queue once the gateway has finished replaying the rows its
+ * previous process left. Until then (and in a caller with no queue at all, such
+ * as a unit test) the answer falls back to the rows in the database: before the
+ * replay a pending row is exactly the turn the boot is about to start, and
+ * reading it as stranded would block the Todo for the few seconds before the
+ * replay undoes it. Pass `undefined` to unregister.
+ */
+export function registerLiveSessionQueue(queue: LiveSessionQueue | undefined): void {
+  liveQueue = queue;
+}
+
 /**
  * Whether the gateway still owes a session a turn that it will run on its own.
  *
@@ -24,16 +46,21 @@ import { settledAttemptOutcome, type RestartResumeEvidence } from "./restart-res
  * the Todo to the operator, who then has to release work that never stopped.
  *
  * The state that settles it is whether a turn is owed, not which writer left
- * the receipt, so the answer comes from the two places the gateway keeps its
- * promises: a queue row for the session that is `pending` or `running`, and an
- * outbox delivery to the session that is still `pending`. A session the
- * operator stopped is the exception: a stop is a real stop, and nothing but a
- * deliberate start will run it again, so it is never owed.
+ * the receipt. Two promises count:
  *
- * `queue_items` has no index on `session_id` (its index leads with the session
- * key), so the queue lookup is a table scan; the outbox lookup uses the
- * leading column of its identity index. Both are only reached for a bad
- * receipt, which is rare, so nothing pays for this on the common path.
+ * - an outbox delivery to the session that is still `pending`, which the outbox
+ *   retries by itself;
+ * - a queue row for the session, `pending` or `running`, that the live queue
+ *   holds and whose lane is not paused. A row alone is not a promise: a reset
+ *   leaves its rows pending in the database after the queue dropped them, a
+ *   connector session's rows are not replayed at boot, and a paused lane waits
+ *   for a person. Those are real stops and must still block the Todo.
+ *
+ * A session the operator stopped is never owed: nothing but a deliberate start
+ * will run it again.
+ *
+ * Only a bad receipt reaches this, so the common path pays nothing. The queue
+ * rows are read by the lane's key, which `idx_queue_session` leads with.
  */
 export function gatewayOwesTurn(sessionId: string): boolean {
   if (hasStoppedMark(sessionId)) return false;
@@ -42,9 +69,18 @@ export function gatewayOwesTurn(sessionId: string): boolean {
     .prepare("SELECT 1 FROM callback_deliveries WHERE target_session_id = ? AND status = 'pending' LIMIT 1")
     .get(sessionId);
   if (pendingDelivery) return true;
-  return database
-    .prepare("SELECT 1 FROM queue_items WHERE session_id = ? AND status IN ('pending', 'running') LIMIT 1")
-    .get(sessionId) !== undefined;
+  const owner = database
+    .prepare("SELECT session_key AS sessionKey, source_ref AS sourceRef FROM sessions WHERE id = ?")
+    .get(sessionId) as { sessionKey: string | null; sourceRef: string | null } | undefined;
+  // The lane key every queue writer uses (`session.sessionKey || sourceRef || id`).
+  const laneKey = owner?.sessionKey || owner?.sourceRef || sessionId;
+  const rows = database
+    .prepare("SELECT id FROM queue_items WHERE session_key = ? AND session_id = ? AND status IN ('pending', 'running')")
+    .all(laneKey, sessionId) as { id: string }[];
+  if (rows.length === 0) return false;
+  const queue = liveQueue;
+  if (!queue) return true;
+  return !queue.isPaused(laneKey) && rows.some((row) => queue.holds(row.id));
 }
 
 /**

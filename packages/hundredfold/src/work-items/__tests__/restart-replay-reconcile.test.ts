@@ -19,7 +19,7 @@ type Reconcile = typeof import("../reconcile.js");
 type Registry = typeof import("../../sessions/registry.js");
 type Settles = typeof import("../child-settles.js");
 type RestartResume = typeof import("../../sessions/restart-resume.js");
-type Stopped = typeof import("../../sessions/stopped-marker.js");
+type OwedTurns = typeof import("../../sessions/owed-turns.js") & typeof import("../../sessions/stopped-marker.js");
 
 let store: Store;
 let runs: Runs;
@@ -27,7 +27,7 @@ let reconcile: Reconcile;
 let registry: Registry;
 let settles: Settles;
 let restartResume: RestartResume;
-let markSessionStopped: Stopped["markSessionStopped"];
+let owedTurns: OwedTurns;
 let db: import("better-sqlite3").Database;
 
 const OLD_GATEWAY = { bootId: "old00001", gatewayVersion: "0.0.0-test" };
@@ -43,7 +43,7 @@ beforeAll(async () => {
   registry = await import("../../sessions/registry.js");
   settles = await import("../child-settles.js");
   restartResume = await import("../../sessions/restart-resume.js");
-  markSessionStopped = (await import("../../sessions/stopped-marker.js")).markSessionStopped;
+  owedTurns = { ...(await import("../../sessions/owed-turns.js")), ...(await import("../../sessions/stopped-marker.js")) };
   db = (await import("../../shared/db.js")).initDb();
 });
 
@@ -58,6 +58,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  owedTurns.registerLiveSessionQueue(undefined);
   vi.useRealTimers();
 });
 
@@ -260,27 +261,19 @@ describe("a restart mid-turn on a child Todo nothing resumes", () => {
     expectBlocked(t);
   });
 
-  it("derives blocked for a connector session once its queue row is gone, since the boot neither replays nor nudges it", () => {
-    // The row the killed turn held is completed (or withdrawn) on the way down.
+  it("derives blocked for a connector session, whose queue row the boot neither replays nor nudges", () => {
     const t = childMidTurn("connector", { source: "telegram" });
+
+    // Before the boot has replayed anything the pending row reads as the turn about to start.
     boot();
-    db.prepare("UPDATE queue_items SET status = 'completed' WHERE session_id = ?").run(t.sessionId);
-    registry.updateSession(t.sessionId, { transportMeta: null });
+    sweep();
+    expect(store.getWorkItem(t.child.id)?.status).toBe("executing");
+
+    // The replay is done and the live queue never took this row: nothing will run it.
+    owedTurns.registerLiveSessionQueue({ holds: () => false, isPaused: () => false });
     sweep();
 
     expectBlocked(t);
-  });
-
-  it("keeps a connector session executing while its queue row is still pending, whatever the boot does with it", () => {
-    // A pending row is a turn the gateway owes the session (sessions/owed-turns.ts), so the
-    // receipt alone does not block the Todo even though the boot leaves a connector row alone.
-    const t = childMidTurn("connector-owed", { source: "telegram" });
-    const before = statusEvents(t.child.id);
-
-    boot();
-    sweep();
-
-    expectNoFlap(t, before);
   });
 
   it("derives blocked for a turn the operator stopped with a row still queued, which no restart marked", () => {
@@ -288,7 +281,7 @@ describe("a restart mid-turn on a child Todo nothing resumes", () => {
     registry.enqueueQueueItem(t.sessionId, `web:${t.sessionId}`, "a follow-up");
     registry.updateSession(t.sessionId, { status: "interrupted", lastError: "Interrupted: stopped" });
     // A stop leaves its mark (`stopSession`), and the mark is what keeps the queued row from being owed.
-    markSessionStopped(t.sessionId);
+    owedTurns.markSessionStopped(t.sessionId);
 
     sweep();
 
