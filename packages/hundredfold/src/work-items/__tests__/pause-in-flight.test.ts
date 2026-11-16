@@ -389,6 +389,18 @@ describe("with the live queue registered", () => {
     expect(runOutcome(s)).toMatchObject({ outcome: "abandoned" });
   });
 
+  it("blocks when an accepted callback's queue row is deferred (its engine is missing) and the live queue never took it", () => {
+    const s = executingTodo();
+    settle(s, "failed");
+    const row = queueRow(s, "pending");
+    const deliveryId = resumeDelivery(s, "accepted");
+    db.prepare("UPDATE callback_deliveries SET queue_item_id = ? WHERE id = ?").run(row, deliveryId);
+
+    sweep();
+
+    expect(statusOf(s)).toBe("blocked");
+  });
+
   it("blocks while the operator has the lane paused, and returns to executing once it is resumed", () => {
     const s = executingTodo();
     settle(s, "failed");
