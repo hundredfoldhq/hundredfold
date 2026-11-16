@@ -30,21 +30,33 @@ import { CALLER_SESSION_CAPABILITY_HEADER, CALLER_SESSION_HEADER, TOOL_CALL_HEAD
  * The guards:
  *
  *   1. no-self-message (checked in prepareLateralSend, before any state changes);
- *   2. a relay hop budget: each delivered lateral message tags its target with an
- *      inbound hop count; the target's next lateral send is hop n+1; beyond
- *      LATERAL_MAX_HOPS the route refuses ("escalate instead of forwarding").
- *      Hop state expires (TTL) and is cleared when a genuine user/operator
- *      message reaches the session — an operator instruction resets the chain.
- *   3. a parent/child pair budget: messages between a session and its reporting
- *      parent (either direction, e.g. a spawned reviewer replying to the
- *      session that asked for the review) are not relay hops. They do not use
- *      the lateral budget and do not tag the receiver, so a session spawned by
- *      another starts a fresh chain at hop 1. They are counted per pair instead,
- *      against a larger cap (PAIR_CAP_FACTOR × the hop cap), so a long review
- *      still completes but a parent and child that keep acknowledging each
- *      other (or relay through a child to launder the lateral chain) are
- *      eventually refused. Pair counts expire like hop tags and are cleared by
- *      an operator message to either session.
+ *   2. a relay hop budget: a lateral message that FORWARDS (goes to a session
+ *      that has not messaged the sender) tags its target with an inbound hop
+ *      count; the target's next forward is hop n+1; beyond LATERAL_MAX_HOPS the
+ *      route refuses ("escalate instead of forwarding"). Hop state expires (TTL)
+ *      and is cleared when a genuine user/operator message reaches the session —
+ *      an operator instruction resets the chain.
+ *   3. a pair budget: a conversation between two sessions is not a relay chain.
+ *      Messages between a session and its reporting parent (either direction,
+ *      e.g. a spawned reviewer replying to the session that asked for the
+ *      review), and a lateral REPLY (to a session that has messaged the sender
+ *      within the TTL, e.g. a reused reviewer and its producer going round after
+ *      round), do not use the hop budget and never raise anyone's hop tag: a
+ *      reply carries the sender's tag over to the receiver when it is deeper, so
+ *      a conversation never lowers a chain either. They are counted per pair
+ *      instead, against a larger cap (PAIR_CAP_FACTOR × the hop cap), so a long
+ *      review completes but two sessions that keep acknowledging each other (or
+ *      relay through a child to launder the lateral chain) are eventually
+ *      refused. Every lateral message, the forwarding first one included, counts
+ *      in its pair. Pair counts expire like hop tags and are cleared by an
+ *      operator message to either session.
+ *   4. a coordinator reset: a message from a session above the target (one it
+ *      reports to, directly or further up) is a fresh instruction from whoever
+ *      owns the work, so it clears the target's hop tag and its pair counts with
+ *      everyone except the sender. The pair between the coordinator and the
+ *      target is never cleared this way, so a loop cannot reset itself: every
+ *      reset is paid for out of the coordinator's own pair budget. The route
+ *      decides who is above whom; the guard only applies the reset.
  *
  * There is deliberately NO per-sender send-rate cap: a coordinator may fan a
  * message out to as many distinct sessions as its task needs, and loop
@@ -83,19 +95,46 @@ export const LATERAL_HOP_TTL_MS = 30 * 60_000;
 export const PRUNE_EVERY_OPS = 256;
 
 export type SendVerdict =
-  | { ok: true; hops: number }
+  | { ok: true; hops: number; budget?: SendBudget }
   | { ok: false; status: 400; error: string };
+
+/** Which budget a send is charged to: a relay hop, or a message of a pair's conversation. */
+export type SendBudget = "relay" | "pair";
+
+export interface SendRouteOpts {
+  /** The caller's reporting parent, named in a relay refusal. */
+  parentSessionId?: string | null;
+  /** A live session above the caller other than its peer: messaging it is the
+   *  supported way to carry on, so a refusal names it. */
+  coordinatorSessionId?: string | null;
+}
 
 export interface SessionCommGuards {
   /** Check the hop budget for a sender and return the outbound hop count to
    *  stamp. There is no send-rate limit: any number of sends may pass. */
-  checkSendAllowed(callerId: string, opts?: { parentSessionId?: string | null }): SendVerdict;
-  /** Check the parent/child pair budget for a send between a session and its
-   *  reporting parent (either direction); `hops` is the message's number in the
-   *  pair's exchange. Does not touch the lateral hop state. */
-  checkPairSend(callerId: string, targetId: string): SendVerdict;
-  /** Record a delivered parent/child message with the number returned above. */
+  checkSendAllowed(callerId: string, opts?: SendRouteOpts): SendVerdict;
+  /** Check the pair budget for a send between two sessions in conversation;
+   *  `hops` is the message's number in the pair's exchange. Does not touch the
+   *  lateral hop state. */
+  checkPairSend(callerId: string, targetId: string, opts?: SendRouteOpts): SendVerdict;
+  /** Record a delivered message in its pair (any budget) with its number in the
+   *  pair's exchange, and remember that `callerId` has written to `targetId`. */
   recordPairDelivery(callerId: string, targetId: string, count: number): void;
+  /** Has `fromId` messaged `toId` within the TTL? A send back the other way is
+   *  then a reply, charged to the pair budget instead of the relay budget. */
+  hasMessaged(fromId: string, toId: string): boolean;
+  /** Charge a lateral send: a reply goes to the pair budget, anything else to
+   *  the relay budget. The verdict says which. */
+  checkLateralSend(callerId: string, targetId: string, opts?: SendRouteOpts): SendVerdict;
+  /** Record a delivered lateral send under the budget its verdict named: a relay
+   *  tags the receiver, a reply carries the sender's tag over when it is deeper,
+   *  and both count in the pair. */
+  recordLateralDelivery(callerId: string, targetId: string, verdict: { hops: number; budget?: SendBudget }): void;
+  /** A session above `targetId` messaged it: clear its hop tag and its pair
+   *  counts with everyone except `coordinatorId`. */
+  resetFromCoordinator(targetId: string, coordinatorId: string): void;
+  /** Messages so far between two sessions in their current exchange. */
+  pairCount(x: string, y: string): number;
   /** The current cap on messages between one parent/child pair. */
   pairMaxMessages(): number;
   /** Record that a lateral message with the given hop count reached a target. */
@@ -118,17 +157,25 @@ export function createSessionCommGuards(
   initialMaxHops: number = LATERAL_MAX_HOPS,
 ): SessionCommGuards {
   const inboundHop = new Map<string, { hops: number; at: number }>();
-  const pairCount = new Map<string, { a: string; b: string; count: number; at: number }>();
+  const pairCount = new Map<string, { a: string; b: string; count: number; at: number; senders: Set<string> }>();
   const pairKey = (x: string, y: string): string => (x < y ? `${x}|${y}` : `${y}|${x}`);
   const pairCap = (): number => maxHops * PAIR_CAP_FACTOR;
-  function pairCountOf(x: string, y: string): number {
+  function livePair(x: string, y: string) {
     const rec = pairCount.get(pairKey(x, y));
-    if (!rec) return 0;
+    if (!rec) return undefined;
     if (now() - rec.at > LATERAL_HOP_TTL_MS) {
       pairCount.delete(pairKey(x, y));
-      return 0;
+      return undefined;
     }
-    return rec.count;
+    return rec;
+  }
+  function pairCountOf(x: string, y: string): number {
+    return livePair(x, y)?.count ?? 0;
+  }
+  function continueRoute(coordinatorSessionId: string | null | undefined): string {
+    return coordinatorSessionId
+      ? `ask session ${coordinatorSessionId}, which coordinates your work, to message you (send_to_session to it): a message from a session above you resets this budget, so you can carry on with the same session`
+      : `ask the operator to message you: an operator message resets this budget, so you can carry on with the same session`;
   }
   let maxHops = clampLateralMaxHops(initialMaxHops);
   let opsSincePrune = 0;
@@ -157,13 +204,13 @@ export function createSessionCommGuards(
     }
   }
 
-  return {
-    checkSendAllowed(callerId: string, opts?: { parentSessionId?: string | null }): SendVerdict {
+  const guards: SessionCommGuards = {
+    checkSendAllowed(callerId: string, opts?: SendRouteOpts): SendVerdict {
       maybePrune();
       const hops = inboundHopOf(callerId) + 1;
       if (hops > maxHops) {
-        const routes: string[] = [];
-        if (opts?.parentSessionId) {
+        const routes: string[] = [continueRoute(opts?.coordinatorSessionId)];
+        if (opts?.parentSessionId && opts.parentSessionId !== opts.coordinatorSessionId) {
           routes.push(
             `send_to_session to your parent session ${opts.parentSessionId} (parent/child messages do not use this budget)`,
           );
@@ -176,14 +223,15 @@ export function createSessionCommGuards(
           ok: false,
           status: 400,
           error:
-            `hop budget exhausted: this message would be relay hop ${hops} of a lateral chain (max ${maxHops}). ` +
-            `Stop forwarding — escalate instead. Routes that still work: ${routes.join("; ")}.`,
+            `hop budget exhausted (relay budget): this message would be relay hop ${hops} of a lateral chain (max ${maxHops}). ` +
+            `Stop forwarding — escalate instead. A reply to a session that has messaged you does not use this budget. ` +
+            `Routes that still work: ${routes.join("; ")}.`,
         };
       }
-      return { ok: true, hops };
+      return { ok: true, hops, budget: "relay" };
     },
 
-    checkPairSend(callerId: string, targetId: string): SendVerdict {
+    checkPairSend(callerId: string, targetId: string, opts?: SendRouteOpts): SendVerdict {
       maybePrune();
       const count = pairCountOf(callerId, targetId) + 1;
       if (count > pairCap()) {
@@ -191,17 +239,55 @@ export function createSessionCommGuards(
           ok: false,
           status: 400,
           error:
-            `hop budget exhausted: this would be message ${count} between you and your parent/child session (max ${pairCap()}). ` +
-            `The exchange is going in circles — stop and summarise: finish your turn with your conclusion, ` +
-            `comment on the Todo you are working if you have one, or report to the operator.`,
+            `hop budget exhausted (pair budget): this would be message ${count} between you and session ${targetId} ` +
+            `without a pause of ${LATERAL_HOP_TTL_MS / 60_000} minutes (max ${pairCap()}). ` +
+            `To carry on: ${continueRoute(opts?.coordinatorSessionId)}. ` +
+            `If the exchange is going in circles, stop and summarise instead: finish your turn with your conclusion, ` +
+            `or comment on the Todo you are working if you have one.`,
         };
       }
-      return { ok: true, hops: count };
+      return { ok: true, hops: count, budget: "pair" };
     },
 
     recordPairDelivery(callerId: string, targetId: string, count: number): void {
       maybePrune();
-      pairCount.set(pairKey(callerId, targetId), { a: callerId, b: targetId, count, at: now() });
+      const senders = livePair(callerId, targetId)?.senders ?? new Set<string>();
+      senders.add(callerId);
+      pairCount.set(pairKey(callerId, targetId), { a: callerId, b: targetId, count, at: now(), senders });
+    },
+
+    hasMessaged(fromId: string, toId: string): boolean {
+      return livePair(fromId, toId)?.senders.has(fromId) ?? false;
+    },
+
+    checkLateralSend(callerId: string, targetId: string, opts?: SendRouteOpts): SendVerdict {
+      return guards.hasMessaged(targetId, callerId)
+        ? guards.checkPairSend(callerId, targetId, opts)
+        : guards.checkSendAllowed(callerId, opts);
+    },
+
+    recordLateralDelivery(callerId: string, targetId: string, verdict: { hops: number; budget?: SendBudget }): void {
+      if (verdict.budget === "pair") {
+        guards.recordPairDelivery(callerId, targetId, verdict.hops);
+        // A reply never deepens a chain, and never lets a deeper one escape
+        // through a shallower peer: the receiver keeps the deeper of the two tags.
+        const carried = inboundHopOf(callerId);
+        if (carried > inboundHopOf(targetId)) inboundHop.set(targetId, { hops: carried, at: now() });
+        return;
+      }
+      guards.recordDelivery(targetId, verdict.hops);
+      guards.recordPairDelivery(callerId, targetId, pairCountOf(callerId, targetId) + 1);
+    },
+
+    resetFromCoordinator(targetId: string, coordinatorId: string): void {
+      inboundHop.delete(targetId);
+      for (const [key, rec] of pairCount) {
+        if ((rec.a === targetId || rec.b === targetId) && rec.a !== coordinatorId && rec.b !== coordinatorId) pairCount.delete(key);
+      }
+    },
+
+    pairCount(x: string, y: string): number {
+      return pairCountOf(x, y);
     },
 
     pairMaxMessages(): number {
@@ -238,13 +324,14 @@ export function createSessionCommGuards(
       opsSincePrune = 0;
     },
   };
+  return guards;
 }
 
 /** The gateway's singleton guard state (api.ts routes use this instance). */
 export const sessionCommGuards: SessionCommGuards = createSessionCommGuards();
 
 export type LateralSendPlan =
-  | { ok: true; prompt: string; displayMessage: string; hops: number; meta: AgentRelayMeta; parentLink: boolean }
+  | { ok: true; prompt: string; displayMessage: string; hops: number; budget: SendBudget; meta: AgentRelayMeta; parentLink: boolean }
   | { ok: false; status: 400; error: string };
 
 export interface AgentRelayMeta {
@@ -271,9 +358,10 @@ export function clipSessionMessage(text: string, max = 220): string {
  * agent-initiated send: the ENGINE prompt carries full sender identity, the hop
  * tag, the verbatim message, and a reply hint; `displayMessage` is the clean
  * banner the web UI shows. Deterministic text from record fields only.
- * On success the caller then `guards.recordDelivery(targetId, hops)` when it
- * accepts the send (conservative if a later step fails — an over-recorded hop
- * only tightens the budget).
+ * On success the caller then records the delivery when it accepts the send:
+ * `recordPairDelivery` for a parent/child link, else `recordLateralDelivery`
+ * (conservative if a later step fails — an over-recorded hop only tightens the
+ * budget).
  */
 export function prepareLateralSend(opts: {
   caller: Session;
@@ -282,6 +370,9 @@ export function prepareLateralSend(opts: {
   guards: SessionCommGuards;
   /** The caller's reporting parent session, if any (named in a budget refusal). */
   callerParentSessionId?: string | null;
+  /** A live session above the caller other than the target, which can reset
+   *  the caller's budgets by messaging it (named in a budget refusal). */
+  callerCoordinatorSessionId?: string | null;
   /** The send runs between a session and its reporting parent (either way): it
    *  is a reply or follow-up inside one request, not a relay, so it uses the
    *  pair budget instead of the lateral hop budget and does not tag the receiver. */
@@ -295,15 +386,20 @@ export function prepareLateralSend(opts: {
       error: "cannot message your own session — write your conclusion in your reply instead.",
     };
   }
+  const routeOpts: SendRouteOpts = {
+    parentSessionId: opts.callerParentSessionId,
+    coordinatorSessionId: opts.callerCoordinatorSessionId,
+  };
   const verdict: SendVerdict = opts.parentLink
-    ? guards.checkPairSend(caller.id, targetSessionId)
-    : guards.checkSendAllowed(caller.id, { parentSessionId: opts.callerParentSessionId });
+    ? guards.checkPairSend(caller.id, targetSessionId, routeOpts)
+    : guards.checkLateralSend(caller.id, targetSessionId, routeOpts);
   if (!verdict.ok) return verdict;
+  const budget: SendBudget = verdict.budget ?? (opts.parentLink ? "pair" : "relay");
 
   const senderLabel = caller.employee || caller.source || "session";
   // Relayed messages (hop > 1) carry the hop tag in the human banner too, so an
   // operator watching a chain sees how deep it runs; first-hop banners stay clean.
-  const hopCap = opts.parentLink ? guards.pairMaxMessages() : guards.maxHops();
+  const hopCap = budget === "pair" ? guards.pairMaxMessages() : guards.maxHops();
   const hopTag = ` [hop ${verdict.hops}/${hopCap}]`;
   const prompt =
     `📨 Message from session ${caller.id} (${senderLabel})${hopTag}:\n\n` +
@@ -320,7 +416,7 @@ export function prepareLateralSend(opts: {
     maxHops: hopCap,
     fullMessage: message.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
   };
-  return { ok: true, prompt, displayMessage, hops: verdict.hops, meta, parentLink: opts.parentLink === true };
+  return { ok: true, prompt, displayMessage, hops: verdict.hops, budget, meta, parentLink: opts.parentLink === true };
 }
 
 /**

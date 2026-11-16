@@ -165,7 +165,7 @@ import { resolveMessageAudiences, speechContextApplies } from "./speech-context.
 import { isJsonMediaType } from "./media-type.js";
 import { recoverPendingSessionDeliveries } from "../sessions/callbacks.js";
 import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_KEY } from "../sessions/delegation-completion-contract.js";
-import { callerMayActOnSession, sessionIsWithinReach } from "./session-reach-guard.js";
+import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
@@ -3956,6 +3956,7 @@ export async function handleApiRequest(
           message: String(rawMessage),
           guards: sessionCommGuards,
           callerParentSessionId: callerParentId,
+          callerCoordinatorSessionId: coordinatorSessionId(caller, session.id, (candidate) => !isSpentDispatcher(candidate)),
           parentLink: callerParentId === session.id || targetParentId === caller.id,
         });
         if (!plan.ok) {
@@ -3978,13 +3979,20 @@ export async function handleApiRequest(
           // notifyParentSession suppresses that redundant callback.
           recordChildReportedToParent(caller.id, caller.attemptToken);
         }
-        // A parent/child message is not a relay hop: it counts against the pair
-        // budget and leaves the receiver's chain untouched, so a spawned session
-        // starts at hop 1. Conservative on later failure (e.g. engine
-        // unavailable): the tag may be recorded for an undelivered message, which
-        // only ever tightens the budget, never loosens it.
+        // A message from a session above the target (its parent, its delegator
+        // or further up) is an instruction from whoever owns the work: it resets
+        // the target's chain and its pair counts with everyone but the sender,
+        // so a coordinator can let a long review carry on. Applied before the
+        // delivery is recorded, so this message still counts in its own pair.
+        if (isAboveSession(session, caller.id)) sessionCommGuards.resetFromCoordinator(params.id, caller.id);
+        // A parent/child message or a reply is not a relay hop: it counts against
+        // the pair budget and never deepens the receiver's chain, so a spawned
+        // session starts at hop 1 and a producer and reviewer can go round after
+        // round. Conservative on later failure (e.g. engine unavailable): the tag
+        // may be recorded for an undelivered message, which only ever tightens
+        // the budget, never loosens it.
         if (plan.parentLink) sessionCommGuards.recordPairDelivery(caller.id, params.id, plan.hops);
-        else sessionCommGuards.recordDelivery(params.id, plan.hops);
+        else sessionCommGuards.recordLateralDelivery(caller.id, params.id, plan);
       } else if (body.role === "notification" && isStoppedByUser(session)) {
         // No session sent it (a compaction turn, an operator relay): never a deliberate start.
         return void refuseStoppedSession(res, session);

@@ -246,9 +246,81 @@ describe("prepareLateralSend — the route-side transform", () => {
       g.recordPairDelivery(from, to, i);
     }
     const denied = prepareLateralSend({ caller: sess("c"), targetSessionId: "p", message: "m", guards: g, parentLink: true });
-    expect(!denied.ok && denied.error).toMatch(/hop budget exhausted.*parent\/child.*max 8/i);
+    expect(!denied.ok && denied.error).toMatch(/hop budget exhausted \(pair budget\).*message 9 between you and session p.*max 8/i);
+    expect(!denied.ok && denied.error).toMatch(/ask the operator to message you/i);
     g.clearInboundHop("p");
-    expect(g.checkPairSend("c", "p")).toEqual({ ok: true, hops: 1 });
+    expect(g.checkPairSend("c", "p")).toEqual({ ok: true, hops: 1, budget: "pair" });
+  });
+
+  it("a pair refusal names the coordinating session as the way to carry on with the same peer", () => {
+    const g = createSessionCommGuards(() => 0, 1); // pair budget 4
+    for (let i = 1; i <= 4; i++) g.recordPairDelivery(i % 2 ? "p" : "r", i % 2 ? "r" : "p", i);
+    const denied = prepareLateralSend({
+      caller: sess("p"),
+      targetSessionId: "r",
+      message: "round 3 please",
+      guards: g,
+      callerCoordinatorSessionId: "orchestrator-1",
+    });
+    expect(!denied.ok && denied.error).toMatch(/pair budget/);
+    expect(!denied.ok && denied.error).toContain("message 5 between you and session r (max 4)".replace(" (max", " without a pause of 30 minutes (max"));
+    expect(!denied.ok && denied.error).toMatch(/ask session orchestrator-1, which coordinates your work, to message you/);
+    expect(!denied.ok && denied.error).not.toMatch(/ask the operator to message you/);
+  });
+
+  it("a reply to a session that messaged you is charged to the pair, not the relay budget, and never lowers or raises a chain", () => {
+    const g = createSessionCommGuards(() => 0, 4); // relay cap 4, pair budget 16
+    // A forwards to B: a relay hop.
+    const first = g.checkLateralSend("a", "b");
+    expect(first).toEqual({ ok: true, hops: 1, budget: "relay" });
+    g.recordLateralDelivery("a", "b", first as { hops: number; budget: "relay" });
+    // B answers A, and they go round far past the relay cap.
+    for (let i = 2; i <= 16; i++) {
+      const [from, to] = i % 2 ? ["a", "b"] : ["b", "a"];
+      const v = g.checkLateralSend(from, to);
+      expect(v).toEqual({ ok: true, hops: i, budget: "pair" });
+      g.recordLateralDelivery(from, to, v as { hops: number; budget: "pair" });
+    }
+    // The conversation never deepened anyone's chain: B still forwards at hop 2.
+    expect(g.checkLateralSend("b", "c")).toEqual({ ok: true, hops: 2, budget: "relay" });
+    // The pair itself is bounded.
+    const denied = g.checkLateralSend("b", "a");
+    expect(!denied.ok && denied.error).toMatch(/pair budget.*message 17/);
+  });
+
+  it("a reply carries a deeper chain over to the receiver, so a conversation cannot launder a relay", () => {
+    const g = createSessionCommGuards(() => 0, 4);
+    g.recordLateralDelivery("a", "b", { hops: 1, budget: "relay" }); // A wrote to B once; A has no chain
+    g.recordDelivery("b", 4); // B is at the cap of a different chain
+    const reply = g.checkLateralSend("b", "a");
+    expect(reply.ok && reply.budget).toBe("pair");
+    g.recordLateralDelivery("b", "a", reply as { hops: number; budget: "pair" });
+    // A now carries B's depth: it cannot forward B's chain to a fresh session.
+    expect(g.checkLateralSend("a", "c").ok).toBe(false);
+  });
+
+  it("a coordinator's message clears the target's chain and pairs with others, never its own pair with the target", () => {
+    const g = createSessionCommGuards(() => 0, 1); // pair budget 4
+    for (let i = 1; i <= 4; i++) g.recordPairDelivery(i % 2 ? "p" : "r", i % 2 ? "r" : "p", i);
+    for (let i = 1; i <= 4; i++) g.recordPairDelivery(i % 2 ? "o" : "p", i % 2 ? "p" : "o", i);
+    g.recordDelivery("p", 1);
+    expect(g.checkPairSend("p", "r").ok).toBe(false);
+    g.resetFromCoordinator("p", "o");
+    expect(g.pairCount("p", "r")).toBe(0);
+    expect(g.checkLateralSend("p", "x")).toMatchObject({ ok: true, hops: 1 });
+    expect(g.pairCount("o", "p")).toBe(4); // the coordinator pays for every reset
+    expect(g.checkPairSend("o", "p").ok).toBe(false);
+  });
+
+  it("a reply stops being a reply once the pair has been quiet for the TTL", () => {
+    let now = 0;
+    const g = createSessionCommGuards(() => now, 4);
+    g.recordLateralDelivery("a", "b", { hops: 1, budget: "relay" });
+    expect(g.hasMessaged("a", "b")).toBe(true);
+    expect(g.hasMessaged("b", "a")).toBe(false);
+    now += LATERAL_HOP_TTL_MS + 1;
+    expect(g.hasMessaged("a", "b")).toBe(false);
+    expect(g.checkLateralSend("b", "a")).toMatchObject({ ok: true, budget: "relay" });
   });
 
   it("a refusal for a root session does not advertise a parent route", () => {
