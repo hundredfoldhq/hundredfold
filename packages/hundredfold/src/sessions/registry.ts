@@ -160,36 +160,42 @@ const FTS_BACKFILL_CHUNK = 1000;
  */
 function ftsBackfillStep(database: Database.Database, chunkSize = FTS_BACKFILL_CHUNK): boolean {
   if (getMeta(database, 'fts_backfill_done') === '1') return true;
-  const max = Number(getMeta(database, 'fts_backfill_max') ?? '0');
-  const progress = Number(getMeta(database, 'fts_backfill_rowid') ?? '0');
-  if (progress >= max) {
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  const rows = database
-    .prepare(
-      `SELECT rowid, content FROM messages
-       WHERE role IN ('user','assistant') AND rowid > ? AND rowid <= ?
-       ORDER BY rowid ASC LIMIT ?`,
-    )
-    .all(progress, max, chunkSize) as Array<{ rowid: number; content: string }>;
-  if (rows.length === 0) {
-    // No indexable rows left in (progress, max] — we're done.
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  const insert = database.prepare('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)');
-  const txn = database.transaction((items: Array<{ rowid: number; content: string }>) => {
-    for (const r of items) insert.run(r.rowid, r.content);
-  });
-  txn(rows);
-  const lastRowid = rows[rows.length - 1].rowid;
-  setMeta(database, 'fts_backfill_rowid', String(lastRowid));
-  if (lastRowid >= max) {
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  return false;
+  // IMMEDIATE: read the progress and write the chunk under one write lock, so a second process draining
+  // the same file, or one disabling FTS, cannot interleave between the two.
+  return database.transaction((): boolean => {
+    if (getMeta(database, 'fts_backfill_done') === '1') return true;
+    const maxMeta = getMeta(database, 'fts_backfill_max');
+    // Boot always pins the watermark, so a missing one means the index was dropped under us (another
+    // process disabled FTS). Stop without stamping done: the next boot pins a fresh watermark and rebuilds.
+    if (maxMeta === null) return true;
+    const max = Number(maxMeta);
+    const progress = Number(getMeta(database, 'fts_backfill_rowid') ?? '0');
+    if (progress >= max) {
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    const rows = database
+      .prepare(
+        `SELECT rowid, content FROM messages
+         WHERE role IN ('user','assistant') AND rowid > ? AND rowid <= ?
+         ORDER BY rowid ASC LIMIT ?`,
+      )
+      .all(progress, max, chunkSize) as Array<{ rowid: number; content: string }>;
+    if (rows.length === 0) {
+      // No indexable rows left in (progress, max]: done.
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    const insert = database.prepare('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)');
+    for (const r of rows) insert.run(r.rowid, r.content);
+    const lastRowid = rows[rows.length - 1].rowid;
+    setMeta(database, 'fts_backfill_rowid', String(lastRowid));
+    if (lastRowid >= max) {
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    return false;
+  }).immediate();
 }
 
 // Relay bodies are up to 16,000 chars each, so their backfill walks a narrow rowid window per
@@ -208,7 +214,10 @@ export function relayFtsBackfillStep(database: Database.Database, span = RELAY_F
   // the backfill), and two windows over the same rowids would index a row twice.
   return database.transaction((): boolean => {
     if (getMeta(database, 'relay_fts_backfill_done') === '1') return true;
-    const max = Number(getMeta(database, 'relay_fts_backfill_max') ?? '0');
+    const maxMeta = getMeta(database, 'relay_fts_backfill_max');
+    // A missing watermark means the index was dropped under us (see ftsBackfillStep): never stamp done.
+    if (maxMeta === null) return true;
+    const max = Number(maxMeta);
     const progress = Number(getMeta(database, 'relay_fts_backfill_rowid') ?? '0');
     if (progress >= max) {
       setMeta(database, 'relay_fts_backfill_done', '1');
@@ -426,25 +435,32 @@ export function searchMessages(query: string, limit = 50, filter?: MessageSearch
   // Relayed messages and child replies are found by the body they carry, not their banner. They are
   // notification rows, so a user/assistant role filter leaves them out.
   const withRelays = !filter?.role;
-  const hitColumns = (snippetTable: string): string => `m.id AS messageId,
-                m.session_id AS sessionId,
-                snippet(${snippetTable}, 0, '«', '»', '…', 12) AS snippet,
-                m.role AS role,
-                m.timestamp AS timestamp,
-                s.employee AS employee,
-                s.engine AS engine`;
-  const hitQuery = (table: string): string => `SELECT * FROM (
-           SELECT ${hitColumns(table)}
-           FROM ${table}
-           JOIN messages m ON m.rowid = ${table}.rowid
+  // Take each branch's newest `cap` hits by rowid first, then build snippets for those rows only:
+  // snippet() in the ranking query would run over every match before the LIMIT, and a common word
+  // across thousands of long relay bodies made that take seconds while holding the event loop.
+  // CROSS JOIN keeps the limited set as the outer loop, so the FTS table is probed by rowid.
+  const hitQuery = (table: string): string => `SELECT x.messageId AS messageId,
+           x.sessionId AS sessionId,
+           snippet(${table}, 0, '«', '»', '…', 12) AS snippet,
+           x.role AS role,
+           x.timestamp AS timestamp,
+           x.employee AS employee,
+           x.engine AS engine
+         FROM (
+           SELECT m.rowid AS r, m.id AS messageId, m.session_id AS sessionId, m.role AS role,
+                  m.timestamp AS timestamp, s.employee AS employee, s.engine AS engine
+           FROM ${table} f
+           JOIN messages m ON m.rowid = f.rowid
            LEFT JOIN sessions s ON s.id = m.session_id
-           WHERE ${table} MATCH ?${extra}
+           WHERE f.${table} MATCH ?${extra}
            ORDER BY m.timestamp DESC
-           LIMIT ?)`;
+           LIMIT ?) x
+         CROSS JOIN ${table} ON ${table}.rowid = x.r
+         WHERE ${table} MATCH ?`;
   const sql = withRelays
     ? `SELECT * FROM (${hitQuery('messages_fts')} UNION ALL ${hitQuery('relay_messages_fts')}) ORDER BY timestamp DESC LIMIT ?`
-    : `${hitQuery('messages_fts')} ORDER BY timestamp DESC`;
-  const branchArgs = [match, ...values, cap];
+    : `SELECT * FROM (${hitQuery('messages_fts')}) ORDER BY timestamp DESC`;
+  const branchArgs = [match, ...values, cap, match];
   try {
     return db.prepare(sql).all(...(withRelays ? [...branchArgs, ...branchArgs, cap] : branchArgs)) as MessageSearchResult[];
   } catch (err) {

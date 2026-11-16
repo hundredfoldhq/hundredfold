@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
 // Own file: the last test disables FTS for the process, which would silence every search after it.
@@ -135,6 +137,49 @@ describe("searchMessages — relayed messages and child replies", () => {
     expect(reg.searchMessages("dugong")).toEqual([]);
   });
 
+  it("builds snippets only for the hits it returns, however many long bodies match", () => {
+    mkSession(reg, "s-many");
+    const db = dbModule.initDb();
+    const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+    const prose = "the grey heron waded through the shallow water at dawn and ".repeat(160); // ~9,600 chars
+    db.transaction(() => {
+      for (let i = 0; i < 800; i++) {
+        ins.run(`many-relay-${i}`, "s-many", "notification", "📨", 20_000 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `${prose} ${i}` }));
+        ins.run(`many-reply-${i}`, "s-many", "assistant", `${prose} ${i}`, 30_000 + i, null);
+      }
+    })();
+    // What snippet() over every match costs on this machine right now: the bar the search must clear by a
+    // wide margin. A ratio, not a wall-clock bound, so host load moves both sides.
+    const snippetEveryMatch = (table: string): number => {
+      const started = performance.now();
+      db.prepare(`SELECT snippet(${table}, 0, '«', '»', '…', 12) FROM ${table} JOIN messages m ON m.rowid = ${table}.rowid WHERE ${table} MATCH '"heron"' ORDER BY m.timestamp DESC LIMIT 5`).all();
+      return performance.now() - started;
+    };
+    const timed = (run: () => unknown): number => {
+      const started = performance.now();
+      run();
+      return performance.now() - started;
+    };
+    reg.searchMessages("heron", 5); // warm the statement cache and the page cache
+    const everyRelay = snippetEveryMatch("relay_messages_fts");
+    const everyReply = snippetEveryMatch("messages_fts");
+
+    let both: ReturnType<Reg["searchMessages"]> = [];
+    const bothMs = timed(() => { both = reg.searchMessages("heron", 5); });
+    let replies: ReturnType<Reg["searchMessages"]> = [];
+    const repliesMs = timed(() => { replies = reg.searchMessages("heron", 5, { role: "assistant" }); });
+
+    expect(both.map((h) => h.messageId)).toEqual(["many-reply-799", "many-reply-798", "many-reply-797", "many-reply-796", "many-reply-795"]);
+    expect(both.every((h) => h.snippet.includes("«heron»"))).toBe(true);
+    expect(replies.map((h) => h.messageId)).toEqual(both.map((h) => h.messageId));
+    const relays = reg.searchMessages("heron", 3, { until: 29_999 });
+    expect(relays.map((h) => h.messageId)).toEqual(["many-relay-799", "many-relay-798", "many-relay-797"]);
+    expect(relays.every((h) => h.snippet.includes("«heron»"))).toBe(true);
+
+    expect(bothMs).toBeLessThan((everyRelay + everyReply) / 5);
+    expect(repliesMs).toBeLessThan(everyReply / 5);
+  });
+
   describe("on a database that already holds relays", () => {
     function legacyWithRelays(): Database.Database {
       const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-fts-relay-legacy-")), "legacy.db");
@@ -251,6 +296,107 @@ describe("searchMessages — relayed messages and child replies", () => {
       expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
       db.close();
     });
+
+    it("indexes a relay once when it reuses a rowid at or below the pinned watermark", () => {
+      const db = legacyWithRelays();
+      migrateModule.migrateFtsSchema(db);
+      const max = Number(migrateModule.getMeta(db, "relay_fts_backfill_max"));
+      // Deleting the newest row frees its rowid, so the next insert lands at the watermark: the
+      // backfill owns that rowid, and the insert trigger must leave it alone.
+      db.prepare("DELETE FROM messages WHERE rowid = ?").run(max);
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      const info = ins.run("reused", "leg", "notification", "📨", 50, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: "reused bilby" }));
+      expect(Number(info.lastInsertRowid)).toBeLessThanOrEqual(max);
+
+      reg.backfillFtsSync(db);
+      expect(relayHits(db, "bilby")).toEqual(["reused"]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM relay_messages_fts_docsize").get()).toEqual({ n: 2 });
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      db.close();
+    });
+
+    it("the yielded backfill still seeds relays when the message index finished on an earlier boot", async () => {
+      const db = legacyWithRelays();
+      migrateModule.migrateFtsSchema(db);
+      // An upgraded home: the message backfill completed long ago, the relay index is new.
+      migrateModule.setMeta(db, "fts_backfill_done", "1");
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBeNull();
+
+      await reg.scheduleFtsBackfill(db, 4);
+      expect(relayHits(db, "numbat")).toEqual(["old-relay"]);
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBe("1");
+      db.close();
+    });
+
+    it("a drain whose index was dropped by another process stops without marking it done", () => {
+      const db = legacyWithRelays();
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      for (let i = 0; i < 20; i++) {
+        ins.run(`drop-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `dropped potoroo ${i}` }));
+        ins.run(`drop-a-${i}`, "leg", "assistant", `dropped quoll ${i}`, 40 + i, null);
+      }
+      migrateModule.migrateFtsSchema(db);
+      expect(reg.relayFtsBackfillStep(db, 5)).toBe(false);
+
+      // What disableFtsForProcess does, from another process: drop both indexes and their progress.
+      const other = new Database(db.name);
+      other.exec(`
+        DROP TRIGGER IF EXISTS messages_fts_ai; DROP TRIGGER IF EXISTS messages_fts_ad; DROP TRIGGER IF EXISTS messages_fts_au;
+        DROP TABLE IF EXISTS messages_fts;
+        ${migrateModule.DROP_RELAY_FTS}
+        DELETE FROM meta WHERE key LIKE '%fts_backfill_%';
+      `);
+      other.close();
+
+      // This process carries on draining: it must stop, and leave the index marked not migrated.
+      expect(() => reg.backfillFtsSync(db, 5)).not.toThrow();
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBeNull();
+      expect(migrateModule.getMeta(db, "fts_backfill_done")).toBeNull();
+
+      // So the next boot pins a fresh watermark and rebuilds both indexes whole.
+      migrateModule.migrateFtsSchema(db);
+      reg.backfillFtsSync(db, 5);
+      expect(relayHits(db, "potoroo")).toHaveLength(20);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'quoll'").get()).toEqual({ n: 20 });
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      // messages_fts indexes only user/assistant rows of messages, so its integrity-check cannot be used
+      // here; its docsize table holds one row per indexed message.
+      expect(db.prepare("SELECT COUNT(*) AS n FROM messages_fts_docsize").get()).toEqual({ n: 20 });
+      db.close();
+    });
+
+    it("four processes draining the same file index every relay once", async () => {
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const workerPath = path.join(here, "fixtures", "fts-drain-worker.mjs");
+      const registryPath = path.resolve(here, "../../../dist/src/sessions/registry.js");
+      const db = legacyWithRelays();
+      db.pragma("journal_mode = WAL");
+      const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
+      db.transaction(() => {
+        for (let i = 0; i < 1500; i++) ins.run(`proc-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-reply", employee: "w", childSessionId: "c", fullMessage: `shared dibbler tag${i} ${"word ".repeat(40)}` }));
+      })();
+      migrateModule.migrateFtsSchema(db);
+      const workers = 4;
+      const barrier = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-fts-barrier-"));
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-fts-drain-home-"));
+      const run = (): Promise<{ windows: number }> => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [workerPath, home, registryPath, db.name, barrier, String(workers), "3"], { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        child.stdout.setEncoding("utf8").on("data", (c) => { out += c; });
+        child.stderr.setEncoding("utf8").on("data", (c) => { err += c; });
+        child.on("error", reject);
+        child.on("close", (code) => (code === 0 ? resolve(JSON.parse(out)) : reject(new Error(`drain worker exited ${code}: ${err || out}`))));
+      });
+      const results = await Promise.all(Array.from({ length: workers }, run));
+      // Every window was taken by exactly one process.
+      expect(results.reduce((n, r) => n + r.windows, 0)).toBeLessThanOrEqual(Math.ceil(Number(migrateModule.getMeta(db, "relay_fts_backfill_max")) / 3));
+      expect(migrateModule.getMeta(db, "relay_fts_backfill_done")).toBe("1");
+      expect(relayHits(db, "dibbler")).toHaveLength(1500);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM relay_messages_fts_docsize").get()).toEqual({ n: 1501 });
+      expect(() => db.exec("INSERT INTO relay_messages_fts(relay_messages_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+      db.close();
+    }, 120_000);
 
     it("is rebuilt on the next boot after FTS was disabled for the process", () => {
       const db = legacyWithRelays();

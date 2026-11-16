@@ -286,13 +286,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ad AFTER DELETE ON messages WHEN old.role = 'notification' AND ${relayGuardSql('old')} BEGIN
   INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE ${relayBodySql('old')} IS NOT NULL;
 END;
-CREATE TRIGGER IF NOT EXISTS relay_messages_fts_au AFTER UPDATE ON messages WHEN old.role = 'notification' OR new.role = 'notification' BEGIN
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_au AFTER UPDATE OF role, meta ON messages WHEN old.role = 'notification' OR new.role = 'notification' BEGIN
   INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE old.role = 'notification' AND ${relayGuardSql('old')} AND ${relayBodySql('old')} IS NOT NULL;
   INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE new.role = 'notification' AND ${relayGuardSql('new')} AND ${relayBodySql('new')} IS NOT NULL;
 END;
 `;
 
-/** Every object CREATE_RELAY_FTS makes, dropped by disableFtsForProcess and before a rebuild. */
+/** Every object CREATE_RELAY_FTS makes, dropped by disableFtsForProcess. */
 export const DROP_RELAY_FTS = `
 DROP TRIGGER IF EXISTS relay_messages_fts_ai;
 DROP TRIGGER IF EXISTS relay_messages_fts_ad;
