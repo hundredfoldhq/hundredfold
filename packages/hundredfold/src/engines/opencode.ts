@@ -81,6 +81,8 @@ export class OpencodeEngine implements InterruptibleEngine {
    *  exists from the moment the turn starts — before its server is up — so an
    *  interrupt during a server start is recorded rather than lost. */
   private serverTurns = new Map<string, ServerTurnSlot>();
+  /** Turns waiting for their account's models before anything is launched (`accountsOnceStaged`): live, and stoppable. */
+  private stagingWaits = new Map<string, StagingWait>();
   private serverTurnEndListeners: Array<(sessionId: string) => void> = [];
   private remoteKills = new RemoteKills("opencode");
 
@@ -134,6 +136,7 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   kill(sessionId: string, reason = "Interrupted"): void {
+    if (this.stopStagingWait(sessionId, reason)) return;
     const slot = this.serverTurns.get(sessionId);
     if (slot) {
       logger.info(`Interrupting opencode server turn for session ${sessionId}`);
@@ -161,7 +164,20 @@ export class OpencodeEngine implements InterruptibleEngine {
     this.terminate(live, sessionId);
   }
 
+  /** Stop a turn still waiting for its account's models; false when the session has no such wait. */
+  private stopStagingWait(sessionId: string, reason: string): boolean {
+    const waiting = this.stagingWaits.get(sessionId);
+    if (!waiting) return false;
+    logger.info(`Interrupting opencode turn for session ${sessionId} while it waits for model discovery`);
+    waiting.interrupted ??= reason;
+    waiting.abort.abort();
+    return true;
+  }
+
   killAll(): void {
+    for (const sessionId of [...this.stagingWaits.keys()]) {
+      this.kill(sessionId, "Interrupted: gateway shutting down");
+    }
     for (const sessionId of [...this.serverTurns.keys()]) {
       this.kill(sessionId, "Interrupted: gateway shutting down");
     }
@@ -182,6 +198,7 @@ export class OpencodeEngine implements InterruptibleEngine {
   }
 
   isAlive(sessionId: string): boolean {
+    if (this.stagingWaits.has(sessionId)) return true;
     const slot = this.serverTurns.get(sessionId);
     if (slot && !slot.turn?.isSettled()) return true;
     const live = this.liveProcesses.get(sessionId);
@@ -198,12 +215,23 @@ export class OpencodeEngine implements InterruptibleEngine {
     const accounts = this.accountsFor(trackingId, requested.model);
     // An account model whose base's details have not loaded yet (a fresh gateway's first turn) waits for them: staged now,
     // the account would list no models. Before the effort is resolved, since the same discovery brings the model's levels.
-    if (awaitsAccountModels(requested, accounts)) {
-      const staged = await accountsOnceStaged(requested, accounts, () => this.accountsFor(trackingId, requested.model));
-      if ("result" in staged) return staged.result;
-      return await this.runStaged(requested, trackingId, staged.accounts);
-    }
+    if (awaitsAccountModels(requested, accounts)) return await this.runOnceStaged(requested, trackingId, accounts);
     return await this.runStaged(requested, trackingId, accounts);
+  }
+
+  /** The wait for the account's models, registered so that `kill` stops it and `isAlive` sees it. Stopped, nothing is launched. */
+  private async runOnceStaged(requested: EngineRunOpts, trackingId: string, accounts: NonNullable<ReturnType<OpencodeAccountsReader>>): Promise<EngineResult> {
+    const waiting: StagingWait = { abort: new AbortController() };
+    this.stagingWaits.set(trackingId, waiting);
+    let staged: Awaited<ReturnType<typeof accountsOnceStaged>>;
+    try {
+      staged = await accountsOnceStaged(requested, accounts, () => this.accountsFor(trackingId, requested.model), { signal: waiting.abort.signal });
+    } finally {
+      if (this.stagingWaits.get(trackingId) === waiting) this.stagingWaits.delete(trackingId);
+    }
+    if ("interrupted" in staged) return interruptedBeforePost(requested, waiting.interrupted ?? "Interrupted");
+    if ("result" in staged) return staged.result;
+    return await this.runStaged(requested, trackingId, staged.accounts);
   }
 
   private async runStaged(requested: EngineRunOpts, trackingId: string, accounts: ReturnType<OpencodeAccountsReader>): Promise<EngineResult> {
@@ -616,6 +644,12 @@ export class OpencodeEngine implements InterruptibleEngine {
       logger.debug(`Failed to send ${signal} to opencode process: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+/** A turn waiting for its account's models before it is staged: the interrupt that stopped the wait, and what stops it. */
+interface StagingWait {
+  interrupted?: string;
+  abort: AbortController;
 }
 
 /** A server-mode turn from its start: the interrupt that arrived before it had

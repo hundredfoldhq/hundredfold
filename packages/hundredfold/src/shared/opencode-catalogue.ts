@@ -270,15 +270,16 @@ export function opencodeClonesPending(base: string): boolean {
 }
 
 /** Resolves once {@link opencodeClonesPending} clears for `base`, or after
- *  `timeoutMs`; at once when it is not pending. A fresh gateway's first turn on
+ *  `timeoutMs`, or when `signal` aborts; at once when it is not pending. A fresh gateway's first turn on
  *  an account model can start before the first detailed discovery lands, and an
  *  account staged then has no models, which opencode refuses as `provider.no-route`. */
-export async function opencodeClonesSettled(base: string, timeoutMs: number): Promise<void> {
-  if (!opencodeClonesPending(base)) return;
+export async function opencodeClonesSettled(base: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+  if (!opencodeClonesPending(base) || signal?.aborted) return;
   await new Promise<void>((resolve) => {
     const done = (): void => {
       clearTimeout(timer);
       cloneWaiters.delete(check);
+      signal?.removeEventListener("abort", done);
       resolve();
     };
     const check = (): void => {
@@ -287,5 +288,6 @@ export async function opencodeClonesSettled(base: string, timeoutMs: number): Pr
     const timer = setTimeout(done, timeoutMs);
     timer.unref?.();
     cloneWaiters.add(check);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }

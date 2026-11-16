@@ -59,7 +59,7 @@ const ENV = { GO_B_KEY: SENTINEL };
 /** Every module that holds catalogue state, fresh for each test: the catalogue is module state, and a test must start cold. */
 async function cold() {
   vi.resetModules();
-  const [engineMod, serverMod, accountsMod, modelsMod, catalogueMod, lifecycleMod, versionMod, pathsMod, failureMod, engineFailureMod, timingMod] = await Promise.all([
+  const [engineMod, serverMod, accountsMod, modelsMod, catalogueMod, lifecycleMod, versionMod, pathsMod, failureMod, engineFailureMod, timingMod, servedMod, sharedAccountsMod] = await Promise.all([
     import("../opencode.js"),
     import("../opencode-server.js"),
     import("../opencode-accounts.js"),
@@ -71,6 +71,8 @@ async function cold() {
     import("../../shared/opencode-failure.js"),
     import("../../shared/engine-failure.js"),
     import("../opencode-server-turn.js"),
+    import("../opencode-model-served.js"),
+    import("../../shared/opencode-accounts.js"),
   ]);
   versionMod.clearOpencodeVersionCache();
   timingMod.SERVER_TURN_TIMING.statusPollMs = 30_000;
@@ -78,7 +80,7 @@ async function cold() {
   timingMod.SERVER_TURN_TIMING.closeWaitMs = 2_000;
   // The gateway's reader reads the live catalogue on every call (gateway/opencode-account-reach.ts).
   const read = (config: HundredfoldConfig = CONFIG) => () => accountsMod.opencodeAccountStaging(config, ENV);
-  return { ...engineMod, ...serverMod, ...modelsMod, ...catalogueMod, ...lifecycleMod, ...failureMod, ...engineFailureMod, HOME: pathsMod.HUNDREDFOLD_HOME, read };
+  return { ...engineMod, ...serverMod, ...accountsMod, ...modelsMod, ...catalogueMod, ...lifecycleMod, ...failureMod, ...engineFailureMod, ...servedMod, ...sharedAccountsMod, HOME: pathsMod.HUNDREDFOLD_HOME, read };
 }
 
 let home = "";
@@ -158,7 +160,7 @@ describe("the first turn on an account model, before the first discovery has lan
     }
   });
 
-  it("fails without launching, and without a failure class that holds the model, when discovery ends without the base", async () => {
+  it("fails without launching, as model access (hop, hold the model), when discovery has finished without the base", async () => {
     process.env.FAKE_OPENCODE_VERSION = "2.0.32";
     const m = await cold();
     const refresh = m.refreshOpencodeModels(CONFIG);
@@ -167,12 +169,67 @@ describe("the first turn on an account model, before the first discovery has lan
     (await heldDiscovery()).answer(false);
     await refresh;
     const result = await turn;
-    expect(result.error).toBe('go-b/alpha cannot start yet: account "b" takes its models from "base-go", and opencode model discovery has not loaded that provider\'s models on this host');
+    expect(result.error).toBe('go-b/alpha is not served by account "b": model discovery found no models of its base "base-go" on this host');
     expect(result.conversationIntact).toBe(true);
     expect(staged()).toEqual([]);
-    // Not `provider.no-route` (model access, held) or any other class the walk reads: the model stays usable.
-    expect(m.classifyOpencodeFailure(result.error)).toBeUndefined();
-    expect([...m.classifyEngineFailureText(result.error).classes]).toEqual(["terminal"]);
+    // As opencode's own refusal of the empty block was read on main: the walk hops, and only this model is held.
+    expect(m.classifyOpencodeFailure(result.error)?.kind).toBe("model-access");
+    // And so for every later turn: nothing is pending, so nothing waits.
+    expect(m.opencodeClonesPending("base-go")).toBe(false);
+    expect((await engine.run(runOpts({ sessionId: "sess-cold-none-2" }))).error).toBe(result.error);
+  });
+
+  it("fails without launching, with no failure class (nothing held, no hop), when discovery is still running at the timeout", async () => {
+    const m = await cold();
+    const refresh = m.refreshOpencodeModels(CONFIG);
+    const accounts = m.read()()!;
+    expect(accounts.unstaged("go-b/alpha")).toEqual({ account: "b", base: "base-go" });
+    const staging = await m.accountsOnceStaged(runOpts(), accounts, m.read(), { timeoutMs: 200 });
+    expect(staging).toEqual({ result: { sessionId: "", result: "", error: m.UNLOADED_ACCOUNT_MODELS_ERROR, conversationIntact: true } });
+    expect(m.classifyOpencodeFailure(m.UNLOADED_ACCOUNT_MODELS_ERROR)).toBeUndefined();
+    expect([...m.classifyEngineFailureText(m.UNLOADED_ACCOUNT_MODELS_ERROR).classes]).toEqual(["terminal"]);
+    (await heldDiscovery()).answer(true);
+    await refresh;
+  });
+
+  it("is stopped by an interrupt during the wait, reported live while it waits, and launches nothing (run mode)", async () => {
+    process.env.FAKE_OPENCODE_VERSION = "2.0.32";
+    const m = await cold();
+    const refresh = m.refreshOpencodeModels(CONFIG);
+    const engine = new m.OpencodeEngine({ mode: () => "run", accounts: m.read() });
+    const turn = engine.run(runOpts({ sessionId: "sess-cold-kill" }));
+    await settleABit();
+    expect(engine.isAlive("sess-cold-kill")).toBe(true);
+    engine.kill("sess-cold-kill", "Interrupted by the operator");
+    const result = await turn;
+    expect(result.error).toBe("Interrupted by the operator");
+    expect(engine.isAlive("sess-cold-kill")).toBe(false);
+    (await heldDiscovery()).answer(true);
+    await refresh;
+    await settleABit();
+    expect(staged()).toEqual([]);
+  });
+
+  it("is stopped by an interrupt during the wait, and starts no server (server mode)", async () => {
+    const m = await cold();
+    const read = m.read();
+    const pool = new m.OpencodeServerPool(new m.PtyLifecycleManager({ maxLivePtys: 8, enforceLocalCap: false }), { bin: () => FAKE, accounts: read });
+    try {
+      const refresh = m.refreshOpencodeModels(CONFIG);
+      const engine = new m.OpencodeEngine({ mode: () => "server", servers: pool, accounts: read });
+      const turn = engine.run(runOpts({ sessionId: "sess-cold-kill-server" }));
+      await settleABit();
+      expect(engine.isAlive("sess-cold-kill-server")).toBe(true);
+      engine.killAll();
+      expect((await turn).error).toBe("Interrupted: gateway shutting down");
+      (await heldDiscovery()).answer(true);
+      await refresh;
+      await settleABit();
+      expect(staged()).toEqual([]);
+      expect(pool.size()).toBe(0);
+    } finally {
+      await pool.stopAll();
+    }
   });
 
   it("waits for a reload's refresh that adds a new base, though an earlier discovery has detailed the catalogue", async () => {

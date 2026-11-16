@@ -169,11 +169,16 @@ export function unservedModelError(model: string, account: string): string {
   return `${model} is not served by account "${account}" on OpenCode 1.x (models on another endpoint need OpenCode 2)`;
 }
 
-/** The error of a turn on an account model whose base's model details have not loaded, so the account has no models to stage.
- *  Worded to be read as no failure class in particular (engine-failure.ts): nothing is wrong with the model or the key, and the
- *  model is not held; the next turn, once discovery has landed, runs. */
-export function unstagedModelError(model: string, account: string, base: string): string {
-  return `${model} cannot start yet: account "${account}" takes its models from "${base}", and opencode model discovery has not loaded that provider's models on this host`;
+/** The error of a turn on an account model that waited for model discovery and gave up while it was still running. A fixed
+ *  phrase, with no account or model name in it, so it reads as no failure class in particular (engine-failure.ts) whatever
+ *  the names are: nothing is known to be wrong with the model or the key, so it is not held and the turn does not hop. */
+export const UNLOADED_ACCOUNT_MODELS_ERROR = "opencode account models have not loaded yet: model discovery on this host did not finish in time";
+
+/** The error of a turn on an account model when model discovery has finished and brought no models of the account's base
+ *  (the base is not in the catalogue, or its details would not load). Read as model access (`opencode-failure.ts`), as
+ *  opencode's own `provider.no-route` for the empty block would have been: the turn hops, and only that model is held. */
+export function missingBaseModelsError(model: string, account: string, base: string): string {
+  return `${model} is not served by account "${account}": model discovery found no models of its base "${base}" on this host`;
 }
 
 /** What the problem checks read of the host. */

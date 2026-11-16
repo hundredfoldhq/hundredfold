@@ -5,7 +5,8 @@ import { resolveBin } from "../shared/resolve-bin.js";
 import { opencodeApiOf } from "./opencode-version.js";
 import { gatherFacts } from "./remote-stage.js";
 import type { OpencodeAccountStaging } from "./opencode-accounts.js";
-import { opencodeClonesSettled } from "../shared/opencode-catalogue.js";
+import { opencodeClonesPending, opencodeClonesSettled } from "../shared/opencode-catalogue.js";
+import { missingBaseModelsError, UNLOADED_ACCOUNT_MODELS_ERROR } from "../shared/opencode-accounts.js";
 import { DETAILS_TIMEOUT_MS } from "../shared/opencode-discovery.js";
 import { logger } from "../shared/logger.js";
 
@@ -57,22 +58,26 @@ export function awaitsAccountModels(opts: EngineRunOpts, accounts: OpencodeAccou
  * opencode refuses the turn as `provider.no-route`, which holds the model as if the account could not use it. So the turn
  * waits, bounded, for discovery to bring the base's models, then reads the accounts again (`read`: the turn's own reader).
  *
- * @returns the accounts to go on with, or the failed result when the account still has no models: discovery ended without
- *  them or did not finish in time. Nothing ran, so the conversation is intact, and the error names no failure class, so
- *  the model is not held.
+ * @returns the accounts to go on with; `interrupted` when `signal` aborted the wait (nothing is launched); or the failed
+ *  result, nothing having run: {@link UNLOADED_ACCOUNT_MODELS_ERROR} when discovery was still running at the timeout (no
+ *  failure class: nothing is held), or {@link missingBaseModelsError} when it finished without the base's models (model
+ *  access: the turn hops and the model is held, as opencode's refusal of the empty block would have been).
  */
 export async function accountsOnceStaged(
   opts: EngineRunOpts,
   accounts: OpencodeAccountStaging,
   read: () => OpencodeAccountStaging | undefined,
-  timeoutMs = DETAILS_TIMEOUT_MS,
-): Promise<{ accounts: OpencodeAccountStaging | undefined } | { result: EngineResult }> {
-  const { base } = accounts.unstaged(opts.model!)!;
-  logger.info(`opencode: waiting for model discovery to load "${base}" before staging ${opts.model}`);
-  await opencodeClonesSettled(base, timeoutMs);
+  wait: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<{ accounts: OpencodeAccountStaging | undefined } | { result: EngineResult } | { interrupted: true }> {
+  const model = opts.model!;
+  const { base } = accounts.unstaged(model)!;
+  logger.info(`opencode: waiting for model discovery to load "${base}" before staging ${model}`);
+  await opencodeClonesSettled(base, wait.timeoutMs ?? DETAILS_TIMEOUT_MS, wait.signal);
+  if (wait.signal?.aborted) return { interrupted: true };
   const again = read();
-  const still = again?.unstaged(opts.model!);
+  const still = again?.unstaged(model);
   if (still === undefined) return { accounts: again };
-  logger.warn(still.error);
-  return { result: { sessionId: opts.resumeSessionId || "", result: "", error: still.error, conversationIntact: true } };
+  const error = opencodeClonesPending(still.base) ? UNLOADED_ACCOUNT_MODELS_ERROR : missingBaseModelsError(model, still.account, still.base);
+  logger.warn(`opencode: ${model} (account "${still.account}", base "${still.base}"): ${error}`);
+  return { result: { sessionId: opts.resumeSessionId || "", result: "", error, conversationIntact: true } };
 }

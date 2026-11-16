@@ -215,9 +215,14 @@ same on 1.x and 2.x:
   running or a first one's details are still to come, and is then staged as
   later turns are. Staged earlier, its block would list no models, and opencode
   would refuse the turn as `provider.no-route`, holding the model as one the
-  account cannot use. If discovery ends without the base's models, the turn
-  fails before opencode is launched, saying the account's models have not
-  loaded; that error carries no failure class, so nothing is held.
+  account cannot use. The wait counts as a live turn: a stop ends it and nothing
+  is launched. Nothing is launched either when the wait ends without the base's
+  models: if discovery is still running at the timeout, the turn fails with a
+  fixed phrase that carries no failure class, so nothing is held; if discovery
+  finished without them, it fails with `<model> is not served by account
+  "<name>": model discovery found no models of its base "<base>" on this host`,
+  read as model access (the turn hops and only that model is held), as the
+  empty block's `provider.no-route` was.
 - Model discovery itself never stages accounts. Account models come from
   cloning.
 
