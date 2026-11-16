@@ -74,12 +74,13 @@ export function withPauseStamp<T extends Record<string, unknown>>(meta: T, kind:
   return PAUSED_AT_META_KEY in meta ? meta : { ...meta, [PAUSED_AT_META_KEY]: { at: at.toISOString(), kind } };
 }
 
-interface Stamp {
+/** A pause as stamped: when it began and why. */
+export interface PauseStamp {
   at: string;
   kind: PauseKind;
 }
 
-function parseStamp(raw: unknown): Stamp | undefined {
+function parseStamp(raw: unknown): PauseStamp | undefined {
   if (typeof raw !== "string") return undefined;
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
@@ -93,7 +94,7 @@ function parseStamp(raw: unknown): Stamp | undefined {
 }
 
 /** Read the session's stamp and drop it, whatever it holds. */
-function consumeStamp(sessionId: string): Stamp | undefined {
+function consumeStamp(sessionId: string): PauseStamp | undefined {
   const database = initDb();
   const row = database
     .prepare(`SELECT json_extract(transport_meta, '$.${PAUSED_AT_META_KEY}') AS stamp FROM sessions WHERE id = ?`)
@@ -149,10 +150,20 @@ function currentStatus(todoId: string): string | undefined {
   return row?.status;
 }
 
+/**
+ * Who moved it, in words a session may read. An allow-list: the operator and the
+ * reconciler by name, another session by its employee, a board member as such,
+ * and anyone else (a cron, a plugin, a recovery sweep, a delegation) as the
+ * gateway. A raw actor carries ids the session has no business with.
+ */
 function actorLabel(event: StatusEvent): string {
-  const actor = event.actor ?? "unknown";
-  const label = actor.startsWith("session:") ? event.employee ?? "another session" : actor;
-  return label.length > MAX_ACTOR_LENGTH ? `${label.slice(0, MAX_ACTOR_LENGTH - 1)}…` : label;
+  const actor = event.actor ?? "";
+  if (actor === "operator" || actor === "reconciler") return actor;
+  if (actor.startsWith("session:")) {
+    const label = event.employee ?? "another session";
+    return label.length > MAX_ACTOR_LENGTH ? `${label.slice(0, MAX_ACTOR_LENGTH - 1)}…` : label;
+  }
+  return actor.startsWith("user:") ? "a board member" : "the gateway";
 }
 
 /**
@@ -183,7 +194,17 @@ function noticeLine(kind: PauseKind, moves: string[]): string {
  * does not know. Consumes the stamp either way, so the next turn gets none.
  */
 export function takePauseNotice(sessionId: string): string | undefined {
-  const stamp = consumeStamp(sessionId);
+  return noticeFor(sessionId, consumeStamp(sessionId));
+}
+
+/** The earlier of the pauses given: a notice covering it covers the later ones too. */
+function earliestStamp(...stamps: Array<PauseStamp | undefined>): PauseStamp | undefined {
+  return stamps.reduce<PauseStamp | undefined>((first, next) => (
+    next && (!first || Date.parse(next.at) < Date.parse(first.at)) ? next : first
+  ), undefined);
+}
+
+function noticeFor(sessionId: string, stamp: PauseStamp | undefined): string | undefined {
   if (!stamp) return undefined;
   const moves = todosWorkedSince(sessionId, stamp.at)
     .map((todoId) => staleMove(sessionId, todoId, stamp.at))
@@ -191,15 +212,33 @@ export function takePauseNotice(sessionId: string): string | undefined {
   return moves.length > 0 ? noticeLine(stamp.kind, moves) : undefined;
 }
 
+/** The pause a turn consumed and the notice it makes. The plan keeps the stamp so a re-run or a retry of the same turn can cover it again. */
+export interface TurnPause {
+  stamp?: PauseStamp;
+  notice?: string;
+}
+
 /**
- * The notice a turn's plan carries. A slash command neither carries nor
- * consumes it (the prompt reaches the engine as written, and the turn after
- * it, which resumes the session, is the one to tell), so a prompt that leads
- * with `/`, as sent or as it will be run, takes nothing.
+ * What a turn's plan takes. A slash command neither carries nor consumes a
+ * pause (the prompt reaches the engine as written, and the turn after it,
+ * which resumes the session, is the one to tell), so a prompt that leads with
+ * `/`, as sent or as it will be run, takes nothing. `carried` is the pause an
+ * earlier pass of this same turn consumed (a rate-limit hand-back re-runs the
+ * turn from preflight): the notice then covers it too, from the earlier start.
  */
-export function takeTurnPauseNotice(sessionId: string, prompt: string, promptToRun: string): string | undefined {
-  if (isSlashPrompt(prompt) || isSlashPrompt(promptToRun)) return undefined;
-  return takePauseNotice(sessionId);
+export function takeTurnPause(sessionId: string, prompt: string, promptToRun: string, carried?: PauseStamp): TurnPause {
+  if (isSlashPrompt(prompt) || isSlashPrompt(promptToRun)) return {};
+  const stamp = earliestStamp(carried, consumeStamp(sessionId));
+  return { stamp, notice: noticeFor(sessionId, stamp) };
+}
+
+/**
+ * The notice a usage-limit retry carries: the pause the wait stamped, from the
+ * start of the pause the turn already carried (the refused attempt never showed
+ * it to the model), as one line.
+ */
+export function takeRetryPauseNotice(sessionId: string, prompt: string, carried?: PauseStamp): string | undefined {
+  return takeTurnPause(sessionId, prompt, prompt, carried).notice;
 }
 
 function isSlashPrompt(prompt: string): boolean {

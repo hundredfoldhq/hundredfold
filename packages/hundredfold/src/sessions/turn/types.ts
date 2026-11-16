@@ -81,6 +81,8 @@ export interface TurnInput {
    * do, because the dashboard already shows the limit state.
    */
   announceUsageWarnings?: boolean;
+  /** The pause an earlier pass of this same turn consumed, when a rate-limit hand-back re-runs the turn from preflight. */
+  carriedPauseStamp?: import("../pause-notice.js").PauseStamp;
 }
 
 /** A preflight that refused to run the turn, with the error it settles as. */
@@ -120,6 +122,8 @@ export interface TurnPlan {
   boardReminder?: string;
   /** The one line telling a resumed session its Todos moved while it was paused (pause-notice.ts); appended after the prompt, before the reminder. */
   pauseNotice?: string;
+  /** The pause that notice was made from, kept so a retry or a re-run of this turn covers it again. */
+  pauseStamp?: import("../pause-notice.js").PauseStamp;
   /** This turn is `/compact`: the engine's own compaction, not a prompt. */
   compaction: boolean;
   /** Built per model attempt, because a model fallback re-fingerprints context. */

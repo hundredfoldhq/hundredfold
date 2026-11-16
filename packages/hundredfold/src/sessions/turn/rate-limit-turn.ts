@@ -12,7 +12,7 @@ import { settleTurn, type SettleTurnInput } from "./completion.js";
 import { formatResumeTime, turnDisplayText } from "./text.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
-import { takeTurnPauseNotice, withPauseNotice } from "../pause-notice.js";
+import { takeRetryPauseNotice, withPauseNotice } from "../pause-notice.js";
 import { chainExhaustedNotice, hopNoticeText, signedOutClause, withSignedOut, type ChainExhausted } from "../fallback-hop.js";
 import type { FallbackHop, FallbackHopNoticeMeta } from "../../shared/fallback-chain-wire.js";
 import type { JsonObject } from "../../shared/types.js";
@@ -273,14 +273,15 @@ function rateLimitHooks(args: RateLimitTurnArgs): RateLimitHandlerHooks {
 
 /**
  * The prompt a retry after the usage-limit wait sends: the same turn resuming,
- * so it takes the notice the wait stamped when the retry fires, falling back to
- * the one this turn already carried (an attempt the limit refused never showed it
- * to the model). Built once, so a retry the limit refuses again sends the same text.
+ * so it takes the notice the wait stamped when the retry fires. The notice
+ * covers the pause this turn already carried too (an attempt the limit refused
+ * never showed it to the model), as one line. Built once, so a retry the limit
+ * refuses again sends the same text.
  */
 function usageLimitRetryPrompt(input: TurnInput, plan: TurnPlan): () => string {
   let built: string | undefined;
   return () => built ??= withBoardReminder(
-    withPauseNotice(input.prompt, takeTurnPauseNotice(input.session.id, input.prompt, input.prompt) ?? plan.pauseNotice),
+    withPauseNotice(input.prompt, takeRetryPauseNotice(input.session.id, input.prompt, plan.pauseStamp)),
     plan.boardReminder,
   );
 }

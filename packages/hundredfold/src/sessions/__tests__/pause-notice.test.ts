@@ -224,7 +224,67 @@ describe("takePauseNotice", () => {
   });
 });
 
-describe("takeTurnPauseNotice", () => {
+describe("who the line says moved it", () => {
+  async function labelFor(actor: string, detail?: Record<string, unknown>): Promise<string> {
+    const session = fx.newSession();
+    const todo = await fx.workedTodo(session);
+    notice.stampSessionPause(session, "restart");
+    await fx.tick();
+    fx.move(todo, "blocked", actor, detail);
+    const line = notice.takePauseNotice(session)!;
+    return /\(by ([^)]*)\)/.exec(line)![1]!;
+  }
+
+  it("names the operator, the reconciler, another session's employee and a board member", async () => {
+    expect(await labelFor("operator")).toBe("operator");
+    expect(await labelFor("reconciler")).toBe("reconciler");
+    expect(await labelFor("session:s-other", { actorEmployee: "parent-dev" })).toBe("parent-dev");
+    expect(await labelFor("session:s-other")).toBe("another session");
+    expect(await labelFor("user:u_1a2b3c4d5e6f")).toBe("a board member");
+  });
+
+  it.each([
+    "delegation:3f1c2a9e-1111-2222-3333-444455556666",
+    "cron:3f1c2a9e-1111-2222-3333-444455556666",
+    "plugin:calendar",
+    "workflow:run",
+    "todo-recovery",
+    "merger",
+  ])("says the gateway for the actor %s, and never quotes its id", async (actor) => {
+    expect(await labelFor(actor)).toBe("the gateway");
+  });
+});
+
+describe("takeTurnPause", () => {
+  it("covers a carried pause from its earlier start, as one line", async () => {
+    const session = fx.newSession();
+    const first = await fx.workedTodo(session);
+    const second = await fx.workedTodo(session);
+    const carried = { at: new Date().toISOString(), kind: "compaction" as const };
+    await fx.tick();
+    fx.move(first, "blocked", "reconciler");
+    await fx.tick();
+    notice.stampSessionPause(session, "usage-limit");
+    await fx.tick();
+    fx.move(second, "blocked", "operator");
+
+    const { stamp, notice: line } = notice.takeTurnPause(session, "go", "go", carried);
+
+    expect(stamp).toEqual(carried);
+    expect(line).toContain(`${first} moved executing → blocked (by reconciler)`);
+    expect(line).toContain(`${second} moved executing → blocked (by operator)`);
+    expect(line).toContain("(compaction)");
+    expect(line).not.toContain("\n");
+    expect(fx.stampOf(session)).toBeUndefined();
+  });
+
+  it("keeps the carried pause when the new one is the earlier", async () => {
+    const session = fx.newSession();
+    notice.stampSessionPause(session, "restart", new Date("2026-01-01T00:00:00.000Z"));
+    const carried = { at: "2026-01-02T00:00:00.000Z", kind: "compaction" as const };
+    expect(notice.takeTurnPause(session, "go", "go", carried).stamp).toEqual({ at: "2026-01-01T00:00:00.000Z", kind: "restart" });
+  });
+
   it.each(["/compact", "  /compact keep the plan", "/init"])("neither carries nor consumes for the slash command %j", async (command) => {
     const session = fx.newSession();
     const todo = await fx.workedTodo(session);
@@ -232,16 +292,16 @@ describe("takeTurnPauseNotice", () => {
     await fx.tick();
     fx.move(todo, "blocked", "reconciler");
 
-    expect(notice.takeTurnPauseNotice(session, command, command)).toBeUndefined();
+    expect(notice.takeTurnPause(session, command, command)).toEqual({});
     expect(fx.stampOf(session)).toBeDefined();
-    expect(notice.takeTurnPauseNotice(session, "carry on", "carry on")).toContain(todo);
+    expect(notice.takeTurnPause(session, "carry on", "carry on").notice).toContain(todo);
     expect(fx.stampOf(session)).toBeUndefined();
   });
 
   it("leaves a stamp in place when the prompt that will run is a slash command", async () => {
     const session = fx.newSession();
     notice.stampSessionPause(session, "compaction");
-    expect(notice.takeTurnPauseNotice(session, "go", "/compact")).toBeUndefined();
+    expect(notice.takeTurnPause(session, "go", "/compact")).toEqual({});
     expect(fx.stampOf(session)).toBeDefined();
   });
 });

@@ -213,19 +213,50 @@ describe("the usage-limit retry", () => {
     expect(retryPrompt!()).toBe(retry);
   });
 
-  it("falls back to the notice the turn already carried when the wait has none of its own", async () => {
+  it("keeps the notice the turn already carried, and adds what moved during the wait, as one line", async () => {
     const { session, todo } = await pausedAndMoved("restart");
     const turn = turnFor(session, "hello");
     const plan = preflightTurn(turn) as TurnPlan;
     expect(plan.pauseNotice).toBeDefined();
+    const other = await fx.workedTodo(session);
     await runRateLimitTurn({
       input: turn, plan, surface: {} as never, systemPrompt: "SYSTEM", platformContextRefresh: undefined,
       rateLimit: {} as never, originalResult: {} as never,
     } as never);
     const { prompt, retryPrompt } = rateLimit.args!;
-    const expected = `hello\n\n${lineFor("gateway restart", todo)}\n\n${REMINDER}`;
-    expect(prompt).toBe(expected);
-    expect(retryPrompt!()).toBe(expected);
+    expect(prompt).toBe(`hello\n\n${lineFor("gateway restart", todo)}\n\n${REMINDER}`);
+
+    stampSessionPause(session, "usage-limit");
+    await fx.tick();
+    fx.move(other, "blocked", "operator");
+
+    const retry = retryPrompt!();
+    expect(count(retry, NOTICE_LABEL)).toBe(1);
+    expect(retry).toContain(`${todo} moved executing → blocked (by reconciler)`);
+    expect(retry).toContain(`${other} moved executing → blocked (by operator)`);
+    expect(retry).toContain("(gateway restart)");
+    expect(retryPrompt!()).toBe(retry);
+  });
+
+  it("repeats the notice the turn carried when the wait has nothing of its own", async () => {
+    const { session, todo } = await pausedAndMoved("restart");
+    const turn = turnFor(session, "hello");
+    const plan = preflightTurn(turn) as TurnPlan;
+    await runRateLimitTurn({
+      input: turn, plan, surface: {} as never, systemPrompt: "SYSTEM", platformContextRefresh: undefined,
+      rateLimit: {} as never, originalResult: {} as never,
+    } as never);
+    const { retryPrompt } = rateLimit.args!;
+    expect(retryPrompt!()).toBe(`hello\n\n${lineFor("gateway restart", todo)}\n\n${REMINDER}`);
+  });
+
+  it("a hand-back re-run of the turn from preflight still covers the pause the first pass consumed", async () => {
+    const { session, todo } = await pausedAndMoved("restart");
+    const first = preflightTurn(turnFor(session, "hello")) as TurnPlan;
+    expect(first.pauseStamp).toBeDefined();
+    expect(fx.stampOf(session)).toBeUndefined();
+    const rerun = preflightTurn({ ...turnFor(session, "hello"), carriedPauseStamp: first.pauseStamp }) as TurnPlan;
+    expect(rerun.pauseNotice).toBe(lineFor("gateway restart", todo));
   });
 
   it("does not consume the notice for a slash command", async () => {
