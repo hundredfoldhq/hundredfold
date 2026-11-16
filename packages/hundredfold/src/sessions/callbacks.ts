@@ -533,7 +533,9 @@ function repeatsDeliveredReply(childSession: Session, text: string | null | unde
   const parentId = childSession.parentSessionId;
   const reply = text?.trim();
   if (!parentId || !reply) return false;
-  const delivered = lastMessageFromChild(parentId, childSession.id);
+  // The note sent in place of an earlier repeat is stored as the newest reply;
+  // the reply it stood for is the one to compare against.
+  const delivered = lastMessageFromChild(parentId, childSession.id, REPEATED_REPLY_NOTE);
   if (!delivered) return false;
   if (delivered.fullMessageChars === undefined) return delivered.fullMessage.trim() === reply;
   return delivered.fullMessageSha256 === fullMessageDigest(reply);

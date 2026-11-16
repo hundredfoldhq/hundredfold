@@ -837,9 +837,11 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
  * automatic reply callback or its own send_to_session: what the parent has
  * already been told by that child, for a caller that must not tell it again.
  * The stored body is clipped for a long message, with the whole one's length
- * and digest beside it.
+ * and digest beside it. A message whose stored body is exactly `exceptBody` is
+ * passed over, so a placeholder the gateway stored in place of a reply is not
+ * mistaken for what the child said.
  */
-export function lastMessageFromChild(parentId: string, childId: string): FullMessageFields | undefined {
+export function lastMessageFromChild(parentId: string, childId: string, exceptBody?: string): FullMessageFields | undefined {
   const db = initDb();
   const row = db.prepare(`
     SELECT meta
@@ -848,9 +850,10 @@ export function lastMessageFromChild(parentId: string, childId: string): FullMes
       AND role = 'notification'
       AND ((json_extract(meta, '$.kind') = 'child-reply' AND json_extract(meta, '$.childSessionId') = ?)
         OR (json_extract(meta, '$.kind') = 'agent-relay' AND json_extract(meta, '$.fromSessionId') = ?))
+      AND (? IS NULL OR COALESCE(json_extract(meta, '$.fullMessage'), '') <> ?)
     ORDER BY timestamp DESC, rowid DESC
     LIMIT 1
-  `).get(parentId, childId, childId) as { meta?: string | null } | undefined;
+  `).get(parentId, childId, childId, exceptBody ?? null, exceptBody ?? null) as { meta?: string | null } | undefined;
   const meta = parseMetaColumn(row?.meta ?? null);
   return meta ? readFullMessageMeta(meta) : undefined;
 }
