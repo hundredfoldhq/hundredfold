@@ -193,6 +193,25 @@ fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({
     expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ a: null, b: null, list: null, keep: "yes" });
   }, 20_000);
 
+  it("never passes the opencode server password to the child, even with no scrub list", async () => {
+    const outFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "scrub-pw-")), "env.json");
+    const dumpScript = path.join(path.dirname(outFile), "dump.mjs");
+    fs.writeFileSync(dumpScript, `import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({
+  names: Object.keys(process.env).filter((k) => k.includes("OPENCODE_SERVER")),
+  keep: process.env.ACME_UNLISTED ?? null,
+}));`);
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, [DIST_SCRUB, process.execPath, dumpScript], {
+        env: { ...process.env, OPENCODE_SERVER_PASSWORD: "server-pw", ACME_UNLISTED: "yes" },
+        stdio: "ignore",
+      });
+      child.on("exit", (c) => resolve(c ?? -1));
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(fs.readFileSync(outFile, "utf-8"))).toEqual({ names: [], keep: "yes" });
+  }, 20_000);
+
   it("propagates a non-zero child exit code", async () => {
     const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "scrub-")), "fail.mjs");
     fs.writeFileSync(script, "process.exit(42);");
