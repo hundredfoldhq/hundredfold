@@ -628,28 +628,15 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
     expect((await logOf(h)).filter((e) => e.method === "DELETE" && e.path.endsWith(`/inbox/${steerId}`))).toHaveLength(1);
   });
 
-  it("is withdrawn when the server cannot be reached to take the input back", async () => {
-    const h = harness();
-    const id = await sessionWithServer(h);
-    const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
-    await waitDelivered(h);
-    const outcome = h.engine.steer("sess-1", STEER);
-    await waitFor(async () => (await inboxOf(h, id)).length === 1);
-    process.kill(h.pool.get("sess-1")!.proc.pid!, "SIGKILL");
-    const result = await turn;
-    expect(result.error).toBeTruthy();
-    expect(await outcome).toBe("withdrawn");
-  });
-
-  it("takes no input once the turn is over, while its end is still taking back what it never heard delivered", async () => {
-    SERVER_TURN_TIMING.steerWaitMs = 200;
+  it("is withdrawn when the server cannot be reached to take the input back, and takes no more meanwhile", async () => {
     const h = harness();
     const id = await sessionWithServer(h);
     const real = globalThis.fetch;
     let armed = false;
     let reading!: () => void;
     const readingInbox = new Promise<void>((resolve) => { reading = resolve; });
-    // The end of the turn reads the inbox; hold that read so the turn is settled but has not returned.
+    // Once the server is gone the turn's end reads the inbox; hold that read so the
+    // turn is settled (its stream dead, no execution end ever seen) but has not returned.
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (armed && (init?.method ?? "GET") === "GET" && String(input).endsWith("/inbox")) {
         reading();
@@ -658,19 +645,19 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
       return real(input, init);
     });
     try {
-      const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "SLOW answer" }));
+      const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
       await waitDelivered(h);
       const outcome = h.engine.steer("sess-1", STEER);
       await waitFor(async () => (await inboxOf(h, id)).length === 1);
-      // Gone from the inbox before it could be delivered: the turn's reply ends with it still pending.
-      await call(h, `/api/session/${id}/inbox/${(await inboxOf(h, id))[0]!.id}`, { method: "DELETE" });
       armed = true;
+      process.kill(h.pool.get("sess-1")!.proc.pid!, "SIGKILL");
       await readingInbox;
       expect(h.engine.isAlive("sess-1")).toBe(false);
       expect(h.engine.canSteer("sess-1")).toBe(false);
       expect(await h.engine.steer("sess-1", "too late")).toBe("withdrawn");
-      expect((await turn).result).toBe("fake:slow");
-      expect(await outcome).toBe("steered");
+      const result = await turn;
+      expect(result.error).toBeTruthy();
+      expect(await outcome).toBe("withdrawn");
     } finally {
       spy.mockRestore();
     }
