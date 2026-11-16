@@ -70,6 +70,7 @@ import { emitTodoProjectionEvent, interruptSessionTurn, isSameOriginBrowserReque
 import { startTodoSweeps } from "./todo-sweeps.js";
 import { startTodoTreeWake } from "./todo-tree-wake.js";
 import { startTodoQuietWatch } from "./todo-quiet-watch.js";
+import { startLateralSendWatch } from "./lateral-send-watch.js";
 import { createGatewayRequestHandler } from "./request-handler.js";
 import { sessionCommGuards, LATERAL_MAX_HOPS } from "./session-comm-guards.js";
 import { rejectCrossOriginUpgrade, rejectPtyUpgrade, rejectUnverifiedIdentifiedUpgradeCaller } from "./upgrade-guards.js";
@@ -1250,6 +1251,8 @@ export async function startGateway(
   const stopTodoTreeWake = startTodoTreeWake(apiContext);
   // An executing Todo with nothing running is nudged, then escalated upward.
   const stopTodoQuietWatch = startTodoQuietWatch(apiContext);
+  // An agent-to-agent message that sits undelivered is dispatched again, or its sender is told.
+  const stopLateralSendWatch = startLateralSendWatch(apiContext);
   // FTS migration installs guarded triggers synchronously, but historical row
   // seeding is a yielded, resumable maintenance job. Start it only after the HTTP
   // server accepts requests so first-upgrade history never delays readiness.
@@ -1318,7 +1321,7 @@ export async function startGateway(
     shuttingDown = true;
 
     // Stop the periodic sweeps before we start marking sessions interrupted below — a mid-shutdown sweep must not race the teardown.
-    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopSessionSchedulers();
+    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopLateralSendWatch(); stopSessionSchedulers();
     backgroundRefreshes.stop(); stopCommentRouting(); stopBoardHooks();
 
     // Stop caffeinate

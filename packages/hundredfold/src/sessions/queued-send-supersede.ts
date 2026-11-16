@@ -22,6 +22,12 @@ export function lateralSendPrefix(callerSessionId: string, targetSessionId: stri
   return `lateral:${callerSessionId}:${targetSessionId}:`;
 }
 
+/** The caller and target a lateral send's queue row was keyed by, or undefined for any other key. */
+export function parseLateralSendKey(dedupeKey: string): { callerSessionId: string; targetSessionId: string } | undefined {
+  const [kind, callerSessionId, targetSessionId] = dedupeKey.split(':');
+  return kind === 'lateral' && callerSessionId && targetSessionId ? { callerSessionId, targetSessionId } : undefined;
+}
+
 export type SupersedeOutcome =
   | { outcome: 'withdrawn'; queueItemId: string; messageId: string | null }
   /** The row had already left `pending`: the receiver took it, or a stop cancelled it. */

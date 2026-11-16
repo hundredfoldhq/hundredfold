@@ -44,7 +44,7 @@ function dropUnreplayableRow(item: QueueItem, context: ApiContext): void {
   }
 }
 
-function resumePendingQueueItem(item: QueueItem, context: ApiContext): boolean {
+export function resumePendingQueueItem(item: QueueItem, context: ApiContext): boolean {
   let session = replayableSession(item.sessionId);
   if (!session) {
     dropUnreplayableRow(item, context);
