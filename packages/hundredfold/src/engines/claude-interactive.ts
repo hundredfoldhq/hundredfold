@@ -351,6 +351,17 @@ function promptFingerprint(text: string): string {
   return text.replace(/`/g, "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * promptFingerprint of a message as Claude Code records it. A message of four
+ * or more lines sent while a turn runs is recorded wrapped in
+ * `<pasted_content id="…">` tags, in its UserPromptSubmit and its transcript
+ * entries alike (verified on 2.1.325), with the id differing from message to
+ * message; shorter ones, and long single lines, are recorded as sent.
+ */
+function steerFingerprint(text: string): string {
+  return promptFingerprint(text.replace(/<\/?pasted_content id="[^"]*">/g, " "));
+}
+
 /** Whether `prompt` reached the transcript as a user prompt at or after
  *  `sinceMs`. Other user entries — a background re-run's `<task-notification>`,
  *  an interrupt marker — do not count. Scans from the end, where anything this
@@ -400,7 +411,7 @@ export function queuedPromptsTakenIn(appended: string): string[] {
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg?.type !== "attachment" || msg?.attachment?.type !== "queued_command") continue;
     const prompt = msg.attachment.prompt;
-    if (typeof prompt === "string") taken.push(promptFingerprint(prompt));
+    if (typeof prompt === "string") taken.push(steerFingerprint(prompt));
   }
   return taken;
 }
@@ -1495,6 +1506,8 @@ interface SteerInFlight {
   acknowledged: boolean;
   /** The submit CR has been written: the message may be in even if its UserPromptSubmit has not arrived. */
   submitted: boolean;
+  /** How many taken-in prompts the transcript watch had seen when this input was sent: only later ones are its. */
+  takenFrom: number;
   cancelSubmit: () => void;
   /** Ends the hand-over with its outcome, once. */
   finish: (outcome: SteerOutcome) => void;
@@ -2303,11 +2316,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       if (event === "UserPromptSubmit") {
         // The late acknowledgement of an input handed to the turn that just ended:
         // Claude Code runs it as a turn of its own, which the next gateway turn waits for.
-        const needle = promptFingerprint(String(h.prompt ?? ""));
-        const late = this.lateSteers.get(hundredfoldSessionId)?.find((s) => !s.acknowledged && s.needle === needle);
-        if (late) late.acknowledged = true;
+        const sent = steerFingerprint(String(h.prompt ?? ""));
+        const late = this.lateSteers.get(hundredfoldSessionId)?.filter((s) => !s.acknowledged && sent.includes(s.needle));
+        for (const steer of late ?? []) steer.acknowledged = true;
         this.terminalTurns.set(hundredfoldSessionId, Date.now());
-        late?.finish("steered");
+        for (const steer of late ?? []) steer.finish("steered");
       }
       else if (event === "Stop" || event === "StopFailure") {
         // A background re-run's Stop ends the re-run, not a typed turn queued
@@ -2324,10 +2337,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     if (event === "UserPromptSubmit") {
       // An input the gateway handed to this turn: Claude Code queued it, and it
       // is no terminal turn to wait for (see steer).
-      const needle = promptFingerprint(String(h.prompt ?? ""));
-      const steer = entry.steers?.find((s) => !s.acknowledged && s.needle === needle);
-      if (steer) {
-        steer.acknowledged = true;
+      // Claude Code merges messages sent before it submits the first, and an
+      // operator's unsent text in the composer: the one prompt then holds each input.
+      const sent = steerFingerprint(String(h.prompt ?? ""));
+      const steers = entry.steers?.filter((s) => !s.acknowledged && sent.includes(s.needle));
+      if (steers?.length) {
+        for (const steer of steers) steer.acknowledged = true;
         return;
       }
       entry.promptSubmitsSeen = (entry.promptSubmitsSeen ?? 0) + 1;
@@ -3692,9 +3707,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     const proc = this.active.get(sessionId) === entry && this.canSteer(sessionId) ? this.steerTarget(sessionId, entry) : undefined;
     if (!proc || !entry.transcriptPath) return "withdrawn";
     const text = neutralizeImagePathsForPaste(prompt);
+    const needle = steerFingerprint(text);
+    // Nothing to deliver, and nothing that could be told apart in the transcript.
+    if (!needle) return "withdrawn";
     return new Promise<SteerOutcome>((resolve) => {
       const steer: SteerInFlight = {
-        needle: promptFingerprint(text),
+        needle,
+        takenFrom: 0,
         lines: Math.max(1, neutralizeForPaste(text).split("\n").length),
         acknowledged: false,
         submitted: false,
@@ -3710,6 +3729,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       };
       (entry.steers ??= []).push(steer);
       this.watchSteerTranscript(entry);
+      steer.takenFrom = entry.steerWatch?.taken.length ?? 0;
       logger.info(`InteractiveClaudeEngine: handing an input to the running turn of ${sessionId}`);
       steer.cancelSubmit = pasteAndSubmit({
         write: (data: string) => {
@@ -3719,6 +3739,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       }, text, {
         submitted: () => steer.acknowledged || steer.done || entry.resolver.isSettled,
         // Real work in flight: the message is queued, not lost (see pasteAndSubmit).
+        // Nearly always so while the turn runs, which holds the CR retries until it ends: a CR the
+        // TUI swallowed is then settled by settleSteers, not by onUnconfirmed.
         busy: () => this.hasActiveUpstream(sessionId) || entry.activeTools > 0,
         abortSubmit: () => this.screenShowsRewindMenu(sessionId),
         onRetry: (attempt) => logger.warn(`InteractiveClaudeEngine: steered input unacknowledged for ${sessionId} — re-sending CR (attempt ${attempt})`),
@@ -3754,9 +3776,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     if (text) watch.taken.push(...queuedPromptsTakenIn(text));
     for (const steer of entry.steers ?? []) {
       if (steer.done) continue;
-      const at = watch.taken.indexOf(steer.needle);
-      if (at < 0) continue;
-      watch.taken.splice(at, 1);
+      // Merged messages are one entry holding each input.
+      if (!watch.taken.slice(steer.takenFrom).some((taken) => taken.includes(steer.needle))) continue;
       logger.info("InteractiveClaudeEngine: the running turn took the steered input in");
       steer.finish("steered");
     }
@@ -3808,7 +3829,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
         const rest = (this.lateSteers.get(sessionId) ?? []).filter((s) => s !== steer);
         if (rest.length) this.lateSteers.set(sessionId, rest); else this.lateSteers.delete(sessionId);
         if (steer.done) return;
-        this.clearComposer(proc, steer.lines);
+        // The composer is the next turn's once that has begun pasting into it.
+        if (!this.active.has(sessionId) && (this.lifecycle.getWarm(sessionId) as { _proc?: unknown } | undefined)?._proc === proc && this.steerTarget(sessionId, entry)) {
+          this.clearComposer(proc, steer.lines);
+        }
         steer.finish("withdrawn");
       }, STEER_ACK_GRACE_MS);
       lateAck.unref?.();

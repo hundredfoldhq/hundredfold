@@ -267,17 +267,68 @@ describe("InteractiveClaudeEngine — steering a running turn", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
 
-    it("a multi-line input is matched by its whole text, however the TUI wraps it", async () => {
+    it("a multi-line input is matched through the <pasted_content> wrapper Claude Code records it in", async () => {
       const { turn } = await runningTurn("s-multi");
-      const text = "line one\nline two\n\nline   three";
+      const text = "/notacommand STEER-C: also add PAPAYA\n  `inline code`\n```js\nconst x = 1;\n```\n@file !bang trailing   ";
+      // As claude 2.1.325 records a message of four or more lines sent mid-turn: in the
+      // UserPromptSubmit and the transcript alike, with an id of its own.
+      const wrapped = `<pasted_content id="844f">\n${text}\n</pasted_content id="844f">`;
       let settled: string | undefined;
-      void steerAcknowledged("s-multi", text).then((o) => { settled = o; });
+      const outcome = engine.steer("s-multi", text);
+      void outcome.then((o) => { settled = o; });
       await vi.advanceTimersByTimeAsync(400);
-      fs.appendFileSync(transcript, foldedLine("line one\nline two\n\nline   three"));
+      deliver("s-multi", { hook_event_name: "UserPromptSubmit", prompt: wrapped });
+      // It was acknowledged: no terminal turn is held for it.
+      deliver("s-multi", { hook_event_name: "PostToolUse", tool_name: "Bash" });
+      fs.appendFileSync(transcript, enqueuedLine() + foldedLine(wrapped));
       await vi.advanceTimersByTimeAsync(600);
       expect(settled).toBe("steered");
-      deliver("s-multi", { hook_event_name: "Stop", last_assistant_message: "second answer" });
+      deliver("s-multi", { hook_event_name: "Stop", last_assistant_message: "second answer PAPAYA" });
+      expect((await turn).result).toBe("second answer PAPAYA");
+      const next = engine.run({ sessionId: "s-multi", prompt: "third", cwd: "/tmp", resumeSessionId: "c1" } as any);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(pasted("third")).toBe(true);
+      deliver("s-multi", { hook_event_name: "UserPromptSubmit", prompt: "third" });
+      deliver("s-multi", { hook_event_name: "Stop", last_assistant_message: "third answer" });
+      await next;
+    });
+
+    it("two inputs sent at once that Claude Code merges into one message are both taken in", async () => {
+      const { turn } = await runningTurn("s-merged");
+      const results: string[] = [];
+      void engine.steer("s-merged", "STEER-A: also add MANGO").then((o) => results.push(`a:${o}`));
+      void engine.steer("s-merged", "STEER-B: also add KIWI").then((o) => results.push(`b:${o}`));
+      await vi.advanceTimersByTimeAsync(400);
+      // The composer held both pastes when it was submitted: one message.
+      deliver("s-merged", { hook_event_name: "UserPromptSubmit", prompt: "STEER-A: also add MANGOSTEER-B: also add KIWI" });
+      fs.appendFileSync(transcript, foldedLine("STEER-A: also add MANGOSTEER-B: also add KIWI"));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(results.sort()).toEqual(["a:steered", "b:steered"]);
+      deliver("s-merged", { hook_event_name: "Stop", last_assistant_message: "second answer MANGO KIWI" });
       await turn;
+    });
+
+    it("an input identical to an earlier one is not taken in by the earlier one's entry", async () => {
+      const { turn } = await runningTurn("s-same");
+      fs.appendFileSync(transcript, foldedLine(STEER)); // an earlier message with the same text, taken in already
+      await vi.advanceTimersByTimeAsync(10);
+      let settled: string | undefined;
+      void steerAcknowledged("s-same").then((o) => { settled = o; });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).toBeUndefined();
+      deliver("s-same", { hook_event_name: "Stop", last_assistant_message: "second answer" });
+      await turn;
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it("an input with nothing in it is withdrawn without being pasted", async () => {
+      await runningTurn("s-blank");
+      const before = ptys[0]!.writes.length;
+      const outcome = engine.steer("s-blank", "  \n ");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await outcome).toBe("withdrawn");
+      expect(ptys[0]!.writes.length).toBe(before);
+      engine.kill("s-blank");
     });
 
     it("the turn ends before taking it: steered (it can no longer be taken back), and the session is held for the turn Claude Code runs it as", async () => {
@@ -364,6 +415,23 @@ describe("InteractiveClaudeEngine — steering a running turn", () => {
       expect(cleared()).toBe(true);
     });
 
+    it("the grace window's clear leaves the composer alone once the next turn has begun pasting into it", async () => {
+      const { turn } = await runningTurn("s-owner");
+      const outcome = engine.steer("s-owner", STEER);
+      await vi.advanceTimersByTimeAsync(300);
+      deliver("s-owner", { hook_event_name: "Stop", last_assistant_message: "second answer" });
+      await turn;
+      // The next gateway turn pastes its prompt inside the window, before its own CR.
+      const next = engine.run({ sessionId: "s-owner", prompt: "third", cwd: "/tmp", resumeSessionId: "c1" } as any);
+      await vi.advanceTimersByTimeAsync(100);
+      const writesBefore = ptys[0]!.writes.length;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await outcome).toBe("withdrawn");
+      expect(ptys[0]!.writes.slice(writesBefore).some((w) => /^\x15+$/.test(w))).toBe(false);
+      engine.kill("s-owner");
+      await next;
+    });
+
     it("the PTY dies with the input queued: withdrawn, it was never delivered", async () => {
       const { turn } = await runningTurn("s-killed");
       const outcome = steerAcknowledged("s-killed");
@@ -438,6 +506,11 @@ describe("queuedPromptsTakenIn", () => {
       JSON.stringify({ type: "queue-operation", operation: "dequeue" }),
     ].join("\n");
     expect(queuedPromptsTakenIn(text)).toEqual(["STEER one line"]);
+  });
+
+  it("reads a wrapped multi-line message without its tags", () => {
+    const wrapped = '<pasted_content id="844f">\nL1 a\nL2 b\nL3 c\nL4 d\n</pasted_content id="844f">';
+    expect(queuedPromptsTakenIn(foldedLine(wrapped))).toEqual(["L1 a L2 b L3 c L4 d"]);
   });
 
   it("matches the real 2.1.325 transcript shape", () => {
