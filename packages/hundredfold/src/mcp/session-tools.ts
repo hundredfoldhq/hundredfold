@@ -1,5 +1,6 @@
 import { assertBoundCaller, gatewayRequest, HundredfoldMcpToolError, type HundredfoldMcpContext, type HundredfoldMcpTool } from "./toolkit.js";
 import { SESSION_FALLBACK_MODES } from "../shared/session-fallback-config.js";
+import { agentReadableContent } from "../shared/full-message.js";
 
 /**
  * GRS-017a — the SESSIONS tool group of the `hundredfold` MCP server: agents spawn,
@@ -119,7 +120,7 @@ interface SessionRecord {
   lastError?: string | null;
   parentSessionId?: string | null;
   stopped?: boolean;
-  messages?: Array<{ role?: string; content?: string; timestamp?: number }>;
+  messages?: Array<{ role?: string; content?: string; timestamp?: number; meta?: unknown }>;
 }
 
 function summarize(s: SessionRecord): Record<string, unknown> {
@@ -287,9 +288,10 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
       const { status, body } = await gatewayRequest(ctx, "GET", `${sessionPath(sessionId)}?last=${last}`);
       if (status >= 400) throw gatewayFailure(`reading session "${sessionId}"`, status, body);
       const s = (body ?? {}) as SessionRecord;
+      // A notification's `content` is the web UI's short banner; the agent reads the body it carries.
       const messages = (Array.isArray(s.messages) ? s.messages : []).map((m) => ({
         role: m.role,
-        content: typeof m.content === "string" ? m.content : "",
+        content: agentReadableContent(m),
         timestamp: m.timestamp,
       }));
       return {

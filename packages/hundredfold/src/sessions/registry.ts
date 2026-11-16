@@ -25,6 +25,7 @@ import { blockFallbackText, mergeBlock, validateBlockEnvelope } from '../shared/
 import { ptySnapshotStore } from '../engines/pty-snapshot.js';
 import { isLegacyWorkflowPhaseRow, isLegacyWorkflowPhaseSession, LEGACY_WORKFLOW_PHASE_SQL } from './legacy-workflow-phase.js';
 import { clearSessionStopped, stoppedMarkerKey } from './stopped-marker.js';
+import { agentReadableContent } from '../shared/full-message.js';
 
 export const RESTART_ACK_META_KEY = "restartAcknowledgedAt";
 /** Stamped on a session the gateway itself interrupted, so the next boot can tell it apart from one that was already idle. Consumed in sessions/restart-resume.ts. */
@@ -2361,7 +2362,8 @@ export interface MessageContext {
  * GRS-020a — the ±radius window around a message anchor (a search_messages
  * hit), so a search result becomes readable in place without pulling a whole
  * transcript. The radius is clamped to {@link MESSAGE_CONTEXT_MAX_RADIUS};
- * selected message bodies are returned as stored.
+ * selected message bodies are returned as stored, except that a notification
+ * reads as the full body it carries rather than its short banner.
  * Returns undefined when the message doesn't exist IN THAT SESSION (an anchor
  * from another session must not leak across).
  */
@@ -2381,15 +2383,16 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
     timestamp: number;
     seq: number | null;
     rowid: number;
+    meta: string | null;
   }
   const anchor = db
-    .prepare('SELECT id, role, content, timestamp, seq, rowid FROM messages WHERE session_id = ? AND id = ?')
+    .prepare('SELECT id, role, content, timestamp, seq, rowid, meta FROM messages WHERE session_id = ? AND id = ?')
     .get(sessionId, messageId) as Row | undefined;
   if (!anchor) return undefined;
   const aSeq = anchor.seq ?? -1;
   const before = db
     .prepare(
-      `SELECT id, role, content, timestamp, seq, rowid FROM messages
+      `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
        WHERE session_id = ?
          AND (timestamp < ?
               OR (timestamp = ? AND COALESCE(seq, -1) < ?)
@@ -2400,7 +2403,7 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
     .all(sessionId, anchor.timestamp, anchor.timestamp, aSeq, anchor.timestamp, aSeq, anchor.rowid, r) as Row[];
   const after = db
     .prepare(
-      `SELECT id, role, content, timestamp, seq, rowid FROM messages
+      `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
        WHERE session_id = ?
          AND (timestamp > ?
               OR (timestamp = ? AND COALESCE(seq, -1) > ?)
@@ -2412,7 +2415,8 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
   const messages: MessageContextEntry[] = [...before.reverse(), anchor, ...after].map((row) => ({
     id: row.id,
     role: row.role,
-    content: row.content,
+    // A notification's stored content is the web UI's banner; a reader gets the body it carries.
+    content: agentReadableContent({ role: row.role, content: row.content, meta: parseJsonObject(row.meta) }),
     timestamp: row.timestamp,
     isAnchor: row.id === messageId,
   }));

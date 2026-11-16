@@ -7,7 +7,8 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, reportsTurnProgress } from "../shared/types.js";
+import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -4019,7 +4020,7 @@ export async function handleApiRequest(
           fromLabel,
           hops: 1,
           maxHops: sessionCommGuards.maxHops(),
-          fullMessage: relayBody.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+          ...fullMessageMeta(relayBody),
         };
       } else if (body.role !== "notification") {
         // A genuine user/operator message resets the target's relay-hop chain —
@@ -4051,9 +4052,8 @@ export async function handleApiRequest(
         const employee = typeof rawMeta.employee === "string" ? stripControlChars(rawMeta.employee).trim().slice(0, 160) : "";
         const employeeDisplay = typeof rawMeta.employeeDisplay === "string" ? stripControlChars(rawMeta.employeeDisplay).trim().slice(0, 160) : "";
         const childSessionId = typeof rawMeta.childSessionId === "string" ? stripControlChars(rawMeta.childSessionId).trim().slice(0, 160) : "";
-        const fullMessage = typeof rawMeta.fullMessage === "string"
-          ? rawMeta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)
-          : undefined;
+        const full = readFullMessageMeta(rawMeta);
+        const fullMessage = full?.fullMessage;
         if (rawMeta.kind === "agent-relay") {
           const fromSessionId = typeof rawMeta.fromSessionId === "string" ? stripControlChars(rawMeta.fromSessionId).trim().slice(0, 160) : "";
           const fromLabel = typeof rawMeta.fromLabel === "string" ? stripControlChars(rawMeta.fromLabel).trim().slice(0, 160) : "";
@@ -4071,7 +4071,7 @@ export async function handleApiRequest(
               ...(fromEmployee ? { fromEmployee } : {}),
               hops,
               maxHops,
-              fullMessage,
+              ...full,
             };
           }
         } else if (kind && employee && childSessionId) {
@@ -4080,7 +4080,7 @@ export async function handleApiRequest(
             employee,
             ...(employeeDisplay ? { employeeDisplay } : {}),
             childSessionId,
-            ...(fullMessage !== undefined ? { fullMessage } : {}),
+            ...full,
           };
         } else if (rawMeta.kind === "manager-visibility" && employee && childSessionId) {
           const manager = typeof rawMeta.manager === "string" ? stripControlChars(rawMeta.manager).trim().slice(0, 160) : "";
