@@ -184,13 +184,17 @@ describe("searchMessages — relayed messages and child replies", () => {
     function legacyWithRelays(): Database.Database {
       const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-fts-relay-legacy-")), "legacy.db");
       const db = new Database(p);
+      // A throwaway fixture: durability is not under test, and an fsync per commit makes these tests time out on a busy disk.
+      db.pragma("synchronous = OFF");
       db.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp INTEGER NOT NULL)");
       migrateModule.migrateMessagesSchema(db);
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
       const body = longBody("numbat");
-      ins.run("old-relay", "leg", "notification", banner(body), 1, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: body }));
-      ins.run("old-bad", "leg", "notification", "📨 numbat", 2, "{not json");
-      ins.run("old-chatter", "leg", "notification", "restart numbat", 3, null);
+      db.transaction(() => {
+        ins.run("old-relay", "leg", "notification", banner(body), 1, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: body }));
+        ins.run("old-bad", "leg", "notification", "📨 numbat", 2, "{not json");
+        ins.run("old-chatter", "leg", "notification", "restart numbat", 3, null);
+      })();
       return db;
     }
     const relayHits = (db: Database.Database, q: string): string[] =>
@@ -220,10 +224,12 @@ describe("searchMessages — relayed messages and child replies", () => {
     it("backfills in rowid windows, resumes, and indexes every relay once", () => {
       const db = legacyWithRelays();
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
-      for (let i = 0; i < 40; i++) {
-        if (i % 3 === 0) ins.run(`bulk-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-reply", employee: "w", childSessionId: "c", fullMessage: `bulk wombat ${i}` }));
-        else ins.run(`bulk-${i}`, "leg", "assistant", `plain ${i}`, 10 + i, null);
-      }
+      db.transaction(() => {
+        for (let i = 0; i < 40; i++) {
+          if (i % 3 === 0) ins.run(`bulk-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-reply", employee: "w", childSessionId: "c", fullMessage: `bulk wombat ${i}` }));
+          else ins.run(`bulk-${i}`, "leg", "assistant", `plain ${i}`, 10 + i, null);
+        }
+      })();
       migrateModule.migrateFtsSchema(db);
       // A window of 4 rowids forces many chunks; two full passes must not double-index.
       reg.backfillFtsSync(db, 4);
@@ -238,7 +244,9 @@ describe("searchMessages — relayed messages and child replies", () => {
       const db = legacyWithRelays();
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
       const relayMeta = (text: string): string => JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: text });
-      for (let i = 0; i < 30; i++) ins.run(`part-${i}`, "leg", "notification", "📨", 10 + i, relayMeta(`partial quokka tag${i}`));
+      db.transaction(() => {
+        for (let i = 0; i < 30; i++) ins.run(`part-${i}`, "leg", "notification", "📨", 10 + i, relayMeta(`partial quokka tag${i}`));
+      })();
       migrateModule.migrateFtsSchema(db);
 
       // One window only: the earliest rows are indexed, the later ones are not yet.
@@ -281,10 +289,13 @@ describe("searchMessages — relayed messages and child replies", () => {
     it("two connections draining the same database index every relay once", () => {
       const db = legacyWithRelays();
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
-      for (let i = 0; i < 40; i++) ins.run(`two-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-error", employee: "w", childSessionId: "c", fullMessage: `shared marmot tag${i}` }));
+      db.transaction(() => {
+        for (let i = 0; i < 40; i++) ins.run(`two-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "child-error", employee: "w", childSessionId: "c", fullMessage: `shared marmot tag${i}` }));
+      })();
       migrateModule.migrateFtsSchema(db);
       const other = new Database(db.name);
       other.pragma("busy_timeout = 5000");
+      other.pragma("synchronous = OFF");
       // Each connection takes a window in turn, as two processes sharing the file would.
       for (let guard = 0; guard < 100; guard++) {
         const a = reg.relayFtsBackfillStep(db, 5);
@@ -331,10 +342,12 @@ describe("searchMessages — relayed messages and child replies", () => {
     it("a drain whose index was dropped by another process stops without marking it done", () => {
       const db = legacyWithRelays();
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
-      for (let i = 0; i < 20; i++) {
-        ins.run(`drop-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `dropped potoroo ${i}` }));
-        ins.run(`drop-a-${i}`, "leg", "assistant", `dropped quoll ${i}`, 40 + i, null);
-      }
+      db.transaction(() => {
+        for (let i = 0; i < 20; i++) {
+          ins.run(`drop-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `dropped potoroo ${i}` }));
+          ins.run(`drop-a-${i}`, "leg", "assistant", `dropped quoll ${i}`, 40 + i, null);
+        }
+      })();
       migrateModule.migrateFtsSchema(db);
       expect(reg.relayFtsBackfillStep(db, 5)).toBe(false);
 
@@ -401,10 +414,12 @@ describe("searchMessages — relayed messages and child replies", () => {
     it("a boot cannot slip between disable's drops and its progress reset", () => {
       const db = legacyWithRelays();
       const ins = db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?)");
-      for (let i = 0; i < 10; i++) {
-        ins.run(`mix-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `mixed wombat ${i}` }));
-        ins.run(`mix-a-${i}`, "leg", "assistant", `mixed echidna ${i}`, 40 + i, null);
-      }
+      db.transaction(() => {
+        for (let i = 0; i < 10; i++) {
+          ins.run(`mix-r-${i}`, "leg", "notification", "📨", 10 + i, JSON.stringify({ kind: "agent-relay", fromLabel: "w", hops: 1, maxHops: 3, fullMessage: `mixed wombat ${i}` }));
+          ins.run(`mix-a-${i}`, "leg", "assistant", `mixed echidna ${i}`, 40 + i, null);
+        }
+      })();
       // A finished index: its watermark stays in meta, which is the stale state the interleave trips over.
       migrateModule.migrateFtsSchema(db);
       reg.backfillFtsSync(db, 5);
