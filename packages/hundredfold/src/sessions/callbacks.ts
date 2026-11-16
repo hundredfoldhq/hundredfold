@@ -525,14 +525,19 @@ export const REPEATED_REPLY_NOTE =
 /**
  * Whether `text` is the reply this child last put in front of its parent, so
  * relaying it again would only make the parent check that it says nothing new.
- * Compared as the parent stored it, which clips a long reply.
+ * Compared as the parent stored it, which clips a long reply: the clipped
+ * prefix must match and the whole reply must be as long as the one delivered,
+ * so a new reply that only shares the stored prefix still goes through.
  */
 function repeatsDeliveredReply(childSession: Session, text: string | null | undefined): boolean {
   const parentId = childSession.parentSessionId;
   const reply = text?.trim();
   if (!parentId || !reply) return false;
-  const delivered = lastMessageFromChild(parentId, childSession.id)?.trim();
-  return delivered !== undefined && delivered === reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
+  const delivered = lastMessageFromChild(parentId, childSession.id);
+  if (!delivered) return false;
+  if (delivered.fullMessageChars === undefined) return delivered.fullMessage.trim() === reply;
+  return delivered.fullMessageChars === reply.length
+    && delivered.fullMessage.trim() === reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS).trim();
 }
 
 function hasMeaningfulReply(result: string | null | undefined): boolean {

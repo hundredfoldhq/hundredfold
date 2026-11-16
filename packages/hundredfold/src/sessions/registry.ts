@@ -25,7 +25,7 @@ import { blockFallbackText, mergeBlock, validateBlockEnvelope } from '../shared/
 import { ptySnapshotStore } from '../engines/pty-snapshot.js';
 import { isLegacyWorkflowPhaseRow, isLegacyWorkflowPhaseSession, LEGACY_WORKFLOW_PHASE_SQL } from './legacy-workflow-phase.js';
 import { clearSessionStopped, stoppedMarkerKey } from './stopped-marker.js';
-import { agentReadableContent } from '../shared/full-message.js';
+import { agentReadableContent, readFullMessageMeta } from '../shared/full-message.js';
 
 export const RESTART_ACK_META_KEY = "restartAcknowledgedAt";
 /** Stamped on a session the gateway itself interrupted, so the next boot can tell it apart from one that was already idle. Consumed in sessions/restart-resume.ts. */
@@ -833,14 +833,16 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
 }
 
 /**
- * The text of the newest message `childId` put in front of `parentId`, whether
- * the automatic reply callback or its own send_to_session: what the parent has
+ * The newest message `childId` put in front of `parentId`, whether the
+ * automatic reply callback or its own send_to_session: what the parent has
  * already been told by that child, for a caller that must not tell it again.
+ * The stored body is clipped for a long message; `fullMessageChars` then says
+ * how long the whole one was.
  */
-export function lastMessageFromChild(parentId: string, childId: string): string | undefined {
+export function lastMessageFromChild(parentId: string, childId: string): { fullMessage: string; fullMessageChars?: number } | undefined {
   const db = initDb();
   const row = db.prepare(`
-    SELECT json_extract(meta, '$.fullMessage') AS full
+    SELECT meta
     FROM messages
     WHERE session_id = ?
       AND role = 'notification'
@@ -848,8 +850,9 @@ export function lastMessageFromChild(parentId: string, childId: string): string 
         OR (json_extract(meta, '$.kind') = 'agent-relay' AND json_extract(meta, '$.fromSessionId') = ?))
     ORDER BY timestamp DESC, rowid DESC
     LIMIT 1
-  `).get(parentId, childId, childId) as { full?: string | null } | undefined;
-  return typeof row?.full === 'string' ? row.full : undefined;
+  `).get(parentId, childId, childId) as { meta?: string | null } | undefined;
+  const meta = parseMetaColumn(row?.meta ?? null);
+  return meta ? readFullMessageMeta(meta) : undefined;
 }
 
 /**
