@@ -1,3 +1,4 @@
+import "@/test/preload-dialogs"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -37,7 +38,9 @@ function compact(id: string, title: string, status = "backlog") {
 
 function renderRow(detail: WorkItemDetailWire) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={qc}><ParentRailRow detail={detail} /></QueryClientProvider>)
+  const ui = (d: WorkItemDetailWire) => <QueryClientProvider client={qc}><ParentRailRow key={d.workItem.id} detail={d} /></QueryClientProvider>
+  const view = render(ui(detail))
+  return { qc, showTodo: (next: WorkItemDetailWire) => view.rerender(ui(next)) }
 }
 
 beforeEach(() => {
@@ -77,7 +80,7 @@ describe("the Parent row", () => {
     const below = await screen.findByTestId("parent-result-AAA-3")
     expect(below.textContent).toContain("sub-task")
     expect(screen.queryByTestId("parent-result-AAA-2")).toBeNull()
-    expect((screen.getByTestId("parent-result-AAA-1") as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId("parent-result-AAA-1").getAttribute("aria-disabled")).toBe("true")
     expect(screen.getByText("Its sub-tasks move with it.")).toBeTruthy()
   })
 
@@ -109,6 +112,100 @@ describe("the Parent row", () => {
     fireEvent.click(screen.getByTestId("rail-parent"))
     fireEvent.change(screen.getByTestId("parent-search"), { target: { value: "oth" } })
     await waitFor(() => expect(api.searchWorkItems).toHaveBeenCalledWith({ text: "oth", limit: 8 }))
+  })
+})
+
+describe("closing and resetting the picker", () => {
+  const loopTree = () => api.getWorkItemTree.mockResolvedValue({ tree: { root: node("AAA-1", "Plan", [node("AAA-2", "Child", [node("AAA-3", "Grandchild", [], "AAA-2")], "AAA-1")]) } })
+
+  it("closes on Escape from any row, not only from the search box, and drops a refusal with it", async () => {
+    loopTree()
+    api.reparentWorkItem.mockRejectedValue(new ApiError(400, "loop refused"))
+    renderRow(detailOf("AAA-2", "AAA-1"))
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    fireEvent.click(await screen.findByTestId("parent-result-AAA-3"))
+    await screen.findByTestId("rail-parent-error")
+    screen.getByTestId("parent-detach").focus()
+    fireEvent.keyDown(screen.getByTestId("parent-detach"), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByTestId("parent-picker")).toBeNull())
+    expect(screen.queryByTestId("rail-parent-error")).toBeNull()
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    expect(screen.queryByTestId("rail-parent-error")).toBeNull()
+  })
+
+  it("closes on a press outside the picker", async () => {
+    loopTree()
+    renderRow(detailOf("AAA-2", "AAA-1"))
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    await screen.findByTestId("parent-picker")
+    fireEvent.pointerDown(document.body)
+    await waitFor(() => expect(screen.queryByTestId("parent-picker")).toBeNull())
+  })
+
+  it("does not carry an open picker or a refusal over to another Todo", async () => {
+    loopTree()
+    api.reparentWorkItem.mockRejectedValue(new ApiError(400, "loop refused"))
+    const { showTodo } = renderRow(detailOf("AAA-2", "AAA-1"))
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    fireEvent.click(await screen.findByTestId("parent-result-AAA-3"))
+    await screen.findByTestId("rail-parent-error")
+    showTodo(detailOf("AAA-3", "AAA-2"))
+    expect(screen.queryByTestId("parent-picker")).toBeNull()
+    expect(screen.queryByTestId("rail-parent-error")).toBeNull()
+  })
+
+  it("invalidates every Todo cache and the trees after a move", async () => {
+    api.getWorkItemTree.mockResolvedValue({ tree: { root: node("AAA-9", "Other") } })
+    const { qc } = renderRow(detailOf("AAA-9", null))
+    const invalidate = vi.spyOn(qc, "invalidateQueries")
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    fireEvent.click(await screen.findByTestId("parent-result-AAA-1"))
+    await waitFor(() => expect(api.reparentWorkItem).toHaveBeenCalled())
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey))
+      for (const key of ['["work-items"]', '["work-item"]', '["work-item-preview"]', '["work-item-tree"]']) expect(keys).toContain(key)
+    })
+  })
+
+  it("opens as a bottom sheet on a phone", async () => {
+    api.getWorkItemTree.mockResolvedValue({ tree: { root: node("AAA-9", "Other") } })
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia
+    try {
+      renderRow(detailOf("AAA-9", null))
+      fireEvent.click(screen.getByTestId("rail-parent"))
+      expect(await screen.findByTestId("parent-picker")).toBeTruthy()
+      expect(screen.getByRole("dialog", { name: "Parent" })).toBeTruthy()
+      fireEvent.click(await screen.findByTestId("parent-result-AAA-1"))
+      await waitFor(() => expect(api.reparentWorkItem).toHaveBeenCalledWith("AAA-9", "AAA-1"))
+    } finally {
+      window.matchMedia = original
+    }
+  })
+})
+
+describe("what the picker offers", () => {
+  it("leaves closed Todos out of the recent list but shows them as unavailable in a search", async () => {
+    api.getWorkItemTree.mockResolvedValue({ tree: { root: node("AAA-9", "Other") } })
+    api.listWorkItems.mockResolvedValue({ workItems: [compact("AAA-4", "Shipped", "done"), compact("AAA-1", "Plan")] })
+    api.searchWorkItems.mockResolvedValue({ workItems: [compact("AAA-4", "Shipped", "done")] })
+    renderRow(detailOf("AAA-9", null))
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    await screen.findByTestId("parent-result-AAA-1")
+    expect(screen.queryByTestId("parent-result-AAA-4")).toBeNull()
+    fireEvent.change(screen.getByTestId("parent-search"), { target: { value: "ship" } })
+    const closed = await screen.findByTestId("parent-result-AAA-4")
+    expect(closed.getAttribute("aria-disabled")).toBe("true")
+    expect(closed.textContent).toContain("Closed")
+  })
+
+  it("says so when the search itself fails", async () => {
+    api.getWorkItemTree.mockResolvedValue({ tree: { root: node("AAA-9", "Other") } })
+    api.searchWorkItems.mockRejectedValue(new Error("offline"))
+    renderRow(detailOf("AAA-9", null))
+    fireEvent.click(screen.getByTestId("rail-parent"))
+    fireEvent.change(screen.getByTestId("parent-search"), { target: { value: "oth" } })
+    expect(await screen.findByText("Couldn't search Todos. Try again.")).toBeTruthy()
   })
 })
 

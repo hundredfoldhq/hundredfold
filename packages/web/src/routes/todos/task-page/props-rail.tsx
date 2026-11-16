@@ -236,7 +236,7 @@ export function PropsRail({
         </RailRow>
         {deptPick?.picker}
       </div>
-      {operatorControls && <ParentRailRow detail={detail} />}
+      {operatorControls && <ParentRailRow key={item.id} detail={detail} />}
       {operatorControls && <SprintRailRow detail={detail} editable={!!rowFor} />}
       <div className="relative">
         <RailRow quiet testId="rail-start" label="Start date" onOpen={startPick?.onOpen} open={startPick?.open}>
