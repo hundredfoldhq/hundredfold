@@ -51,14 +51,6 @@ function resumePendingQueueItem(item: QueueItem, context: ApiContext): boolean {
     dropUnreplayableRow(item, context);
     return false;
   }
-  // A child-watch wake that went stale while the gateway was down is dropped
-  // here, before the session is marked running for a turn that will not happen.
-  const staleWake = staleChildWatchWakeReason(item.id);
-  if (staleWake) {
-    cancelQueueItem(item.id);
-    logger.info(`Dropped stale child-watch wake ${item.id} for session ${session.id} on replay: ${staleWake}`);
-    return false;
-  }
   // Ordinary non-web queue ownership remains connector-specific. Callback
   // receipts are the exception: acceptance already committed this internal
   // turn, so startup replay must finish it regardless of the parent's source.
@@ -69,6 +61,15 @@ function resumePendingQueueItem(item: QueueItem, context: ApiContext): boolean {
   }
   // Hot-reload calls this too: a row waiting its turn here is owned, not orphaned.
   if (context.sessionManager.getQueue().hasInFlightItem(item.id)) return false;
+  // A child-watch wake that went stale while the gateway was down is dropped
+  // here, before the session is marked running for a turn that will not happen.
+  // A row the live queue already owns is judged when its turn starts instead.
+  const staleWake = staleChildWatchWakeReason(item.id);
+  if (staleWake) {
+    cancelQueueItem(item.id);
+    logger.info(`Dropped stale child-watch wake ${item.id} for session ${session.id} on replay: ${staleWake}`);
+    return false;
+  }
   session = maybeRevertEngineOverride(session, undefined, context.getConfig());
 
   const engine = context.sessionManager.getEngine(session.engine);
