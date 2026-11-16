@@ -479,7 +479,7 @@ function ChatPage() {
     if (moved) handleSelect(chat, { replace: true, navigateMobile: false })
     return moved
   }, [handleSelect, workingSet])
-  const pinTodoBoard = useTodoBoardTabPinner(pinTodoBoardTab, { mobile: viewport.mobile, hydrated: workingSet.hydrated })
+  const pinTodoBoard = useTodoBoardTabPinner(pinTodoBoardTab, { mobile: viewport.mobile, hydrated: workingSet.hydrated, failed: sessionsQuery.isError })
   // The Todos tab: opened or shown, the way back to a chat from it, and the phone's close of it.
   const newestChatId = useCallback(() => newestVisibleSessionId(sessionsQuery.data), [sessionsQuery.data])
   const { openTodosTab, showChat, closePhoneTodos } = useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile: viewport.mobile, setMobileView, setPhoneTodos })
