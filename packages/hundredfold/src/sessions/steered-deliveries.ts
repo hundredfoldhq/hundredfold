@@ -36,6 +36,10 @@ export function registerSteeredDelivery(queueItemId: string, outcome: Promise<St
  * A row still parked whose input a turn took in is finished at once; a row that
  * can no longer start (cancelled, completed, gone) has nothing left to wait for.
  * One a slot already claimed is left to that slot, and so is a withdrawn one.
+ *
+ * Accepted window: between a slot claiming the row and the outcome arriving
+ * (at most the bound below) the row is running, so a gateway restart then
+ * replays it as a turn. That can only answer the input twice, never lose it.
  */
 function onOutcome(queueItemId: string, outcome: SteerOutcome): void {
   const status = getQueueItem(queueItemId)?.status;
