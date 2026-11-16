@@ -96,7 +96,7 @@ writes it as explicit links.
 | Failure | Moves on from | Recorded in engine health |
 |---|---|---|
 | rate limit, quota, usage limit | any target | yes, on the failing target |
-| opencode provider refuses: spent allowance (402), dead key (401), model not enabled (403) | any target | yes: the provider, or for a 403 the model alone (see [opencode failure classes](engines-opencode.md#failure-classes)) |
+| opencode provider refuses: spent allowance (402), dead key (401), model not enabled (403), model unroutable (`provider.no-route`) | any target | yes: the provider, or for a 403 or a no-route the model alone (see [opencode failure classes](engines-opencode.md#failure-classes)) |
 | engine gave up its own provider retries | any target | yes |
 | model not served | a fallback link only | no |
 | profile signed out | a fallback link only | the auth outage record, as today |
@@ -119,12 +119,23 @@ reset, as before.
   stand-in continues along it and never goes back to the target the session left.
 - A link is passed over, and named in the hop record with why (the skip
   reasons below). A link whose health says it is at its limit is passed over
-  first, and tried only when nothing healthier is left.
+  first, and tried only when nothing healthier is left. A link on an opencode
+  provider whose key was rejected is never tried in that run (`signed-out`), and
+  neither is a session's own fallback target on that provider.
 - When the chain runs out, the session waits for its own target's reset and
   resumes there. It reads `waiting` (its `lastError` names the own target and
   when it reopens, e.g. "claude · work · opus usage limit, resumes …"), its last
   hop has no target, and the notice says plainly that no hop is left and what
-  was tried. If a stand-in held the session when it ran out, the wait ends
+  was tried. A fallback link that is signed out (its key or login refused,
+  in this turn or an earlier one that left its provider held as signed out)
+  is named in the `lastError`, the notice and the operator alert, since no
+  reset renews it: "…; fallback opencode · go-b/mimo is signed out: its key or
+  login needs replacing". It stays named in `lastError` while the session waits on the limit. A
+  turn whose own target was refused (a dead key, a spent balance, a model it
+  cannot use) fails instead of waiting, and its error, reply and alert name a
+  signed-out link the same way, after the provider's own words. A remote
+  profile that is only not ready on its host is not called signed out.
+  If a stand-in held the session when it ran out, the wait ends
   where the stand-in's window does (the own target's reset), and the turn runs
   again on the own target. See [session statuses](session-statuses.md) for what
   `waiting` means and how to read it.
@@ -190,6 +201,7 @@ link before.
 | `remote` | the link cannot run where the session does: for a remote session, an engine other than `claude`, `pi`, `opencode` and `musecode`, a local Claude profile, or a remote account on another `user@host`; for a local session, a remote account. A profile link carries `skipDetail` saying which, e.g. `profile "spare" is on me@build-host, not this session's host other-host`, `profile "x" is a profile on the gateway, not on build-host`, `profile "spare" is on remote host build-host` |
 | `scoped` | the session is department-scoped and the link is not a Claude account |
 | `exhausted` | its health says it is at its limit; tried only when nothing else is left |
+| `signed-out` | an opencode link whose provider is held as signed out (its key was rejected, `failureClass: auth`): never tried, even when nothing else is left, since every model on that provider would be refused with the same key. The hold lifts when the credential changes. A model held alone (`model-access`) or a spent allowance (`quota`) stays `exhausted` |
 | `model-not-served` | the engine's catalog does not list the link's model |
 | `profile-unknown` | the link names a profile that is not a declared account |
 
@@ -268,10 +280,18 @@ Each account (and each non-Claude engine) keeps its own conversation thread.
   with the messages it has not seen prepended (everything since the thread was
   last brought up to date: its slot's `lastSyncedAt`).
 - **Another account or engine with no thread**: a fresh run whose prompt
-  carries the recent conversation. A Claude session id from one profile is
-  never resumed under another.
+  carries the recent conversation, then the message being answered, stated
+  as the current message. A Claude session id from one profile is never
+  resumed under another.
 - **Back on the session's own target**: its thread resumes with the messages
   exchanged elsewhere prepended, as today.
+
+A message from another session (a brief, a follow-up, a child's reply) is
+logged as a notification and travels in these transcripts as `MESSAGE FROM
+ANOTHER SESSION`; gateway notices are left out. If the session's parent has
+already been sent this exact reply by the session, a turn answered after a
+limit that comes back with the same text is not relayed again: the parent is
+sent a one-line note that nothing is new.
 
 ### What is recorded
 

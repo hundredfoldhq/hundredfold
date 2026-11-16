@@ -714,8 +714,16 @@ describe("session tools — integration against the real routes/registry", () =>
     expect(banner.content).toContain("📨");
     expect(banner.content).toContain("GREEN-LIGHT: clear to merge");
     const meta = typeof banner.meta === "string" ? JSON.parse(banner.meta) : banner.meta;
-    expect(meta).toMatchObject({ kind: "agent-relay", fromLabel: "yorio-lead", hops: 1 });
+    expect(meta).toMatchObject({ kind: "agent-relay", fromLabel: "yorio-lead", viaOperator: true, hops: 1 });
     expect(meta.fromSessionId).toBeUndefined();
+
+    // The target reads it back as the engine read it: relayed via the operator, body whole.
+    const read = (await tool("read_session").handler({ sessionId: target, last: 1 }, ctxFor(target))) as {
+      messages: Array<{ content: string }>;
+    };
+    expect(read.messages[0].content).toBe(
+      "📨 Message relayed from yorio-lead via the operator:\n\nGREEN-LIGHT: clear to merge reps/workspace-conversion.",
+    );
   });
 
   it("an operator message WITHOUT role:notification is still a plain user message (unchanged)", async () => {
@@ -789,27 +797,26 @@ describe("session tools — integration against the real routes/registry", () =>
     }
   });
 
-  it(`a two-agent ping-pong dies on the hop budget (cap pinned to 4) at relay 5, and an operator message resets the chain`, async () => {
-    // The default cap is now 12; pin it to 4 so this stays a compact 5-hop test.
+  it(`a two-agent ping-pong is a conversation: it is not charged relay hops, dies on the pair budget (4x the cap), and an operator message resets it`, async () => {
+    // The default cap is 12; pin it to 4 (pair budget 16) to keep this compact.
     sessionCommGuards.setMaxHops(4);
     const a = await createOperatorSession("agent A");
     const b = await createOperatorSession("agent B");
     const ctxA = ctxFor(a);
     const ctxB = ctxFor(b);
-
-    await tool("send_to_session").handler({ sessionId: b, message: "hop1" }, ctxA);
-    await tool("send_to_session").handler({ sessionId: a, message: "hop2" }, ctxB);
-    await tool("send_to_session").handler({ sessionId: b, message: "hop3" }, ctxA);
-    await tool("send_to_session").handler({ sessionId: a, message: "hop4" }, ctxB);
-    // A's next relay would be hop 5 → substrate refusal, no doctrine involved.
-    await expect(tool("send_to_session").handler({ sessionId: b, message: "hop5" }, ctxA)).rejects.toThrow(
-      /400.*hop budget/is,
+    // The opening forward is a relay hop; the 16 replies after it fill the pair.
+    for (let i = 1; i <= 17; i++) {
+      const [sender, target] = i % 2 ? [ctxA, b] : [ctxB, a];
+      await tool("send_to_session").handler({ sessionId: target, message: `m${i}` }, sender);
+    }
+    // the pair count rode the delivered banners
+    expect(registry.getMessages(b).at(-1)!.content).toContain(`hop 16/16`);
+    // B's next reply would be message 17 of the pair → substrate refusal, no doctrine involved.
+    await expect(tool("send_to_session").handler({ sessionId: a, message: "m18" }, ctxB)).rejects.toThrow(
+      /400.*pair budget.*message 17/is,
     );
-    // hop tags rode the delivered banners
-    const hop4 = registry.getMessages(a).at(-1)!;
-    expect(hop4.content).toContain(`hop 4/4`);
 
-    // A genuine operator message to A resets its chain — A can send again.
+    // A genuine operator message to A resets it — A can send again.
     const op = await apiFetch()(`http://gateway.test/api/sessions/${a}/message`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer test-token" },
@@ -822,17 +829,33 @@ describe("session tools — integration against the real routes/registry", () =>
     expect(again.status).toBe("queued");
   });
 
+  it("a relay chain still dies on the hop budget: forwarding to a session that has not written to you is a hop", async () => {
+    sessionCommGuards.setMaxHops(4);
+    const ids = [] as string[];
+    for (let i = 0; i < 6; i++) ids.push(await createOperatorSession(`chain ${i}`));
+    for (let i = 0; i < 4; i++) {
+      await tool("send_to_session").handler({ sessionId: ids[i + 1], message: `hop${i + 1}` }, ctxFor(ids[i]));
+    }
+    expect(registry.getMessages(ids[4]).at(-1)!.content).toContain(`hop 4/4`);
+    await expect(tool("send_to_session").handler({ sessionId: ids[5], message: "hop5" }, ctxFor(ids[4]))).rejects.toThrow(
+      /400.*relay budget.*relay hop 5/is,
+    );
+    // ...but the end of the chain can still answer the session that wrote to it.
+    const reply = (await tool("send_to_session").handler({ sessionId: ids[3], message: "got it" }, ctxFor(ids[4]))) as { status: string };
+    expect(reply.status).toBe("queued");
+  });
+
   it("a spawned session starts a fresh chain: its first send is hop 1 even when the spawner is at the cap, and its reply to the spawner is delivered", async () => {
     sessionCommGuards.setMaxHops(4);
     const a = await createOperatorSession("producer");
     const b = await createOperatorSession("peer");
     const ctxA = ctxFor(a);
-    const ctxB = ctxFor(b);
-    // Ping-pong A <-> B until A has no budget left.
-    await tool("send_to_session").handler({ sessionId: b, message: "hop1" }, ctxA);
-    await tool("send_to_session").handler({ sessionId: a, message: "hop2" }, ctxB);
-    await tool("send_to_session").handler({ sessionId: b, message: "hop3" }, ctxA);
-    await tool("send_to_session").handler({ sessionId: a, message: "hop4" }, ctxB);
+    // Relay a chain into A until A has no relay budget left.
+    const chain = [] as string[];
+    for (let i = 0; i < 4; i++) chain.push(await createOperatorSession(`relay ${i}`));
+    for (let i = 0; i < 4; i++) {
+      await tool("send_to_session").handler({ sessionId: i < 3 ? chain[i + 1] : a, message: `hop${i + 1}` }, ctxFor(chain[i]));
+    }
     await expect(tool("send_to_session").handler({ sessionId: b, message: "hop5" }, ctxA)).rejects.toThrow(/hop budget/);
 
     // A spawns a reviewer and briefs it by message: the brief is not a relay hop.
@@ -859,6 +882,117 @@ describe("session tools — integration against the real routes/registry", () =>
     );
   });
 
+  it("LONG REVIEW: a producer and a reused reviewer that are not parent and child go 20 rounds with no operator message; at the pair budget the coordinator lets them carry on", async () => {
+    // Default caps: relay 12, pair 48. The coordinator spawned both, so they are siblings.
+    const coordinator = await createOperatorSession("orchestrator");
+    const ctxO = ctxFor(coordinator);
+    const producer = (await tool("spawn_session").handler({ prompt: "build it", engine: "codex" }, ctxO)) as { sessionId: string };
+    const reviewer = (await tool("spawn_session").handler({ prompt: "review it", engine: "codex" }, ctxO)) as { sessionId: string };
+    const ctxP = ctxFor(producer.sessionId);
+    const ctxR = ctxFor(reviewer.sessionId);
+    for (let round = 1; round <= 20; round++) {
+      await tool("send_to_session").handler({ sessionId: reviewer.sessionId, message: `review head v${round}` }, ctxP);
+      await tool("send_to_session").handler({ sessionId: producer.sessionId, message: `round ${round}: changes required` }, ctxR);
+    }
+    expect(registry.getMessages(producer.sessionId).at(-1)!.content).toContain("round 20: changes required");
+    // The reviewer's chain never grew: it can still forward to a fresh session at hop 2.
+    const third = await createOperatorSession("bystander");
+    await tool("send_to_session").handler({ sessionId: third, message: "fyi" }, ctxR);
+    const fyiMeta = registry.getMessages(third).at(-1)!.meta;
+    expect(typeof fyiMeta === "string" ? JSON.parse(fyiMeta) : fyiMeta).toMatchObject({ hops: 2 });
+
+    // Run the pair out: the opening forward was a hop, so 39 of the 48 are used;
+    // nine more pass and the reviewer's next verdict is refused, naming the coordinator.
+    for (let i = 41; i <= 49; i++) {
+      const [sender, target] = i % 2 ? [ctxP, reviewer.sessionId] : [ctxR, producer.sessionId];
+      await tool("send_to_session").handler({ sessionId: target, message: `m${i}` }, sender);
+    }
+    const refusal = await tool("send_to_session")
+      .handler({ sessionId: producer.sessionId, message: "round 25: changes required" }, ctxR)
+      .then(() => "", (err: unknown) => String(err));
+    expect(refusal).toMatch(/pair budget/);
+    expect(refusal).toContain(`message 49 between you and session ${producer.sessionId}`);
+    expect(refusal).toContain(`ask session ${coordinator}, which coordinates your work, to message you`);
+
+    // The reviewer asks (an escalation, not a relay); the coordinator's message resets it and the same pair carries on.
+    await tool("send_to_session").handler({ sessionId: coordinator, message: "pair budget spent, may I carry on?" }, ctxR);
+    await tool("send_to_session").handler({ sessionId: reviewer.sessionId, message: "carry on" }, ctxO);
+    await tool("send_to_session").handler({ sessionId: producer.sessionId, message: "round 25: pass" }, ctxR);
+    expect(registry.getMessages(producer.sessionId).at(-1)!.content).toContain("round 25: pass");
+  });
+
+  it("a session that is not above the target cannot reset its budgets by messaging it", async () => {
+    sessionCommGuards.setMaxHops(1); // pair budget 4
+    const p = await createOperatorSession("producer");
+    const r = await createOperatorSession("reviewer");
+    const stranger = await createOperatorSession("stranger");
+    for (let i = 1; i <= 5; i++) {
+      const [sender, target] = i % 2 ? [ctxFor(p), r] : [ctxFor(r), p];
+      await tool("send_to_session").handler({ sessionId: target, message: `m${i}` }, sender);
+    }
+    await tool("send_to_session").handler({ sessionId: r, message: "carry on" }, ctxFor(stranger));
+    await expect(tool("send_to_session").handler({ sessionId: p, message: "m6" }, ctxFor(r))).rejects.toThrow(/pair budget/);
+  });
+
+  it("TWO COORDINATORS cannot reset each other's pair with a session below them: an O→P, P→G, G→P, P→O loop dies", async () => {
+    sessionCommGuards.setMaxHops(1); // pair budget 4
+    const g = await createOperatorSession("grandparent");
+    const o = (await tool("spawn_session").handler({ prompt: "o", engine: "codex" }, ctxFor(g))) as { sessionId: string };
+    const p = (await tool("spawn_session").handler({ prompt: "p", engine: "codex" }, ctxFor(o.sessionId))) as { sessionId: string };
+    const lap = [
+      [o.sessionId, p.sessionId],
+      [p.sessionId, g],
+      [g, p.sessionId],
+      [p.sessionId, o.sessionId],
+    ] as const;
+    let delivered = 0;
+    let refusal = "";
+    for (let round = 0; round < 30 && !refusal; round++) {
+      for (const [from, to] of lap) {
+        try {
+          await tool("send_to_session").handler({ sessionId: to, message: `lap ${round}` }, ctxFor(from));
+          delivered++;
+        } catch (err) {
+          refusal = String(err);
+          break;
+        }
+      }
+    }
+    expect(refusal).toMatch(/pair budget/);
+    expect(delivered).toBeLessThanOrEqual(8); // two pairs of 4, never reset
+  });
+
+  it("an escalation to the named coordinator is never refused on the relay budget", async () => {
+    sessionCommGuards.setMaxHops(2); // pair budget 8
+    const g = await createOperatorSession("grandparent");
+    const o = (await tool("spawn_session").handler({ prompt: "o", engine: "codex" }, ctxFor(g))) as { sessionId: string };
+    const p = (await tool("spawn_session").handler({ prompt: "p", engine: "codex" }, ctxFor(o.sessionId))) as { sessionId: string };
+    for (let i = 1; i <= 8; i++) {
+      const [from, to] = i % 2 ? [p.sessionId, o.sessionId] : [o.sessionId, p.sessionId];
+      await tool("send_to_session").handler({ sessionId: to, message: `m${i}` }, ctxFor(from));
+    }
+    // Put P at the relay cap through an unrelated chain.
+    const c0 = await createOperatorSession("c0");
+    const c1 = await createOperatorSession("c1");
+    await tool("send_to_session").handler({ sessionId: c1, message: "hop1" }, ctxFor(c0));
+    await tool("send_to_session").handler({ sessionId: p.sessionId, message: "hop2" }, ctxFor(c1));
+    const refusal = await tool("send_to_session")
+      .handler({ sessionId: o.sessionId, message: "m9" }, ctxFor(p.sessionId))
+      .then(() => "", (err: unknown) => String(err));
+    expect(refusal).toContain(`ask session ${g}`);
+    const asked = (await tool("send_to_session").handler({ sessionId: g, message: "may I carry on?" }, ctxFor(p.sessionId))) as { status: string };
+    expect(asked.status).toBe("queued");
+  });
+
+  it("one-way sends never lock the receiver out of replying", async () => {
+    sessionCommGuards.setMaxHops(2); // pair budget 8
+    const a = await createOperatorSession("A");
+    const b = await createOperatorSession("B");
+    for (let i = 0; i < 9; i++) await tool("send_to_session").handler({ sessionId: b, message: `m${i}` }, ctxFor(a));
+    const reply = (await tool("send_to_session").handler({ sessionId: a, message: "ack" }, ctxFor(b))) as { status: string };
+    expect(reply.status).toBe("queued");
+  });
+
   it("a long parent/child exchange is eventually refused (pair budget 4x the cap), and an operator message resets it", async () => {
     sessionCommGuards.setMaxHops(2); // pair budget 8
     const a = await createOperatorSession("parent");
@@ -871,7 +1005,7 @@ describe("session tools — integration against the real routes/registry", () =>
       await tool("send_to_session").handler({ sessionId: target, message: `m${i}` }, sender);
     }
     await expect(tool("send_to_session").handler({ sessionId: a, message: "m9" }, ctxC)).rejects.toThrow(
-      /400.*hop budget.*parent\/child/is,
+      /400.*pair budget.*message 9/is,
     );
     const op = await apiFetch()(`http://gateway.test/api/sessions/${a}/message`, {
       method: "POST",

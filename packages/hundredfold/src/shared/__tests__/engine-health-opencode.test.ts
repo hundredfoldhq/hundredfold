@@ -324,7 +324,7 @@ describe("healthKeys", () => {
 
 describe("a failure that is none of these", () => {
   it("is not recorded", () => {
-    expect(record("provider.no-route: no route for model (HTTP 404)")).toBe(false);
+    expect(record("provider.auth: something unexpected")).toBe(false);
     expect(record("the model returned an empty answer")).toBe(false);
     expect(readEngineHealth(NOW)).toEqual({});
   });

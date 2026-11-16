@@ -145,6 +145,9 @@ describe("the limits the fake opencode reports", () => {
     expect(detectRateLimit(expired)).toEqual({ limited: true, refused: "auth" });
     const noAccess = resultOf({ outcome: "provider-error", type: "provider.auth", status: 403, message: "Upstream request failed: Model access is disabled" });
     expect(detectRateLimit(noAccess)).toEqual({ limited: true, refused: "model-access" });
+    const noRoute = resultOf({ outcome: "provider-error", type: "provider.no-route", message: "Model unavailable: opencode-go-b/deepseek-v4.1-flash" });
+    expect(noRoute.error).toBe("provider.no-route: Model unavailable: opencode-go-b/deepseek-v4.1-flash");
+    expect(detectRateLimit(noRoute)).toEqual({ limited: true, refused: "model-access" });
   });
 
   it("answers an ok turn with the model it ran on", () => {

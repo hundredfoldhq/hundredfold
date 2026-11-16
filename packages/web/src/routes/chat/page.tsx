@@ -49,7 +49,7 @@ const FileView = lazy(() =>
   import('@/components/chat/file-view').then((m) => ({ default: m.FileView })),
 )
 import { LayoutOpenProviders, type OpenFile } from '@/components/chat/file-open-context'
-import { useEmployeeDeepLink, useNewChatTabHandlers, useNewChatTabOpener, useSubagentTabOpener, useTodoBoardTabPinner, useTodoTabOpener } from './use-layout-tab-openers'
+import { useEmployeeDeepLink, useNewChatTabHandlers, useNewChatTabOpener, sessionListFailed, useSubagentTabOpener, useTodoBoardTabPinner, useTodoTabOpener } from './use-layout-tab-openers'
 import { restoresPhoneTodos, usePhoneTodosHistory, useTodosTabPage } from './use-todos-tab-page'
 import { fileBackPlan } from './file-back'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
@@ -479,10 +479,10 @@ function ChatPage() {
     if (moved) handleSelect(chat, { replace: true, navigateMobile: false })
     return moved
   }, [handleSelect, workingSet])
-  const pinTodoBoard = useTodoBoardTabPinner(pinTodoBoardTab, { mobile: viewport.mobile, hydrated: workingSet.hydrated })
+  const pinTodoBoard = useTodoBoardTabPinner(pinTodoBoardTab, { mobile: viewport.mobile, hydrated: workingSet.hydrated, failed: sessionListFailed(sessionsQuery) })
   // The Todos tab: opened or shown, the way back to a chat from it, and the phone's close of it.
   const newestChatId = useCallback(() => newestVisibleSessionId(sessionsQuery.data), [sessionsQuery.data])
-  const { openTodosTab, showChat, closePhoneTodos } = useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile: viewport.mobile, setMobileView, setPhoneTodos })
+  const { openTodosTab, showChat, closePhoneTodos } = useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile: viewport.mobile, setMobileView, setPhoneTodos, sessionListFailed: sessionListFailed(sessionsQuery) })
 
   // Mobile-only: back from the file view to the chat it was opened from (closing the
   // file tab, so they do not pile up into the open-chats cap), or to the chat list

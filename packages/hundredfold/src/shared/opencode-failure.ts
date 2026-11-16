@@ -17,7 +17,8 @@
  * - `usage-limit`: HTTP 429, a spent window; may state when it reopens.
  * - `auth`: HTTP 401, the key is expired or invalid. The whole provider is out.
  * - `model-access`: HTTP 403, this model is not enabled for the account, or the
- *   region has not opted in. Only that (provider, model) is out.
+ *   region has not opted in; or `provider.no-route` ("Model unavailable: <model>"), the
+ *   provider having no route to the model for this key. Only that (provider, model) is out.
  */
 export type OpencodeFailureKind = "quota" | "usage-limit" | "auth" | "model-access";
 
@@ -57,6 +58,9 @@ const KIND_BY_STATUS: Readonly<Record<number, OpencodeFailureKind>> = { 402: "qu
 function kindOf(type: string, status: number | undefined, error: string): OpencodeFailureKind | undefined {
   if (/\bRegionError\b/.test(error)) return "model-access";
   if (type === "provider.rate-limit") return "usage-limit";
+  // The provider has no route to this model for the account (`Model unavailable: <model>`), with or without a status.
+  // Like a 403, retrying the same target fixes nothing; another entry of the chain may serve it.
+  if (type === "provider.no-route") return "model-access";
   // A 403 that names the key (not a model or region) is a bad credential, as a 401 is.
   if (status === 403 && KEY_MESSAGE_RE.test(error) && !MODEL_ACCESS_MESSAGE_RE.test(error)) return "auth";
   return (status === undefined ? undefined : KIND_BY_STATUS[status]) ?? kindByMessage(type, error);

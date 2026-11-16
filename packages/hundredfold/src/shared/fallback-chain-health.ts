@@ -53,6 +53,18 @@ export function healthKeys(link: FallbackLinkIdentity): string[] {
   return key === link.engine ? own : [...own, link.engine];
 }
 
+/**
+ * Whether the link runs on an opencode provider whose key it rejected (a provider-level `auth` hold). Unlike a limit
+ * this is no guess about a clock: every model of the provider is refused the same way, and the hold lifts when the
+ * credential changes (`readEngineHealth`). So a signed-out link is ruled out, not merely ordered last. A hold on one
+ * model (`model-access`) or a spent allowance (`quota`) stays advisory.
+ */
+export function isLinkSignedOut(health: EngineHealthReading, link: FallbackLinkIdentity, now: Date = new Date()): boolean {
+  if (link.engine !== "opencode") return false;
+  const key = linkHealthKey(link);
+  return key !== link.engine && health[key]?.failureClass === "auth" && isEngineExhausted(health, key, now);
+}
+
 /** Whether health says the link's target is at its limit now: its own key or the engine-wide one. */
 export function isLinkExhausted(health: EngineHealthReading, link: FallbackLinkIdentity, now: Date = new Date()): boolean {
   return healthKeys(link).some((key) => isEngineExhausted(health, key, now));

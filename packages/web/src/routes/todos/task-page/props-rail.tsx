@@ -12,6 +12,7 @@ import { LabelChip, RemoveButton } from "./label-chip"
 import { RailKicker, RailRow, RailPriorityBars, formatDueLong } from "./rail-rows"
 import { AutoStartRow } from "./auto-start-row"
 import { SprintRailRow } from "../sprints/sprint-rail-row"
+import { ParentRailRow } from "./parent-rail-row"
 import { displayNameOf, formatRelativeTime } from "../util"
 import { isMemberIdentity, LastTouchedBy, MemberChip, useViewer } from "../attribution"
 import { agentOf, PersonCircle, PersonName, personRowFor, removePersonLabel, waitsOnOperator } from "../assignee-circles"
@@ -235,6 +236,7 @@ export function PropsRail({
         </RailRow>
         {deptPick?.picker}
       </div>
+      {operatorControls && <ParentRailRow key={item.id} detail={detail} />}
       {operatorControls && <SprintRailRow detail={detail} editable={!!rowFor} />}
       <div className="relative">
         <RailRow quiet testId="rail-start" label="Start date" onOpen={startPick?.onOpen} open={startPick?.open}>

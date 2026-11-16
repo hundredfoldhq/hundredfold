@@ -23,6 +23,7 @@ import { resolveMessageAudiences } from "./speech-context.js";
 // Type-only, so the pair below can name the context every web route already
 // carries without this module and api.ts importing each other at runtime.
 import { startDelegatedTurn } from "./delegation-handoff.js";
+import { recordTurnRequester } from "../sessions/turn-requester.js";
 import type { ApiContext } from "./api.js";
 
 /**
@@ -93,6 +94,7 @@ async function runQueuedTurn(
   }
   opts.onAttempt(startedAttempt.attemptToken);
   startDelegatedTurn(startedAttempt, opts.queueItemId);
+  recordTurnRequester(startedAttempt, opts.queueItemId);
   context.emit("session:started", { sessionId: session.id });
   // Item moved pending → running: refresh the queue panel.
   if (opts.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey: opts.sessionKey });

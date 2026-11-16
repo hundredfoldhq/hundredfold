@@ -261,19 +261,46 @@ export function withdrawAllPendingQueueItems(sessionKey: string): QueueItem[] {
 
 export function recoverStaleQueueItems(): number {
   const db = initDb();
-  // If the gateway restarts mid-run, move any "running" items back to "pending"
-  // so they can be replayed. Do NOT cancel pending work.
-  const result = db.prepare(
-    `UPDATE queue_items
-     SET status = 'pending', started_at = NULL
-     WHERE status = 'running'
-       AND NOT EXISTS (
-         SELECT 1 FROM sessions
-         WHERE sessions.id = queue_items.session_id
-           AND sessions.workflow_kind IS NOT NULL
-       )`
-  ).run();
-  return result.changes;
+  return db.transaction(() => {
+    // If the gateway restarts mid-run, move any "running" items back to "pending"
+    // so they can be replayed. Do NOT cancel pending work.
+    const stale = db.prepare(
+      `SELECT id, session_key AS sessionKey FROM queue_items
+       WHERE status = 'running'
+         AND NOT EXISTS (
+           SELECT 1 FROM sessions
+           WHERE sessions.id = queue_items.session_id
+             AND sessions.workflow_kind IS NOT NULL
+         )
+       ORDER BY started_at ASC, position ASC, rowid ASC`
+    ).all() as Array<{ id: string; sessionKey: string }>;
+    const requeue = db.prepare("UPDATE queue_items SET status = 'pending', started_at = NULL WHERE id = ? AND status = 'running'");
+    for (const { id } of stale) requeue.run(id);
+    for (const lane of new Set(stale.map((row) => row.sessionKey))) {
+      renumberLaneRecoveredFirst(db, lane, stale.filter((row) => row.sessionKey === lane).map((row) => row.id));
+    }
+    return stale.length;
+  }).immediate();
+}
+
+/**
+ * Put a lane's pending rows back in the order they were meant to run: the rows
+ * a restart cut off first, then everything that queued behind them, as before.
+ *
+ * A row's position is only meaningful among the rows pending with it: a send
+ * that arrives while the lane's turn runs is numbered from the rows still
+ * waiting, so it can sit below the running row's old number. Left as it was, the
+ * recovered row would replay behind everything that queued after it began. The
+ * lane is renumbered densely while at it, so no two rows tie either.
+ */
+function renumberLaneRecoveredFirst(db: ReturnType<typeof initDb>, sessionKey: string, recoveredIds: string[]): void {
+  const waiting = (db.prepare(
+    "SELECT id FROM queue_items WHERE session_key = ? AND status = 'pending' ORDER BY position ASC, created_at ASC, rowid ASC",
+  ).all(sessionKey) as Array<{ id: string }>).map((row) => row.id);
+  const recovered = new Set(recoveredIds);
+  const ordered = [...recoveredIds, ...waiting.filter((id) => !recovered.has(id))];
+  const write = db.prepare("UPDATE queue_items SET position = ? WHERE id = ? AND status = 'pending'");
+  ordered.forEach((id, index) => write.run(index + 1, id));
 }
 
 /**

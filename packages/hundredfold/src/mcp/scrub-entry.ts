@@ -32,7 +32,7 @@ if (!realCommand) {
 // Under every spelling: a token inherited from an older gateway sits under the older name.
 for (const name of envAliases("GATEWAY_TOKEN")) delete process.env[name];
 
-// And every opencode account key an opencode parent listed (HUNDREDFOLD_SCRUB_ENV): opencode holds them for its own provider calls, not for a server it launches.
+// And every opencode account key an opencode parent listed (HUNDREDFOLD_SCRUB_ENV), plus the opencode server's own password: opencode holds those for its provider calls and its HTTP API, not for a server it launches.
 scrubListedEnv(process.env);
 
 // External MCPs also get a launcher-owned temp root. Browser drivers can leak

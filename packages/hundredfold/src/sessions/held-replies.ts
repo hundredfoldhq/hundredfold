@@ -7,7 +7,7 @@ import { OPEN_EXECUTION_STATUSES } from "./delegation-completion-contract.js";
 import { asksOrReportsBlocker } from "./stop-nudge.js";
 import { isAwaitingOwnBackgroundTask, runtimeActivity, type RuntimeActivityInfo } from "./background-work.js";
 import { getWorkItem } from "../work-items/store.js";
-import { withReportingParent } from "../work-items/employee-session-delegation.js";
+import { withNoticeTarget } from "./turn-requester.js";
 import { openChildrenOf } from "../heartbeats/child-watch.js";
 
 // A shell task that never ends (a dev server) would hold every reply of a child
@@ -129,7 +129,9 @@ function isOpenForExecution(workItemId: string): boolean {
  * a turn whose prompt was never stored is judged by the previous turn's.
  */
 function turnAnswersParent(childSession: Session): boolean {
-  const parentId = withReportingParent(childSession).parentSessionId;
+  // The session as its notices are addressed (the caller has swapped it in), so
+  // a turn another session asked for counts as answering that session.
+  const parentId = childSession.parentSessionId;
   if (!parentId) return false;
   const rows = initDb()
     .prepare("SELECT role, meta FROM messages WHERE session_id = ? ORDER BY timestamp DESC, COALESCE(seq, 0) DESC, rowid DESC LIMIT ?")
@@ -247,7 +249,7 @@ export async function flushHeldInterimReply(sessionId: string): Promise<boolean>
   if (!held) return false;
   const stored = getSession(sessionId);
   if (!stored) return false;
-  const child = withReportingParent(stored);
+  const child = withNoticeTarget(stored);
   if (!child.parentSessionId || !relay) return false;
   await relay.send(child, held.text, `held:${held.at}`).catch((err) => {
     logger.warn(`[callbacks] Failed to relay a held reply of child ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
