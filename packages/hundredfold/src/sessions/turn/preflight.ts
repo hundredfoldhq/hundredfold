@@ -25,7 +25,7 @@ import { findBuiltinMcp } from "../../mcp/builtin-name.js";
 import type { TurnHierarchy, TurnInput, TurnPlan, TurnPreflight } from "./types.js";
 export { warnIfNearUsageLimit } from "./usage-warning.js";
 
-import { FROM_ANOTHER_SESSION, SYNC_TRANSCRIPT_MESSAGES, engineText, syncTranscriptPrompt } from "./sync-transcript.js";
+import { FROM_ANOTHER_SESSION, SYNC_TRANSCRIPT_MESSAGES, TRANSCRIPT_MAX_BYTES, TRANSCRIPT_MESSAGE_MAX_BYTES, clipToBytes, engineText, syncTranscriptPrompt } from "./sync-transcript.js";
 import { LOST_CONVERSATION_META_KEY, LOST_CONVERSATION_NOTICE_KIND, SYNC_MODE_META_KEY, withoutCatchUpMarkers } from "../sync-markers.js";
 import { historyPointerPrompt } from "./history-pointer.js";
 
@@ -35,15 +35,6 @@ import { historyPointerPrompt } from "./history-pointer.js";
  * marker clears when such a turn settles cleanly.
  */
 export { LOST_CONVERSATION_META_KEY };
-
-/**
- * The lost-conversation transcript's budget. It travels in one command-line
- * argument, and a remote session's system prompt shares that argument
- * (argv-limit.ts), so it stays well short of the 128 KiB limit. Each message is
- * clipped first, so a single long one cannot crowd out the rest.
- */
-const LOST_TRANSCRIPT_MAX_BYTES = 24_000;
-const LOST_TRANSCRIPT_MESSAGE_MAX_BYTES = 4_000;
 
 type EngineConfig = { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
 
@@ -360,7 +351,7 @@ function transcriptLines(messages: LoggedMessage[], unseen: string[]): string[] 
     const line = transcriptLine(messages[i]!, unseen);
     if (!line) continue;
     const size = Buffer.byteLength(line) + 2;
-    if (bytes + size > LOST_TRANSCRIPT_MAX_BYTES) break;
+    if (bytes + size > TRANSCRIPT_MAX_BYTES) break;
     bytes += size;
     lines.unshift(line);
   }
@@ -375,7 +366,7 @@ function transcriptLine(message: LoggedMessage, unseen: string[]): string | unde
   const text = engineText(message);
   // A held interrupted prompt is asked for after the transcript instead.
   if (!label || (message.role === "user" && unseen.includes(text))) return undefined;
-  return `${label}: ${clipToBytes(text, LOST_TRANSCRIPT_MESSAGE_MAX_BYTES)}`;
+  return `${label}: ${clipToBytes(text, TRANSCRIPT_MESSAGE_MAX_BYTES)}`;
 }
 
 const TRANSCRIPT_LABELS = new Map([
@@ -386,16 +377,6 @@ const TRANSCRIPT_LABELS = new Map([
 function notificationLabel(message: LoggedMessage): string {
   const kind = message.meta?.["kind"];
   return typeof kind === "string" && FROM_ANOTHER_SESSION.has(kind) ? "MESSAGE FROM ANOTHER SESSION" : "NOTICE";
-}
-
-/** `text` cut to at most `max` UTF-8 bytes, marked where it was cut. */
-function clipToBytes(text: string, max: number): string {
-  if (Buffer.byteLength(text) <= max) return text;
-  const marker = " […clipped]";
-  let clipped = Buffer.from(text).subarray(0, max - Buffer.byteLength(marker)).toString("utf8");
-  // A cut through a multi-byte character decodes to U+FFFD; drop it.
-  clipped = clipped.replace(/\uFFFD$/, "");
-  return `${clipped}${marker}`;
 }
 
 /** Strip the sync markers a settled synced turn consumed; `keepLostConversation` leaves a lost conversation's owed. */

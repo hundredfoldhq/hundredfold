@@ -1,5 +1,5 @@
 import { getMessages } from "./registry.js";
-import { catchUpPrompt, currentMessageSection, syncTranscriptLine, withoutCurrentMessage } from "./turn/sync-transcript.js";
+import { catchUpPrompt, currentMessageSection, syncTranscript, syncTranscriptLine, withoutCurrentMessage } from "./turn/sync-transcript.js";
 
 /**
  * The prompt a fallback chain hop sends, by what the target already has.
@@ -23,11 +23,8 @@ const RESUMED_INTRO = "This session moved between engines or accounts after usag
  * request as the last one and answered it again.
  */
 export function handoffPrompt(sessionId: string, prompt: string): string {
-  const history = withoutCurrentMessage(getMessages(sessionId), prompt)
-    .map(syncTranscriptLine)
-    .filter((line): line is string => line !== undefined)
-    .slice(-HANDOFF_MESSAGES);
-  return [HANDOFF_INTRO, history.length > 0 ? `Conversation so far:\n\n${history.join("\n\n")}` : "", currentMessageSection(prompt)].filter(Boolean).join("\n\n");
+  const history = syncTranscript(withoutCurrentMessage(getMessages(sessionId), prompt), HANDOFF_MESSAGES);
+  return [HANDOFF_INTRO, history ? `Conversation so far:\n\n${history}` : "", currentMessageSection(prompt)].filter(Boolean).join("\n\n");
 }
 
 /** The prompt for a resumed thread: the transcript it missed since `since`, then the prompt; the prompt itself when it missed nothing. */

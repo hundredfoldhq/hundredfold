@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLAUDE_B, answer, config, employee, reg, scripted, limited, useWalkHarness } from "./fallback-walk-harness.js";
 import { runRateLimitTurn, type RateLimitTurnArgs } from "../turn/rate-limit-turn.js";
 import { REPEATED_REPLY_NOTE } from "../callbacks.js";
-import type { Engine } from "../../shared/types.js";
+import { STRUCTURED_MESSAGE_BODY_MAX_CHARS, type Engine } from "../../shared/types.js";
 
 /**
  * A session that finished a turn whose reply went to its parent, hit its usage
@@ -87,6 +87,17 @@ describe("a session that falls back to another account after it delivered a repl
     await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
 
     expect(toldToParent(parentId)).toEqual([REPEATED_REPLY_NOTE]);
+  });
+
+  it("compares a long reply as the parent stored it, which clips it", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    const long = "R".repeat(20_000);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS) });
+    const { engines } = scripted(() => answer(long, "b-thread"));
+    await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
+
+    expect(toldToParent(parentId)).toEqual([long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), REPEATED_REPLY_NOTE]);
   });
 
   it("is only about a reply the parent has: a first reply, and another child's, go through", async () => {

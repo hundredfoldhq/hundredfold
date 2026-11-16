@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CLAUDE_B, answer, employee, handleRateLimit, limitedTurn, newSession, reg, scripted, useWalkHarness } from "./fallback-walk-harness.js";
+import { MAX_ARGUMENT_BYTES } from "../../engines/argv-limit.js";
+import { CLAUDE_B, DIR_B, answer, claudeProfileFromDir, employee, handleRateLimit, limitedTurn, newSession, reg, scripted, useWalkHarness } from "./fallback-walk-harness.js";
 
 /**
  * What a fallback hop onto a fresh conversation is told to answer. A message from
@@ -61,9 +62,63 @@ describe("a fresh conversation on another account answers the message that moved
   });
 });
 
+describe("what a hop's transcript costs", () => {
+  it("stays under the command-line argument limit when the history is large messages from other sessions", async () => {
+    const { engines, calls } = scripted(() => answer("ok", "b-thread"));
+    const id = newSession();
+    for (let i = 0; i < 12; i++) relayFrom(id, `brief ${i} ${"x".repeat(11_000)}`);
+    await handleRateLimit(limitedTurn(id, employee({ fallback: [CLAUDE_B] }), engines, { prompt: "carry on" }).opts);
+
+    expect(Buffer.byteLength(calls[0]!.prompt)).toBeLessThan(MAX_ARGUMENT_BYTES / 2);
+    // The newest are kept, clipped, and the current message is still last.
+    expect(calls[0]!.prompt).toContain("brief 11 ");
+    expect(calls[0]!.prompt).not.toContain("brief 0 ");
+    expect(calls[0]!.prompt.endsWith("CURRENT MESSAGE:\ncarry on")).toBe(true);
+  });
+
+  it("is bounded for a resumed thread's catch-up too", async () => {
+    const accountB = `claude:${claudeProfileFromDir(DIR_B).key}`;
+    const { engines, calls } = scripted(() => answer("ok", "b-thread"));
+    const id = newSession();
+    reg.updateSession(id, { engineSessions: { [accountB]: { id: "b-thread", lastSyncedAt: "2020-01-01T00:00:00.000Z" } } } as never);
+    for (let i = 0; i < 20; i++) relayFrom(id, `brief ${i} ${"y".repeat(11_000)}`);
+    await handleRateLimit(limitedTurn(id, employee({ fallback: [CLAUDE_B] }), engines, { prompt: "carry on" }).opts);
+
+    expect(calls[0]!.resume).toBe("b-thread");
+    expect(Buffer.byteLength(calls[0]!.prompt)).toBeLessThan(MAX_ARGUMENT_BYTES / 2);
+    expect(calls[0]!.prompt.endsWith("CURRENT MESSAGE:\ncarry on")).toBe(true);
+  });
+});
+
+describe("which message is the current one", () => {
+  it("does not mistake an earlier short message for a prompt that merely contains it", async () => {
+    const { engines, calls } = scripted(() => answer("ok", "b-thread"));
+    const id = newSession();
+    relayFrom(id, "ok");
+    reg.insertMessage(id, "assistant", "noted");
+    await handleRateLimit(limitedTurn(id, employee({ fallback: [CLAUDE_B] }), engines, { prompt: "ok, now run the scheduled check" }).opts);
+
+    expect(calls[0]!.prompt).toContain("MESSAGE FROM ANOTHER SESSION: ok\n");
+    expect(calls[0]!.prompt.endsWith("CURRENT MESSAGE:\nok, now run the scheduled check")).toBe(true);
+  });
+
+  it("recognises a long reply from a child as the current message when the prompt clips it", async () => {
+    const { engines, calls } = scripted(() => answer("ok", "b-thread"));
+    const id = newSession();
+    const full = `${"R".repeat(12_000)}`;
+    reg.insertMessage(id, "assistant", "earlier");
+    reg.insertMessage(id, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: "child-9", fullMessage: full });
+    const prompt = `📩 Employee "reviewer" replied in child session child-9.\n\nReply:\n${full.slice(0, 4_000)}…\n\nTo follow up: send_to_session`;
+    await handleRateLimit(limitedTurn(id, employee({ fallback: [CLAUDE_B] }), engines, { prompt }).opts);
+
+    expect(calls[0]!.prompt).not.toContain("MESSAGE FROM ANOTHER SESSION");
+    expect(calls[0]!.prompt.endsWith(`CURRENT MESSAGE:\n${prompt}`)).toBe(true);
+  });
+});
+
 describe("a resumed thread on another account is told of a message from another session it missed", () => {
   it("puts the missed relay in the catch-up transcript", async () => {
-    const accountB = `claude:${(await import("../../shared/claude-profile.js")).claudeProfileFromDir((await import("./fallback-walk-harness.js")).DIR_B).key}`;
+    const accountB = `claude:${claudeProfileFromDir(DIR_B).key}`;
     const { engines, calls } = scripted(() => answer("ok", "b-thread"));
     const id = newSession();
     const synced = "2026-10-19T10:00:00.000Z";
