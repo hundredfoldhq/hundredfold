@@ -246,3 +246,65 @@ describe("the check for a reply the parent already has", () => {
     expect(toldToParent(parentId)).toEqual([reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), REPEATED_REPLY_NOTE]);
   });
 });
+
+describe("what the parent was last told when the child's newest message to it is not a reply", () => {
+  /** Every notification the parent has, newest last, whatever its kind. */
+  function heardByParent(parentId: string): string[] {
+    return reg.getMessages(parentId).filter((message) => message.role === "notification").map((message) => message.content);
+  }
+
+  it("sends a reply in full after the child's error, even if it is the reply from before the error", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    reg.insertMessage(parentId, "notification", "⚠️ reviewer couldn't finish", undefined, undefined, undefined, { kind: "child-error", childSessionId: childId, fullMessage: "usage limit reached" });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    const started = reg.beginSessionAttempt(childId)!;
+    await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: started.attemptToken! }, { result: "Done." }, { afterLimit: true });
+
+    expect(toldToParent(parentId)).toEqual(["Done.", "Done."]);
+  });
+
+  it("sends a reply in full after an error that its own error callback recorded", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    const failed = reg.beginSessionAttempt(childId)!;
+    await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: failed.attemptToken! }, { error: "engine crashed" });
+    const retried = reg.beginSessionAttempt(childId)!;
+    await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: retried.attemptToken! }, { result: "Done." }, { afterLimit: true });
+
+    expect(toldToParent(parentId)).toEqual(["Done.", "Done."]);
+  });
+
+  it("notes a repeat of the reply that followed the error, as it would any reply", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    reg.insertMessage(parentId, "notification", "⚠️ reviewer couldn't finish", undefined, undefined, undefined, { kind: "child-error", childSessionId: childId, fullMessage: "usage limit reached" });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    for (let turn = 0; turn < 2; turn++) {
+      const started = reg.beginSessionAttempt(childId)!;
+      await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: started.attemptToken! }, { result: "Done." }, { afterLimit: true });
+    }
+
+    expect(toldToParent(parentId)).toEqual(["Done.", "Done.", REPEATED_REPLY_NOTE]);
+  });
+
+  it("still notes a repeat when only a rate-limit and resume notice came in between", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    const { notifyParentSessionAndWait, notifyRateLimited, notifyRateLimitResumed } = await import("../callbacks.js");
+    const started = reg.beginSessionAttempt(childId)!;
+    const child = { ...reg.getSession(childId)!, attemptToken: started.attemptToken! };
+    notifyRateLimited(child);
+    notifyRateLimitResumed(child);
+    await vi.waitFor(() => expect(heardByParent(parentId)).toHaveLength(3));
+    await notifyParentSessionAndWait(child, { result: "Done." }, { afterLimit: true });
+
+    // The lifecycle notices carry no reply, so they leave "Done." as the last thing the parent was told.
+    expect(toldToParent(parentId)).toEqual(["Done.", REPEATED_REPLY_NOTE]);
+  });
+});
