@@ -563,6 +563,17 @@ function ctxFor(callerSessionId?: string): HundredfoldMcpContext {
 }
 
 /** Create a session the operator way (no header) and return its id. */
+/**
+ * The turn these tests mark `running` is the session's first message, which no
+ * engine ever ran here, so its queue row would still read `pending` and the
+ * gateway would still owe the session that turn. A real interrupted turn has
+ * settled its row; do the same, so the receipt is the only evidence left.
+ */
+async function settleFirstQueueRow(sessionId: string): Promise<void> {
+  const { initDb } = await import("../../shared/db.js");
+  initDb().prepare("UPDATE queue_items SET status = 'completed' WHERE session_id = ?").run(sessionId);
+}
+
 async function createOperatorSession(prompt: string): Promise<string> {
   const resp = await apiFetch()("http://gateway.test/api/sessions", {
     method: "POST",
@@ -613,6 +624,7 @@ describe("session tools — integration against the real routes/registry", () =>
     workItems.linkSession(item.id, sessionId);
     registry.accumulateSessionCost(sessionId, 4.25, 3);
     registry.updateSession(sessionId, { status: "running" });
+    await settleFirstQueueRow(sessionId);
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}`, {
       method: "DELETE",
@@ -639,6 +651,7 @@ describe("session tools — integration against the real routes/registry", () =>
     });
     workItems.linkSession(item.id, sessionId);
     registry.updateSession(sessionId, { status: "running" });
+    await settleFirstQueueRow(sessionId);
 
     const response = await apiFetch()(`http://gateway.test/api/sessions/${sessionId}/${action}`, {
       method: "POST",
