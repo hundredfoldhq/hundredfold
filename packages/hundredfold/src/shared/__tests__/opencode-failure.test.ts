@@ -21,6 +21,10 @@ describe("classifyOpencodeFailure", () => {
     ["provider.auth: Forbidden (HTTP 403)", { kind: "model-access", type: "provider.auth", status: 403 }],
     ["provider.auth: Forbidden", { kind: "model-access", type: "provider.auth" }],
     ["provider.auth: Forbidden: invalid API key (HTTP 403)", { kind: "auth", type: "provider.auth", status: 403 }],
+    // No route to the model for the account: held against that one model, as a 403 is.
+    ["provider.no-route: Model unavailable: opencode-go-b/deepseek-v4.1-flash", { kind: "model-access", type: "provider.no-route" }],
+    ["Error: provider.no-route: Model unavailable: opencode-go-b/deepseek-v4.1-flash", { kind: "model-access", type: "provider.no-route" }],
+    ["provider.no-route: no route for model (HTTP 404)", { kind: "model-access", type: "provider.no-route", status: 404 }],
   ])("reads %s", (text, expected) => {
     expect(classifyOpencodeFailure(text)).toEqual(expected);
   });
@@ -41,7 +45,6 @@ describe("classifyOpencodeFailure", () => {
   });
 
   it("does not classify a provider error that is none of the four", () => {
-    expect(classifyOpencodeFailure("provider.no-route: no route for model (HTTP 404)")).toBeUndefined();
     expect(classifyOpencodeFailure("provider.auth: something unexpected")).toBeUndefined();
   });
 });
@@ -50,6 +53,7 @@ describe("isOpencodeRefusal", () => {
   it("is a dead key or a model the account cannot use, and nothing else", () => {
     expect(isOpencodeRefusal("provider.auth: This API key has expired (HTTP 401)")).toBe(true);
     expect(isOpencodeRefusal("provider.auth: Model access is disabled (HTTP 403)")).toBe(true);
+    expect(isOpencodeRefusal("provider.no-route: Model unavailable: opencode-go-b/deepseek-v4.1-flash")).toBe(true);
     expect(isOpencodeRefusal("provider.quota: Insufficient account funds (HTTP 402)")).toBe(false);
     expect(isOpencodeRefusal("provider.quota: Go usage limit exceeded (HTTP 429)")).toBe(false);
   });

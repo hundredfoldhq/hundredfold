@@ -96,7 +96,7 @@ writes it as explicit links.
 | Failure | Moves on from | Recorded in engine health |
 |---|---|---|
 | rate limit, quota, usage limit | any target | yes, on the failing target |
-| opencode provider refuses: spent allowance (402), dead key (401), model not enabled (403) | any target | yes: the provider, or for a 403 the model alone (see [opencode failure classes](engines-opencode.md#failure-classes)) |
+| opencode provider refuses: spent allowance (402), dead key (401), model not enabled (403), model unroutable (`provider.no-route`) | any target | yes: the provider, or for a 403 or a no-route the model alone (see [opencode failure classes](engines-opencode.md#failure-classes)) |
 | engine gave up its own provider retries | any target | yes |
 | model not served | a fallback link only | no |
 | profile signed out | a fallback link only | the auth outage record, as today |
