@@ -1,7 +1,7 @@
 import { withRemoteAttachments } from "../shared/remote-attachments.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, SteerableEngine, SteerOutcome, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
@@ -74,7 +74,7 @@ const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
  * machine, with an `ssh` client standing in for the local process.
  * `REMOTE_ENGINE_NAMES` in shared/models.ts names the adapters that can do that.
  */
-export class OpencodeEngine implements InterruptibleEngine {
+export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
   name = "opencode" as const;
   private liveProcesses = new Map<string, LiveProcess>();
   /** Server-mode turns in flight: no process of their own, only HTTP. The slot
@@ -173,6 +173,32 @@ export class OpencodeEngine implements InterruptibleEngine {
   /** Remote kills still in flight, for a shutdown to wait on. */
   pendingRemoteKills(): Promise<unknown> {
     return this.remoteKills.pending();
+  }
+
+  /**
+   * A turn on an OpenCode 2 server can take a steered input (see
+   * OpencodeV2ServerTurn.steer) while its own prompt is being run. A 1.x
+   * turn, a `run`-mode process, a compaction and a session with no turn cannot.
+   */
+  canSteer(sessionId: string): boolean {
+    return this.steerableTurn(sessionId)?.canSteer() ?? false;
+  }
+
+  /** Hand `prompt` to the session's running 2.x turn; `"withdrawn"` at once when there is none. */
+  async steer(sessionId: string, prompt: string): Promise<SteerOutcome> {
+    const turn = this.steerableTurn(sessionId);
+    if (!turn) return "withdrawn";
+    try {
+      return await turn.steer(prompt);
+    } catch (err) {
+      logger.warn(`opencode steer into session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return "withdrawn";
+    }
+  }
+
+  private steerableTurn(sessionId: string): OpencodeV2ServerTurn | undefined {
+    const turn = this.serverTurns.get(sessionId)?.turn;
+    return turn instanceof OpencodeV2ServerTurn ? turn : undefined;
   }
 
   /** Batch engine: no warm-PTY reuse, every live process is an in-flight turn.
