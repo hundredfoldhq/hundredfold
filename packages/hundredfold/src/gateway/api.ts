@@ -296,6 +296,7 @@ import {
 import { announceDelegation, claimHeldBy, landInLiveSession, reusedDelegationBody, reusedDelegationReceipt, delegationLoopError, delegationReplayBody } from "./delegation-handoff.js";
 import { liveEmployeeSession } from "../work-items/employee-sessions.js";
 import { recordNewDelegateSession, reportingParentSessionId } from "../work-items/employee-session-delegation.js";
+import { noticeTargetSessionId } from "../sessions/turn-requester.js";
 import { NOTE_FILE_MAX_BYTES, createNote, listNotes, readKnowledgeFile, readNote, searchKnowledge, updateNote, type NoteStoreResult } from "../notes/store.js";
 import { loadInstances, saveInstances, type Instance, type InstanceInput } from "../instances/directory.js";
 import { createInstance, type CreateInstanceInput, type CreateInstanceResult } from "../instances/create.js";
@@ -3970,12 +3971,13 @@ export async function handleApiRequest(
         body.meta = plan.meta;
         if (targetParentId === caller.id) {
           parentFollowUp = { caller, message: String(rawMessage) };
-        } else if (callerParentId === session.id && caller.attemptToken) {
-          // The child is reporting UP to its parent via send_to_session. The
-          // automatic parent-completion callback fired at this child's settle
-          // would be a SECOND injection of the same turn (the operator sees a
-          // spurious "duplicate callback" wake). Mark the attempt so
-          // notifyParentSession suppresses that redundant callback.
+        } else if (noticeTargetSessionId(caller) === session.id && caller.attemptToken) {
+          // The child is reporting UP to whoever its notice goes to (its parent,
+          // or the session that sent it the message it is answering) via
+          // send_to_session. The automatic completion callback fired at this
+          // child's settle would be a SECOND injection of the same turn (the
+          // operator sees a spurious "duplicate callback" wake). Mark the
+          // attempt so notifyParentSession suppresses that redundant callback.
           recordChildReportedToParent(caller.id, caller.attemptToken);
         }
         // A parent/child message is not a relay hop: it counts against the pair

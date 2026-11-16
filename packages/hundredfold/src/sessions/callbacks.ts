@@ -18,6 +18,7 @@ import { enforceDelegationCompletionContract } from "./delegation-completion-con
 import { isRemoteMcpSession } from "./remote-mcp-session.js";
 import { __resetHeldRepliesForTest, holdsInterimRelay, recoverHeldInterimReplies, releaseHeldReply, reviewHeldInterimReply, setHeldReplyRelay } from "./held-replies.js";
 import { withReportingParent } from "../work-items/employee-session-delegation.js";
+import { withNoticeTarget } from "./turn-requester.js";
 import type { SessionDeliveryPayload } from "../shared/types.js";
 import { releaseChildWatchIfSettled } from "../heartbeats/child-watch.js";
 import { isSpentDispatcher } from "../gateway/work-item-authority.js";
@@ -99,7 +100,8 @@ export function notifyManagerVisibility(
 /** Tell the parent a child replied, fire-and-forget. Turn settlement awaits the
  *  variant below, so a source-drain hold cannot release before the final
  *  durable callback is accepted. "The parent" is the session the child reports
- *  to: the delegator of the last delegation that landed in it, if one did. */
+ *  to: whoever sent the message this turn answers, when another session did;
+ *  else the delegator of the last delegation that landed in it, if one did. */
 export function notifyParentSession(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
@@ -114,7 +116,7 @@ export async function notifyParentSessionAndWait(
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
   options?: { alwaysNotify?: boolean },
 ): Promise<void> {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   // The marker is consumed by the settle that matches it whether or not a
@@ -156,7 +158,7 @@ export async function notifyParentOfExternalTurn(
   turnKey: string,
   options?: { alwaysNotify?: boolean },
 ): Promise<void> {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
   const relayed = consumeExplicitRelay(childSession);
   if (relayed) releaseHeldReply(childSession.id);
@@ -278,7 +280,7 @@ export function notifyRateLimited(
   childSession: Session,
   estimatedResumeTime?: string, // ISO timestamp or human-readable
 ): void {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   _sendNotification(childSession, {
@@ -298,7 +300,7 @@ export function notifyRateLimited(
 export function notifyRateLimitResumed(
   childSession: Session,
 ): void {
-  childSession = withReportingParent(childSession);
+  childSession = withNoticeTarget(childSession);
   if (!childSession.parentSessionId) return;
 
   if (isSpentDispatcher(getSession(childSession.parentSessionId))) return;
