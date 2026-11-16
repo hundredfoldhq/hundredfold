@@ -13,7 +13,7 @@ import {
   markDelegationCompletionSurfaced,
 } from "./registry.js";
 import { logger } from "../shared/logger.js";
-import type { Session } from "../shared/types.js";
+import { STRUCTURED_MESSAGE_BODY_MAX_CHARS, type Session } from "../shared/types.js";
 import { fullMessageMeta } from "../shared/full-message.js";
 import type { ChatBlockEnvelope, JsonObject } from "../shared/types.js";
 import { enforceDelegationCompletionContract } from "./delegation-completion-contract.js";

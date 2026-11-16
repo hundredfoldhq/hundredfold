@@ -123,3 +123,22 @@ describe("a turn that was not recovered from a usage limit", () => {
     expect(toldToParent(parentId)).toEqual(["Done.", "Done."]);
   });
 });
+
+describe("the check for a reply the parent already has", () => {
+  it.each([
+    ["a short reply", "Done."],
+    ["a reply longer than the stored body limit", "L".repeat(STRUCTURED_MESSAGE_BODY_MAX_CHARS + 4_000)],
+  ])("answers for %s without throwing", async (_label, reply) => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS) });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    const started = reg.beginSessionAttempt(childId)!;
+
+    await expect(
+      notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: started.attemptToken! }, { result: reply }, { afterLimit: true }),
+    ).resolves.toBeUndefined();
+
+    expect(toldToParent(parentId)).toEqual([reply.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), REPEATED_REPLY_NOTE]);
+  });
+});
