@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "./types.js";
 
 /**
@@ -6,21 +7,41 @@ import { STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "./types.js";
  * reading a transcript must get the body, not the banner.
  */
 
-/** The `fullMessage` meta fields for `text`: the body, and its real length when the stored copy is clipped. */
-export function fullMessageMeta(text: string): { fullMessage: string; fullMessageChars?: number } {
-  if (text.length <= STRUCTURED_MESSAGE_BODY_MAX_CHARS) return { fullMessage: text };
-  return { fullMessage: text.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), fullMessageChars: text.length };
+/**
+ * The stored body, and for a copy clipped at the cap the whole message's
+ * length and a digest of its trimmed text, so a caller can tell whether a
+ * message is the one stored without holding all of it.
+ */
+export interface FullMessageFields {
+  fullMessage: string;
+  fullMessageChars?: number;
+  fullMessageSha256?: string;
 }
 
-/** Re-read the `fullMessage` fields from untrusted meta, keeping the cap and a length only when it says the copy is clipped. */
-export function readFullMessageMeta(meta: Record<string, unknown>): { fullMessage: string; fullMessageChars?: number } | undefined {
+/** The digest `fullMessageSha256` records: SHA-256 of the trimmed text, as hex. */
+export function fullMessageDigest(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex");
+}
+
+/** The `fullMessage` meta fields for `text`: the body, and its real length and digest when the stored copy is clipped. */
+export function fullMessageMeta(text: string): FullMessageFields {
+  if (text.length <= STRUCTURED_MESSAGE_BODY_MAX_CHARS) return { fullMessage: text };
+  return { fullMessage: text.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), fullMessageChars: text.length, fullMessageSha256: fullMessageDigest(text) };
+}
+
+/** Re-read the `fullMessage` fields from untrusted meta, keeping the cap, and a length and digest only when it says the copy is clipped. */
+export function readFullMessageMeta(meta: Record<string, unknown>): FullMessageFields | undefined {
   if (typeof meta.fullMessage !== "string") return undefined;
   const fullMessage = meta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS);
   const chars = meta.fullMessageChars;
   // Only a copy cut at the cap can be a clipped one.
   const clipped = fullMessage.length === STRUCTURED_MESSAGE_BODY_MAX_CHARS
     && typeof chars === "number" && Number.isSafeInteger(chars) && chars > fullMessage.length;
-  return clipped ? { fullMessage, fullMessageChars: chars } : { fullMessage };
+  if (!clipped) return { fullMessage };
+  const digest = meta.fullMessageSha256;
+  return typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest)
+    ? { fullMessage, fullMessageChars: chars, fullMessageSha256: digest }
+    : { fullMessage, fullMessageChars: chars };
 }
 
 interface LoggedMessageLike {

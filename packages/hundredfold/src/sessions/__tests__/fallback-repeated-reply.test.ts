@@ -136,7 +136,44 @@ describe("a session that falls back to another account after it delivered a repl
     const { engines } = scripted(() => answer(next, "b-thread"));
     await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
 
-    expect(toldToParent(parentId)[1]).not.toBe(REPEATED_REPLY_NOTE);
+    expect(toldToParent(parentId)).toEqual([first, next.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)]);
+  });
+
+  it("sends a new long reply as long as the delivered one that differs only past the stored prefix", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    const first = "L".repeat(19_993) + " abc1234";
+    const next = "L".repeat(19_993) + " def5678";
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, ...fullMessageMeta(first) });
+    const { engines } = scripted(() => answer(next, "b-thread"));
+    await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
+
+    expect(toldToParent(parentId)).toEqual([first.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), next.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)]);
+  });
+
+  it("treats a long send_to_session text with surrounding whitespace as already delivered", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    const long = "R".repeat(20_000);
+    reg.insertMessage(parentId, "notification", "📨 From reviewer", undefined, undefined, undefined, { kind: "agent-relay", fromSessionId: childId, ...fullMessageMeta(`${long}\n`) });
+    const { engines } = scripted(() => answer(long, "b-thread"));
+    await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
+
+    expect(toldToParent(parentId)).toEqual([REPEATED_REPLY_NOTE]);
+  });
+
+  it.each([
+    ["no length or digest", (long: string) => ({ fullMessage: long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS) })],
+    ["a length but no digest", (long: string) => ({ fullMessage: long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), fullMessageChars: long.length })],
+  ])("sends a long reply again over an older clipped copy with %s, which cannot say what was cut off", async (_label, stored) => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    const long = "R".repeat(20_000);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, ...stored(long) });
+    const { engines } = scripted(() => answer(long, "b-thread"));
+    await runRateLimitTurn(limitedTurnArgs(childId, engines, "Hold: do not start another round."));
+
+    expect(toldToParent(parentId)).toEqual([long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), long.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)]);
   });
 
   it("is only about a reply the parent has: a first reply, and another child's, go through", async () => {

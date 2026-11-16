@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { agentReadableContent, fullMessageMeta, readFullMessageMeta } from "../full-message.js";
+import { createHash } from "node:crypto";
+import { agentReadableContent, fullMessageDigest, fullMessageMeta, readFullMessageMeta } from "../full-message.js";
 import { STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../types.js";
 
 describe("fullMessageMeta", () => {
@@ -9,9 +10,19 @@ describe("fullMessageMeta", () => {
     expect(fullMessageMeta(atCap)).toEqual({ fullMessage: atCap });
   });
 
-  it("clips a body past the cap and records its real length", () => {
+  it("clips a body past the cap and records its real length and digest", () => {
     const body = "x".repeat(STRUCTURED_MESSAGE_BODY_MAX_CHARS + 1);
-    expect(fullMessageMeta(body)).toEqual({ fullMessage: body.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS), fullMessageChars: body.length });
+    expect(fullMessageMeta(body)).toEqual({
+      fullMessage: body.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+      fullMessageChars: body.length,
+      fullMessageSha256: createHash("sha256").update(body).digest("hex"),
+    });
+  });
+
+  it("digests the trimmed text, so surrounding whitespace does not change it", () => {
+    const body = "x".repeat(STRUCTURED_MESSAGE_BODY_MAX_CHARS + 1);
+    expect(fullMessageMeta(`\n${body}  \n`).fullMessageSha256).toBe(fullMessageDigest(body));
+    expect(fullMessageDigest(body)).not.toBe(fullMessageDigest(`${body}y`));
   });
 });
 
@@ -24,6 +35,16 @@ describe("readFullMessageMeta", () => {
     expect(readFullMessageMeta({ fullMessage: atCap, fullMessageChars: 20000 })).toEqual({ fullMessage: atCap, fullMessageChars: 20000 });
     // A short body cannot be a clipped copy, whatever its meta says.
     expect(readFullMessageMeta({ fullMessage: "abc", fullMessageChars: 9 })).toEqual({ fullMessage: "abc" });
+  });
+
+  it("keeps a well-formed digest only beside a clipped copy's length", () => {
+    const atCap = "x".repeat(STRUCTURED_MESSAGE_BODY_MAX_CHARS);
+    const digest = "a".repeat(64);
+    expect(readFullMessageMeta({ fullMessage: atCap, fullMessageChars: 20000, fullMessageSha256: digest })).toEqual({ fullMessage: atCap, fullMessageChars: 20000, fullMessageSha256: digest });
+    expect(readFullMessageMeta({ fullMessage: atCap, fullMessageChars: 20000, fullMessageSha256: "A".repeat(64) })).toEqual({ fullMessage: atCap, fullMessageChars: 20000 });
+    expect(readFullMessageMeta({ fullMessage: atCap, fullMessageChars: 20000, fullMessageSha256: "a".repeat(63) })).toEqual({ fullMessage: atCap, fullMessageChars: 20000 });
+    expect(readFullMessageMeta({ fullMessage: atCap, fullMessageSha256: digest })).toEqual({ fullMessage: atCap });
+    expect(readFullMessageMeta({ fullMessage: "abc", fullMessageChars: 9, fullMessageSha256: digest })).toEqual({ fullMessage: "abc" });
   });
 
   it("caps an over-long body and ignores meta with no body", () => {

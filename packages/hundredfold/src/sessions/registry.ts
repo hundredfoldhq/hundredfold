@@ -25,7 +25,7 @@ import { blockFallbackText, mergeBlock, validateBlockEnvelope } from '../shared/
 import { ptySnapshotStore } from '../engines/pty-snapshot.js';
 import { isLegacyWorkflowPhaseRow, isLegacyWorkflowPhaseSession, LEGACY_WORKFLOW_PHASE_SQL } from './legacy-workflow-phase.js';
 import { clearSessionStopped, stoppedMarkerKey } from './stopped-marker.js';
-import { agentReadableContent, readFullMessageMeta } from '../shared/full-message.js';
+import { agentReadableContent, readFullMessageMeta, type FullMessageFields } from '../shared/full-message.js';
 
 export const RESTART_ACK_META_KEY = "restartAcknowledgedAt";
 /** Stamped on a session the gateway itself interrupted, so the next boot can tell it apart from one that was already idle. Consumed in sessions/restart-resume.ts. */
@@ -836,10 +836,10 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
  * The newest message `childId` put in front of `parentId`, whether the
  * automatic reply callback or its own send_to_session: what the parent has
  * already been told by that child, for a caller that must not tell it again.
- * The stored body is clipped for a long message; `fullMessageChars` then says
- * how long the whole one was.
+ * The stored body is clipped for a long message, with the whole one's length
+ * and digest beside it.
  */
-export function lastMessageFromChild(parentId: string, childId: string): { fullMessage: string; fullMessageChars?: number } | undefined {
+export function lastMessageFromChild(parentId: string, childId: string): FullMessageFields | undefined {
   const db = initDb();
   const row = db.prepare(`
     SELECT meta
