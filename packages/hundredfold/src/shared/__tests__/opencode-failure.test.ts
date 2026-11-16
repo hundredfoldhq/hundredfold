@@ -71,6 +71,10 @@ describe("an account model this host's opencode cannot serve", () => {
     expect(linkFailure({ result: "", error } as never, "opencode")).toMatchObject({ reason: "invalid-model" });
   });
 
+  it("reads the gateway's refusal of an account model whose base discovery found no models of as model access", () => {
+    expect(classifyOpencodeFailure('go-b/alpha is not served by account "b": model discovery found no models of its base "base-go" on this host')).toEqual({ kind: "model-access" });
+  });
+
   it("does not catch other prose that mentions an account", () => {
     expect(classifyOpencodeFailure('model "x" is not served by account "go-b"')).toBeUndefined();
   });

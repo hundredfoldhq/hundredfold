@@ -260,6 +260,7 @@ describe("opencode accounts on a remote server", () => {
   const accounts = {
     providers: () => ({ "go-b": { name: "Go B", options: { apiKey: "{env:GO_B_KEY}" }, models: {} } }),
     unservedModel: () => undefined,
+    unstaged: () => undefined,
     env: { GO_B_KEY: SENTINEL },
     fingerprint: "go-b",
     scrub: ["GO_B_KEY"],

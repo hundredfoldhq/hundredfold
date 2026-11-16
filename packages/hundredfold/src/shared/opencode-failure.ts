@@ -68,8 +68,9 @@ function kindOf(type: string, status: number | undefined, error: string): Openco
 
 /** The gateway's own refusal of a declared account's model that this host's opencode generation cannot serve
  *  (`unservedModelError`, shared/opencode-accounts.ts): the model, not the account, is out on this host, so it
- *  is read as model access. The turn hops, and only that model is held. */
-const UNSERVED_ACCOUNT_MODEL_RE = /\bis not served by account "[^"]+" on OpenCode 1\.x\b/;
+ *  is read as model access. The turn hops, and only that model is held. So is its refusal of an account model whose base
+ *  discovery found no models of (`missingBaseModelsError`), which opencode would have refused as `provider.no-route`. */
+const UNSERVED_ACCOUNT_MODEL_RE = /\bis not served by account "[^"]+"(?: on OpenCode 1\.x\b|: model discovery found no models of its base\b)/;
 
 /**
  * The failure an opencode turn's error text reports, or undefined when it is not
