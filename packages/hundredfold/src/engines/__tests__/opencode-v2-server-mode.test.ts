@@ -667,12 +667,14 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
   // `holdMs` is how long the client holds the post: shorter than the stop takes (the turn is
   // stopping when it is released) or longer (the turn has ended, and the bound gave up on it).
   describe.each([
-    ["is held past the turn's end after the server took it", true, 4000],
-    ["is held past the turn's end and never reaches the server", false, 4000],
-    ["is released while the turn is being stopped", false, 1500],
-  ])("a steer post that %s", (_name, reachesServer, holdMs) => {
+    ["is held past the turn's end after the server took it", true, 4000, "stop"],
+    ["is held past the turn's end and never reaches the server", false, 4000, "stop"],
+    ["is released while the turn is being stopped", false, 1500, "stop"],
+    ["is held past the turn's own end (nothing stops it) and never reaches the server", false, 4000, "end"],
+  ] as const)("a steer post that %s", (_name, reachesServer, holdMs, ending) => {
     it("is abandoned at the bound and taken back out: withdrawn, and nothing runs it unattended", async () => {
       SERVER_TURN_TIMING.steerWithdrawMs = 300;
+      SERVER_TURN_TIMING.steerWaitMs = 200;
       const HOLD_MS = holdMs;
       const h = harness();
       const id = await sessionWithServer(h);
@@ -690,12 +692,17 @@ describe("steering an input into a running turn", { timeout: 30_000 }, () => {
         return real(input, init);
       });
       try {
-        const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: "HANG until stopped" }));
+        const turn = h.engine.run(runOpts({ resumeSessionId: id, prompt: ending === "stop" ? "HANG until stopped" : "SLOW answer" }));
         await waitDelivered(h);
         const outcome = h.engine.steer("sess-1", STEER);
-        await new Promise((r) => setTimeout(r, 200));
-        h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
-        expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
+        if (ending === "stop") {
+          await new Promise((r) => setTimeout(r, 200));
+          h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+          expect((await turn).error).toBe(USER_STOP_INTERRUPTION_REASON);
+        } else {
+          // The reply ends with the post still unanswered; the turn waits a moment, then ends.
+          expect((await turn).result).toBe("fake:slow");
+        }
         expect(await outcome).toBe("withdrawn");
         // Past the point the held post is released: the server never runs the input.
         await new Promise((r) => setTimeout(r, HOLD_MS));
