@@ -200,6 +200,34 @@ describe("a turn that was not recovered from a usage limit", () => {
   });
 });
 
+describe("a session that falls back twice and repeats its reply each time", () => {
+  it("sends its parent the note both times, not the reply in full the second time", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    for (let limit = 0; limit < 2; limit++) {
+      const started = reg.beginSessionAttempt(childId)!;
+      await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: started.attemptToken! }, { result: "Done." }, { afterLimit: true });
+    }
+
+    expect(toldToParent(parentId)).toEqual(["Done.", REPEATED_REPLY_NOTE, REPEATED_REPLY_NOTE]);
+  });
+
+  it("still sends a new reply after a note, and then notes a repeat of that one", async () => {
+    const { parentId, childId } = parentAndChild();
+    stubGateway(parentId);
+    reg.insertMessage(parentId, "notification", "📩 reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: childId, fullMessage: "Done." });
+    const { notifyParentSessionAndWait } = await import("../callbacks.js");
+    for (const result of ["Done.", "Holding.", "Holding."]) {
+      const started = reg.beginSessionAttempt(childId)!;
+      await notifyParentSessionAndWait({ ...reg.getSession(childId)!, attemptToken: started.attemptToken! }, { result }, { afterLimit: true });
+    }
+
+    expect(toldToParent(parentId)).toEqual(["Done.", REPEATED_REPLY_NOTE, "Holding.", REPEATED_REPLY_NOTE]);
+  });
+});
+
 describe("the check for a reply the parent already has", () => {
   it.each([
     ["a short reply", "Done."],
