@@ -64,7 +64,7 @@ export function usePhoneTodosHistory(
  * or a chat of the layout on the desktop, else the chat list's newest (false when there is none, leaving the link to do
  * what it does).
  */
-export function useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile, setMobileView, setPhoneTodos }: {
+export function useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile, setMobileView, setPhoneTodos, sessionListFailed = false }: {
   workingSet: SplitWorkingSet
   selectedIdRef: MutableRefObject<string | null>
   handleSelect: (id: string, opts?: { navigateMobile?: boolean; replace?: boolean }) => void
@@ -73,6 +73,8 @@ export function useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newes
   mobile: boolean
   setMobileView: Dispatch<SetStateAction<'sidebar' | 'chat'>>
   setPhoneTodos: Dispatch<SetStateAction<boolean>>
+  /** The session list failed with nothing to hydrate the layout from: the `?open=todos` link is dropped, not held. */
+  sessionListFailed?: boolean
 }) {
   const { openTodosTab: openInLayout, split, state } = workingSet
   const openTodosTab = useCallback((): boolean => {
@@ -83,7 +85,7 @@ export function useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newes
     if (mobile) { setPhoneTodos(true); setMobileView('chat') }
     return moved
   }, [handleSelect, mobile, openInLayout, selectedIdRef, setMobileView, setPhoneTodos, split.layout])
-  useTodosOpenIntent(openTodosTab, workingSet.hydrated)
+  useTodosOpenIntent(openTodosTab, workingSet.hydrated, sessionListFailed)
 
   const showChat = useCallback((): boolean => {
     if (mobile) {

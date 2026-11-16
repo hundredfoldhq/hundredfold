@@ -287,7 +287,7 @@ function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { 
 
 /** The hop that records the chain ran out: what was left after the cursor, and why none of it could be used. */
 function exhaustedHop(w: Walk, decision: SubstituteDecision): FallbackHop {
-  const left = (decision.chain?.links ?? []).slice(w.cursor + 1).flatMap((link) => {
+  const left = decision.left ?? (decision.chain?.links ?? []).slice(w.cursor + 1).flatMap((link) => {
     const reason = w.tried.has(link.key) ? "tried" as const : link.skip;
     return reason === undefined ? [] : [{ key: link.key, reason }];
   });

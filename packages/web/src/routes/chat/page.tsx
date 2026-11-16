@@ -482,7 +482,7 @@ function ChatPage() {
   const pinTodoBoard = useTodoBoardTabPinner(pinTodoBoardTab, { mobile: viewport.mobile, hydrated: workingSet.hydrated, failed: sessionListFailed(sessionsQuery) })
   // The Todos tab: opened or shown, the way back to a chat from it, and the phone's close of it.
   const newestChatId = useCallback(() => newestVisibleSessionId(sessionsQuery.data), [sessionsQuery.data])
-  const { openTodosTab, showChat, closePhoneTodos } = useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile: viewport.mobile, setMobileView, setPhoneTodos })
+  const { openTodosTab, showChat, closePhoneTodos } = useTodosTabPage({ workingSet, selectedIdRef, handleSelect, newestChatId, mobile: viewport.mobile, setMobileView, setPhoneTodos, sessionListFailed: sessionListFailed(sessionsQuery) })
 
   // Mobile-only: back from the file view to the chat it was opened from (closing the
   // file tab, so they do not pile up into the open-chats cap), or to the chat list

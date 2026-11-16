@@ -119,7 +119,9 @@ reset, as before.
   stand-in continues along it and never goes back to the target the session left.
 - A link is passed over, and named in the hop record with why (the skip
   reasons below). A link whose health says it is at its limit is passed over
-  first, and tried only when nothing healthier is left.
+  first, and tried only when nothing healthier is left. A link on an opencode
+  provider whose key was rejected is never tried in that run (`signed-out`), and
+  neither is a session's own fallback target on that provider.
 - When the chain runs out, the session waits for its own target's reset and
   resumes there. It reads `waiting` (its `lastError` names the own target and
   when it reopens, e.g. "claude · work · opus usage limit, resumes …"), its last
@@ -190,6 +192,7 @@ link before.
 | `remote` | the link cannot run where the session does: for a remote session, an engine other than `claude`, `pi`, `opencode` and `musecode`, a local Claude profile, or a remote account on another `user@host`; for a local session, a remote account. A profile link carries `skipDetail` saying which, e.g. `profile "spare" is on me@build-host, not this session's host other-host`, `profile "x" is a profile on the gateway, not on build-host`, `profile "spare" is on remote host build-host` |
 | `scoped` | the session is department-scoped and the link is not a Claude account |
 | `exhausted` | its health says it is at its limit; tried only when nothing else is left |
+| `signed-out` | an opencode link whose provider is held as signed out (its key was rejected, `failureClass: auth`): never tried, even when nothing else is left, since every model on that provider would be refused with the same key. The hold lifts when the credential changes. A model held alone (`model-access`) or a spent allowance (`quota`) stays `exhausted` |
 | `model-not-served` | the engine's catalog does not list the link's model |
 | `profile-unknown` | the link names a profile that is not a declared account |
 
