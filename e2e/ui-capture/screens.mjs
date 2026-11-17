@@ -256,7 +256,7 @@ export const SCREENS = [
     },
   },
   {
-    // A board card's menu, opened by a right-click (desktop only: a long press is the card's drag).
+    // A board card's menu, opened by a right-click: Open, Keep on Home, the moves it can make and its sprint.
     name: 'board-card-menu',
     viewports: ['desktop'],
     title: 'Board card menu',

@@ -51,6 +51,7 @@ import { useBoardFilters } from "./use-board-filters"
 import { useBoardMemberView } from "./use-board-member-view"
 import { MovedOffBoard } from "./moved-off-board"
 import { useBoardSprints } from "../sprints/use-board-sprints"
+import { useBoardCardMenu } from "./card-menu"
 import { GroupSkeleton } from "./group-skeleton"
 
 /* Todos v2 slice 6 — the board surface (design contract:
@@ -442,7 +443,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     [subtree, subRoot.department, board],
   )
 
-  const sprintTools = useBoardSprints({ filters, setFilters, columns: data.columns, mobile, announce })
+  const sprintTools = useBoardSprints({ filters, setFilters, mobile, announce })
   // Opening a card carries the board context so the task page's crumb knows
   // its way back (the board name is the back affordance).
   const onOpen = useCallback(
@@ -506,6 +507,16 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     return columns
   }, [data.columns, itemsByStatus, filters.due])
   const keep = useKeepWorkItem(announce)
+  // Right-click (or Shift+F10 / the Menu key on a focused card) opens the card's actions. A member's board has none of the operator's controls, so none of these.
+  const cardMenu = useBoardCardMenu({
+    itemsByStatus,
+    enabled: !gate.member && (!mobile || phoneMoves),
+    openChildrenOf,
+    onOpen,
+    onMove: moveCard,
+    onKeep: keep.mutate,
+    sprints: sprintTools.cardSprints,
+  })
   // Clearing goes through the same setter as any other change, so the cleared
   // set is persisted and the storage fallback cannot restore it.
   const clearAllFilters = useCallback(() => setFilters({ status: "open" }), [setFilters])
@@ -727,7 +738,8 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
           <div
             ref={boardScrollRef}
             onScroll={onBoardScroll}
-            onContextMenu={gate.member ? undefined : sprintTools.onContextMenu}
+            onContextMenu={cardMenu.onContextMenu}
+            onKeyDown={cardMenu.onKeyDown}
             hidden={mobile && mobileView !== "board"}
             data-testid="todo-board-scroll"
             data-board-glass={subtree ? undefined : embedded ? "tab" : ""}
@@ -853,6 +865,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
         />
       )}
 
+      {cardMenu.menu}
       {sprintTools.overlays}
     </Frame>
   )
