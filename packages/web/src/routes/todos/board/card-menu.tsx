@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ContextMenuContent,
   ContextMenuItem,
@@ -58,8 +58,7 @@ export function useBoardCardMenu(options: BoardCardMenuOptions) {
   const open = useCallback((event: Event, card: HTMLElement | null, point: (card: HTMLElement) => MenuPoint) => {
     const { enabled, itemsByStatus } = latest.current
     if (!enabled || !card) return false
-    const id = card.dataset.boardCard ?? ""
-    const item = Object.values(itemsByStatus).flat().find((candidate) => candidate?.id === id)
+    const item = findCard(itemsByStatus, card.dataset.boardCard ?? "")
     // Anywhere but a card keeps the browser's own menu.
     if (!item) return false
     event.preventDefault()
@@ -82,10 +81,35 @@ export function useBoardCardMenu(options: BoardCardMenuOptions) {
     })
   }, [open])
 
-  const menu = target
-    ? <BoardCardMenu key={target.seq} target={target} options={options} onClose={() => setTarget(null)} />
+  // The card as the board has it now: a move still in flight, or one refused and put back, changes it under the open menu.
+  const live = target ? findCard(options.itemsByStatus, target.item.id) : undefined
+  // A card the board no longer shows (filtered out, moved off it) has nothing left to act on.
+  useEffect(() => {
+    if (target && !live) setTarget(null)
+  }, [target, live])
+
+  const close = () => {
+    setTarget(null)
+    if (target?.point.keyboard) focusCardSoon(target.item.id)
+  }
+  const menu = target && live
+    ? <BoardCardMenu key={target.seq} target={{ ...target, item: live }} options={options} onClose={close} />
     : null
   return { onContextMenu, onKeyDown, menu }
+}
+
+/** The menu was opened from a card by the keyboard: focus goes back to that card, which a move has by now put in
+ *  another column. (A pointer open leaves focus where it was.) */
+function focusCardSoon(id: string) {
+  window.setTimeout(() => document.querySelector<HTMLElement>(`[data-board-card="${CSS.escape(id)}"]`)?.focus(), 0)
+}
+
+function findCard(itemsByStatus: BoardCardMenuOptions["itemsByStatus"], id: string): WorkItemCompactWire | undefined {
+  for (const items of Object.values(itemsByStatus)) {
+    const found = items?.find((candidate) => candidate.id === id)
+    if (found) return found
+  }
+  return undefined
 }
 
 function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; options: BoardCardMenuOptions; onClose: () => void }) {

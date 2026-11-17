@@ -94,7 +94,7 @@ function TaskProbe() {
 
 function renderBoard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={["/todos/b/platform"]}>
         <Routes>
@@ -104,6 +104,7 @@ function renderBoard() {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return { ...view, client }
 }
 
 function setViewport(mobile: boolean) {
@@ -281,6 +282,20 @@ describe("right-clicking a card on the board", () => {
     const menu = await menuOf()
     await waitFor(() => expect(menu.getByTestId("board-card-open")).toBe(document.activeElement))
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByTestId("board-card-menu")).toBeNull())
+    // Focus is back on the card the menu was opened from, not lost to the page.
+    await waitFor(() => expect(document.activeElement).toBe(card))
+  })
+
+  it("closes when the card leaves the board under it, rather than offering moves for a card that is gone", async () => {
+    const { client } = renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-3"))
+    await menuOf()
+
+    rows.executing = []
+    await act(async () => { await client.invalidateQueries() })
+
+    await waitFor(() => expect(screen.queryByTestId("board-card-TSK-3")).toBeNull())
     await waitFor(() => expect(screen.queryByTestId("board-card-menu")).toBeNull())
   })
 
