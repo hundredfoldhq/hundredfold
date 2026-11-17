@@ -287,6 +287,25 @@ describe("right-clicking a card on the board", () => {
     await waitFor(() => expect(document.activeElement).toBe(card))
   })
 
+  it("puts focus on the card in its new column after a move chosen from the keyboard", async () => {
+    setWorkItemStatus.mockResolvedValue({ workItem: { ...compact("TSK-1", "executing"), version: 4 }, escalated: false })
+    updateWorkItem.mockResolvedValue({ workItem: { ...compact("TSK-1", "executing"), version: 5 } })
+    renderBoard()
+    const card = await screen.findByTestId("board-card-TSK-1")
+    card.focus()
+    fireEvent.keyDown(card, { key: "ContextMenu" })
+    await menuOf()
+
+    fireEvent.click(screen.getByTestId("board-card-move-executing"))
+
+    await waitFor(() => expect(setWorkItemStatus).toHaveBeenCalledWith("TSK-1", "executing"))
+    await waitFor(() => {
+      const moved = screen.getByTestId("board-card-TSK-1")
+      expect(screen.getByTestId("board-column-executing").contains(moved)).toBe(true)
+      expect(document.activeElement).toBe(moved)
+    })
+  })
+
   it("closes when the card leaves the board under it, rather than offering moves for a card that is gone", async () => {
     const { client } = renderBoard()
     rightClick(await screen.findByTestId("board-card-TSK-3"))
