@@ -261,7 +261,7 @@ import { TodoDepartmentNotAllowedError } from "../shared/todo-departments-config
 import { DepartmentArchivedError, isDepartmentArchived } from "../work-items/department-archive.js";
 import { DepartmentBoundaryError, scopedDepartmentOf } from "../work-items/department-scope.js";
 import { parseStatusUpdateFields } from "./work-item-status-fields.js";
-import { parentOwnerEventDetail, parentOwnerMoveOptions } from "./work-item-ancestor-close.js";
+import { ancestorOwnerStanding, parentOwnerEventDetail, parentOwnerMoveOptions } from "./work-item-ancestor-close.js";
 import { employeeCloseComment, hasOperatorLane, resolveStatusLane, WORK_ITEM_STATUSES } from "./work-item-status-lane.js";
 import { assignWorkItem, changedStopCause, transition, TransitionError } from "../work-items/transitions.js";
 import { checkAssignee } from "./todo-assignee.js";
@@ -3231,7 +3231,10 @@ export async function handleApiRequest(
     // moving a stuck attempt onto another engine) and deliberately NOT part of
     // PATCH: these live in a side table, and the PATCH field order feeds the
     // canonical edit fingerprint that existing idempotency receipts were made
-    // against. Same authority as labels: operator, creator, or assignee.
+    // against. Same authority as labels: operator, creator, or assignee; and
+    // the owner of an executing or blocked Todo above it, so an owner can stop
+    // the board walk starting a duplicate another session created in its tree.
+    // That last change is the one made on someone else's Todo, so it is logged.
     params = matchRoute("/api/work-items/:id/dispatch-config", pathname);
     if (method === "PUT" && params) {
       const caller = resolveWorkItemCaller(req, res, context);
@@ -3244,8 +3247,9 @@ export async function handleApiRequest(
         caller.kind === "operator" ||
         item.createdBy === workItemActor(caller) ||
         (employee !== null && (item.assignee === employee || item.createdBy === employee));
-      if (!allowed) {
-        return json(res, { error: "setting a Todo's dispatch config requires the operator, the item creator, or the assignee" }, 403);
+      const ownerStanding = !allowed && employee !== null ? ancestorOwnerStanding(employee, item) : undefined;
+      if (!allowed && !ownerStanding) {
+        return json(res, { error: "setting a Todo's dispatch config requires the operator, the item creator, the assignee, or the owner of an executing or blocked Todo above it" }, 403);
       }
       const parsed = await readJsonBody(req, res);
       if (!parsed.ok) return;
@@ -3261,13 +3265,28 @@ export async function handleApiRequest(
       if (body.autoStart !== undefined && typeof body.autoStart !== "boolean") {
         return badRequest(res, "autoStart must be a boolean");
       }
-      const result = setTodoDispatchConfig(params.id, {
+      const requested = {
         ...(body.skills !== undefined ? { skills: body.skills } : {}),
         ...(body.engine !== undefined ? { engine: body.engine === null ? null : (body.engine as string).trim() } : {}),
         ...(body.model !== undefined ? { model: body.model === null ? null : (body.model as string).trim() } : {}),
         ...(body.autoStart !== undefined ? { autoStart: body.autoStart as boolean } : {}),
-      }, context.getConfig());
+      };
+      const result = setTodoDispatchConfig(params.id, requested, context.getConfig());
       if (!result.ok) return badRequest(res, result.error);
+      if (ownerStanding) {
+        appendWorkItemEvent({
+          workItemId: params.id,
+          kind: "note",
+          actor: workItemActor(caller),
+          detail: writeDetail({
+            dispatchConfig: requested,
+            ...(employee ? { actorEmployee: employee } : {}),
+            parentOwner: true,
+            ...(ownerStanding.direct ? {} : { ancestorOwner: ownerStanding.ancestorId }),
+          }, caller.origin),
+          versionEffect: "audit",
+        });
+      }
       emitTodoProjectionEvent(context, params.id, "dispatch-config-updated");
       return json(res, { dispatchConfig: result.config });
     }

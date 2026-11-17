@@ -5,7 +5,8 @@ import { call, sessionOf, startParentReviewHarness, statusPost, treeInReview } f
  * The parent-owner lane, through the real `handleApiRequest`: the employee that
  * owns a child Todo's parent accepts it (`done`, with a reason) while the child is
  * executing or in review, or sends it back (`executing`, a review bounce) while it
- * is in review, and nothing else. A close from review is the ancestor-owner close
+ * is in review. A close from review, or from any other open status (without
+ * review), is the ancestor-owner close
  * (`work-item-status-ancestor-close.test.ts`), so the owner's own work is no bar. A delegated child accepted from `executing`
  * is covered in `work-item-status-parent-owner-delegated.test.ts`.
  */
@@ -131,14 +132,14 @@ describe("what the parent-owner lane refuses", () => {
     expect([statusOf(child.id), statusOf(grandchild.id)]).toEqual(["in_review", "executing"]);
   });
 
-  it.each(["backlog", "blocked"] as const)("does not close a child that is %s", async (status) => {
+  it.each(["backlog", "blocked"] as const)("closes a child that is %s without review, as the ancestor owner", async (status) => {
     const { child } = treeInReview(workItems, `Child ${status}`);
     transition(child.id, status === "backlog" ? "executing" : status, "operator", { human: true, blockKind: "needs_input" });
     if (status === "backlog") transition(child.id, "backlog", "operator", { human: true });
     const res = await statusPost((await sessionOf("owner-dev")).id, child.id, accept);
-    expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(new RegExp(`from ${status} is not an agent move: move it to ${status === "backlog" ? "executing, then to in_review" : "in_review"} with a summary in note, then you, as the owner of the parent Todo \\S+, close it from there with a note`))]);
-    expect(statusOf(child.id)).toBe(status);
-    expect(listComments(child.id).total).toBe(0);
+    expect([res.status, statusOf(child.id)]).toEqual([200, "done"]);
+    expect(lastMove(child.id)).toMatchObject({ fromStatus: status, detail: { parentOwner: true, closedUnreviewed: true } });
+    expect(listComments(child.id).comments.at(-1)?.body).toMatch(new RegExp(`^Closed as done without review, from ${status}, by owner-dev, who owns the parent Todo\\. Reason: `));
   });
 
   it("does not accept a child whose parent it does not own, and its send-back is no review bounce", async () => {

@@ -1,11 +1,13 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { sessionOf, startParentReviewHarness, statusPost } from "./review-addressee-harness.js";
+import { as, sessionOf, startParentReviewHarness, statusPost } from "./review-addressee-harness.js";
 
 /**
  * The ancestor-owner close, through the real `handleApiRequest`: an employee
- * that owns an `executing` or `blocked` Todo above another closes that Todo from
- * review as done, with a note, at any depth and whoever produced it, its own work
- * included. A root has no ancestor and never qualifies.
+ * that owns an `executing` or `blocked` Todo above another closes that Todo as
+ * done, with a note, at any depth and whoever produced it, its own work
+ * included: from review it accepts the work, from any other open status it
+ * closes a duplicate or unneeded Todo without review. It may also set that
+ * Todo's dispatch config. A root has no ancestor and never qualifies.
  *
  *   owner-dev:  owns the root (A)
  *   child-dev:  owns the middle Todo (B)
@@ -33,10 +35,6 @@ const statusOf = (id: string) => workItems.getWorkItem(id)?.status;
 const lastMove = (id: string) => listWorkItemEvents(id).filter((event) => event.toStatus !== null).at(-1)!;
 const closeBody = { status: "done", note: "Landed in the root's deliverable" };
 const operatorsDecision = /closing Todo \S+ is the operator's decision: move it to in_review and the operator closes it/;
-/** What an owner of an open ancestor is told when it tries `done` before the Todo is in review. */
-const ownerClosesFromReview = (owns: string, path = "in_review") =>
-  new RegExp(`closing Todo \\S+ from \\w+ is not an agent move: move it to ${path} with a summary in note, then you, as the owner of ${owns} \\S+, close it from there with a note`);
-
 const todo = (title: string, status: Status, assignee: string | null, parentId?: string) =>
   workItems.createWorkItem({ title, status, ...(assignee ? { assignee } : {}), ...(parentId ? { parentId } : {}) });
 
@@ -192,29 +190,6 @@ describe("what stays refused", () => {
     },
   );
 
-  it.each(["backlog", "executing", "blocked"] as const)("does not close a %s Todo through a non-direct ancestor", async (status) => {
-    const root = todo("Open root", "executing", "owner-dev");
-    const middle = todo("Open middle", "executing", "child-dev", root.id);
-    const leaf = todo("Open leaf", status, "child-dev", middle.id);
-    const res = await statusPost((await sessionOf("owner-dev")).id, leaf.id, closeBody);
-    expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(ownerClosesFromReview("ancestor Todo", status === "backlog" ? "executing, then to in_review" : "in_review"))]);
-    expect(res.body.error).not.toMatch(/operator/);
-    expect(statusOf(leaf.id)).toBe(status);
-  });
-
-  /** The refusal is advice: following it ends in a close, so it never names a move that does not exist. */
-  it.each(["backlog", "executing", "blocked"] as const)("closes a %s Todo by following the refusal", async (status) => {
-    const root = todo("Path root", "executing", "owner-dev");
-    const middle = todo("Path middle", "executing", "child-dev", root.id);
-    const leaf = todo("Path leaf", status, "child-dev", middle.id);
-    const owner = await sessionOf("owner-dev");
-    expect((await statusPost(owner.id, leaf.id, closeBody)).status).toBe(403);
-    if (status === "backlog") expect((await statusPost(owner.id, leaf.id, { status: "executing" })).status).toBe(200);
-    expect((await statusPost(owner.id, leaf.id, { status: "in_review", note: "Summary of the work" })).status).toBe(200);
-    expect((await statusPost(owner.id, leaf.id, closeBody)).status).toBe(200);
-    expect(statusOf(leaf.id)).toBe("done");
-  });
-
   it.each(["backlog", "executing", "blocked"] as const)("keeps the operator wording for an outsider closing a %s Todo", async (status) => {
     const root = todo("Outsider root", "executing", "owner-dev");
     const middle = todo("Outsider middle", "executing", "child-dev", root.id);
@@ -222,14 +197,6 @@ describe("what stays refused", () => {
     const res = await statusPost((await sessionOf("third-dev")).id, leaf.id, closeBody);
     expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(operatorsDecision)]);
     expect(statusOf(leaf.id)).toBe(status);
-  });
-
-  it("tells the parent's owner the same, naming the parent rather than an ancestor", async () => {
-    const root = todo("Parent root", "executing", "owner-dev");
-    const leaf = todo("Parent leaf", "executing", "child-dev", root.id);
-    const res = await statusPost((await sessionOf("owner-dev")).id, leaf.id, closeBody);
-    expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(ownerClosesFromReview("the parent Todo"))]);
-    expect(statusOf(leaf.id)).toBe("executing");
   });
 
   it("keeps the operator wording on a Todo that is already done: there is nothing to move to review", async () => {
@@ -280,5 +247,141 @@ describe("what stays refused", () => {
     const { grandchild, owner } = await tree("Cancel");
     const cancel = await statusPost(owner.id, grandchild.id, { status: "cancelled", note: "No" });
     expect([cancel.status, statusOf(grandchild.id)]).toEqual([403, "in_review"]);
+  });
+});
+
+/**
+ * The duplicate: another employee's session creates a sub-Todo under a Todo A
+ * owns, repeating one A already tracks. A turns off its auto-start and closes it
+ * without review, whatever its status and whoever created it.
+ */
+describe("closing a duplicate or unneeded sub-Todo without review", () => {
+  const dupBody = (of: string) => ({ status: "done", note: `Duplicate of ${of}, which carries the work` });
+  const dispatchPut = (sessionId: string, id: string, body: Record<string, unknown>) =>
+    as(sessionId)("PUT", `/api/work-items/${id}/dispatch-config`, body);
+  const dispatchNotes = (id: string) => listWorkItemEvents(id).filter((event) => event.kind === "note" && event.detail?.dispatchConfig);
+
+  /** P, owned by A (`owner-dev`); T, the sub-Todo A tracks; D, the duplicate B's session created. */
+  async function duplicate(title: string, status: Status = "backlog", { parentStatus = "executing" as Status } = {}) {
+    const parent = todo(`${title} P`, parentStatus, "owner-dev");
+    const tracked = todo(`${title} T`, "backlog", "owner-dev", parent.id);
+    const b = await sessionOf("child-dev");
+    const dup = workItems.createWorkItem({ title: `${title} D`, status, parentId: parent.id, createdBy: `session:${b.id}` });
+    return { parent, tracked, dup, owner: await sessionOf("owner-dev") };
+  }
+
+  it("the repro: A turns off auto-start on B's duplicate, then closes it from backlog, and both are on the record", async () => {
+    const { tracked, dup, owner } = await duplicate("Repro");
+    expect(dup.createdBy).not.toBe(`session:${owner.id}`);
+    expect(dup.assignee).toBeNull();
+
+    const silence = await dispatchPut(owner.id, dup.id, { autoStart: false });
+    expect([silence.status, silence.body.dispatchConfig?.autoStart]).toEqual([200, false]);
+    expect(dispatchNotes(dup.id).at(-1)).toMatchObject({
+      actor: `session:${owner.id}`,
+      detail: { dispatchConfig: { autoStart: false }, parentOwner: true, actorEmployee: "owner-dev" },
+    });
+
+    const close = await statusPost(owner.id, dup.id, dupBody(tracked.id));
+    expect([close.status, statusOf(dup.id)]).toEqual([200, "done"]);
+    expect(lastMove(dup.id)).toMatchObject({
+      fromStatus: "backlog",
+      toStatus: "done",
+      actor: `session:${owner.id}`,
+      detail: { parentOwner: true, closedUnreviewed: true, note: dupBody(tracked.id).note, actorEmployee: "owner-dev" },
+    });
+    expect(listComments(dup.id).comments.at(-1)?.body).toBe(
+      `Closed as done without review, from backlog, by owner-dev, who owns the parent Todo. Reason: ${dupBody(tracked.id).note}`,
+    );
+    expect(statusOf(tracked.id)).toBe("backlog");
+  });
+
+  it.each(["backlog", "executing", "blocked"] as const)("closes a %s grandchild through a non-direct ancestor, naming it", async (status) => {
+    const root = todo("Deep root", "executing", "owner-dev");
+    const middle = todo("Deep middle", "executing", "child-dev", root.id);
+    const leaf = todo("Deep leaf", status, "child-dev", middle.id);
+    const owner = await sessionOf("owner-dev");
+
+    expect((await dispatchPut(owner.id, leaf.id, { autoStart: false })).status).toBe(200);
+    expect(dispatchNotes(leaf.id).at(-1)?.detail).toMatchObject({ ancestorOwner: root.id });
+
+    const res = await statusPost(owner.id, leaf.id, { status: "done", note: "Not needed: the root changed course" });
+    expect([res.status, statusOf(leaf.id)]).toEqual([200, "done"]);
+    expect(lastMove(leaf.id)).toMatchObject({ fromStatus: status, detail: { closedUnreviewed: true, ancestorOwner: root.id } });
+    expect(listComments(leaf.id).comments.at(-1)?.body).toBe(
+      `Closed as done without review, from ${status}, by owner-dev, who owns ancestor Todo ${root.id}. Reason: Not needed: the root changed course`,
+    );
+  });
+
+  it("serves the owner of a blocked parent", async () => {
+    const { tracked, dup, owner } = await duplicate("Blocked parent", "blocked", { parentStatus: "blocked" });
+    expect((await dispatchPut(owner.id, dup.id, { autoStart: false })).status).toBe(200);
+    expect((await statusPost(owner.id, dup.id, dupBody(tracked.id))).status).toBe(200);
+  });
+
+  it("closes a child still executing that the owner itself took on, without review", async () => {
+    const root = todo("Took on root", "executing", "owner-dev");
+    const leaf = todo("Took on leaf", "backlog", "owner-dev", root.id);
+    const owner = await sessionOf("owner-dev");
+    expect((await statusPost(owner.id, leaf.id, { status: "executing" })).status).toBe(200);
+    const res = await statusPost(owner.id, leaf.id, { status: "done", note: "Folded into the parent" });
+    expect([res.status, statusOf(leaf.id)]).toEqual([200, "done"]);
+    expect(lastMove(leaf.id).detail).toMatchObject({ closedUnreviewed: true, ownWork: true });
+  });
+
+  it("keeps the accept, and its wording, for a delegated child still executing whose producer stopped", async () => {
+    const root = todo("Accept root", "executing", "owner-dev");
+    const leaf = todo("Accept leaf", "executing", "child-dev", root.id);
+    workItems.linkSession(leaf.id, (await sessionOf("child-dev")).id, "delegation", "execute", { via: "delegation" });
+    const res = await statusPost((await sessionOf("owner-dev")).id, leaf.id, closeBody);
+    expect([res.status, statusOf(leaf.id)]).toEqual([200, "done"]);
+    expect(lastMove(leaf.id).detail).not.toHaveProperty("closedUnreviewed");
+    expect(listComments(leaf.id).comments.at(-1)?.body).toBe(`Accepted as done by owner-dev, who owns the parent Todo. Reason: ${closeBody.note}`);
+  });
+
+  it("needs the reason in note, and leaves the duplicate where it was without it", async () => {
+    const { dup, owner } = await duplicate("No reason");
+    for (const body of [{ status: "done" }, { status: "done", note: "  " }]) {
+      const res = await statusPost(owner.id, dup.id, body);
+      expect([res.status, res.body.error]).toEqual([400, expect.stringMatching(/without review needs the reason in note \(for a duplicate, the Todo that carries the work\)/)]);
+    }
+    expect(statusOf(dup.id)).toBe("backlog");
+  });
+
+  it("is held by another session still working the duplicate", async () => {
+    const { tracked, dup, owner } = await duplicate("Live duplicate", "executing");
+    const b = await sessionOf("child-dev");
+    workItems.linkSession(dup.id, b.id, "delegation", "execute", { via: "delegation" });
+    updateSession(b.id, { status: "running" });
+    const res = await statusPost(owner.id, dup.id, dupBody(tracked.id));
+    expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(/still being worked on: a session of child-dev is running/)]);
+    expect(statusOf(dup.id)).toBe("executing");
+    updateSession(b.id, { status: "idle" });
+  });
+
+  it("refuses both moves to an employee that is neither an ancestor owner nor the operator", async () => {
+    const { tracked, dup } = await duplicate("Outsider duplicate");
+    const outsider = await sessionOf("third-dev");
+    const silence = await dispatchPut(outsider.id, dup.id, { autoStart: false });
+    expect([silence.status, silence.body.error]).toEqual([403, expect.stringMatching(/requires the operator, the item creator, the assignee, or the owner of an executing or blocked Todo above it/)]);
+    expect(dispatchNotes(dup.id)).toHaveLength(0);
+    const close = await statusPost(outsider.id, dup.id, dupBody(tracked.id));
+    expect([close.status, close.body.error]).toEqual([403, expect.stringMatching(operatorsDecision)]);
+    expect(statusOf(dup.id)).toBe("backlog");
+  });
+
+  it("gives the owner of a parked (backlog) parent no standing for either move", async () => {
+    const { tracked, dup, owner } = await duplicate("Parked parent", "backlog", { parentStatus: "backlog" });
+    expect((await dispatchPut(owner.id, dup.id, { autoStart: false })).status).toBe(403);
+    expect((await statusPost(owner.id, dup.id, dupBody(tracked.id))).status).toBe(403);
+    expect(statusOf(dup.id)).toBe("backlog");
+  });
+
+  it.each(["backlog", "executing", "blocked"] as const)("never closes a root this way: a %s root stays the operator's", async (status) => {
+    const root = todo("Duplicate root", status, "owner-dev");
+    const owner = await sessionOf("owner-dev");
+    const res = await statusPost(owner.id, root.id, { status: "done", note: "Duplicate of another root" });
+    expect([res.status, res.body.error]).toEqual([403, expect.stringMatching(operatorsDecision)]);
+    expect(statusOf(root.id)).toBe(status);
   });
 });

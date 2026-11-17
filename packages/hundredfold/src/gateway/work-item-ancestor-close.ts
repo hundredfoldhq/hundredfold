@@ -1,22 +1,26 @@
 import { OWNER_ADDRESSED_PARENT_STATUSES } from "../work-items/review-addressee.js";
-import { getWorkItem, type WorkItem, type WorkItemStatus } from "../work-items/store.js";
+import { getWorkItem, STICKY_STATUSES, type WorkItem, type WorkItemStatus } from "../work-items/store.js";
 import { orgRegistry } from "./org-registry.js";
 import { isSystemEmployeeName } from "./system-employees.js";
 import type { StatusLane, StatusLaneResult } from "./work-item-status-lane.js";
 
 /**
  * The ancestor-owner close: an employee that owns a Todo above another may move
- * that Todo from `in_review` to `done`, with a note, at any depth and whoever
- * produced it, its own work included. The self-review ban still holds one level
- * up: a root has no ancestor, so its review always reaches the operator, or the
- * owner of its own parent.
+ * that Todo to `done`, with a note, at any depth and whoever produced it, its
+ * own work included. From `in_review` the close accepts the work. From any
+ * other open status it closes the Todo without review, for a duplicate or work
+ * that is no longer needed: the note names why (and, for a duplicate, the Todo
+ * that carries the work), and the comment and event say it was not reviewed.
+ * The self-review ban still holds one level up: a root has no ancestor, so its
+ * review always reaches the operator, or the owner of its own parent.
  */
 
 /** The ancestor an employee owns above a Todo, and whether it is the parent. */
 export type AncestorStanding = { ancestorId: string; direct: boolean };
 
-/** What a `parent-owner` lane carries when the move is an ancestor-owner close. */
-export type AncestorCloseFields = AncestorStanding & { ownWork: boolean };
+/** What a `parent-owner` lane carries when the move is an ancestor-owner close.
+ *  `unreviewedFrom` is the status a Todo closed without review left. */
+export type AncestorCloseFields = AncestorStanding & { ownWork: boolean; unreviewedFrom?: WorkItemStatus };
 
 /** What the status lane lends this module (it owns the audit-trail reading). */
 export type AncestorCloseHooks = {
@@ -52,11 +56,11 @@ export function ancestorOwnerStanding(employee: string, item: Pick<WorkItem, "id
 
 /**
  * The lane for `employee`'s session moving `item` to `done`, or `undefined`
- * when this is not that move (any other target or status, or no standing), which
- * leaves it to the other lanes. With standing the move is decided here: the
- * employee's own hand in the work does not hold it, a session still working on
- * the Todo does unless it is the caller's own, and the note is the reason the
- * gateway posts.
+ * when this is not that move (any other target, a closed Todo, or no standing),
+ * which leaves it to the other lanes. With standing the move is decided here,
+ * from any open status: the employee's own hand in the work does not hold it, a
+ * session still working on the Todo does unless it is the caller's own, and the
+ * note is the reason the gateway posts.
  */
 export function resolveAncestorOwnerClose(
   who: { employee: string | undefined; sessionId: string },
@@ -65,14 +69,24 @@ export function resolveAncestorOwnerClose(
   note: string,
   hooks: AncestorCloseHooks,
 ): StatusLaneResult | undefined {
-  if (target !== "done" || item.status !== "in_review" || !who.employee) return undefined;
+  if (target !== "done" || STICKY_STATUSES.has(item.status) || !who.employee) return undefined;
   const standing = ancestorOwnerStanding(who.employee, item);
   if (!standing) return undefined;
   const live = hooks.liveWork(item, who.sessionId);
   if (live) return live;
-  if (!note) return { ok: false, status: 400, error: `accepting Todo ${item.id} needs the reason in note: it is posted on the Todo as a comment` };
+  const reviewed = item.status === "in_review";
+  if (!note) {
+    return {
+      ok: false,
+      status: 400,
+      error: reviewed
+        ? `accepting Todo ${item.id} needs the reason in note: it is posted on the Todo as a comment`
+        : `closing Todo ${item.id} from ${item.status} without review needs the reason in note (for a duplicate, the Todo that carries the work): it is posted on the Todo as a comment`,
+    };
+  }
   const ownWork = hooks.ownWork(who.employee, item) !== undefined;
-  return { ok: true, lane: { kind: "parent-owner", employee: who.employee, ancestor: { ...standing, ownWork } } };
+  const ancestor: AncestorCloseFields = { ...standing, ownWork, ...(reviewed ? {} : { unreviewedFrom: item.status }) };
+  return { ok: true, lane: { kind: "parent-owner", employee: who.employee, ancestor } };
 }
 
 /** The audit detail a `parent-owner` lane adds to its status event. */
@@ -82,6 +96,7 @@ export function parentOwnerEventDetail(lane: Extract<StatusLane, { kind: "parent
     parentOwner: true,
     ...(ancestor && !ancestor.direct ? { ancestorOwner: ancestor.ancestorId } : {}),
     ...(ancestor?.ownWork ? { ownWork: true } : {}),
+    ...(ancestor?.unreviewedFrom ? { closedUnreviewed: true } : {}),
   };
 }
 
@@ -89,6 +104,9 @@ export function parentOwnerEventDetail(lane: Extract<StatusLane, { kind: "parent
 export function ancestorCloseComment(lane: Extract<StatusLane, { kind: "parent-owner" }>, note: string): string {
   const { ancestor } = lane;
   const owns = ancestor && !ancestor.direct ? `ancestor Todo ${ancestor.ancestorId}` : "the parent Todo";
+  if (ancestor?.unreviewedFrom) {
+    return `Closed as done without review, from ${ancestor.unreviewedFrom}, by ${lane.employee}, who owns ${owns}. Reason: ${note}`;
+  }
   return `Accepted as done by ${lane.employee}, who owns ${owns}. Reason: ${note}`;
 }
 
