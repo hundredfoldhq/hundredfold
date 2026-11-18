@@ -273,7 +273,6 @@ import { resolveOrgRoot } from "./work-item-owner.js";
 import { orgRegistry } from "./org-registry.js";
 import { isRemoteTarget, sshDestination } from "../shared/remote-target.js";
 import { cachedRemoteFacts } from "../engines/remote-stage.js";
-import { TODO_DISPATCHER_NAME } from "./system-employees.js";
 import { claimTodoForDelegation } from "./todo-claim.js";
 import { claimBeforeReplacing, freshSessionRefusal, parseFreshSession, REPLACED_SESSION_META_KEY, replaceLiveSession } from "./delegation-fresh-session.js";
 import { startTodoDispatcher } from "./todo-dispatch.js";
@@ -3577,7 +3576,6 @@ export async function handleApiRequest(
       //    mint as before. An idempotency key makes the minted sourceRef stable,
       //    so a retry after a pre-session failure reuses the same intent.
       let workItem: WorkItem;
-      let dispatcherHandoffFrom: string | undefined;
       if (requestedWorkItemId) {
         const existingWorkItem = getWorkItem(requestedWorkItemId);
         if (!existingWorkItem) return json(res, { error: `Todo ${requestedWorkItemId} not found` }, 404);
@@ -3593,10 +3591,6 @@ export async function handleApiRequest(
           );
           if (!authorized.ok) return json(res, { error: authorized.error }, authorized.status);
         }
-        dispatcherHandoffFrom = delegationCaller.kind === "session"
-          && getSession(delegationCaller.callerId)?.employee === TODO_DISPATCHER_NAME
-          ? delegationCaller.callerId
-          : undefined;
       } else {
         try {
           workItem = createWorkItem({
@@ -3642,7 +3636,7 @@ export async function handleApiRequest(
       });
       if (freshRefusal) return json(res, { error: freshRefusal.error }, freshRefusal.status);
       let claim = (reused && claimHeldBy(workItem.id, reused)) || (replaced && claimBeforeReplacing(workItem.id, replaced))
-        || claimTodoForDelegation(res, workItem.id, dispatcherHandoffFrom);
+        || claimTodoForDelegation(res, workItem.id, delegationCaller.kind === "session" ? delegationCaller.callerId : undefined);
       if (!claim) return;
 
       // 2. SPAWN — the irreversible step. A failure here PRESERVES the minted
