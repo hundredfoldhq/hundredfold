@@ -15,7 +15,7 @@ import { initDb } from '../shared/db.js';
 import { recordEngineSpend } from './engine-spend.js';
 import { stripControlChars } from '../shared/sanitize.js';
 import { AUTO_COMPACT_BUDGET_HOLD_KEY } from '../shared/auto-compact-config.js';
-import { getMeta, setMeta, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
+import { DROP_RELAY_FTS, getMeta, setMeta, runImmediateMigrationWithRetry, canonicalCallbackIdentityText, canonicalSessionDeliveryIdentity, sessionDeliveryFromRow, validateSessionDeliveryIdentity, type SessionDeliveryRow } from './migrate.js';
 import { parseTodoId } from '../work-items/id.js';
 import { toWorkItemLinkRole } from '../work-items/link-role.js';
 import { scopedDepartmentOf } from '../work-items/department-scope.js';
@@ -25,6 +25,8 @@ import { blockFallbackText, mergeBlock, validateBlockEnvelope } from '../shared/
 import { ptySnapshotStore } from '../engines/pty-snapshot.js';
 import { isLegacyWorkflowPhaseRow, isLegacyWorkflowPhaseSession, LEGACY_WORKFLOW_PHASE_SQL } from './legacy-workflow-phase.js';
 import { clearSessionStopped, stoppedMarkerKey } from './stopped-marker.js';
+import { agentReadableContent, readFullMessageMeta, type FullMessageFields } from '../shared/full-message.js';
+import { pausedAtMetaSql, pausedAtParam } from './pause-notice.js';
 
 export const RESTART_ACK_META_KEY = "restartAcknowledgedAt";
 /** Stamped on a session the gateway itself interrupted, so the next boot can tell it apart from one that was already idle. Consumed in sessions/restart-resume.ts. */
@@ -159,36 +161,86 @@ const FTS_BACKFILL_CHUNK = 1000;
  */
 function ftsBackfillStep(database: Database.Database, chunkSize = FTS_BACKFILL_CHUNK): boolean {
   if (getMeta(database, 'fts_backfill_done') === '1') return true;
-  const max = Number(getMeta(database, 'fts_backfill_max') ?? '0');
-  const progress = Number(getMeta(database, 'fts_backfill_rowid') ?? '0');
-  if (progress >= max) {
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  const rows = database
-    .prepare(
-      `SELECT rowid, content FROM messages
-       WHERE role IN ('user','assistant') AND rowid > ? AND rowid <= ?
-       ORDER BY rowid ASC LIMIT ?`,
-    )
-    .all(progress, max, chunkSize) as Array<{ rowid: number; content: string }>;
-  if (rows.length === 0) {
-    // No indexable rows left in (progress, max] — we're done.
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  const insert = database.prepare('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)');
-  const txn = database.transaction((items: Array<{ rowid: number; content: string }>) => {
-    for (const r of items) insert.run(r.rowid, r.content);
-  });
-  txn(rows);
-  const lastRowid = rows[rows.length - 1].rowid;
-  setMeta(database, 'fts_backfill_rowid', String(lastRowid));
-  if (lastRowid >= max) {
-    setMeta(database, 'fts_backfill_done', '1');
-    return true;
-  }
-  return false;
+  // IMMEDIATE: read the progress and write the chunk under one write lock, so a second process draining
+  // the same file, or one disabling FTS, cannot interleave between the two.
+  return database.transaction((): boolean => {
+    if (getMeta(database, 'fts_backfill_done') === '1') return true;
+    const maxMeta = getMeta(database, 'fts_backfill_max');
+    // Boot always pins the watermark, so a missing one means the index was dropped under us (another
+    // process disabled FTS). Stop without stamping done: the next boot pins a fresh watermark and rebuilds.
+    if (maxMeta === null) return true;
+    const max = Number(maxMeta);
+    const progress = Number(getMeta(database, 'fts_backfill_rowid') ?? '0');
+    if (progress >= max) {
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    const rows = database
+      .prepare(
+        `SELECT rowid, content FROM messages
+         WHERE role IN ('user','assistant') AND rowid > ? AND rowid <= ?
+         ORDER BY rowid ASC LIMIT ?`,
+      )
+      .all(progress, max, chunkSize) as Array<{ rowid: number; content: string }>;
+    if (rows.length === 0) {
+      // No indexable rows left in (progress, max]: done.
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    const insert = database.prepare('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)');
+    for (const r of rows) insert.run(r.rowid, r.content);
+    const lastRowid = rows[rows.length - 1].rowid;
+    setMeta(database, 'fts_backfill_rowid', String(lastRowid));
+    if (lastRowid >= max) {
+      setMeta(database, 'fts_backfill_done', '1');
+      return true;
+    }
+    return false;
+  }).immediate();
+}
+
+// Relay bodies are up to 16,000 chars each, so their backfill walks a narrow rowid window per
+// transaction rather than a fixed row count, bounding the bytes one transaction tokenizes and the
+// time it holds the write lock.
+const RELAY_FTS_BACKFILL_SPAN = 200;
+
+/**
+ * Seed one rowid window of pre-existing relay bodies (see migrateRelayFts) into relay_messages_fts, in one
+ * transaction. Resumable through `meta.relay_fts_backfill_rowid`; only rows at or below the watermark are
+ * touched, the insert trigger owns the rest. Returns true once the window reaches the watermark.
+ */
+export function relayFtsBackfillStep(database: Database.Database, span = RELAY_FTS_BACKFILL_SPAN): boolean {
+  if (getMeta(database, 'relay_fts_backfill_done') === '1') return true;
+  // IMMEDIATE: another process may be draining the same database (every process that opens it can schedule
+  // the backfill), and two windows over the same rowids would index a row twice.
+  return database.transaction((): boolean => {
+    if (getMeta(database, 'relay_fts_backfill_done') === '1') return true;
+    const maxMeta = getMeta(database, 'relay_fts_backfill_max');
+    // A missing watermark means the index was dropped under us (see ftsBackfillStep): never stamp done.
+    if (maxMeta === null) return true;
+    const max = Number(maxMeta);
+    const progress = Number(getMeta(database, 'relay_fts_backfill_rowid') ?? '0');
+    if (progress >= max) {
+      setMeta(database, 'relay_fts_backfill_done', '1');
+      return true;
+    }
+    const upper = Math.min(progress + Math.max(1, Math.floor(span)), max);
+    const rows = database
+      .prepare('SELECT rid, body FROM relay_message_bodies WHERE rid > ? AND rid <= ? ORDER BY rid ASC')
+      .all(progress, upper) as Array<{ rid: number; body: string }>;
+    const insert = database.prepare('INSERT INTO relay_messages_fts(rowid, body) VALUES (?, ?)');
+    for (const r of rows) insert.run(r.rid, r.body);
+    setMeta(database, 'relay_fts_backfill_rowid', String(upper));
+    if (upper >= max) setMeta(database, 'relay_fts_backfill_done', '1');
+    return upper >= max;
+  }).immediate();
+}
+
+/** One backfill round over both indexes; true once both are complete. */
+function ftsBackfillRound(database: Database.Database, chunkSize: number): boolean {
+  const messagesDone = ftsBackfillStep(database, chunkSize);
+  const relaysDone = relayFtsBackfillStep(database, Math.min(chunkSize, RELAY_FTS_BACKFILL_SPAN));
+  return messagesDone && relaysDone;
 }
 
 /**
@@ -197,13 +249,17 @@ function ftsBackfillStep(database: Database.Database, chunkSize = FTS_BACKFILL_C
  * `scheduleFtsBackfill` (which yields between chunks) instead.
  */
 export function backfillFtsSync(database: Database.Database, chunkSize = FTS_BACKFILL_CHUNK): void {
-  while (!ftsBackfillStep(database, chunkSize)) {
+  while (!ftsBackfillRound(database, chunkSize)) {
     /* keep draining chunks */
   }
 }
 
 // False when the FTS boot drain fails: `searchMessages` then returns [] without touching the table.
 let ftsAvailable = true;
+
+/** Every backfill progress key, messages and relays. */
+const RESET_FTS_PROGRESS_SQL =
+  "DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max','relay_fts_backfill_done','relay_fts_backfill_rowid','relay_fts_backfill_max')";
 
 /**
  * Drop all FTS infrastructure from `database` and reset the backfill progress flags so
@@ -218,20 +274,37 @@ let ftsAvailable = true;
 export function disableFtsForProcess(database: Database.Database, reason?: unknown): void {
   const msg = reason instanceof Error ? reason.message : reason != null ? String(reason) : 'explicit disable';
   console.error(`[fts] Boot drain failed (${msg}). Disabling FTS for this process — next boot will retry.`);
-  try {
+  // One IMMEDIATE transaction for the drops AND the progress reset. Run apart, another process booting between
+  // them would migrateFtsSchema a fresh index, find the stale `*_backfill_max` still present and pin no new
+  // watermark; our DELETE would then remove the stale one, the trigger guards would fall back to `rowid > 0`,
+  // and the AD/AU triggers would send FTS 'delete' commands for rows that were never indexed (the next delete
+  // of an old row throws "database disk image is malformed"). Inside the transaction a peer sees either the old
+  // state or the fully disabled one. Already in a caller's transaction: that one gives the same guarantee.
+  const disable = (): void => {
     database.exec(`
       DROP TRIGGER IF EXISTS messages_fts_ai;
       DROP TRIGGER IF EXISTS messages_fts_ad;
       DROP TRIGGER IF EXISTS messages_fts_au;
       DROP TABLE IF EXISTS messages_fts;
+      ${DROP_RELAY_FTS}
     `);
+    try {
+      database.prepare(RESET_FTS_PROGRESS_SQL).run();
+    } catch {
+      // meta table may not exist in edge cases — not a fatal error, and a failed statement leaves the drops intact
+    }
+  };
+  try {
+    if (database.inTransaction) disable();
+    else runImmediateMigrationWithRetry(database.transaction(disable));
   } catch (dropErr) {
     console.error(`[fts] Failed to drop FTS infrastructure during disable: ${dropErr instanceof Error ? dropErr.message : dropErr}`);
-  }
-  try {
-    database.prepare("DELETE FROM meta WHERE key IN ('fts_backfill_done','fts_backfill_rowid','fts_backfill_max')").run();
-  } catch {
-    // meta table may not exist in edge cases — not a fatal error
+    // Nothing was dropped (the transaction rolled back). Still reset progress so the next boot starts from scratch.
+    try {
+      database.prepare(RESET_FTS_PROGRESS_SQL).run();
+    } catch {
+      // as above
+    }
   }
   ftsAvailable = false;
 }
@@ -241,7 +314,7 @@ const ftsBackfillPromises = new WeakMap<Database.Database, Promise<void>>();
 /**
  * Kick the one-time FTS backfill off the hot path. startGateway calls this only
  * after listen(); searchMessages calls it as a lazy fallback for library/test
- * consumers. Guarded by the persistent `fts_backfill_done` flag and a per-DB
+ * consumers. Guarded by the persistent `fts_backfill_done` / `relay_fts_backfill_done` flags and a per-DB
  * in-process promise so concurrent callers share one drain. Each chunk is its own
  * transaction with a `setImmediate` yield in between, so a large historical table
  * is seeded without blocking the event loop.
@@ -250,14 +323,16 @@ export function scheduleFtsBackfill(
   database: Database.Database = initDb(),
   chunkSize = FTS_BACKFILL_CHUNK,
 ): Promise<void> {
-  if (!ftsAvailable || getMeta(database, 'fts_backfill_done') === '1') return Promise.resolve();
+  if (!ftsAvailable || (getMeta(database, 'fts_backfill_done') === '1' && getMeta(database, 'relay_fts_backfill_done') === '1')) {
+    return Promise.resolve();
+  }
   const existing = ftsBackfillPromises.get(database);
   if (existing) return existing;
 
   const completion = new Promise<void>((resolve) => {
     const pump = (): void => {
       try {
-        if (ftsBackfillStep(database, chunkSize)) {
+        if (ftsBackfillRound(database, chunkSize)) {
           ftsBackfillPromises.delete(database);
           resolve();
           return;
@@ -328,7 +403,8 @@ function sanitizeFtsQuery(query: string): string {
 }
 
 /**
- * Full-text search over user/assistant message bodies, newest-first. `snippet`
+ * Full-text search over user/assistant message bodies and over the bodies of
+ * relayed messages and child replies (notifications), newest-first. `snippet`
  * wraps matched terms in «»; results are capped by `limit` (default 50). Triggers
  * the one-time backfill on first call so older history becomes searchable.
  *
@@ -377,24 +453,37 @@ export function searchMessages(query: string, limit = 50, filter?: MessageSearch
   }
   if (filter?.scopeDepartment) { conditions.push('s.scope_department = ?'); values.push(filter.scopeDepartment); }
   const extra = conditions.length ? ` AND ${conditions.join(' AND ')}` : '';
+  // Relayed messages and child replies are found by the body they carry, not their banner. They are
+  // notification rows, so a user/assistant role filter leaves them out.
+  const withRelays = !filter?.role;
+  // Take each branch's newest `cap` hits by rowid first, then build snippets for those rows only:
+  // snippet() in the ranking query would run over every match before the LIMIT, and a common word
+  // across thousands of long relay bodies made that take seconds while holding the event loop.
+  // CROSS JOIN keeps the limited set as the outer loop, so the FTS table is probed by rowid.
+  const hitQuery = (table: string): string => `SELECT x.messageId AS messageId,
+           x.sessionId AS sessionId,
+           snippet(${table}, 0, '«', '»', '…', 12) AS snippet,
+           x.role AS role,
+           x.timestamp AS timestamp,
+           x.employee AS employee,
+           x.engine AS engine
+         FROM (
+           SELECT m.rowid AS r, m.id AS messageId, m.session_id AS sessionId, m.role AS role,
+                  m.timestamp AS timestamp, s.employee AS employee, s.engine AS engine
+           FROM ${table} f
+           JOIN messages m ON m.rowid = f.rowid
+           LEFT JOIN sessions s ON s.id = m.session_id
+           WHERE f.${table} MATCH ?${extra}
+           ORDER BY m.timestamp DESC
+           LIMIT ?) x
+         CROSS JOIN ${table} ON ${table}.rowid = x.r
+         WHERE ${table} MATCH ?`;
+  const sql = withRelays
+    ? `SELECT * FROM (${hitQuery('messages_fts')} UNION ALL ${hitQuery('relay_messages_fts')}) ORDER BY timestamp DESC LIMIT ?`
+    : `SELECT * FROM (${hitQuery('messages_fts')}) ORDER BY timestamp DESC`;
+  const branchArgs = [match, ...values, cap, match];
   try {
-    return db
-      .prepare(
-        `SELECT m.id AS messageId,
-                m.session_id AS sessionId,
-                snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
-                m.role AS role,
-                m.timestamp AS timestamp,
-                s.employee AS employee,
-                s.engine AS engine
-         FROM messages_fts
-         JOIN messages m ON m.rowid = messages_fts.rowid
-         LEFT JOIN sessions s ON s.id = m.session_id
-         WHERE messages_fts MATCH ?${extra}
-         ORDER BY m.timestamp DESC
-         LIMIT ?`,
-      )
-      .all(match, ...values, cap) as MessageSearchResult[];
+    return db.prepare(sql).all(...(withRelays ? [...branchArgs, ...branchArgs, cap] : branchArgs)) as MessageSearchResult[];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('no such table')) return [];
@@ -829,6 +918,51 @@ export function recordChildReportedToParent(id: string, attemptToken: string): v
     SET transport_meta = json_set(COALESCE(transport_meta, '{}'), '$.reportedToParentAttempt', ?)
     WHERE id = ?
   `).run(attemptToken, id);
+}
+
+/** What kind of message from a child the parent last had. */
+export type MessageFromChildKind = "child-reply" | "child-error" | "agent-relay";
+
+export interface MessageFromChild extends FullMessageFields {
+  kind: MessageFromChildKind;
+}
+
+/**
+ * The newest message `childId` put in front of `parentId`: the automatic reply
+ * callback, its automatic error callback, or its own send_to_session. This is
+ * what the parent was last told by that child, for a caller that must not tell
+ * it again.
+ *
+ * "Last told" is the newest of those three, whatever its kind, so a caller can
+ * see that the child's last word was an error rather than a reply (`kind`).
+ * That is deliberate: the parent heard the error after any earlier reply, so
+ * the earlier reply no longer describes the child's state. Lifecycle notices
+ * (rate-limited, resumed) are not in the set: they store no body, and they say
+ * nothing about what the child answered, so they neither count as told nor
+ * move the newest message. The set must stay in step with what the callback
+ * writers record (`childNotificationMeta` in callbacks.ts, the relay row).
+ *
+ * The stored body is clipped for a long message, with the whole one's length
+ * and digest beside it. A message whose stored body is exactly `exceptBody` is
+ * passed over, so a placeholder the gateway stored in place of a reply is not
+ * mistaken for what the child said.
+ */
+export function lastMessageFromChild(parentId: string, childId: string, exceptBody?: string): MessageFromChild | undefined {
+  const db = initDb();
+  const row = db.prepare(`
+    SELECT meta
+    FROM messages
+    WHERE session_id = ?
+      AND role = 'notification'
+      AND ((json_extract(meta, '$.kind') IN ('child-reply', 'child-error') AND json_extract(meta, '$.childSessionId') = ?)
+        OR (json_extract(meta, '$.kind') = 'agent-relay' AND json_extract(meta, '$.fromSessionId') = ?))
+      AND (? IS NULL OR COALESCE(json_extract(meta, '$.fullMessage'), '') <> ?)
+    ORDER BY timestamp DESC, rowid DESC
+    LIMIT 1
+  `).get(parentId, childId, childId, exceptBody ?? null, exceptBody ?? null) as { meta?: string | null } | undefined;
+  const meta = parseMetaColumn(row?.meta ?? null);
+  const fields = meta ? readFullMessageMeta(meta) : undefined;
+  return meta && fields ? { ...fields, kind: meta["kind"] as MessageFromChildKind } : undefined;
 }
 
 /**
@@ -1786,8 +1920,8 @@ export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
   return db.prepare(
-    `UPDATE sessions SET status = 'interrupted', attempt_outcome = 'interrupted', attempt_terminal_version = attempt_terminal_version + 1, last_activity = ?, transport_meta = json_set(COALESCE(transport_meta, '{}'), '$.${RESTART_RESUME_META_KEY}', ?), last_error = CASE status WHEN 'waiting' THEN 'Interrupted: gateway restarted while session was waiting to retry' ELSE 'Interrupted: gateway restarted while session was running' END WHERE status IN ('running', 'waiting') AND workflow_kind IS NULL`,
-  ).run(now, now).changes;
+    `UPDATE sessions SET status = 'interrupted', attempt_outcome = 'interrupted', attempt_terminal_version = attempt_terminal_version + 1, last_activity = ?, transport_meta = json_set(${pausedAtMetaSql()}, '$.${RESTART_RESUME_META_KEY}', ?), last_error = CASE status WHEN 'waiting' THEN 'Interrupted: gateway restarted while session was waiting to retry' ELSE 'Interrupted: gateway restarted while session was running' END WHERE status IN ('running', 'waiting') AND workflow_kind IS NULL`,
+  ).run(now, pausedAtParam("restart"), now).changes;
 }
 
 /**
@@ -2361,7 +2495,8 @@ export interface MessageContext {
  * GRS-020a — the ±radius window around a message anchor (a search_messages
  * hit), so a search result becomes readable in place without pulling a whole
  * transcript. The radius is clamped to {@link MESSAGE_CONTEXT_MAX_RADIUS};
- * selected message bodies are returned as stored.
+ * selected message bodies are returned as stored, except that a notification
+ * reads as the full body it carries rather than its short banner.
  * Returns undefined when the message doesn't exist IN THAT SESSION (an anchor
  * from another session must not leak across).
  */
@@ -2381,15 +2516,16 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
     timestamp: number;
     seq: number | null;
     rowid: number;
+    meta: string | null;
   }
   const anchor = db
-    .prepare('SELECT id, role, content, timestamp, seq, rowid FROM messages WHERE session_id = ? AND id = ?')
+    .prepare('SELECT id, role, content, timestamp, seq, rowid, meta FROM messages WHERE session_id = ? AND id = ?')
     .get(sessionId, messageId) as Row | undefined;
   if (!anchor) return undefined;
   const aSeq = anchor.seq ?? -1;
   const before = db
     .prepare(
-      `SELECT id, role, content, timestamp, seq, rowid FROM messages
+      `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
        WHERE session_id = ?
          AND (timestamp < ?
               OR (timestamp = ? AND COALESCE(seq, -1) < ?)
@@ -2400,7 +2536,7 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
     .all(sessionId, anchor.timestamp, anchor.timestamp, aSeq, anchor.timestamp, aSeq, anchor.rowid, r) as Row[];
   const after = db
     .prepare(
-      `SELECT id, role, content, timestamp, seq, rowid FROM messages
+      `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
        WHERE session_id = ?
          AND (timestamp > ?
               OR (timestamp = ? AND COALESCE(seq, -1) > ?)
@@ -2412,7 +2548,8 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
   const messages: MessageContextEntry[] = [...before.reverse(), anchor, ...after].map((row) => ({
     id: row.id,
     role: row.role,
-    content: row.content,
+    // A notification's stored content is the web UI's banner; a reader gets the body it carries.
+    content: agentReadableContent({ role: row.role, content: row.content, meta: parseJsonObject(row.meta) }),
     timestamp: row.timestamp,
     isAnchor: row.id === messageId,
   }));
@@ -2968,9 +3105,9 @@ export function acceptSessionDelivery(
 // through the registry keep working; the rows themselves live in
 // queue-item-registry.ts.
 export {
-  enqueueQueueItem, markQueueItemRunning, markQueueItemCompleted, markRunningQueueItemsCompletedForSession,
+  enqueueQueueItem, markQueueItemRunning, markQueueItemCompleted, completePendingQueueItem, markRunningQueueItemsCompletedForSession,
   getQueueItem, cancelQueueItem, withdrawPendingQueueItem, getQueueItems, withdrawAllPendingQueueItems, recoverStaleQueueItems,
-  listAllPendingQueueItems, listPendingQueueItemIdsForSession, editPendingQueueItem, promotePendingQueueItem, type QueueItem,
+  listAllPendingQueueItems, listPendingQueueItemIdsForSession, editPendingQueueItem, promotePendingQueueItem, movePendingQueueItemToHead, type QueueItem,
 } from './queue-item-registry.js';
 // ── File management ──────────────────────────────────────────────────
 // Kept re-exported here so the many callers that reach for a file through the

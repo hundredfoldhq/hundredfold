@@ -1,4 +1,4 @@
-import type { EngineResult, EngineRunOpts, StreamDelta } from "../shared/types.js";
+import type { EngineResult, EngineRunOpts, SteerOutcome, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { USER_STOP_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { OpencodeTurn } from "./opencode-turn.js";
@@ -18,8 +18,8 @@ import { fallbackModelNotice, requestedModel, stepModel } from "./opencode-fallb
 import { abandonedRetryError, providerFailureReason, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
 import { isAbortError, record, runLinesFromStoredReply, str, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
 import { cancelledV2Requests, HUNDREDFOLD_V2_PROMPT_METADATA, hundredfoldSessionNotes, type HundredfoldSessionNotes } from "./opencode-v2-history.js";
-import { sessionRoute, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes } from "./opencode-v2-api.js";
-import { RESEED_PREAMBLE } from "./opencode-server-compaction.js";
+import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes, v2WithdrawInbox } from "./opencode-v2-api.js";
+import { RESEED_PREAMBLE, retryReseed } from "./opencode-server-compaction.js";
 import { sameModelRef, unsupportedServerFlags, variantOf, type V2ModelRef } from "./opencode-variant.js";
 
 /**
@@ -76,13 +76,15 @@ function reportKey(line: string): string | undefined {
 
 /** The replies (assistant items) answering `prompt`, oldest first, from a
  *  history listed newest first: what follows the prompt up to the next input
- *  someone else sent. */
-export function ownStoredReplies(newestFirst: V2Message[], prompt: string): V2Message[] {
+ *  someone else sent. Inputs steered into the turn (`steered`) are not
+ *  someone else's. */
+export function ownStoredReplies(newestFirst: V2Message[], prompt: string, steered: ReadonlySet<string> = new Set()): V2Message[] {
   const replies: V2Message[] = [];
   let ours = false;
   for (const message of [...newestFirst].reverse()) {
     const id = str(message.id) ?? "";
-    if (id === prompt) ours = true;
+    // An input steered into the turn is part of it: the steps after it are the turn's too.
+    if (id === prompt || steered.has(id)) ours = true;
     else if (message.type === "user" || message.type === "compaction") ours = false;
     else if (ours && message.type === "assistant") replies.push(message);
   }
@@ -108,6 +110,13 @@ export class OpencodeV2ServerTurn {
   private readonly queuedByOthers = new Set<string>();
   /** The turn's prompt has been delivered. */
   private delivered = false;
+  /** Inputs steered into the turn (see steer) the server has not yet delivered. */
+  private readonly pendingSteers = new Map<string, PendingSteer>();
+  /** The turn is waiting for a steer past the end of its execution (see onExecutionEnded). */
+  private afterExecutionSteer = false;
+  /** Every input posted by steer, delivered or not: the store lists a delivered
+   *  one as a user item, which does not end the turn's replies (ownStoredReplies). */
+  private readonly steeredIds = new Set<string>();
   /** Assistant messages (one per step) answering the turn. */
   private readonly own = new Set<string>();
   /** The newest step in the session, whoever's. */
@@ -136,6 +145,9 @@ export class OpencodeV2ServerTurn {
   private streamErred = false;
   private missedIdle = false;
   private statusPoll?: NodeJS.Timeout;
+  /** opencode compacted the session while the turn ran (`session.compaction.ended`): the summary replaced
+   *  the first message, which is where Hundredfold's system prompt rides. */
+  private compacted = false;
 
   constructor(
     private readonly server: OpencodeServer,
@@ -150,6 +162,9 @@ export class OpencodeV2ServerTurn {
   interrupt(reason: string): Promise<void> {
     if (this.interrupting) return this.interrupting;
     this.terminationReason = reason;
+    // A steer still being posted must not reach a server that is being stopped: with no
+    // execution running, the server would start one for it and run it unattended.
+    for (const pending of this.pendingSteers.values()) pending.abortPost();
     this.interrupting = this.stopOnServer()
       .then(() => (reason === USER_STOP_INTERRUPTION_REASON ? this.noteStoppedByUser() : undefined))
       .finally(() => this.finish());
@@ -158,6 +173,109 @@ export class OpencodeV2ServerTurn {
 
   isSettled(): boolean {
     return this.settled;
+  }
+
+  /**
+   * A new input can be handed to this turn now: its own prompt has been
+   * delivered and is still the input running (`ownInput`), and the turn is not
+   * over (settled) or being stopped (`interrupting`, which a kill and a
+   * timeout both set at once).
+   */
+  canSteer(): boolean {
+    return this.ownInput && !this.settled && !this.interrupting;
+  }
+
+  /**
+   * Hand `text` to the running turn as a steered input (`delivery: "steer"`):
+   * 2.x adds it to the running input at the next step, and the model answers it
+   * in the same execution, so the steps after it are this turn's reply.
+   *
+   * Resolves `"steered"` once the server has delivered the input while the
+   * turn is live, and `"withdrawn"` when it could not be given to the turn:
+   * the post failed, or the turn ended without taking it in and it was taken
+   * back out of the inbox. An input the turn ended without hearing delivered,
+   * and that is no longer in the inbox, was delivered elsewhere: `"steered"`
+   * again, so it is not run a second time. Never rejects, and changes nothing
+   * in what `run()` returns.
+   *
+   * What opencode 2.0.32 does with a steer (real binary, opencode-v2-e2e.test.ts):
+   *
+   * - during a tool call it is delivered at the next step of the SAME execution
+   *   (one `idle` closes both inputs), and the model's next request carries it
+   *   after the tool's result;
+   * - during the last step it is delivered right after that step ends, in the
+   *   same execution (`session.inbox.delivered` in the millisecond of
+   *   `session.step.ended`), and one more step answers it. The turn therefore
+   *   stays open for it (endOrAwaitSteer) instead of ending with the step and
+   *   losing the answer;
+   * - with no execution running it starts one at once, so nothing waits in the
+   *   inbox: a steer that reaches the server after the turn's execution ended
+   *   runs on its own, which is why the engine only steers a turn whose input
+   *   is still the one running (canSteer);
+   * - a steer still waiting when the turn is stopped stays in the inbox after
+   *   the interrupt, and nothing runs it: it is taken back out (settleSteers).
+   */
+  async steer(text: string): Promise<SteerOutcome> {
+    if (!this.canSteer()) return "withdrawn";
+    const id = newMessageId();
+    let resolve!: (outcome: SteerOutcome) => void;
+    const outcome = new Promise<SteerOutcome>((r) => { resolve = r; });
+    // Known before the post, so its events and the end of the turn find it.
+    const posting = new AbortController();
+    const pending: PendingSteer = { resolve, posted: Promise.resolve(false), failed: false, abortPost: () => posting.abort() };
+    this.pendingSteers.set(id, pending);
+    this.steeredIds.add(id);
+    pending.posted = v2Request(this.server, "POST", sessionRoute(this.sessionId, "/prompt"), {
+      id,
+      text,
+      metadata: HUNDREDFOLD_V2_PROMPT_METADATA,
+      delivery: "steer",
+    }, AbortSignal.any([posting.signal, AbortSignal.timeout(V2_REQUEST_TIMEOUT_MS)])).then(() => true, (err: unknown) => {
+      // From here nothing is on its way to the turn: it is being taken back, not waited for.
+      pending.failed = true;
+      logger.warn(`opencode server turn could not steer an input into ${this.sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
+    if (!(await pending.posted) && this.pendingSteers.get(id) === pending) {
+      // A post that timed out may still have been taken: do not leave it to run unattended.
+      await this.takeBack(id);
+      this.pendingSteers.delete(id);
+      this.steeredIds.delete(id);
+      pending.resolve("withdrawn");
+    }
+    return outcome;
+  }
+
+  /** Take an undelivered steered input back out of the inbox, within the end-of-turn bound. */
+  private async takeBack(id: string): Promise<SteerOutcome> {
+    try {
+      // Only an input found gone from the inbox was taken by the server: a delete
+      // that failed with the input still listed (or the inbox unreadable) is not.
+      const outcome = await within(v2WithdrawInbox(this.server, this.sessionId, id), SERVER_TURN_TIMING.steerWithdrawMs);
+      return outcome === "delivered" ? "steered" : "withdrawn";
+    } catch {
+      return "withdrawn";
+    }
+  }
+
+  /** The turn is over: every steered input it never heard delivered is taken
+   *  back out (`"withdrawn"`), or was taken by the server already (`"steered"`).
+   *  A post the server has not answered by the bound is abandoned and the inbox
+   *  checked anyway, in case the server took it: whatever is found is taken
+   *  out and the input is `"withdrawn"`, so it runs once, with the caller.
+   *  Bounded, so a dead or slow server does not hold the turn's result. */
+  private async settleSteers(): Promise<void> {
+    await Promise.all([...this.pendingSteers].map(async ([id, pending]) => {
+      this.pendingSteers.delete(id);
+      const posted = await within(pending.posted, SERVER_TURN_TIMING.steerWithdrawMs).catch(() => undefined);
+      if (posted === undefined) {
+        pending.abortPost();
+        await this.takeBack(id);
+        pending.resolve("withdrawn");
+        return;
+      }
+      pending.resolve(posted ? await this.takeBack(id) : "withdrawn");
+    }));
   }
 
   /**
@@ -182,6 +300,8 @@ export class OpencodeV2ServerTurn {
       this.settle.cancel();
       this.controller.abort();
     }
+    await this.settleSteers();
+    const reseedNotice = await this.noteNativeCompaction();
     const result = this.failedTurn(this.turn.result({
       code: this.failure ? 1 : 0,
       terminationReason: this.terminationReason,
@@ -189,7 +309,26 @@ export class OpencodeV2ServerTurn {
       failure: this.failure ?? undefined,
       noAnswer: this.noAnswer(),
     }));
-    return this.ranOn ? { ...result, notices: [fallbackModelNotice(this.ranOn)] } : result;
+    const notices = [...(this.ranOn ? [fallbackModelNotice(this.ranOn)] : []), ...(reseedNotice ? [reseedNotice] : [])];
+    return notices.length ? { ...result, notices } : result;
+  }
+
+  /**
+   * opencode compacted the session by itself during this turn (it does when a
+   * step's context crosses the model's budget), which summarized the system
+   * prompt away. Note on the session that the next prompt owes it again, as after
+   * a compaction Hundredfold started (opencode-v2-compaction.ts). Nothing is noted
+   * for a turn that did not compact. Returns the notice the session is owed when
+   * the note could not be written.
+   */
+  private async noteNativeCompaction(): Promise<string | undefined> {
+    if (!this.compacted || !this.opts.systemPrompt || !this.sessionId) return undefined;
+    logger.info(`opencode compacted session ${this.sessionId} during a turn: its next prompt carries the system prompt again`);
+    return retryReseed(
+      this.sessionId,
+      async () => { await v2UpdateSessionNotes(this.server, this.sessionId, (notes) => ({ ...notes, reseed: true })); },
+      () => false,
+    );
   }
 
   /** As 1.x: a usage window says when it ends, and a prompt the server took
@@ -423,7 +562,7 @@ export class OpencodeV2ServerTurn {
   /** The stream did not say how the turn ended: read its replies from the store. */
   private async recover(): Promise<void> {
     const history = await v2Messages(this.server, this.sessionId, HISTORY_LIMIT);
-    const replies = ownStoredReplies(history, this.promptId);
+    const replies = ownStoredReplies(history, this.promptId, this.steeredIds);
     if (replies.length) this.ownReply = replies.at(-1);
     if (!replies.length && !(await this.mayStillRun())) {
       this.turn.readLine(JSON.stringify({ type: "error", sessionID: this.sessionId, error: PROMPT_NOT_RUN }), this.onStream);
@@ -506,6 +645,7 @@ export class OpencodeV2ServerTurn {
       if (this.runsOwnReply() && !this.terminationReason) this.feed(this.lines.lineFor(event));
       this.onExecutionEnded();
     },
+    "session.compaction.ended": () => { this.compacted = true; },
     "session.created": (data) => this.adoptChild(data),
     "permission.asked": (data) => this.answerPermission(data),
     "form.created": (data) => this.dismissForm(record(data.form) ?? {}),
@@ -553,10 +693,26 @@ export class OpencodeV2ServerTurn {
    *   have been steered.
    *
    * Only an input someone else queued after the turn's own ends it: that runs
-   * once the turn's reply is done.
+   * once the turn's reply is done. An input the turn steered in itself (see
+   * steer) is never that, even if the operator's terminal toggles it to
+   * queue (which records it in `queuedByOthers`): its delivery is taken first,
+   * answers the caller and moves nothing else.
    */
   private onDelivered(data: Record<string, unknown>): void {
     const id = str(data.inboxID) ?? "";
+    const steered = this.pendingSteers.get(id);
+    if (steered) {
+      this.pendingSteers.delete(id);
+      steered.resolve("steered");
+      // One taken in after the execution ended started an execution of its own: its
+      // steps are the turn's reply, as for one taken in mid-turn.
+      if (this.afterExecutionSteer) this.ownInput = true;
+      this.afterExecutionSteer = false;
+      // Delivered: the step that answers it is next, and the execution's end ends the turn.
+      this.settle.cancel("steer");
+      logger.info(`opencode server turn in ${this.sessionId} had its steered input taken in (${id})`);
+      return;
+    }
     if (id === this.promptId) {
       this.ownInput = true;
       this.delivered = true;
@@ -634,13 +790,32 @@ export class OpencodeV2ServerTurn {
   private onExecutionEnded(): void {
     if (!this.posting) return;
     this.ownInput = false;
-    if (this.lastAnswer === "text" && !this.newestOwnOpen) return this.finish();
+    // A steer whose post the server has not answered may still land: with no execution
+    // running the server starts one for it at once, so it is waited for like one
+    // that arrives during the last step, not left to run unwatched after the turn.
+    if (this.lastAnswer === "text" && !this.newestOwnOpen) return this.endOrAwaitSteer(true);
     this.settle.arm("idle", SERVER_TURN_TIMING.closeWaitMs);
   }
 
   private onReplyEnded(): void {
-    if (this.lastAnswer === "text") return this.finish();
+    if (this.lastAnswer === "text") return this.endOrAwaitSteer();
     if (this.settle.pending !== "idle") this.settle.arm("done", SERVER_TURN_TIMING.closeWaitMs);
+  }
+
+  /**
+   * The turn's reply is done. An input steered into the turn that is not
+   * delivered yet is on its way: 2.0.32 takes a steer that arrives during the
+   * last step in right after that step, in the same execution, and runs one
+   * more step to answer it. So the turn stays open a moment for it (bounded:
+   * `onSettled` ends it, and settleSteers takes back what never came). The
+   * answer is then the turn's, as for a steer that arrived mid-tool.
+   */
+  private endOrAwaitSteer(executionEnded = false): void {
+    // An input whose post already failed is being taken back; nothing of it is coming.
+    if ([...this.pendingSteers.values()].some((steer) => !steer.failed)) {
+      this.afterExecutionSteer = executionEnded;
+      this.settle.arm("steer", SERVER_TURN_TIMING.steerWaitMs);
+    } else this.finish();
   }
 
   /** The session is running the turn's input: a session-wide event (a
@@ -725,6 +900,26 @@ export class OpencodeV2ServerTurn {
     this.settle.cancel();
     this.resolveDone();
   }
+}
+
+/** An input handed to the running turn that the server has not delivered yet. */
+interface PendingSteer {
+  resolve: (outcome: SteerOutcome) => void;
+  /** Whether the server took the post. */
+  posted: Promise<boolean>;
+  /** The post failed: the input is being taken back and is not on its way. */
+  failed: boolean;
+  /** Give up on a post the server has not answered. */
+  abortPost: () => void;
+}
+
+/** `work`'s result, or a rejection once `ms` has passed. */
+function within<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer within ${ms}ms`)), ms);
+    timer.unref?.();
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 /** One SSE block as an event; heartbeats (comments) and junk are undefined. */

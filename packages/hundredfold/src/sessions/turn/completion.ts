@@ -50,6 +50,8 @@ export interface SettleTurnInput {
   /** Interrupters pass false — they report the interrupt themselves. The status
    *  reconciler, the interrupt nobody is left to report, keeps the default. */
   notifyParent?: boolean;
+  /** The turn was answered after a usage limit, so a reply that repeats the one the parent already has is not relayed again. */
+  afterLimit?: boolean;
   surface: TurnSurface;
 }
 
@@ -86,7 +88,7 @@ export async function settleTurn(input: SettleTurnInput): Promise<Session | unde
     durationMs: input.durationMs,
   };
   if (input.notifyParent !== false) {
-    await notifyParentSessionAndWait(settled, report, { alwaysNotify: input.employee?.alwaysNotify });
+    await notifyParentSessionAndWait(settled, report, { alwaysNotify: input.employee?.alwaysNotify, afterLimit: input.afterLimit });
   }
   await input.surface.settled({ session: settled, ...report });
   return settled;

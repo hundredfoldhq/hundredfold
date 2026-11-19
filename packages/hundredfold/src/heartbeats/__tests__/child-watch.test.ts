@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { writeAutoStartRow } from "../../work-items/auto-start.js";
+import { employeeSessionsTable } from "../../work-items/employee-sessions.js";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-child-watch-"));
 process.env.HUNDREDFOLD_HOME = home;
@@ -37,6 +38,10 @@ beforeEach(() => {
 let seq = 0;
 function session(parentSessionId?: string) {
   return registry.createSession({ engine: "claude", source: "web", sourceRef: `cw-${++seq}`, parentSessionId });
+}
+
+function orchestrator(employee: string) {
+  return registry.createSession({ engine: "claude", source: "web", sourceRef: `cw-${++seq}`, employee }).id;
 }
 
 function armed(sessionId: string) {
@@ -76,8 +81,17 @@ describe("armChildWatch", () => {
     });
     expect(heartbeat!.message).toBe(
       "Child check (armed by the gateway because you have open child work): run get_work_item_tree on your Todo " +
-      "and read the child sessions you started; act on any child that has settled. If nothing needs you, end your turn.",
+      "and read the child sessions you started; act on any child that has settled. If nothing needs you, reply with " +
+      "just NO_CHANGE and end your turn: that reply stays here, and the session you report to is not woken for it.",
     );
+  });
+
+  it("brings an older build's message up to date when it pushes the expiry", () => {
+    const owner = session().id;
+    watch.armChildWatch(owner, 1_000_000);
+    db.prepare("UPDATE heartbeats SET message = 'old text' WHERE owner_session_id = ?").run(owner);
+    watch.armChildWatch(owner, 2_000_000);
+    expect(armed(owner)[0]!.message).toBe(watch.CHILD_WATCH_MESSAGE);
   });
 
   it("does not duplicate on a second trigger and pushes the expiry", () => {
@@ -191,6 +205,65 @@ describe("openChildrenOf", () => {
     expect(watch.openChildrenOf(owner).todoIds.sort()).toEqual([dispatched.id, parked.id].sort());
   });
 
+  it("ignores a child blocked on the operator, beside parked backlog children", () => {
+    const owner = session().id;
+    const blocked = childTodo(owner, "executing", "@operator");
+    db.prepare("UPDATE work_items SET status = 'blocked' WHERE id = ?").run(blocked.id);
+    const parked = childTodo(owner, "backlog");
+    setAutoStart(parked.id, false);
+    expect(watch.openChildrenOf(owner)).toEqual({ todoIds: [], sessionIds: [] });
+  });
+
+  it("looks through an executing sub-Todo the session works itself, to that Todo's own children", () => {
+    // An orchestrator linked to a parent Todo splits its work into a sub-Todo,
+    // moves it to executing itself and parks the sub-Todo's children. Nothing
+    // there is anyone else's to move, so there is nothing to watch.
+    const owner = orchestrator("principal");
+    const linked = workItems.createWorkItem({ title: "linked parent", source: "human" });
+    db.prepare("UPDATE sessions SET work_item_id = ? WHERE id = ?").run(linked.id, owner);
+    const own = workItems.createWorkItem({
+      title: "own", source: "session", sourceRef: `session:${owner}:own`, parentId: linked.id, status: "executing", assignee: "principal",
+    });
+    const parked = workItems.createWorkItem({
+      title: "parked", source: "session", sourceRef: `session:${owner}:p`, parentId: own.id, status: "backlog", assignee: "worker",
+    });
+    setAutoStart(parked.id, false);
+    const settled = workItems.createWorkItem({ title: "settled", source: "human", parentId: own.id, status: "executing", assignee: "@operator" });
+    db.prepare("UPDATE work_items SET status = 'blocked' WHERE id = ?").run(settled.id);
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([]);
+
+    // A child of that sub-Todo someone else is working is still watched, even one the session did not create.
+    const working = workItems.createWorkItem({ title: "working", source: "human", parentId: own.id, status: "executing", assignee: "worker" });
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([working.id]);
+  });
+
+  it("still watches an executing child of its own employee that another session works", () => {
+    const owner = orchestrator("principal");
+    const delegated = childTodo(owner, "executing", "principal");
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([]);
+    const other = orchestrator("principal");
+    db.prepare("UPDATE sessions SET work_item_id = ? WHERE id = ?").run(delegated.id, other);
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([delegated.id]);
+  });
+
+  it("still watches an executing child of its own employee that a delegation recorded for another session", () => {
+    const owner = orchestrator("principal");
+    const delegated = childTodo(owner, "executing", "principal");
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([]);
+    const other = orchestrator("principal");
+    employeeSessionsTable().prepare(`
+      INSERT INTO work_item_employee_sessions (work_item_id, employee, session_id, delegator_session_id, delegated_at, updated_at)
+      VALUES (?, 'principal', ?, ?, ?, ?)
+    `).run(delegated.id, other, owner, new Date().toISOString(), new Date().toISOString());
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([delegated.id]);
+  });
+
+  it("still watches an executing child the session works itself when it is another employee's", () => {
+    const owner = orchestrator("principal");
+    const theirs = childTodo(owner, "executing", "senior");
+    expect(watch.openChildrenOf(owner).todoIds).toEqual([theirs.id]);
+  });
+
   it("counts in-flight child sessions only", () => {
     const owner = session().id;
     const running = session(owner);
@@ -230,6 +303,19 @@ describe("child-watch firing", () => {
     setAutoStart(unassigned.id, false);
     const optedOut = childTodo(owner, "backlog");
     setAutoStart(optedOut.id, false);
+    watch.armChildWatch(owner, 0);
+    const id = armed(owner)[0]!.id;
+    const deliver = vi.fn();
+    expect(scheduler.sweepOnce({ now: () => 3_600_001, deliver })).toBe(0);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(store.getHeartbeat(id)).toMatchObject({ status: "disarmed", disarmedReason: "children-settled" });
+  });
+
+  it("delivers nothing to an orchestrator whose only open child is its own executing sub-Todo", () => {
+    const owner = orchestrator("principal");
+    const own = childTodo(owner, "executing", "principal");
+    const blocked = workItems.createWorkItem({ title: "blocked", source: "human", parentId: own.id, status: "executing", assignee: "@operator" });
+    db.prepare("UPDATE work_items SET status = 'blocked' WHERE id = ?").run(blocked.id);
     watch.armChildWatch(owner, 0);
     const id = armed(owner)[0]!.id;
     const deliver = vi.fn();

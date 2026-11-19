@@ -121,6 +121,15 @@ The compaction is the engine's own: Claude Code's `/compact`, or opencode's summ
 
 A session can also move itself to another engine, Claude profile or model through `compact_session`; see [Switching a running session](session-fallback-mode.md#switching-a-running-session).
 
+### The instructions survive every compaction we start
+
+A compacted session comes back under the same instructions a fresh one of its employee starts with (persona, operating rules, session context, and a scoped department's own scope), whether the compaction was auto, the operator's `/compact`, or the session's own `compact_session`. Nothing is pasted into the resume turn, so a compaction does not cost the instructions again.
+
+- **Claude.** The system prompt is given at spawn and sits outside the conversation, so a summary cannot drop it. Claude Code also reads the working directory's `CLAUDE.md` again after compacting, which for a scoped department is the department's own file, not the root one. Checked live on Claude Code 2.1.328: a fact present only in the appended system prompt, and one present only in `CLAUDE.md`, were both answered correctly after `/compact` with no file read.
+- **opencode (server mode).** The system prompt travels in the first user message, which a summary replaces, so the compaction puts it back itself: 1.x posts it again straight after the summary; 2.x prefixes the next prompt with it. The same holds when opencode compacts a session on its own, as it does once a turn's context crosses the model's budget: 1.x posts the system prompt once the turn has settled (and before the next prompt, if the session's history still shows a compaction with no re-seed after it); 2.x notes it on the session for the prompt after. A turn that did not compact sends nothing. A re-seed that fails is retried, and if it still fails the session is told in a notice.
+
+The resume turn after a compaction is therefore only the handoff, verbatim (`compact_session`) or, after an auto-compaction, the message that was waiting.
+
 There is no handoff here, unlike `compact_session`. The session did not choose the moment, so it had nothing to write. Agents are told this in the template `CLAUDE.md`: when they pause long work, they should leave its state somewhere a summary will keep it.
 
 ## Checking the saving

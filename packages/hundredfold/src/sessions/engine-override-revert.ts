@@ -10,9 +10,35 @@ import { accountOverride } from "./session-account.js";
 import { isAutoResume } from "./session-fallback.js";
 import { extendSpentWindow, ownTargetClearedSince } from "./engine-override-window.js";
 import type { Employee, HundredfoldConfig, Session } from "../shared/types.js";
-import { getEngineSessionRef, nextEngineSessionFields, updateSession } from "./registry.js";
+import { getEngineSessionRef, getSession, nextEngineSessionFields, updateSession } from "./registry.js";
 import { withoutRun } from "./fallback-run.js";
 import { SYNC_MODE_META_KEY } from "./sync-markers.js";
+import { withLeftBackgroundTasksOf } from "./left-background-tasks.js";
+
+/** Told when a revert has moved a session off the engine it stood on: the session id and the engine it left. */
+type EngineTargetMovedListener = (sessionId: string, fromEngine: string) => void;
+
+const movedListeners = new Set<EngineTargetMovedListener>();
+
+/**
+ * Register to hear of every revert that moves a session back to its own target, after the row is
+ * written. The gateway releases the engine process the session left from it, so the background
+ * tasks that process held are recorded for the turn that runs next. Returns the way to unregister.
+ */
+export function onEngineTargetMoved(listener: EngineTargetMovedListener): () => void {
+  movedListeners.add(listener);
+  return () => { movedListeners.delete(listener); };
+}
+
+function announceMoved(sessionId: string, fromEngine: string): void {
+  for (const listener of movedListeners) {
+    try {
+      listener(sessionId, fromEngine);
+    } catch (error) {
+      logger.warn(`Session ${sessionId}: a listener for leaving ${fromEngine} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
 /** When a swap made now would end: a standing swap's window, which a nested one
  *  keeps, else `undefined` (the new swap's own `until` applies). */
@@ -198,7 +224,15 @@ export function maybeRevertEngineOverride(session: Session, employee?: Employee,
     `Session ${session.id}: ${parked.engine}'s stand-in ${parked.until.getTime() > Date.now() ? "ended before its window closed at" : "window ended at"} ${parked.until.toISOString()} — `
     + `moving back from ${session.engine} to ${parked.engine}${parked.model ? ` (model: ${parked.model})` : ""}`,
   );
-  return updateSession(session.id, {
+  return applyRevert(session, parked, { meta, thread, preserved });
+}
+
+/** Write the revert, then tell the listeners the session has left the engine it stood on. */
+function applyRevert(
+  session: Session, parked: ParkedOverride, parts: { meta: Record<string, unknown>; thread: string | null; preserved: ReturnType<typeof nextEngineSessionFields> | Record<string, never> },
+): Session {
+  const { meta, thread, preserved } = parts;
+  const reverted = updateSession(session.id, {
     ...preserved,
     engine: parked.engine,
     engineSessionId: thread,
@@ -206,7 +240,13 @@ export function maybeRevertEngineOverride(session: Session, employee?: Employee,
     // A stand-in's turns overwrote the meter with its own thread's size; the
     // thread coming back is the one the parked reading measured.
     ...restoredMeter(session, parked),
-    transportMeta: revertedMeta(meta, session, parked, thread) as never,
+    // The tasks the row holds now, not the snapshot's: one recorded since it was read is still owed.
+    transportMeta: withLeftBackgroundTasksOf(revertedMeta(meta, session, parked, thread), getSession(session.id)?.transportMeta) as never,
     lastError: null,
-  }) ?? session;
+  });
+  if (!reverted) return session;
+  announceMoved(session.id, session.engine);
+  // Read again: the listeners may have written to the row (the tasks the engine left held), and a caller
+  // that wrote its own copy of the meta back would drop them.
+  return getSession(session.id) ?? reverted;
 }

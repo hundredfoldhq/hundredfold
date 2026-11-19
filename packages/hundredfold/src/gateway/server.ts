@@ -23,6 +23,7 @@ import { createRuntimeActivityHandler } from "./runtime-activity.js";
 import { getPackageVersion } from "../shared/version.js";
 import { PRODUCT_NAME, productBanner } from "../shared/brand.js";
 import { handleLostBackgroundTasks } from "../sessions/lost-background-tasks.js";
+import { releaseEngineOnMove } from "../sessions/engine-move-release.js";
 import { acknowledgeRestartRequesters, backgroundWorkAtShutdown, interruptRunningSessionsForShutdown, recordSessionsRunningAtBoot, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { initDb } from "../shared/db.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -58,6 +59,7 @@ import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids, recordedByAnotherHome, gatewayBaseUrl } from "./gateway-info.js";
 import { authenticateGatewayRequest, authRequiredForRequest, ensureGatewayAuthToken, shouldRequireGatewayAuth, validateGatewayExposure, verifyGatewayAuth } from "./auth.js";
 import { reconcileWorkItemsOnStartup, startWorkItemReconciler } from "../work-items/reconcile.js";
+import { registerLiveSessionQueue } from "../sessions/owed-turns.js";
 import { setTodoLiveEmitter, setTodoStatusChangeListener } from "../work-items/live-events.js";
 import { cleanupSessionSettings } from "../shared/claude-settings.js";
 import { bootClaudeProfiles } from "./claude-profile-boot.js";
@@ -886,9 +888,12 @@ export async function startGateway(
   // a respawn, a crash) is never re-invoked by them: ask it to carry on. Not
   // while shutting down, when the restart record nudges what the shutdown kills.
   let shuttingDown = false;
-  interactiveClaudeEngine.onLostBackgroundTasks((sessionId, tasks, deliberate) => {
-    if (!shuttingDown) handleLostBackgroundTasks(sessionId, tasks, deliberate);
+  interactiveClaudeEngine.onLostBackgroundTasks((sessionId, tasks, cause) => {
+    if (!shuttingDown) handleLostBackgroundTasks(sessionId, tasks, cause);
   });
+
+  // A session handed back to its own target leaves the stand-in's process behind: release it as a move.
+  releaseEngineOnMove(engines);
 
   // Unsolicited-Stop consumer: a Stop hook nobody claims within the registry's
   // grace delay means a PTY-native turn (typed straight into the CLI/xterm
@@ -1300,6 +1305,14 @@ export async function startGateway(
   // keep the stagger they were planned with instead of being flushed at once.
   resumeRestartInterruptedSessions(restartRecordGateway);
 
+  // The replay and the nudge plan are done: from here a queue row counts toward a
+  // Todo's in-flight evidence only while the live queue holds it (sessions/owed-turns.ts).
+  // Before this the evidence reads the rows themselves, the turns the boot is about to start.
+  registerLiveSessionQueue({
+    holds: (itemId) => sessionManager.getQueue().hasInFlightItem(itemId),
+    isPaused: (sessionKey) => sessionManager.getQueue().isPaused(sessionKey),
+  });
+
   // Prevent macOS from sleeping while the gateway is running
   let caffeinate: ChildProcess | null = null;
   if (process.platform === "darwin") {
@@ -1321,7 +1334,7 @@ export async function startGateway(
     shuttingDown = true;
 
     // Stop the periodic sweeps before we start marking sessions interrupted below — a mid-shutdown sweep must not race the teardown.
-    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopLateralSendWatch(); stopSessionSchedulers();
+    registerLiveSessionQueue(undefined); stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopTodoTreeWake(); stopTodoQuietWatch(); stopLateralSendWatch(); stopSessionSchedulers();
     backgroundRefreshes.stop(); stopCommentRouting(); stopBoardHooks();
 
     // Stop caffeinate

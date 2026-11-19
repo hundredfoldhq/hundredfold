@@ -58,6 +58,12 @@ interface Case {
   firstPromptTokens: number;
   limit: { context: number; output: number; input?: number };
   reserved?: number;
+  /** Hundredfold's own `/compact` between the two turns, every turn carrying this system prompt. */
+  compactWith?: string;
+  /** A system prompt on every turn, with no `/compact` of Hundredfold's own. */
+  systemPrompt?: string;
+  /** Run a third turn after the second and report the requests it made. */
+  thirdTurn?: boolean;
 }
 
 interface StoredMessage {
@@ -73,6 +79,8 @@ interface Observed {
   summaries: number;
   requests: Array<{ kind: string; body: string }>;
   kinds: string[];
+  /** With `thirdTurn`: the whole request log once it has run. */
+  afterwards?: { turn3: EngineResult; requests: Array<{ kind: string; body: string }> };
 }
 
 async function runCase(c: Case): Promise<Observed> {
@@ -118,15 +126,21 @@ async function runCase(c: Case): Promise<Observed> {
 
   try {
     for (let i = 0; i < 50 && !(await canConnect(port)); i += 1) await sleep(100);
-    const turn1 = await engine.run(opts({ prompt: "Say hello in one word." }));
-    const turn2 = await engine.run(opts({ prompt: "Say goodbye in one word.", resumeSessionId: turn1.sessionId }));
+    const systemPrompt = c.compactWith ?? c.systemPrompt;
+    const turn1 = await engine.run(opts({ prompt: "Say hello in one word.", systemPrompt }));
+    if (c.compactWith) {
+      const compacted = await engine.run(opts({ prompt: "/compact", resumeSessionId: turn1.sessionId, systemPrompt }));
+      if (compacted.error) throw new Error(`the compaction failed: ${compacted.error}`);
+    }
+    const turn2 = await engine.run(opts({ prompt: "Say goodbye in one word.", resumeSessionId: turn1.sessionId, systemPrompt }));
 
     const server = pool.get(sessionId)!;
     const messages = (await (await fetch(`${server.apiUrl}/session/${turn1.sessionId}/message`, {
       headers: { authorization: basicAuthHeader(server.password) },
     })).json()) as StoredMessage[];
-    const requests = fs.readFileSync(mockLog, "utf8").trim().split("\n").filter(Boolean)
+    const readRequests = () => fs.readFileSync(mockLog, "utf8").trim().split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as { kind: string; body: string });
+    const requests = readRequests();
     const kinds = requests.map((r) => r.kind);
     const observed: Observed = {
       turn1,
@@ -137,6 +151,10 @@ async function runCase(c: Case): Promise<Observed> {
       requests,
       kinds,
     };
+    if (c.thirdTurn) {
+      const turn3 = await engine.run(opts({ prompt: "Say it once more.", resumeSessionId: turn1.sessionId, systemPrompt }));
+      observed.afterwards = { turn3, requests: readRequests() };
+    }
     const line = `[opencode-compaction-e2e] ${c.label} firstPromptTokens=${c.firstPromptTokens} limit=${JSON.stringify(c.limit)} `
       + `reserved=${c.reserved ?? "-"} compactionParts=${JSON.stringify(observed.compactionParts.map((p) => ({ auto: p.auto })))} `
       + `summaryMessages=${observed.summaries} requests=${kinds.join(",")} `
@@ -194,5 +212,46 @@ describe.skipIf(!RUN)("opencode native auto-compaction (Hundredfold server path)
     expect(o.compactionParts).toEqual([expect.objectContaining({ auto: true })]);
     expect(o.summaries).toBe(1);
     expect(o.turn2.error).toBeUndefined();
+  });
+
+  it("puts the system prompt back in front of the model after Hundredfold's own /compact", async () => {
+    const persona = "You are Pirate Bob. The harbour password is KESTREL-17.";
+    const o = await runCase({ label: "hundredfold-compact", firstPromptTokens: 1_000, limit: NO_INPUT_LIMIT, compactWith: persona });
+    expect(o.turn2.error).toBeUndefined();
+    expect(o.kinds.filter((k) => k === "summary")).toHaveLength(1);
+    const mains = o.requests.filter((r) => r.kind === "main");
+    // Turn 1 carried the system prompt as part of its first message, which the summary then replaced.
+    expect(mains[0]!.body).toContain(persona);
+    // The request after the compaction has the summary, the re-seeded system prompt once, and the new prompt.
+    const last = mains.at(-1)!.body;
+    expect(last).toContain("Summary: the user asked for short replies");
+    expect(last).not.toContain("Say hello in one word.");
+    expect(last.split(persona)).toHaveLength(2);
+    expect(last).toContain("Say goodbye in one word.");
+  });
+});
+
+describe.skipIf(!RUN)("opencode native auto-compaction keeps the system prompt (Hundredfold server path)", { timeout: 240_000 }, () => {
+  const persona = "You are Pirate Bob. The harbour password is KESTREL-17.";
+
+  it("puts the system prompt back, once, after opencode compacts the session itself", async () => {
+    const o = await runCase({ label: "native-reseed", firstPromptTokens: 97_000, limit: NO_INPUT_LIMIT, systemPrompt: persona, thirdTurn: true });
+    expect(o.compactionParts).toEqual([expect.objectContaining({ auto: true })]);
+    expect(o.turn2.error).toBeUndefined();
+    const mains = o.requests.filter((r) => r.kind === "main");
+    expect(mains[0]!.body).toContain(persona);
+    // Turn 2 compacted itself mid-turn: the model answered it from the summary, without the system prompt.
+    expect(mains.at(-1)!.body).not.toContain("Say hello in one word.");
+    // The system prompt is posted back once the turn settles, and reaches the model on the session's next turn.
+    const next = o.afterwards!.requests.filter((r) => r.kind === "main").at(-1)!.body;
+    expect(next.split(persona)).toHaveLength(2);
+    expect(next).toContain("Say it once more.");
+  });
+
+  it("does not re-seed a turn that did not compact", async () => {
+    const o = await runCase({ label: "no-native-reseed", firstPromptTokens: 1_000, limit: NO_INPUT_LIMIT, systemPrompt: persona, thirdTurn: true });
+    expect(o.compactionParts).toEqual([]);
+    const next = o.afterwards!.requests.filter((r) => r.kind === "main").at(-1)!.body;
+    expect(next.split(persona)).toHaveLength(2);
   });
 });

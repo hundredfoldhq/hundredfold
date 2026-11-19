@@ -32,6 +32,14 @@ describe('the Todos tab on the chat page', () => {
       expect(storedGroups().map((group) => group.tabs)).toEqual([['todos:']])
     })
 
+    it('drops the link from the address, opening no tab, when the session list fails to load', async () => {
+      apiMocks.getSessions.mockRejectedValueOnce(new Error('sessions unavailable'))
+      renderRoute('/?open=todos&view=x')
+
+      await waitFor(() => expect(screen.getByTestId('route-location').textContent).toBe('/?view=x'))
+      expect(todosPanes()).toHaveLength(0)
+    })
+
     it('waits for the stored layout instead of landing in the one it is about to replace', async () => {
       seedLayout([{ tabs: ['a'] }, { tabs: ['b'] }])
       renderRoute('/?open=todos')

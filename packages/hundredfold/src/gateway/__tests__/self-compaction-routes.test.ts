@@ -309,6 +309,31 @@ describe("POST /api/compactions — integration against the real routes and outb
     expect((await request("POST", "/api/compactions", { headers: asSession(me), body: HANDOFF })).status).toBe(202);
   });
 
+  it("stamps the pause at the claim, once the compaction is queued, and only then", async () => {
+    const me = newSession("claude");
+    const pausedAt = () => registry.getSession(me)!.transportMeta?.pausedAt;
+
+    failLoopback = (index) => index === 0;
+    expect((await request("POST", "/api/compactions", { headers: asSession(me), body: HANDOFF })).status).toBe(502);
+    expect(pausedAt()).toBeUndefined();
+
+    failLoopback = undefined;
+    expect((await request("POST", "/api/compactions", { headers: asSession(me), body: HANDOFF })).status).toBe(202);
+    const claimedAt = registry.getSession(me)!.transportMeta?.selfCompactionAt as number;
+    expect(pausedAt()).toEqual({ at: new Date(claimedAt).toISOString(), kind: "compaction" });
+
+    // A refused repeat leaves the first pause as it was.
+    expect((await request("POST", "/api/compactions", { headers: asSession(me), body: HANDOFF })).status).toBe(429);
+    expect(pausedAt()).toEqual({ at: new Date(claimedAt).toISOString(), kind: "compaction" });
+  });
+
+  it("leaves no pause behind when messages are already queued", async () => {
+    const me = newSession("claude");
+    await request("POST", `/api/sessions/${me}/message`, { headers: { authorization: "Bearer test-token" }, body: { message: "child says hi", role: "notification" } });
+    expect((await request("POST", "/api/compactions", { headers: asSession(me), body: HANDOFF })).status).toBe(409);
+    expect(registry.getSession(me)!.transportMeta?.pausedAt).toBeUndefined();
+  });
+
   it("keeps the resume turn durable when its first delivery attempt fails", async () => {
     const me = newSession("claude");
     failLoopback = (index) => index === 1;

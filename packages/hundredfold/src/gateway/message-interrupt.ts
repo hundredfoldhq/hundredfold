@@ -59,3 +59,45 @@ export function shouldInterruptRunningTurn(o: {
   const wouldInterrupt = o.delivery === "now" || (o.interruptOnNewMessage ?? true);
   return wouldInterrupt && !o.queuePaused?.();
 }
+
+/** What an arriving message does to the turn running in its session. */
+export type RunningTurnAction = "queue" | "interrupt" | "steer" | "promote";
+
+/**
+ * What to do with a message that arrives while a turn may be running.
+ *
+ * An unflagged message is exactly {@link shouldInterruptRunningTurn}: it
+ * interrupts or it queues, and a notification never does either, never steers.
+ *
+ * A message the operator asked to be heard (`reachRunningTurn`, read from the
+ * durable delivery row, never from a request) never cuts a turn off: on claude
+ * an interrupt ends the whole process, with its tool call, background shells
+ * and subagents. It is handed to the running turn when the engine can take it
+ * (`"steer"`), else moved to the head of its lane (`"promote"`) to be the next
+ * thing the session reads. Neither looks at `interruptOnNewMessage`. The same
+ * guards as above hold it back: no turn running, a running auto-compaction, a
+ * compact command and a paused queue all leave it queued behind the turn.
+ */
+export function runningTurnAction(o: {
+  isNotification: boolean;
+  prompt: string;
+  interruptOnNewMessage: boolean | undefined;
+  turnRunning: boolean;
+  autoCompacting?: boolean;
+  delivery?: MessageDelivery;
+  queuePaused?: () => boolean;
+  /** The operator's own mention, per the delivery row. */
+  reachRunningTurn?: boolean;
+  /** Whether the engine can hand a new input to the turn running now. */
+  canSteer?: () => boolean;
+}): RunningTurnAction {
+  if (!o.reachRunningTurn) return shouldInterruptRunningTurn(o) ? "interrupt" : "queue";
+  if (!reachableTurnRunning(o)) return "queue";
+  if (o.canSteer?.()) return "steer";
+  return "promote";
+}
+
+/** Whether there is a running turn a mention may reach: one that is neither compacting, nor about to compact, nor held by a pause. */
+function reachableTurnRunning(o: { prompt: string; turnRunning: boolean; autoCompacting?: boolean; queuePaused?: () => boolean }): boolean {
+  return o.turnRunning && !o.autoCompacting && !isCompactCommand(o.prompt) && !o.queuePaused?.();
+}

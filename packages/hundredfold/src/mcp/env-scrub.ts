@@ -75,9 +75,11 @@ export function wrapServersWithScrub(servers: Record<string, McpServerConfig>): 
   const out: Record<string, McpServerConfig> = {};
   const scrubEntry = scrubEntryPath();
   for (const [name, spec] of Object.entries(servers)) {
-    // Builtin hundredfold: exempt (proven auth path). URL servers: no command to wrap.
-    const stdio = spec as McpServerStdioConfig & { url?: unknown };
-    if (isBuiltinMcpName(name) || typeof stdio.command !== "string" || !stdio.command || stdio.url !== undefined) {
+    // Builtin hundredfold: exempt (proven auth path). A server with no command, a pure URL server, has nothing to wrap.
+    // One that names both a command and a url IS wrapped: opencode projects a command first and launches it as a local server, so
+    // an exemption for the url would hand that process the whole environment.
+    const stdio = spec as McpServerStdioConfig;
+    if (isBuiltinMcpName(name) || typeof stdio.command !== "string" || !stdio.command) {
       out[name] = spec;
       continue;
     }

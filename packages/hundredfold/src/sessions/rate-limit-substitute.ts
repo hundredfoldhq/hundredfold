@@ -1,7 +1,8 @@
 import { isBoardWalkTurn } from "../board-walk/started-sessions.js";
 import type { ClaudeProfile } from "../shared/claude-profile.js";
 import { engineHealthForTarget, readEngineHealth } from "../shared/engine-health.js";
-import { effectivePosition, nextFallbackLink, type FallbackRunCursor, type NextFallbackLink } from "../shared/fallback-chain-next.js";
+import { effectivePosition, linksLeftOver, nextFallbackLink, type FallbackRunCursor, type NextFallbackLink } from "../shared/fallback-chain-next.js";
+import type { FallbackHopSkip } from "../shared/fallback-chain-wire.js";
 import type { EngineHealthReading } from "../shared/engine-health.js";
 import type { EngineName } from "../shared/models.js";
 import type { Employee, HundredfoldConfig, RemoteTarget, Session, SessionRemoteTarget } from "../shared/types.js";
@@ -45,6 +46,8 @@ export interface SubstituteDecision {
   position?: number;
   /** The chain position of the choice, and the links passed over to reach it. */
   next?: NextFallbackLink;
+  /** When the chain has no next link: every link after the session's position, with why it could not be taken. */
+  left?: FallbackHopSkip[];
 }
 
 /**
@@ -87,8 +90,9 @@ function chainPosition(chain: SubstituteChain, input: ChooseSubstituteInput): nu
 function chainDecision(input: ChooseSubstituteInput, chain: SubstituteChain, health: EngineHealthReading): SubstituteDecision {
   const position = chainPosition(chain, input);
   const tried = [...(input.run?.tried ?? readFallbackRun(metaOf(input.session))?.tried ?? []), chain.links[0]!.key, chain.links[position]!.key];
-  const next = nextFallbackLink(chain.links, { position, tried }, health);
-  if (!next) return { chain, position };
+  const cursor = { position, tried };
+  const next = nextFallbackLink(chain.links, cursor, health);
+  if (!next) return { chain, position, left: linksLeftOver(chain.links, cursor, health) };
   // Only a model the chain names is a choice; one it leaves to the stand-in is derived when the swap is made, as it always was.
   const model = chain.namedModel(next.link);
   return {

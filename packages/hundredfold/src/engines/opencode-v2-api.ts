@@ -90,6 +90,35 @@ export async function v2CancelInbox(server: V2Endpoint, engineSessionId: string,
   }
 }
 
+/** What became of an item that was taken back out of the inbox. */
+export type V2InboxWithdrawal = "cancelled" | "delivered" | "still-listed";
+
+/**
+ * {@link v2CancelInbox} that tells a delete which failed apart from an item
+ * that was already delivered, for a caller that acts on the difference.
+ *
+ * - `"cancelled"`: the delete went through;
+ * - `"delivered"`: the item is not in the inbox (never was, or the server took
+ *   it), whether the delete was never needed or failed because it was taken;
+ * - `"still-listed"`: the delete failed and the item is still listed, or the
+ *   inbox could not be read to say: the item may yet run, and it was not taken.
+ *
+ * Throws only when the first read of the inbox does.
+ */
+export async function v2WithdrawInbox(server: V2Endpoint, engineSessionId: string, inboxId: string): Promise<V2InboxWithdrawal> {
+  if (!(await v2InInbox(server, engineSessionId, inboxId))) return "delivered";
+  try {
+    await v2Request(server, "DELETE", sessionRoute(engineSessionId, `/inbox/${encodeURIComponent(inboxId)}`));
+    return "cancelled";
+  } catch {
+    try {
+      return (await v2InInbox(server, engineSessionId, inboxId)) ? "still-listed" : "delivered";
+    } catch {
+      return "still-listed";
+    }
+  }
+}
+
 export async function v2Interrupt(server: V2Endpoint, engineSessionId: string): Promise<void> {
   await v2Request(server, "POST", sessionRoute(engineSessionId, "/interrupt"));
 }

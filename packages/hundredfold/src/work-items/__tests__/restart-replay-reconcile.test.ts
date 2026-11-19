@@ -19,6 +19,7 @@ type Reconcile = typeof import("../reconcile.js");
 type Registry = typeof import("../../sessions/registry.js");
 type Settles = typeof import("../child-settles.js");
 type RestartResume = typeof import("../../sessions/restart-resume.js");
+type OwedTurns = typeof import("../../sessions/owed-turns.js") & typeof import("../../sessions/stopped-marker.js");
 
 let store: Store;
 let runs: Runs;
@@ -26,6 +27,7 @@ let reconcile: Reconcile;
 let registry: Registry;
 let settles: Settles;
 let restartResume: RestartResume;
+let owedTurns: OwedTurns;
 let db: import("better-sqlite3").Database;
 
 const OLD_GATEWAY = { bootId: "old00001", gatewayVersion: "0.0.0-test" };
@@ -41,6 +43,7 @@ beforeAll(async () => {
   registry = await import("../../sessions/registry.js");
   settles = await import("../child-settles.js");
   restartResume = await import("../../sessions/restart-resume.js");
+  owedTurns = { ...(await import("../../sessions/owed-turns.js")), ...(await import("../../sessions/stopped-marker.js")) };
   db = (await import("../../shared/db.js")).initDb();
 });
 
@@ -55,6 +58,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  owedTurns.registerLiveSessionQueue(undefined);
   vi.useRealTimers();
 });
 
@@ -260,7 +264,13 @@ describe("a restart mid-turn on a child Todo nothing resumes", () => {
   it("derives blocked for a connector session, whose queue row the boot neither replays nor nudges", () => {
     const t = childMidTurn("connector", { source: "telegram" });
 
+    // Before the boot has replayed anything the pending row reads as the turn about to start.
     boot();
+    sweep();
+    expect(store.getWorkItem(t.child.id)?.status).toBe("executing");
+
+    // The replay is done and the live queue never took this row: nothing will run it.
+    owedTurns.registerLiveSessionQueue({ holds: () => false, isPaused: () => false });
     sweep();
 
     expectBlocked(t);
@@ -270,6 +280,8 @@ describe("a restart mid-turn on a child Todo nothing resumes", () => {
     const t = childMidTurn("operator-stop", { queued: false });
     registry.enqueueQueueItem(t.sessionId, `web:${t.sessionId}`, "a follow-up");
     registry.updateSession(t.sessionId, { status: "interrupted", lastError: "Interrupted: stopped" });
+    // A stop leaves its mark (`stopSession`), and the mark is what keeps the queued row from being owed.
+    owedTurns.markSessionStopped(t.sessionId);
 
     sweep();
 

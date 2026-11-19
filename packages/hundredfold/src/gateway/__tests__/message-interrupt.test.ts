@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveMessageDelivery, shouldInterruptRunningTurn } from "../message-interrupt.js";
+import { resolveMessageDelivery, runningTurnAction, shouldInterruptRunningTurn } from "../message-interrupt.js";
 
 describe("shouldInterruptRunningTurn", () => {
   const base = { isNotification: false, prompt: "stop, do this instead", interruptOnNewMessage: undefined, turnRunning: true };
@@ -57,5 +57,67 @@ describe("resolveMessageDelivery", () => {
     expect(resolveMessageDelivery({})).toBeUndefined();
     expect(resolveMessageDelivery({ delivery: "later" })).toBeUndefined();
     expect(resolveMessageDelivery({ delivery: 1, interrupt: "yes" })).toBeUndefined();
+  });
+});
+
+describe("runningTurnAction", () => {
+  type Action = ReturnType<typeof runningTurnAction>;
+  const notification = { isNotification: true, prompt: "🏷️ you were tagged", interruptOnNewMessage: undefined as boolean | undefined, turnRunning: true };
+  const flagged = { ...notification, reachRunningTurn: true };
+  const steerable = { canSteer: () => true };
+  const notSteerable = { canSteer: () => false };
+
+  // Each row: the situation, then what a flagged mention and an unflagged notification do in it.
+  const rows: Array<{ name: string; extra: Record<string, unknown>; flagged: Action; unflagged: Action }> = [
+    { name: "no turn running", extra: { turnRunning: false, ...steerable }, flagged: "queue", unflagged: "queue" },
+    { name: "running, engine can steer", extra: steerable, flagged: "steer", unflagged: "queue" },
+    { name: "running, engine cannot steer", extra: notSteerable, flagged: "promote", unflagged: "queue" },
+    { name: "running, no steering offered at all", extra: {}, flagged: "promote", unflagged: "queue" },
+    { name: "interruptOnNewMessage off, engine can steer", extra: { interruptOnNewMessage: false, ...steerable }, flagged: "steer", unflagged: "queue" },
+    { name: "interruptOnNewMessage off, engine cannot steer", extra: { interruptOnNewMessage: false, ...notSteerable }, flagged: "promote", unflagged: "queue" },
+    { name: "interruptOnNewMessage on, engine cannot steer", extra: { interruptOnNewMessage: true, ...notSteerable }, flagged: "promote", unflagged: "queue" },
+    { name: "interruptOnNewMessage on, engine can steer", extra: { interruptOnNewMessage: true, ...steerable }, flagged: "steer", unflagged: "queue" },
+    { name: "queue paused", extra: { queuePaused: () => true, ...steerable }, flagged: "queue", unflagged: "queue" },
+    { name: "queue not paused", extra: { queuePaused: () => false, ...steerable }, flagged: "steer", unflagged: "queue" },
+    { name: "auto-compacting", extra: { autoCompacting: true, ...steerable }, flagged: "queue", unflagged: "queue" },
+    { name: "a compact command", extra: { prompt: "/compact keep the ids", ...steerable }, flagged: "queue", unflagged: "queue" },
+  ];
+
+  it.each(rows)("$name: a flagged mention $flagged, an unflagged notification $unflagged", (row) => {
+    expect(runningTurnAction({ ...flagged, ...row.extra })).toBe(row.flagged);
+    expect(runningTurnAction({ ...notification, ...row.extra })).toBe(row.unflagged);
+  });
+
+  it("never answers interrupt for a flagged mention, whatever else is set", () => {
+    for (const interruptOnNewMessage of [undefined, true, false]) {
+      for (const delivery of [undefined, "queue" as const, "now" as const]) {
+        for (const extra of [steerable, notSteerable, {}]) {
+          expect(runningTurnAction({ ...flagged, interruptOnNewMessage, delivery, ...extra })).not.toBe("interrupt");
+        }
+      }
+    }
+  });
+
+  it("never asks the engine whether it can steer when nothing could be steered", () => {
+    let asked = 0;
+    const canSteer = () => { asked++; return true; };
+    runningTurnAction({ ...notification, canSteer });
+    runningTurnAction({ ...flagged, turnRunning: false, canSteer });
+    runningTurnAction({ ...flagged, queuePaused: () => true, canSteer });
+    expect(asked).toBe(0);
+  });
+
+  it("ignores a per-message delivery choice for a flagged mention, which no request can make", () => {
+    expect(runningTurnAction({ ...flagged, delivery: "queue", ...steerable })).toBe("steer");
+    expect(runningTurnAction({ ...flagged, delivery: "queue", ...notSteerable })).toBe("promote");
+    expect(runningTurnAction({ ...flagged, delivery: "now", ...notSteerable })).toBe("promote");
+  });
+
+  it("leaves everything unflagged exactly as shouldInterruptRunningTurn has it", () => {
+    const base = { isNotification: false, prompt: "stop, do this instead", interruptOnNewMessage: undefined as boolean | undefined, turnRunning: true };
+    for (const extra of [{}, { interruptOnNewMessage: false }, { delivery: "queue" as const }, { delivery: "now" as const, interruptOnNewMessage: false },
+      { prompt: "/compact" }, { autoCompacting: true }, { turnRunning: false }, { queuePaused: () => true }, { isNotification: true }, { isNotification: true, delivery: "now" as const }]) {
+      expect(runningTurnAction({ ...base, ...extra, ...steerable })).toBe(shouldInterruptRunningTurn({ ...base, ...extra }) ? "interrupt" : "queue");
+    }
   });
 });

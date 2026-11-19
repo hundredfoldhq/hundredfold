@@ -2,17 +2,19 @@ import { awaitEffortLevels } from "../shared/effort-wait.js";
 import type { FallbackChainSource, FallbackHop, FallbackHopReason, ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
 import { logger } from "../shared/logger.js";
 import { rateLimitEngineLabel } from "../shared/rateLimit.js";
-import { linkHealthKey } from "../shared/fallback-chain-health.js";
+import { isLinkSignedOut, linkHealthKey } from "../shared/fallback-chain-health.js";
+import { engineHealthForTarget, readEngineHealth } from "../shared/engine-health.js";
 import { recordTurnServed } from "../shared/engine-health-opencode.js";
 import type { EngineName } from "../shared/models.js";
 import type { EngineResult, Session } from "../shared/types.js";
 import { claudeLinkRefusal, linkFailure, noteLinkAuthFailure, recordLinkLimit, runLink } from "./fallback-link-run.js";
-import { buildHop, chainExhaustedReason, hopLogLine, limitReason, windowOf, type HopEnd } from "./fallback-hop.js";
+import { buildHop, chainExhaustedReason, hopLogLine, limitReason, windowOf, type ChainExhausted, type HopEnd } from "./fallback-hop.js";
 import { metaOf, readFallbackRun, servedBy, targetOfLink, withHop, withRun, withServedBy, type FallbackRunState } from "./fallback-run.js";
 import { abandonEngineSubstitution, beginEngineSubstitution, standingOverrideUntil, type EngineSubstitution } from "./engine-override.js";
 import { chooseSubstituteOrReason, type SubstituteDecision } from "./rate-limit-substitute.js";
 import type { RateLimitHandlerOpts } from "./rate-limit-contract.js";
 import { getSession, nextEngineSessionFields, updateSessionForAttempt } from "./registry.js";
+import { withLeftBackgroundTasksNote, withLeftBackgroundTasksOf } from "./left-background-tasks.js";
 import { handoffPrompt, resumedPrompt } from "./rate-limit-hop-prompt.js";
 import { spawnCwd } from "./session-cwd.js";
 import type { RemoteTarget, SessionRemoteTarget } from "../shared/types.js";
@@ -40,8 +42,12 @@ export interface WalkInput {
 export type WalkOutcome =
   | { kind: "served"; result: EngineResult }
   | { kind: "cancelled" }
-  /** Nothing served the turn: it waits on its own target. `reason` says why no one else did, `hop` is the record that the chain ran out. */
-  | { kind: "unserved"; reason?: string; hop?: FallbackHop; walked: boolean; exhausted?: { tried: string[]; own: string } };
+  /**
+   * Nothing served the turn: it waits on its own target. `reason` says why no one else did, `hop` is the record that
+   * the chain ran out. `signedOut`: the fallback links, in chain order, that are signed out (their key or login
+   * refused, this turn or an earlier one), which only the operator can renew.
+   */
+  | { kind: "unserved"; reason?: string; hop?: FallbackHop; walked: boolean; exhausted?: ChainExhausted; signedOut?: string[] };
 
 /** The target that just failed, and how. */
 interface Failure {
@@ -68,8 +74,14 @@ interface Walk {
   failedOver: boolean;
   failure: Failure;
   triedLabels: string[];
+  /** The links this walk tried whose key or login was refused (`auth`), in the order it tried them. */
+  signedOut: string[];
+  /** The session's chain, from the first look at it. */
+  links: readonly ResolvedFallbackLink[];
   ownLabel: string;
   startedAt: string;
+  /** The tasks the prompt of the link now running carries; settle clears them once the link has served the turn. */
+  carried: string[];
 }
 
 type Found = SubstituteDecision & { choice: NonNullable<SubstituteDecision["choice"]>; next: NonNullable<SubstituteDecision["next"]>; chain: NonNullable<SubstituteDecision["chain"]> };
@@ -98,6 +110,7 @@ function adopt(w: Walk, decision: SubstituteDecision): void {
   const chain = decision.chain;
   if (!chain || w.source !== undefined) return;
   w.source = chain.source;
+  w.links = chain.links;
   w.cursor = decision.position ?? 0;
   w.ownLabel = chain.links[0]!.label;
   w.tried.add(chain.links[0]!.key);
@@ -114,7 +127,7 @@ function startWalk(input: WalkInput): Walk {
   const metaBefore = (getSession(session.id) ?? session).transportMeta;
   return {
     input, metaBefore, runAtStart: readFallbackRun(metaOf({ transportMeta: metaBefore })), tried: new Set(), cursor: 0, source: undefined,
-    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], ownLabel: "", startedAt: new Date().toISOString(),
+    hops: [], written: 0, flipped: false, failedOver: false, triedLabels: [], signedOut: [], links: [], ownLabel: "", startedAt: new Date().toISOString(), carried: [],
     failure: { engine: input.limited.engine, account: input.limited.account, reason: limitReason(originalResult), resetsAt: rateLimit.resetsAt },
   };
 }
@@ -156,7 +169,7 @@ async function moveOnto(w: Walk, found: Found): Promise<WalkOutcome | undefined>
   const refusal = claudeLinkRefusal(w.input.opts, found.choice);
   if (refusal) {
     await w.input.opts.hooks.onFallbackStart?.(startInfo(w, found.choice, hop));
-    failedOver(w, found, { reason: "auth", isLimit: false });
+    failedOver(w, found, { reason: "auth", isLimit: false, refused: true });
     return undefined;
   }
   return await launch(w, found, hop);
@@ -202,10 +215,15 @@ async function flipOnto(w: Walk, found: Found, hop: FallbackHop): Promise<Engine
   return substitution;
 }
 
-/** The prompt the link is sent: what its thread missed when it has one, the conversation so far when it has not. */
+/** The prompt the link is sent: what its thread missed when it has one, the conversation so far when it has not. It leads
+ *  with the note on any background task the session was left without (the process that held it was released when the turn
+ *  moved off its engine), read from the live row, so a link that fails and moves on leaves them owed to the next. */
 function promptFor(w: Walk, substitution: EngineSubstitution): string {
   const { session, prompt } = w.input.opts;
-  return substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id);
+  const base = substitution.resumeSessionId ? resumedPrompt(session.id, substitution.syncedThrough ?? session.createdAt, prompt) : handoffPrompt(session.id, prompt);
+  const { promptToRun, carriedLeftBackgroundTaskIds } = withLeftBackgroundTasksNote(getSession(session.id) ?? session, base);
+  w.carried = carriedLeftBackgroundTaskIds;
+  return promptToRun;
 }
 
 async function launch(w: Walk, found: Found, hop: FallbackHop): Promise<WalkOutcome | undefined> {
@@ -220,16 +238,18 @@ async function launch(w: Walk, found: Found, hop: FallbackHop): Promise<WalkOutc
   if (!failure) return await served(w, found, substitution.model ?? substitution.engineConfig.model, { result, startedMs });
   await opts.hooks.onFallbackFailed?.(result);
   if (failure.reason === "auth" && result.error) noteLinkAuthFailure(opts, choice, result.error);
-  failedOver(w, found, { ...failure, model: substitution.model ?? substitution.engineConfig.model }, result);
+  // A remote profile that is not ready to run there moves the walk on as a login that is down does, but its key was not refused.
+  failedOver(w, found, { ...failure, model: substitution.model ?? substitution.engineConfig.model, refused: failure.reason === "auth" && !result.profileNotReady }, result);
   return undefined;
 }
 
 /** The link failed in a way that moves the walk on: remember it, and hold a limit against its target. */
-function failedOver(w: Walk, found: Found, failure: { reason: FallbackHopReason; resetsAt?: number; isLimit: boolean; model?: string; error?: string }, result?: EngineResult): void {
+function failedOver(w: Walk, found: Found, failure: { reason: FallbackHopReason; resetsAt?: number; isLimit: boolean; model?: string; error?: string; refused?: boolean }, result?: EngineResult): void {
   const { link } = found.next;
   w.failedOver = true;
   w.tried.add(link.key);
   w.triedLabels.push(link.label);
+  if (failure.refused) w.signedOut.push(link.label);
   w.cursor = found.next.index;
   w.failure = { end: endOf(link), engine: link.engine, account: link.account, reason: failure.reason, resetsAt: failure.resetsAt };
   if (failure.isLimit) recordLinkLimit(link, failure.resetsAt, failure.model, { error: failure.error, config: w.input.opts.config, host: w.input.remote?.remoteHost });
@@ -253,7 +273,7 @@ async function served(w: Walk, found: Found, model: string | undefined, ran: { r
     const { link } = found.next;
     recordTurnServed({ engine: link.engine, key: linkHealthKey(link), startedMs: ran.startedMs, model, servedOn: w.input.remote?.remoteHost });
   }
-  await hooks.onFallbackComplete?.(result, { engine: found.choice.engine as EngineName, model });
+  await hooks.onFallbackComplete?.(result, { engine: found.choice.engine as EngineName, model, carriedLeftBackgroundTaskIds: w.carried });
   return { kind: "served", result };
 }
 
@@ -267,11 +287,24 @@ async function unserved(w: Walk, decision: SubstituteDecision): Promise<WalkOutc
     logger.info(hopLogLine(w.input.opts.session.id, hop));
   }
   if (!(await settleExhausted(w))) return { kind: "cancelled" };
-  return { kind: "unserved", ...whyUnserved(w, decision, ranOut), ...(hop ? { hop } : {}), walked };
+  const signedOut = signedOutLinks(w);
+  return { kind: "unserved", ...whyUnserved(w, decision, ranOut), ...(hop ? { hop } : {}), walked, ...(signedOut.length > 0 ? { signedOut } : {}) };
+}
+
+/**
+ * Every fallback link that is signed out, in chain order: those this walk was refused, and those link health
+ * holds as signed out (a provider that rejected its key), which a later walk passes over without a request.
+ * Without the second, the turn after the one that met the dead key reports the own target's error alone.
+ */
+function signedOutLinks(w: Walk): string[] {
+  const health = engineHealthForTarget(readEngineHealth(), w.input.remoteTarget);
+  const refused = new Set(w.signedOut);
+  const inChain = w.links.slice(1).filter((link) => refused.has(link.label) || isLinkSignedOut(health, link)).map((link) => link.label);
+  return [...new Set([...inChain, ...w.signedOut])];
 }
 
 /** Why nothing took the turn: the session target's own reason, or that the chain ran out, naming what was tried and what the session waits for. */
-function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { reason?: string; exhausted?: { tried: string[]; own: string } } {
+function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { reason?: string; exhausted?: ChainExhausted } {
   if (decision.reason) return { reason: decision.reason };
   if (!ranOut) return {};
   return { reason: chainExhaustedReason(w.triedLabels, w.ownLabel), exhausted: { tried: [...w.triedLabels], own: w.ownLabel } };
@@ -279,7 +312,7 @@ function whyUnserved(w: Walk, decision: SubstituteDecision, ranOut: boolean): { 
 
 /** The hop that records the chain ran out: what was left after the cursor, and why none of it could be used. */
 function exhaustedHop(w: Walk, decision: SubstituteDecision): FallbackHop {
-  const left = (decision.chain?.links ?? []).slice(w.cursor + 1).flatMap((link) => {
+  const left = decision.left ?? (decision.chain?.links ?? []).slice(w.cursor + 1).flatMap((link) => {
     const reason = w.tried.has(link.key) ? "tried" as const : link.skip;
     return reason === undefined ? [] : [{ key: link.key, reason }];
   });
@@ -293,6 +326,8 @@ async function settleExhausted(w: Walk): Promise<boolean> {
     // Back where the turn began: the engine, thread and model it ran on, with the hops this walk made on top.
     let meta = w.hops.reduce(withHop, metaOf({ transportMeta: w.metaBefore }));
     if (w.runAtStart) meta = withRun(meta, { ...w.runAtStart, tried: [...w.tried] });
+    // What the session was left without when its engine was released is not part of "where the turn began": the live record stays.
+    meta = withLeftBackgroundTasksOf(meta, getSession(session.id)?.transportMeta);
     return abandonEngineSubstitution(session, attemptToken, meta as Session["transportMeta"]);
   }
   const unwritten = w.hops.slice(w.written);

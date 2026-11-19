@@ -100,7 +100,7 @@ describe("handleRateLimit — a retry whose host is not ready", () => {
 
     expect(outcome).toEqual({ kind: "resumed", result: answer });
     expect(run).toHaveBeenCalledTimes(2);
-    expect(onRetrySuccess).toHaveBeenCalledWith(answer);
+    expect(onRetrySuccess).toHaveBeenCalledWith(answer, { carriedLeftBackgroundTaskIds: [] });
     expect(onRetryHostNotReady).toHaveBeenCalledTimes(1);
     expect(onRetryHostNotReady.mock.calls[0]![0]).toMatchObject({ error: NOT_REACHABLE, failures: 1 });
     // Parked back in `waiting`, saying why and when it tries again.

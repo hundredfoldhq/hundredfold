@@ -32,12 +32,18 @@ function recordSpent(key = "claude:overflow", about: { host?: string; window?: s
 }
 
 beforeEach(() => {
+  // The store answers lifetime questions against the wall clock (`isSpent`) and
+  // callers default `now` to it, so pin Date to the fixture's NOW: a record
+  // spent until NOW + 4 days has to still read spent when a test takes that
+  // default, however long after the fixture was written the suite runs.
+  vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
   fs.rmSync(STATE_PATH, { force: true });
 });
 
 afterEach(() => {
   fs.rmSync(TEST_HOME, { recursive: true, force: true });
+  vi.useRealTimers();
 });
 
 const stored = () => JSON.parse(fs.readFileSync(STATE_PATH, "utf-8")) as Record<string, Record<string, unknown>>;

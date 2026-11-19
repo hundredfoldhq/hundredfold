@@ -8,6 +8,7 @@ import {
   listReleasableParentCompletionQueuesForSource,
 } from "../sessions/registry.js";
 import { FILES_DIR } from "../shared/paths.js";
+import { settleSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { settleTurn } from "../sessions/turn/completion.js";
 import { maybeRevertEngineOverride } from "../sessions/engine-override.js";
 import { applyPendingSwitch } from "../sessions/pending-switch-apply.js";
@@ -22,6 +23,9 @@ import { resolveMessageAudiences } from "./speech-context.js";
 // Type-only, so the pair below can name the context every web route already
 // carries without this module and api.ts importing each other at runtime.
 import { startDelegatedTurn } from "./delegation-handoff.js";
+import { recordTurnRequester } from "../sessions/turn-requester.js";
+import { isHeartbeatQueueItem, markHeartbeatTurn } from "../heartbeats/turn-origin.js";
+import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
 import type { ApiContext } from "./api.js";
 
 /**
@@ -81,6 +85,14 @@ async function runQueuedTurn(
   request: Omit<WebTurnRequest, "attemptToken">,
   opts: { sessionKey: string; queueItemId?: string; operatorTurn?: boolean; onAttempt: (token: string) => void },
 ): Promise<void> {
+  // A child-watch wake can wait here for hours; if nothing is left to watch by
+  // the time it is let through, it is dropped (the queue closes its row) rather
+  // than spending a model turn to find that out.
+  const stale = staleChildWatchWakeReason(opts.queueItemId);
+  if (stale) {
+    logger.info(`Dropped stale child-watch wake ${opts.queueItemId} for session ${session.id}: ${stale}`);
+    return;
+  }
   const startedAttempt = beginSessionAttempt(session.id, {
     lastActivity: new Date().toISOString(),
     lastError: null,
@@ -91,7 +103,9 @@ async function runQueuedTurn(
     return;
   }
   opts.onAttempt(startedAttempt.attemptToken);
+  if (isHeartbeatQueueItem(opts.queueItemId)) markHeartbeatTurn(session.id, startedAttempt.attemptToken);
   startDelegatedTurn(startedAttempt, opts.queueItemId);
+  recordTurnRequester(startedAttempt, opts.queueItemId);
   context.emit("session:started", { sessionId: session.id });
   // Item moved pending → running: refresh the queue panel.
   if (opts.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey: opts.sessionKey });
@@ -121,6 +135,17 @@ function requestForTurn(
   return { ...dispatched, prompt, attachments: parked.dispatch.attachments.length > 0 ? parked.dispatch.attachments : undefined };
 }
 
+/**
+ * Whether the turn that ran ahead of this row already took its input in. An
+ * input handed to a running turn (a steered mention) was read by it; running the
+ * row as well would answer it twice. Taken back out, the row runs as usual.
+ */
+async function wasSteeredIn(session: Session, queueItemId: string | undefined): Promise<boolean> {
+  if (await settleSteeredDelivery(queueItemId) !== "steered") return false;
+  logger.info(`Session ${session.id} turn ${queueItemId} was steered into the running turn; no turn of its own`);
+  return true;
+}
+
 export function dispatchWebSessionRun(
   session: Session,
   prompt: string,
@@ -140,15 +165,15 @@ export function dispatchWebSessionRun(
   const sessionKey = session.sessionKey || session.sourceRef;
   const run = async () => {
     try {
-      await context.sessionManager.getQueue().enqueue(sessionKey, () =>
-        runQueuedTurn(session, context, requestForTurn({ prompt, engine, attachments: opts?.attachments }, opts?.queueItemId), {
+      await context.sessionManager.getQueue().enqueue(sessionKey, async () => {
+        if (await wasSteeredIn(session, opts?.queueItemId)) return;
+        await runQueuedTurn(session, context, requestForTurn({ prompt, engine, attachments: opts?.attachments }, opts?.queueItemId), {
           sessionKey,
           queueItemId: opts?.queueItemId,
           operatorTurn: opts?.operatorTurn,
-          onAttempt: (token) => {
-            dispatchedAttemptToken = token;
-          },
-        }), opts?.queueItemId);
+          onAttempt: (token) => { dispatchedAttemptToken = token; },
+        });
+      }, opts?.queueItemId);
     } finally {
       // Item settled (completed/cancelled/errored): refresh so the "N queued"
       // panel drains. Without this the panel only refreshes on enqueue and the

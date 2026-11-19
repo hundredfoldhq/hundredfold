@@ -29,6 +29,12 @@ import { metadataTag } from "./opencode-metadata-tag.js";
  * cancelled-request walk steps over it instead of reporting it as a request
  * the operator abandoned.
  *
+ * The same re-seed follows a compaction opencode runs on its own when a turn
+ * crosses the model's context budget (the turn's event stream reports
+ * `session.compacted`): the turn posts it once it has settled, through
+ * {@link reseedSystemPrompt}. On 2.x the re-seed is noted on the session for the
+ * next prompt instead (opencode-v2-turn.ts).
+ *
  * The prompt's text after `/compact` is not used: summarize takes no
  * instructions. Hundredfold's self-compaction delivers the handoff as its own turn.
  */
@@ -39,6 +45,31 @@ export const HUNDREDFOLD_RESEED_METADATA = metadataTag("context-reseed");
 /** Summarizing a long session is one model call over all of it. */
 export const COMPACTION_TIMEOUT_MS = 15 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Putting the system prompt back is one small request after a summary that took far longer, so it is worth a few tries. */
+const RESEED_ATTEMPTS = 3;
+const RESEED_RETRY_DELAY_MS = 500;
+
+export const RESEED_FAILED_NOTICE = "This session was compacted, but its operating instructions could not be put back in front of the model, "
+  + "so it may have lost them. Start a fresh session if it behaves as if it has.";
+
+/** Run `attempt` (one try at putting the system prompt back) up to RESEED_ATTEMPTS times. Undefined when it landed
+ *  or `stopped()` says the turn was cut off; otherwise the notice the session is owed. */
+export async function retryReseed(label: string, attempt: () => Promise<void>, stopped: () => boolean): Promise<string | undefined> {
+  let failure = "";
+  for (let n = 1; n <= RESEED_ATTEMPTS; n++) {
+    if (stopped()) return undefined;
+    try {
+      await attempt();
+      return undefined;
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+      logger.warn(`opencode compaction could not re-seed the system prompt into ${label} (attempt ${n}/${RESEED_ATTEMPTS}): ${failure}`);
+      if (n < RESEED_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, RESEED_RETRY_DELAY_MS));
+    }
+  }
+  logger.error(`opencode compaction could not re-seed the system prompt into ${label}: ${failure}`);
+  return RESEED_FAILED_NOTICE;
+}
 
 export const RESEED_PREAMBLE =
   "[Hundredfold] Your context was just compacted. These are the operating instructions and the session context "
@@ -142,46 +173,23 @@ export class OpencodeServerCompaction {
     if (done !== true) throw new Error(`summarize answered ${JSON.stringify(done)?.slice(0, 200)}`);
     logger.info(`opencode compaction summarized session ${sessionId} (${model.providerID}/${model.modelID})`);
 
-    await this.reseed(route, model);
+    const reseedFailure = await this.reseed(route, model);
     const { cost, compaction, summary } = await this.summaryReport(route);
-    return { sessionId, result: "", numTurns: 1, compaction, ...(summary ? { compactionSummary: summary } : {}), ...(cost ? { cost } : {}) };
+    return {
+      sessionId, result: "", numTurns: 1, compaction,
+      ...(summary ? { compactionSummary: summary } : {}),
+      ...(cost ? { cost } : {}),
+      ...(reseedFailure ? { notices: [reseedFailure] } : {}),
+    };
   }
 
-  /** Put Hundredfold's system prompt back in front of the model (see the header).
-   *  Best effort: a failure costs the persona until the session's next fresh
-   *  start, not the compaction, and is logged loudly. */
-  private async reseed(route: string, model: { providerID: string; modelID: string }): Promise<void> {
-    if (!this.opts.systemPrompt) return;
-    const agent = agentFromCliFlags(this.opts.cliFlags);
-    try {
-      await this.request("POST", `${route}/message`, {
-        noReply: true,
-        model,
-        ...(agent ? { agent } : {}),
-        parts: [{
-          type: "text",
-          text: `${RESEED_PREAMBLE}\n\n${this.opts.systemPrompt}`,
-          synthetic: true,
-          metadata: HUNDREDFOLD_RESEED_METADATA,
-        }],
-      });
-    } catch (err) {
-      logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  /** Put Hundredfold's system prompt back in front of the model (see the header). */
+  private reseed(route: string, model: { providerID: string; modelID: string }): Promise<string | undefined> {
+    return reseedSystemPrompt(this.server, route, model, this.opts, () => Boolean(this.terminationReason));
   }
 
-  /** The model the session's newest user message ran on. */
-  private async lastUserModel(route: string): Promise<{ providerID: string; modelID: string } | undefined> {
-    const messages = await this.messages(route, 20);
-    for (const message of [...messages].reverse()) {
-      const info = message.info;
-      if (info?.role !== "user") continue;
-      const model = info.model as { providerID?: unknown; modelID?: unknown } | undefined;
-      if (typeof model?.providerID === "string" && typeof model.modelID === "string") {
-        return { providerID: model.providerID, modelID: model.modelID };
-      }
-    }
-    return undefined;
+  private lastUserModel(route: string): Promise<{ providerID: string; modelID: string } | undefined> {
+    return lastUserModel(this.server, route);
   }
 
   /**
@@ -208,29 +216,81 @@ export class OpencodeServerCompaction {
     return Array.isArray(body) ? body as StoredMessage[] : [];
   }
 
-  private async request(
-    method: "GET" | "POST",
-    route: string,
-    body: unknown,
-    signal: AbortSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  ): Promise<unknown> {
-    const res = await fetch(`${this.server.apiUrl}${route}`, {
-      method,
-      headers: {
-        authorization: basicAuthHeader(this.server.password),
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal,
-    });
-    if (!res.ok) {
-      const detail = (await res.text().catch(() => "")).slice(0, 300);
-      throw new Error(`${method} ${route} answered ${res.status}${detail ? `: ${detail}` : ""}`);
-    }
-    const text = await res.text();
-    if (!text) return undefined;
-    try { return JSON.parse(text); } catch { return text; }
+  private request(method: "GET" | "POST", route: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    return serverRequest(this.server, method, route, body, signal);
   }
+}
+
+/** One request to the server's API; its parsed answer (undefined when it has no body). */
+export async function serverRequest(
+  server: OpencodeServer,
+  method: "GET" | "POST",
+  route: string,
+  body: unknown,
+  signal: AbortSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+): Promise<unknown> {
+  const res = await fetch(`${server.apiUrl}${route}`, {
+    method,
+    headers: {
+      authorization: basicAuthHeader(server.password),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal,
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 300);
+    throw new Error(`${method} ${route} answered ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
+  const text = await res.text();
+  if (!text) return undefined;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+/** The model the session's newest user message ran on. */
+export async function lastUserModel(server: OpencodeServer, route: string): Promise<{ providerID: string; modelID: string } | undefined> {
+  const body = await serverRequest(server, "GET", `${route}/message?limit=20`, undefined);
+  const messages = Array.isArray(body) ? body as StoredMessage[] : [];
+  for (const message of [...messages].reverse()) {
+    const info = message.info;
+    if (info?.role !== "user") continue;
+    const model = info.model as { providerID?: unknown; modelID?: unknown } | undefined;
+    if (typeof model?.providerID === "string" && typeof model.modelID === "string") {
+      return { providerID: model.providerID, modelID: model.modelID };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Put Hundredfold's system prompt back in front of the model (see the header)
+ * by posting it to session `route` as a synthetic `noReply` message. A
+ * transient failure is retried; one that persists costs the persona until the
+ * session's next fresh start, not the work that came before, so it is logged
+ * loudly and returned as a notice the turn posts to the session. Undefined when
+ * the prompt is back (or there is none to put back).
+ */
+export async function reseedSystemPrompt(
+  server: OpencodeServer,
+  route: string,
+  model: { providerID: string; modelID: string },
+  opts: Pick<EngineRunOpts, "systemPrompt" | "cliFlags">,
+  stopped: () => boolean,
+): Promise<string | undefined> {
+  if (!opts.systemPrompt) return undefined;
+  const agent = agentFromCliFlags(opts.cliFlags);
+  const body = {
+    noReply: true,
+    model,
+    ...(agent ? { agent } : {}),
+    parts: [{
+      type: "text",
+      text: `${RESEED_PREAMBLE}\n\n${opts.systemPrompt}`,
+      synthetic: true,
+      metadata: HUNDREDFOLD_RESEED_METADATA,
+    }],
+  };
+  return retryReseed(route, async () => { await serverRequest(server, "POST", `${route}/message`, body); }, stopped);
 }
 
 /**

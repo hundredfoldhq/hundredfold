@@ -33,6 +33,8 @@
 //   TOOL        one shell tool step (finish tool-calls), then the text "tool done"
 //   SLOWTOOL    the same, with a tool that runs 1.5 s (time to steer an input in)
 //   SLOW        a text step that takes 2 s
+//   LATESTART   the input is delivered, and its step starts only 1.2 s later (a
+//               gap in which nothing says the input is being answered)
 //   HANG        the step runs until interrupted
 //   FAIL        step.failed and execution.failed {type: provider.invalid-request, status: 400}
 //   RETRY       retry.scheduled 200 ms ahead, then a successful step on the same
@@ -54,6 +56,8 @@
 //               idle; /api/session/active stops listing the session)
 //   DROPSTREAM  one tool step, then every event stream ends and the server carries
 //               on unobserved
+//   NATIVECOMPACT  opencode compacts the session by itself first (compaction.started and .ended, reason auto),
+//               then the step answers `fake:nativecompact`
 //   (none)      the text `fake:<the text after the last --->`
 // A /compact fails (compaction.failed) when the session's newest user prompt
 // carries the directive FAILCOMPACT.
@@ -62,6 +66,7 @@
 //   FAKE_V2_OPERATOR_BUSY_MS  an operator input (no Hundredfold metadata) is already
 //                             running in the session for that long whenever a
 //                             prompt arrives at an idle session
+//   FAKE_V2_METADATA_FAIL     answers the first n session metadata PATCHes 500
 //   FAKE_V2_LOG               a file each verb appends `<verb> <args>` to
 //   FAKE_V2_HEARTBEAT_MS      how often the event stream sends its `: heartbeat` comment (default 10 s)
 //   FAKE_V2_VERSION           what --version and /api/info report (default 2.0.29)
@@ -120,6 +125,7 @@ function serve() {
   let seq = 0;
   let mcpCalls = 0;
   let eventStreams = 0;
+  let metadataFailed = 0;
   let config = null;
   try { config = process.env.OPENCODE_CONFIG ? JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, "utf8")) : null; } catch { config = "unreadable"; }
   const info = {
@@ -447,11 +453,24 @@ function serve() {
     return await textStep(s, "fake:retryloop");
   }
 
+  /** opencode compacting the session by itself at the top of an execution, because the last reply's context
+   *  crossed the model's budget (2.0.32): a compaction of its own (`reason: auto`, no input behind it) inside
+   *  the execution, then the input's step. */
+  async function nativeCompactTurn(s) {
+    publish("session.compaction.started", { sessionID: s.id, reason: "auto", recent: "" });
+    await sleep(s, 20);
+    const summary = "## Objective\n- Mock objective\n";
+    s.items.push({ type: "compaction", id: newId("msg"), time: { created: now() }, reason: "auto", status: "completed", cost: COST, tokens: TOKENS, model: s.model, summary, recent: "" });
+    publish("session.compaction.ended", { sessionID: s.id, reason: "auto", model: s.model, text: summary });
+    return await textStep(s, "fake:nativecompact");
+  }
+
   /** The directives, in the order they are tried. */
   const DIRECTIVES = [
     ["TOOL", toolTurn],
     ["SLOWTOOL", toolTurn],
     ["SLOW", (s) => textStep(s, "fake:slow", { waitMs: 2000 })],
+    ["LATESTART", async (s) => ((await sleep(s, 1200)) ? "interrupted" : await textStep(s, "fake:latestart"))],
     ["HANG", hangTurn],
     ["FAIL", failTurn],
     ["RETRY", retryTurn],
@@ -459,6 +478,7 @@ function serve() {
     ["RETRYLOOP", retryLoopTurn],
     ["RETRYSLOW", retrySlowTurn],
     ["NOTEXT", noTextTurn],
+    ["NATIVECOMPACT", nativeCompactTurn],
     ["OTHERMODEL", otherModelTurn],
     ["PERMISSION", permissionTurn],
     ["QUESTION", questionTurn],
@@ -552,6 +572,7 @@ function serve() {
     const method = req.method;
     if (rest === "" && method === "GET") return data(res, sessionInfo(s));
     if (rest === "" && method === "PATCH") {
+      if (metadataFailed++ < Number(process.env.FAKE_V2_METADATA_FAIL ?? 0)) { res.writeHead(500); res.end("fake: metadata write refused"); return; }
       if (body && "metadata" in body) s.metadata = body.metadata && Object.keys(body.metadata).length ? body.metadata : undefined;
       return noContent(res);
     }

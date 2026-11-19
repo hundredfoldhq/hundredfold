@@ -1,12 +1,9 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react"
 import { LoadBoundary } from "@/components/ui/lazy-overlay"
-import type { WorkItemStatusWire } from "@/lib/api"
 import type { TodoFilters } from "@/lib/todos"
-import type { BoardColumnData } from "../board/use-board"
-import { BOARD_STATUS_ORDER } from "../board/status-scope"
-import { useSprintCardMenu } from "./sprint-card-menu"
 import { SprintStrip } from "./sprint-strip"
-import { sprintErrorMessage, useSprints } from "./use-sprints"
+import type { CardSprints } from "./sprint-card-menu"
+import { sprintErrorMessage, useSetWorkItemSprint, useSprints } from "./use-sprints"
 
 /* The planner is only needed once someone opens it, so it stays out of the
  * board chunk and loads on first open. It then stays mounted, closed, so the
@@ -36,14 +33,13 @@ function PlannerHost({ planner, close, drop, onShowOnBoard }: {
 
 /* Everything the board needs for sprints, in one place: the strip under the
  * filter row while a sprint filter is set, the planner dialog, and the card
- * menu that moves a Todo between sprints. The board mounts `strip` and
- * `overlays`, hands `openPlanner` to its filter controls, and puts
- * `onContextMenu` on the element holding the cards. */
+ * sprints a card's right-click menu offers. The board mounts `strip` and
+ * `overlays`, hands `openPlanner` to its filter controls, and gives
+ * `cardSprints` to the card menu. */
 
-export function useBoardSprints({ filters, setFilters, columns, mobile, announce }: {
+export function useBoardSprints({ filters, setFilters, mobile, announce }: {
   filters: TodoFilters
   setFilters: (next: TodoFilters) => void
-  columns: Record<WorkItemStatusWire, BoardColumnData>
   mobile: boolean
   announce: (message: string) => void
 }) {
@@ -54,14 +50,11 @@ export function useBoardSprints({ filters, setFilters, columns, mobile, announce
     (error: unknown) => announce(sprintErrorMessage(error, "The gateway refused to move the Todo to that sprint")),
     [announce],
   )
-  const itemById = useCallback((id: string) => {
-    for (const status of BOARD_STATUS_ORDER) {
-      const found = columns[status]?.items.find((item) => item.id === id)
-      if (found) return found
-    }
-    return undefined
-  }, [columns])
-  const cardMenu = useSprintCardMenu({ itemById, sprints: openSprints, enabled: !mobile, onError: onMoveError })
+  const setSprint = useSetWorkItemSprint()
+  const cardSprints = useMemo<CardSprints | undefined>(
+    () => (mobile ? undefined : { sprints: openSprints, move: (item, sprint) => setSprint.mutate({ id: item.id, sprint }, { onError: onMoveError }) }),
+    [mobile, openSprints, setSprint.mutate, onMoveError],
+  )
   const openPlanner = useCallback(() => setPlanner({ open: true }), [])
   const closePlanner = useCallback(() => setPlanner((current) => (current ? { ...current, open: false } : current)), [])
 
@@ -70,7 +63,6 @@ export function useBoardSprints({ filters, setFilters, columns, mobile, announce
     : null
   const overlays = (
     <>
-      {cardMenu.menu}
       {planner !== null && (
         <PlannerHost
           planner={planner}
@@ -84,5 +76,5 @@ export function useBoardSprints({ filters, setFilters, columns, mobile, announce
       )}
     </>
   )
-  return { strip, overlays, openPlanner, onContextMenu: cardMenu.onContextMenu }
+  return { strip, overlays, openPlanner, cardSprints }
 }

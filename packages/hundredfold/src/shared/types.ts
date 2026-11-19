@@ -157,6 +157,35 @@ export function reportsTurnProgress(engine: Engine): engine is TurnProgressEngin
   return typeof (engine as Partial<TurnProgressEngine>).turnProgress === "function";
 }
 
+/** What became of an input handed to a running turn with {@link SteerableEngine.steer}. */
+export type SteerOutcome = "steered" | "withdrawn";
+
+/**
+ * An engine that can hand a new input to a turn already running, so the model
+ * reads it at its next step rather than after the whole turn. The gateway
+ * hands an operator's Todo mention to a turn this way; for an engine without
+ * it the mention waits at the head of the session's queue, never cutting the
+ * running turn off.
+ */
+export interface SteerableEngine extends Engine {
+  /** Whether a turn that can take a steered input is running in this session now. */
+  canSteer(sessionId: string): boolean;
+  /**
+   * Hand `prompt` to the turn running in this session. Resolves `"steered"`
+   * once the turn has taken the input in, or when the turn ended and the input
+   * could no longer be taken back (the engine has it either way, so running it
+   * again would deliver it twice). Resolves `"withdrawn"` when the turn ended
+   * without taking it and it was taken back out, or when no turn could take it:
+   * the caller then runs it as a turn of its own. Never rejects.
+   */
+  steer(sessionId: string, prompt: string): Promise<SteerOutcome>;
+}
+
+export function isSteerableEngine(engine: Engine): engine is SteerableEngine {
+  const candidate = engine as Partial<SteerableEngine>;
+  return typeof candidate.canSteer === "function" && typeof candidate.steer === "function";
+}
+
 /**
  * Where an engine session actually executes. Absent on every field = the gateway
  * host, which is every employee today. When `remoteHost` is set the session is
@@ -487,6 +516,11 @@ export interface SessionDeliveryPayload {
   displayMessage: string;
   meta?: JsonObject;
   block?: ChatBlockEnvelope;
+  /** The operator asked for this one (their `@employee` on a Todo): a turn
+   *  running when it arrives takes it at its next step when its engine can, and
+   *  otherwise it runs next, ahead of anything queued earlier, without cutting
+   *  the turn off. Set only by the gateway's own writers. */
+  reachRunningTurn?: true;
 }
 
 export interface SessionDelivery extends SessionDeliveryIdentity {

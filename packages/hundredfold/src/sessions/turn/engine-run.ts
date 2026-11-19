@@ -12,6 +12,7 @@ import { settleTurn } from "./completion.js";
 import type { TurnHeartbeat } from "./heartbeat.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
+import { withPauseNotice } from "../pause-notice.js";
 
 /** One engine invocation plus the context that was built for it. */
 export interface EngineAttempt {
@@ -43,7 +44,7 @@ export async function runEngineAttempt(args: EngineAttemptArgs): Promise<EngineA
   const prepared = plan.prepareContext(args.model);
 
   const result = await plan.engine.run({
-    prompt: withBoardReminder(plan.promptToRun, plan.boardReminder),
+    prompt: withBoardReminder(withPauseNotice(plan.promptToRun, plan.pauseNotice), plan.boardReminder),
     resumeSessionId: plan.resumeSessionId,
     systemPrompt: prepared.systemPrompt,
     platformContextRefresh: prepared.refresh,

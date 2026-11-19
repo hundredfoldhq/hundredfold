@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import * as pty from "node-pty";
-import type { CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta, TurnProgress } from "../shared/types.js";
+import type { CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, SteerableEngine, SteerOutcome, StreamDelta, TurnProgress } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { ENGINE_SWITCHED_REASON, type LostBackgroundCause } from "../shared/engine-switch.js";
 import { HUNDREDFOLD_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { cleanupSessionSettings } from "../shared/claude-settings.js";
 import { assertClaudeProfileDirExists, claudeResetSource, ensureClaudeProfileTrust, writeClaudeSessionSettings } from "./claude-profile-launch.js";
@@ -350,6 +351,17 @@ function promptFingerprint(text: string): string {
   return text.replace(/`/g, "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * promptFingerprint of a message as Claude Code records it. A message of four
+ * or more lines sent while a turn runs is recorded wrapped in
+ * `<pasted_content id="…">` tags, in its UserPromptSubmit and its transcript
+ * entries alike (verified on 2.1.325), with the id differing from message to
+ * message; shorter ones, and long single lines, are recorded as sent.
+ */
+function steerFingerprint(text: string): string {
+  return promptFingerprint(text.replace(/<\/?pasted_content id="[^"]*">/g, " "));
+}
+
 /** Whether `prompt` reached the transcript as a user prompt at or after
  *  `sinceMs`. Other user entries — a background re-run's `<task-notification>`,
  *  an interrupt marker — do not count. Scans from the end, where anything this
@@ -376,6 +388,52 @@ export function transcriptHasPromptSince(transcriptPath: string, sinceMs: number
     if (promptFingerprint(text).includes(needle)) return true;
   }
   return false;
+}
+
+/**
+ * Fingerprints of the prompts Claude Code took into a running turn at a tool
+ * boundary, read from newly appended transcript lines.
+ *
+ * A message sent while a turn runs is queued (`queue-operation` `enqueue`). At
+ * the turn's next tool boundary it is folded into that turn: the transcript
+ * gets a `queued_command` attachment carrying the prompt, and the model reads
+ * it with the tool's result (verified on 2.1.325). A message the turn finishes
+ * without folding is not an attachment: it is dequeued after the turn's Stop
+ * and runs as a turn of its own, as an ordinary user entry. Hooks cannot tell
+ * the two apart: the queued message's UserPromptSubmit fires when it is sent
+ * either way. Exported for tests.
+ */
+export function queuedPromptsTakenIn(appended: string): string[] {
+  const taken: string[] = [];
+  for (const line of appended.split("\n")) {
+    if (!line.includes('"queued_command"')) continue;
+    let msg: any;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg?.type !== "attachment" || msg?.attachment?.type !== "queued_command") continue;
+    const prompt = msg.attachment.prompt;
+    if (typeof prompt === "string") taken.push(steerFingerprint(prompt));
+  }
+  return taken;
+}
+
+/** The part of a file written since `offset`, cut after its last newline so a line still being written is
+ *  read whole next time; `next` is where the following read starts. Unreadable: nothing new. */
+function readAppendedLines(filePath: string, offset: number): { text: string; next: number } {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const size = fs.fstatSync(fd).size;
+    if (size <= offset) return { text: "", next: Math.min(offset, size) };
+    const buf = Buffer.alloc(size - offset);
+    fs.readSync(fd, buf, 0, buf.length, offset);
+    const end = buf.lastIndexOf(0x0a);
+    if (end < 0) return { text: "", next: offset };
+    return { text: buf.subarray(0, end + 1).toString("utf-8"), next: offset + end + 1 };
+  } catch {
+    return { text: "", next: offset };
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already gone */ }
+  }
 }
 
 export function stripReasoningBlocks(text: string): string {
@@ -1427,7 +1485,40 @@ interface ActiveTurn {
   holdingPaste?: boolean;
   /** Stops the submit-confirmation retry loop; called when the turn settles. */
   cancelSubmitConfirm?: () => void;
+  /** This turn's transcript, as any of its hooks reports it. */
+  transcriptPath?: string;
+  /** The session runs on another host: its transcript is not readable here. */
+  remote?: boolean;
+  /** Inputs handed to this turn with steer() whose fate is not yet known. */
+  steers?: SteerInFlight[];
+  /** Watches this turn's transcript for the entries that show it took a steered input in. */
+  steerWatch?: { offset: number; taken: string[]; timer: NodeJS.Timeout };
 }
+
+/** One input handed to a running turn (see InteractiveClaudeEngine.steer). */
+interface SteerInFlight {
+  /** promptFingerprint of the pasted text: what its UserPromptSubmit and its transcript entry are matched by. */
+  needle: string;
+  /** Lines the composer holds while the text is unsent, for clearing it. */
+  lines: number;
+  /** Claude Code accepted the message: its UserPromptSubmit fired. It fires when the message is sent
+   *  and queued, not when the model reads it. */
+  acknowledged: boolean;
+  /** The submit CR has been written: the message may be in even if its UserPromptSubmit has not arrived. */
+  submitted: boolean;
+  /** How many taken-in prompts the transcript watch had seen when this input was sent: only later ones are its. */
+  takenFrom: number;
+  cancelSubmit: () => void;
+  /** Ends the hand-over with its outcome, once. */
+  finish: (outcome: SteerOutcome) => void;
+  done: boolean;
+}
+
+/** How long, after a turn ends, a message whose submit was written is waited for to be acknowledged. */
+const STEER_ACK_GRACE_MS = 1500;
+
+/** How often a handed-over input is looked for in the turn's transcript. */
+const STEER_FOLD_POLL_MS = 400;
 
 /** Optional submit acknowledgement probe for pasteAndSubmit. Supplied by the
  *  gateway-driven warm-PTY path, where an unsubmitted prompt is an invisible hang;
@@ -1610,7 +1701,7 @@ export function pasteAndSubmit(
   };
 }
 
-export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine, BackgroundTasksSource {
+export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEngine, PtyViewEngine, BackgroundTasksSource {
   name = "claude" as const;
   /** Active turn resolvers keyed by Hundredfold session id. `boundProc` is the specific
    *  PTY serving this turn (captured at spawn / warm-reuse). A PTY's onExit only
@@ -1643,6 +1734,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  when it was seen starting. Opened by a UserPromptSubmit no gateway turn
    *  owns, closed by its Stop/StopFailure or by TERMINAL_TURN_QUIET_MS silence. */
   private terminalTurns = new Map<string, number>();
+  /** Inputs handed to a turn that ended before their submit was acknowledged, by session: their
+   *  acknowledgement may still arrive (see settleSteers). */
+  private lateSteers = new Map<string, SteerInFlight[]>();
   /** Gateway turns waiting for a terminal turn to finish; calling it aborts. */
   private terminalWaits = new Map<string, (reason: string) => void>();
   /** Sessions whose daemon-held background session is being stopped before the
@@ -1678,10 +1772,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private taskStore = new BackgroundTaskStore((hundredfoldSessionId) => this.publishBackgroundState(hundredfoldSessionId));
   private backgroundSilenceTimers = new Map<string, NodeJS.Timeout>();
   private backgroundActivityCb?: (hundredfoldSessionId: string, info: UpstreamActivityInfo | null) => void;
-  private lostBackgroundTasksCb?: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], deliberate: boolean) => void;
-  /** Sessions whose PTY kill() is releasing: the session was stopped on purpose, so the
-   *  background tasks that die with it are reported deliberate. Held only for the release. */
-  private deliberateReleases = new Set<string>();
+  private lostBackgroundTasksCb?: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], cause: LostBackgroundCause) => void;
+  /** Sessions whose PTY kill() is releasing, and why: stopped on purpose, or moved to another account
+   *  or engine. The background tasks that die with it are reported with that cause. Held only for the release. */
+  private deliberateReleases = new Map<string, Exclude<LostBackgroundCause, "ended">>();
   /** killAll ran: the gateway is shutting down, and the restart record owns what dies with it. */
   private shuttingDown = false;
   /** Test override for the post-settle clear quiet window (default 10s). */
@@ -1822,9 +1916,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  evicted as idle, or was respawned) while background tasks it launched were
    *  still running. Claude Code never announces those tasks' ends, so nothing
    *  would re-invoke the model; the gateway asks the session to carry on, or
-   *  keeps the tasks for its next turn. `deliberate`: stopped on purpose (kill)
-   *  or the gateway is shutting down, so not woken but not forgotten. */
-  onLostBackgroundTasks(cb: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], deliberate: boolean) => void): void {
+   *  keeps the tasks for its next turn. `cause`: `stopped` (a kill, or the gateway
+   *  shutting down) and `moved` (a kill that handed the session to another account or
+   *  engine) are not woken but not forgotten; `ended` is any other release. */
+  onLostBackgroundTasks(cb: (hundredfoldSessionId: string, tasks: BackgroundTaskWait[], cause: LostBackgroundCause) => void): void {
     this.lostBackgroundTasksCb = cb;
   }
 
@@ -1833,13 +1928,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private reportLostBackgroundTasks(hundredfoldSessionId: string): void {
     const tasks = this.taskStore.list(hundredfoldSessionId);
     if (tasks.length === 0) return;
-    const deliberate = this.shuttingDown || this.deliberateReleases.has(hundredfoldSessionId);
+    const cause: LostBackgroundCause = this.shuttingDown ? "stopped" : this.deliberateReleases.get(hundredfoldSessionId) ?? "ended";
     logger.warn(
       `InteractiveClaudeEngine: ${hundredfoldSessionId}'s Claude Code process ended with ${tasks.length} background task(s) `
       + `still running (${tasks.map((task) => task.id).join(", ")}): `
-      + (deliberate ? "it was stopped on purpose, so the session is not asked to carry on" : "reporting them so the session can be asked to carry on"),
+      + (cause === "ended" ? "reporting them so the session can be asked to carry on" : `it was ${cause === "moved" ? "moved to another account or engine" : "stopped on purpose"}, so the session is not asked to carry on`),
     );
-    this.lostBackgroundTasksCb?.(hundredfoldSessionId, tasks, deliberate);
+    this.lostBackgroundTasksCb?.(hundredfoldSessionId, tasks, cause);
   }
 
   /** Per-PTY SSE proxy reported an in-flight change. Always record it (counts
@@ -2218,7 +2313,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // No gateway turn, or one whose paste is still held: a prompt
     // submitted now was typed into the terminal.
     if (!entry || entry.holdingPaste) {
-      if (event === "UserPromptSubmit") this.terminalTurns.set(hundredfoldSessionId, Date.now());
+      if (event === "UserPromptSubmit") {
+        // The late acknowledgement of an input handed to the turn that just ended:
+        // Claude Code runs it as a turn of its own, which the next gateway turn waits for.
+        const sent = steerFingerprint(String(h.prompt ?? ""));
+        const late = this.lateSteers.get(hundredfoldSessionId)?.filter((s) => !s.acknowledged && sent.includes(s.needle));
+        for (const steer of late ?? []) steer.acknowledged = true;
+        this.terminalTurns.set(hundredfoldSessionId, Date.now());
+        for (const steer of late ?? []) steer.finish("steered");
+      }
       else if (event === "Stop" || event === "StopFailure") {
         // A background re-run's Stop ends the re-run, not a typed turn queued
         // behind it. Taps run before the turn's listener, so both checks still
@@ -2232,6 +2335,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     // somebody typing in the terminal — cold spawn, warm paste or native
     // command alike.
     if (event === "UserPromptSubmit") {
+      // An input the gateway handed to this turn: Claude Code queued it, and it
+      // is no terminal turn to wait for (see steer).
+      // Claude Code merges messages sent before it submits the first, and an
+      // operator's unsent text in the composer: the one prompt then holds each input.
+      const sent = steerFingerprint(String(h.prompt ?? ""));
+      const steers = entry.steers?.filter((s) => !s.acknowledged && sent.includes(s.needle));
+      if (steers?.length) {
+        for (const steer of steers) steer.acknowledged = true;
+        return;
+      }
       entry.promptSubmitsSeen = (entry.promptSubmitsSeen ?? 0) + 1;
       if (entry.promptSubmitsSeen > (entry.native ? 0 : 1)) entry.terminalPromptQueued = true;
     }
@@ -2526,6 +2639,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       lastHookAt: turnStartedAt,
       gated: gateOnPromptSubmit,
       native: nativeCommand,
+      remote: isRemoteTarget(opts),
       // Only the warm-PTY paste has to earn this flag. The cold-spawn path carries
       // the prompt in argv, so it is submitted by construction; native commands are
       // exempt because no acknowledgement is expected for them (see injectPrompt
@@ -2560,6 +2674,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           resolver.completeNativeCommand();
         }
         entry.lastHookAt = Date.now();
+        if (typeof h.transcript_path === "string" && h.transcript_path) entry.transcriptPath = h.transcript_path;
         // Submit acknowledgement. UserPromptSubmit is the direct signal; the in-turn
         // hooks are accepted too because none of them can fire before a prompt is
         // running. SessionStart is deliberately NOT accepted — it can arrive from the
@@ -2802,6 +2917,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       if (lostStopRecoveryTimer) clearInterval(lostStopRecoveryTimer);
       // MUST run before the PTY can be handed to another turn — see pasteAndSubmit.
       entry.cancelSubmitConfirm?.();
+      this.settleSteers(hundredfoldSessionId, entry);
       this.hookRegistry.unregister(hundredfoldSessionId);
       this.active.delete(hundredfoldSessionId);
       // A prompt typed in the terminal during this turn runs next: the next
@@ -3500,7 +3616,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     this.cancelLateRecovery(sessionId);
     const e = this.active.get(sessionId);
     e?.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`);
-    this.deliberateReleases.add(sessionId);
+    this.deliberateReleases.set(sessionId, reason === ENGINE_SWITCHED_REASON ? "moved" : "stopped");
     try {
       this.lifecycle.releaseSession(sessionId);
     } finally {
@@ -3525,11 +3641,202 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     this.lifecycle.releaseIdle((id) => this.active.has(id) || this.terminalWaits.has(id) || this.terminalTurns.has(id));
   }
 
+  /** Whether releasing this session's PTY now would cut a turn off: one the gateway runs, one it waits on behind the
+   *  terminal, one typed into the terminal, or a background stop in progress. The predicate `killIdle` spares, plus the
+   *  background stop. Separate from `isTurnRunning`, which the reconciler and /stop read. */
+  holdsTurn(sessionId: string): boolean {
+    return this.isTurnRunning(sessionId) || this.terminalTurns.has(sessionId);
+  }
+
   /** True only while a turn is in flight (distinct from "PTY is warm"). */
   isTurnRunning(sessionId: string): boolean {
     // A turn waiting behind one typed in the terminal is still a turn: "send
     // now" and /stop must be able to interrupt it.
     return this.active.has(sessionId) || this.terminalWaits.has(sessionId) || this.backgroundStops.has(sessionId);
+  }
+
+  /**
+   * Whether a turn that can take a message is running in this session now: its
+   * own prompt is the one running (not one waiting behind a background re-run or
+   * a turn typed into the terminal), the TUI is not blocked on a dialog, and the
+   * transcript that shows a message was taken in is readable here.
+   */
+  canSteer(sessionId: string): boolean {
+    const entry = this.active.get(sessionId);
+    if (!entry || entry.native || entry.remote || entry.holdingPaste || !entry.transcriptPath) return false;
+    const { resolver } = entry;
+    if (resolver.isSettled || resolver.stopFailure || resolver.promptSubmittedAt === undefined || resolver.awaitingBackgroundRerun) return false;
+    // Somebody typed into the terminal during this turn: a second queued message
+    // would be folded in with theirs, and what became of ours would be unclear.
+    if (entry.blockedOnPermissionAt !== undefined || entry.terminalPromptQueued) return false;
+    return this.steerTarget(sessionId, entry) !== undefined;
+  }
+
+  /** The PTY serving this turn, while it is alive and is the session's warm one. */
+  private steerTarget(sessionId: string, entry: ActiveTurn): pty.IPty | undefined {
+    const proc = entry.boundProc as (pty.IPty & { _exitCode?: number | null }) | undefined;
+    if (!proc || proc._exitCode != null || this.lifecycle.getWarm(sessionId) === undefined) return undefined;
+    return proc;
+  }
+
+  /**
+   * Hand `prompt` to the turn running in this session, as a message typed while
+   * it works. Claude Code queues it and gives it to the model at the turn's next
+   * tool boundary, in the same turn (verified on 2.1.325):
+   * - Taken in at a boundary: the transcript gets a `queued_command` entry and
+   *   there is one Stop for the turn and the message ("steered"). Nothing is
+   *   cut off, and it has no turn of its own.
+   * - The turn ends first: Claude Code dequeues the message right after the
+   *   Stop (about 40 ms, so it cannot be taken back) and runs it as a turn of
+   *   its own. That is "steered" too, as the contract says for an input that
+   *   could no longer be taken back: running it again would answer it twice. The
+   *   engine then holds the session as a terminal turn until it is over, and its
+   *   answer reaches chat through the external-turn sync, like any turn typed
+   *   into the terminal.
+   * - Claude Code never took the paste, or the process died with it queued:
+   *   "withdrawn". Nothing was delivered, and a paste left in the composer is
+   *   cleared so the next turn's paste does not land behind it.
+   */
+  async steer(sessionId: string, prompt: string): Promise<SteerOutcome> {
+    const entry = this.active.get(sessionId);
+    if (!entry || !this.canSteer(sessionId)) return "withdrawn";
+    // The rewind menu takes a CR as "confirm rewind" and drops the paste; a
+    // safety dialog is the operator's to answer.
+    if (await this.screenShowsRewindMenu(sessionId) || await this.screenShowsSafetyPrompt(sessionId)) return "withdrawn";
+    // The turn can end, or the terminal can change hands, during that read.
+    const proc = this.active.get(sessionId) === entry && this.canSteer(sessionId) ? this.steerTarget(sessionId, entry) : undefined;
+    if (!proc || !entry.transcriptPath) return "withdrawn";
+    const text = neutralizeImagePathsForPaste(prompt);
+    const needle = steerFingerprint(text);
+    // Nothing to deliver, and nothing that could be told apart in the transcript.
+    if (!needle) return "withdrawn";
+    return new Promise<SteerOutcome>((resolve) => {
+      const steer: SteerInFlight = {
+        needle,
+        takenFrom: 0,
+        lines: Math.max(1, neutralizeForPaste(text).split("\n").length),
+        acknowledged: false,
+        submitted: false,
+        cancelSubmit: () => {},
+        done: false,
+        finish: (outcome) => {
+          if (steer.done) return;
+          steer.done = true;
+          steer.cancelSubmit();
+          resolve(outcome);
+          this.stopSteerWatchIfIdle(entry);
+        },
+      };
+      (entry.steers ??= []).push(steer);
+      this.watchSteerTranscript(entry);
+      steer.takenFrom = entry.steerWatch?.taken.length ?? 0;
+      logger.info(`InteractiveClaudeEngine: handing an input to the running turn of ${sessionId}`);
+      steer.cancelSubmit = pasteAndSubmit({
+        write: (data: string) => {
+          if (data === "\r") steer.submitted = true;
+          proc.write(data);
+        },
+      }, text, {
+        submitted: () => steer.acknowledged || steer.done || entry.resolver.isSettled,
+        // Real work in flight: the message is queued, not lost (see pasteAndSubmit).
+        // Nearly always so while the turn runs, which holds the CR retries until it ends: a CR the
+        // TUI swallowed is then settled by settleSteers, not by onUnconfirmed.
+        busy: () => this.hasActiveUpstream(sessionId) || entry.activeTools > 0,
+        abortSubmit: () => this.screenShowsRewindMenu(sessionId),
+        onRetry: (attempt) => logger.warn(`InteractiveClaudeEngine: steered input unacknowledged for ${sessionId} — re-sending CR (attempt ${attempt})`),
+        // Never took it: respawning would cut the turn off, so clear what the composer holds.
+        onUnconfirmed: (attempts) => {
+          logger.warn(`InteractiveClaudeEngine: steered input still unacknowledged for ${sessionId} after ${attempts} re-sent CRs; withdrawing it`);
+          this.clearComposer(proc, steer.lines);
+          steer.finish("withdrawn");
+        },
+      });
+    });
+  }
+
+  /**
+   * Look in the turn's transcript for the entries that show it took a steered
+   * input in, until none is outstanding. Starts from the end of the file as it
+   * is now: the entry is written after the input was sent.
+   */
+  private watchSteerTranscript(entry: ActiveTurn): void {
+    if (entry.steerWatch || !entry.transcriptPath) return;
+    let offset = 0;
+    try { offset = fs.statSync(entry.transcriptPath).size; } catch { /* not written yet: from the start */ }
+    const timer = setInterval(() => this.lookForSteerFolds(entry), STEER_FOLD_POLL_MS);
+    timer.unref?.();
+    entry.steerWatch = { offset, taken: [], timer };
+  }
+
+  private lookForSteerFolds(entry: ActiveTurn): void {
+    const watch = entry.steerWatch;
+    if (!watch || !entry.transcriptPath) return;
+    const { text, next } = readAppendedLines(entry.transcriptPath, watch.offset);
+    watch.offset = next;
+    if (text) watch.taken.push(...queuedPromptsTakenIn(text));
+    for (const steer of entry.steers ?? []) {
+      if (steer.done) continue;
+      // Merged messages are one entry holding each input.
+      if (!watch.taken.slice(steer.takenFrom).some((taken) => taken.includes(steer.needle))) continue;
+      logger.info("InteractiveClaudeEngine: the running turn took the steered input in");
+      steer.finish("steered");
+    }
+  }
+
+  private stopSteerWatchIfIdle(entry: ActiveTurn): void {
+    if (!entry.steerWatch || entry.steers?.some((s) => !s.done)) return;
+    clearInterval(entry.steerWatch.timer);
+    entry.steerWatch = undefined;
+  }
+
+  /** Empty the TUI's composer of an unsent paste. Ctrl+U deletes one line, and each line break takes another. */
+  private clearComposer(proc: Pick<pty.IPty, "write">, lines: number): void {
+    proc.write("\x15".repeat(2 * lines));
+  }
+
+  /**
+   * The turn is over. Inputs it already took in were settled as they were seen;
+   * for the rest, one last look at the transcript, then:
+   * - acknowledged, process alive: Claude Code runs it as a turn of its own (see
+   *   steer), which the next gateway turn must wait for;
+   * - process gone: it died queued, never delivered;
+   * - never acknowledged: not delivered, once what the composer holds is cleared.
+   *   Where the submit was written, its acknowledgement may only be late: wait
+   *   for it briefly rather than answer the input twice.
+   */
+  private settleSteers(sessionId: string, entry: ActiveTurn): void {
+    const pending = entry.steers?.filter((s) => !s.done);
+    if (!pending?.length) return;
+    this.lookForSteerFolds(entry);
+    const proc = this.steerTarget(sessionId, entry);
+    for (const steer of pending) {
+      if (steer.done) continue;
+      if (!proc) { steer.finish("withdrawn"); continue; }
+      if (steer.acknowledged) {
+        entry.terminalPromptQueued = true;
+        steer.finish("steered");
+        continue;
+      }
+      if (!steer.submitted) {
+        this.clearComposer(proc, steer.lines);
+        steer.finish("withdrawn");
+        continue;
+      }
+      const waiting = this.lateSteers.get(sessionId) ?? [];
+      waiting.push(steer);
+      this.lateSteers.set(sessionId, waiting);
+      const lateAck = setTimeout(() => {
+        const rest = (this.lateSteers.get(sessionId) ?? []).filter((s) => s !== steer);
+        if (rest.length) this.lateSteers.set(sessionId, rest); else this.lateSteers.delete(sessionId);
+        if (steer.done) return;
+        // The composer is the next turn's once that has begun pasting into it.
+        if (!this.active.has(sessionId) && (this.lifecycle.getWarm(sessionId) as { _proc?: unknown } | undefined)?._proc === proc && this.steerTarget(sessionId, entry)) {
+          this.clearComposer(proc, steer.lines);
+        }
+        steer.finish("withdrawn");
+      }, STEER_ACK_GRACE_MS);
+      lateAck.unref?.();
+    }
   }
 
   /** Observable progress for the in-flight turn, or undefined if none is running.

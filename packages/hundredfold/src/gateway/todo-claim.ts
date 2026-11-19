@@ -3,8 +3,9 @@ import type { ServerResponse } from "node:http";
 import { getSession } from "../sessions/registry.js";
 import {
   claimWorkItem,
+  getWorkItemClaim,
   releaseWorkItemClaim,
-  releaseWorkItemClaimForSession,
+  type WorkItemClaim,
 } from "../work-items/claims.js";
 import { json } from "./route-helpers.js";
 import { TODO_DISPATCHER_NAME } from "./system-employees.js";
@@ -34,11 +35,21 @@ export interface RouteTodoClaim {
  *  so the board can say that plainly instead of a generic failure. */
 export const TODO_ALREADY_EXECUTING = "TODO_ALREADY_EXECUTING";
 
-export function acquiredTodoClaim(workItemId: string, owner: string): RouteTodoClaim {
+/** Put a claim a hand-off gave up back on its Todo, for whichever session held it. */
+function restoreClaim(given: WorkItemClaim): void {
+  claimWorkItem({ workItemId: given.workItemId, owner: given.owner, sessionId: given.sessionId });
+}
+
+/** `handedOver` is the claim the caller gave up to take this one: `release` puts
+ *  it back, because a delegation that fails has not passed the Todo on. */
+export function acquiredTodoClaim(workItemId: string, owner: string, handedOver?: WorkItemClaim): RouteTodoClaim {
   return {
     owner,
     bind: (sessionId) => { claimWorkItem({ workItemId, owner, sessionId }); },
-    release: () => { releaseWorkItemClaim(workItemId, owner); },
+    release: () => {
+      releaseWorkItemClaim(workItemId, owner);
+      if (handedOver) restoreClaim(handedOver);
+    },
   };
 }
 
@@ -50,9 +61,15 @@ function refuse(res: ServerResponse, workItemId: string, reason: string): undefi
 }
 
 /**
- * Claim a Todo for a delegation. A Dispatcher handing its own Todo to the
- * employee it picked is the one caller allowed past a live claim: it is not a
- * second worker, it is the same work moving on, so it gives its claim up first.
+ * Claim a Todo for a delegation. A session handing on the Todo it holds is the
+ * one caller allowed past a live claim: it is not a second worker, it is the
+ * same work moving on, so its claim transfers to the delegate. That covers the
+ * Dispatcher handing its Todo to the employee it picked and a producer handing
+ * its Todo up. A claim held by any other session still refuses the delegation.
+ *
+ * The caller's claim is given up just before the delegate's is taken, and given
+ * back if the delegation then fails (`release`), so a hand-off that falls
+ * through leaves the caller as protected as it was.
  *
  * A delegation that MINTED its Todo claims too. Nothing can be racing it yet,
  * but the claim is what the next pickup path reads: without one, the second
@@ -61,12 +78,16 @@ function refuse(res: ServerResponse, workItemId: string, reason: string): undefi
 export function claimTodoForDelegation(
   res: ServerResponse,
   workItemId: string,
-  dispatcherCallerId?: string,
+  callerSessionId?: string,
 ): RouteTodoClaim | undefined {
-  if (dispatcherCallerId) releaseWorkItemClaimForSession(dispatcherCallerId);
+  // Only this Todo's claim moves: a session holding some other Todo keeps it.
+  const held = getWorkItemClaim(workItemId);
+  const given = callerSessionId && held?.sessionId === callerSessionId ? held : undefined;
+  if (given) releaseWorkItemClaim(workItemId, given.owner);
   const owner = `delegation:${randomUUID()}`;
   const claim = claimWorkItem({ workItemId, owner });
-  if (claim.state === "acquired") return acquiredTodoClaim(workItemId, owner);
+  if (claim.state === "acquired") return acquiredTodoClaim(workItemId, owner, given);
+  if (given) restoreClaim(given);
   if (claim.state === "rejected") return refuse(res, workItemId, claim.reason);
   json(res, {
     error: `Todo ${workItemId} already has live execution session ${claim.claim.sessionId ?? claim.claim.owner}`,

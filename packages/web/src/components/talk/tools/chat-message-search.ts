@@ -29,18 +29,20 @@ function relativeTime(value: unknown): string {
   return `${Math.floor(age / 86_400_000)} days ago`
 }
 
-function projectHits(value: unknown, sessionId: string): Array<Record<string, unknown>> {
+function projectHits(value: unknown, sessionId: string): Array<{ timestamp: number; match: Record<string, unknown> }> {
   if (!value || typeof value !== "object") return []
   const results = (value as { results?: unknown }).results
   if (!Array.isArray(results)) return []
-  return results.flatMap((raw): Array<Record<string, unknown>> => {
+  return results.flatMap((raw): Array<{ timestamp: number; match: Record<string, unknown> }> => {
     if (!raw || typeof raw !== "object") return []
     const hit = raw as SearchHit
     if (hit.role !== "user" && hit.role !== "assistant") return []
     if (hit.sessionId !== sessionId) return []
     const excerpt = safeSpokenText(hit.snippet, EXCERPT_CHAR_LIMIT)
-    return excerpt ? [{ role: hit.role, excerpt, when: relativeTime(hit.timestamp) }] : []
-  }).slice(0, MATCH_LIMIT)
+    if (!excerpt) return []
+    const timestamp = typeof hit.timestamp === "number" && Number.isFinite(hit.timestamp) ? hit.timestamp : 0
+    return [{ timestamp, match: { role: hit.role, excerpt, when: relativeTime(hit.timestamp) } }]
+  })
 }
 
 function queryProblem(value: unknown): string | null {
@@ -50,16 +52,28 @@ function queryProblem(value: unknown): string | null {
     : null
 }
 
+/** One role's search. Asked per role because the index also returns relayed messages and child replies
+ *  (role "notification"), which are not part of what Talk speaks and would use up the limit before the
+ *  client could drop them. */
+async function searchRole(query: string, sessionId: string, role: "user" | "assistant"): Promise<unknown> {
+  const path = `/api/search/messages?q=${encodeURIComponent(query)}&sessionId=${encodeURIComponent(sessionId)}&role=${role}&limit=${MATCH_LIMIT}`
+  const response = await authFetch(path, { method: "GET" })
+  if (!response.ok) throw new Error("search failed")
+  return await response.json() as unknown
+}
+
 async function searchCurrentChat(query: string, sessionId: string): Promise<ToolResult> {
-  const path = `/api/search/messages?q=${encodeURIComponent(query)}&sessionId=${encodeURIComponent(sessionId)}&limit=${MATCH_LIMIT}`
   try {
-    const response = await authFetch(path, { method: "GET" })
-    if (!response.ok) return { ok: false, error: "The current chat history could not be searched." }
-    const body = await response.json() as unknown
+    const bodies = await Promise.all([searchRole(query, sessionId, "user"), searchRole(query, sessionId, "assistant")])
     if (currentChatId() !== sessionId) {
       return { ok: false, error: "The chat changed while history was being searched, so those excerpts were discarded." }
     }
-    return { ok: true, data: { matches: projectHits(body, sessionId) } }
+    const matches = bodies
+      .flatMap((body) => projectHits(body, sessionId))
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, MATCH_LIMIT)
+      .map((hit) => hit.match)
+    return { ok: true, data: { matches } }
   } catch {
     return { ok: false, error: "The current chat history could not be searched." }
   }

@@ -57,11 +57,15 @@ export class WaitingRows {
 
   /**
    * A row that will not start: usually a cancel, but also the last point at
-   * which a dispatch can end without a spawn — so it is never silent.
+   * which a dispatch can end without a spawn — so it is never silent. A row
+   * that is already completed is the ordinary end of an input a running turn
+   * took in (see steered-deliveries.ts), so that one is only noted.
    */
   skip(lane: string, row: WaitingRow, reason: string): void {
     this.take(lane, row);
-    logger.warn(`Turn ${row.id} on lane ${lane} skipped: queue row is ${reason}`);
+    const line = `Turn ${row.id} on lane ${lane} skipped: queue row is ${reason}`;
+    if (reason === "completed") logger.info(line);
+    else logger.warn(line);
     this.onSkipped(row);
     row.resolve();
   }

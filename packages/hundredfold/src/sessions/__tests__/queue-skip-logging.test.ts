@@ -51,6 +51,16 @@ describe("SessionQueue says why a turn did not start", () => {
     expect(warn).toHaveBeenCalledWith("Turn row-missing on lane lane-2 skipped: queue row is gone");
   });
 
+  it("only notes, not warns, a row already completed: an input a running turn took in", async () => {
+    const queue = new SessionQueue();
+    rows.set("row-taken-in", { sessionId: "sess-t", status: "completed" });
+    let ran = false;
+    await queue.enqueue("lane-4", async () => { ran = true; }, "row-taken-in");
+    expect(ran).toBe(false);
+    expect(info).toHaveBeenCalledWith("Turn row-taken-in on lane lane-4 skipped: queue row is completed");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("stays quiet for a turn that starts straight away", async () => {
     const queue = new SessionQueue();
     rows.set("row-now", { sessionId: "sess-n", status: "pending" });

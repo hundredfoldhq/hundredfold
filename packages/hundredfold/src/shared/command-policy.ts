@@ -75,13 +75,74 @@ const STAGE_FARM_SEGMENT = new RegExp(
   `(?:^|/)(?:${[REMOTE_STAGE_DIR_NAME, LEGACY_REMOTE_STAGE_DIR_NAME].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?:/|$)`,
 );
 
-/** Commands that create or overwrite a file named in their arguments. */
-const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)\b/i;
+/** Commands that create or overwrite a file named in their arguments. Matched
+ *  anywhere a word starts, by path too (`/bin/cp`), on purpose: a write this layer cannot place is
+ *  judged as a write. Only {@link isReadOnlySegment} clears a match. */
+const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:[^\s;&|()]*\/)?(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)\b/i;
+/** Tools that write no file of their own, whatever words they are given. */
+const READ_ONLY_TOOLS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "cat", "head", "tail", "ls", "wc", "stat", "du", "tree"]);
+/** `find` actions that run a command or write a file. */
+const FIND_ACTION = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+/** Options by which a read-only tool runs a command or writes a file after all. */
+const READER_ESCAPE: Record<string, RegExp> = {
+  rg: /^--pre(?:=|$)/,
+  ag: /^--pager(?:=|$)/,
+  tree: /^-o/,
+};
+/** `git` options by which a reading subcommand writes a file or runs a command. */
+const GIT_ESCAPE = /^(?:--output(?:=|$)|-O|--open-files-in-pager(?:=|$))/;
+/** `git` subcommands that only read the repository. */
+const GIT_READ_SUBCOMMANDS = new Set(["log", "show", "diff", "grep", "status", "blame", "ls-files", "rev-parse"]);
+/** `git` options that take the next word as their value. */
+const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+/** `VAR=value` before a command. */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** The subcommand of a `git` invocation, its global options skipped. */
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (GIT_VALUE_OPTIONS.has(arg)) i++;
+    else if (!arg.startsWith("-")) return arg;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a pipeline segment is a known read: its command (by basename, after
+ * any `VAR=value`) is a read-only tool, `find` with no action that writes or runs
+ * anything, or a reading `git` subcommand. Anything else, a command this does not
+ * know included, is not cleared, so the broad write match still judges it.
+ */
+function isReadOnlySegment(segment: string): boolean {
+  const words = segment.trim().split(/\s+/).filter(Boolean);
+  const start = words.findIndex((word) => !ENV_ASSIGNMENT.test(word));
+  if (start < 0) return false;
+  const tool = words[start]!.replace(/^.*\//, "");
+  const args = words.slice(start + 1);
+  if (READ_ONLY_TOOLS.has(tool)) return !args.some((arg) => READER_ESCAPE[tool]?.test(arg));
+  if (tool === "find") return !args.some((arg) => FIND_ACTION.test(arg));
+  if (tool === "git") return GIT_READ_SUBCOMMANDS.has(gitSubcommand(args) ?? "") && !args.some((arg) => GIT_ESCAPE.test(arg));
+  return false;
+}
+
+/**
+ * Whether `text` may run a write command: the broad match in any pipeline
+ * segment that is not a known read. `grep -rn install docs` is a read; `ls x |
+ * xargs rm`, `if cp …`, `git mv …` and every command this does not know are not.
+ */
+function runsWriteCommand(text: string): boolean {
+  return text.split(/[;&|()`\n]/).some((segment) => WRITE_COMMAND.test(segment) && !isReadOnlySegment(segment));
+}
 /** `> path` / `>> path`, where the target is absolute or home-relative.
  *  `$HOME`/`${HOME}` count as home-relative: without them a plain
  *  `echo x > $HOME/.hundredfold/knowledge/y.md` never even reached the containment
  *  check, because nothing in the line looked like a write to a path. */
-const WRITE_REDIRECT = />>?\s*['"]?(?:[~/]|\$\{?HOME\}?\/)/;
+const WRITE_REDIRECT = />>?\|?\s*['"]?(?:[~/]|\$\{?HOME\}?\/)/;
+/** The target of each `>`/`>>`/`>|` redirect (an `&>` or `2>` one included). */
+const REDIRECT_TARGET = />>?\|?\s*((?:['"])?(?:~|\$HOME|\$\{HOME\})?\/[^\s'"();|&]*)/g;
+/** A device such as `/dev/null` or `/dev/stderr`: writing to it writes no file. */
+const DEVICE_PATH = /^\/dev\//;
 /** In-place edit: the file is both the input and the output. */
 const SED_IN_PLACE = /\bsed\b[^|;&]*\s-i\b/i;
 
@@ -207,16 +268,29 @@ export function evaluateCommandPolicy(command: string, opts?: CommandPolicyOptio
   return { action: "allow" };
 }
 
+/**
+ * The paths a command may write. A write command (`cp`, `tee`, `sed -i`…) can
+ * write any path it names, so all of them are judged. When a redirect is the
+ * only sign of a write, only its targets are: `grep x <home>/docs 2>/dev/null`
+ * reads the home and writes nothing, and `cat <home>/x > /tmp/y` writes /tmp.
+ */
+function writeCandidateTokens(text: string): string[] {
+  if (runsWriteCommand(text) || SED_IN_PLACE.test(text)) return absolutePathTokens(text);
+  if (!WRITE_REDIRECT.test(text)) return [];
+  return [...text.matchAll(REDIRECT_TARGET)]
+    .map((match) => match[1]!.replace(/^['"]/, ""))
+    .filter((target) => !DEVICE_PATH.test(path.posix.normalize(target)));
+}
+
 /** The remote half of {@link evaluateCommandPolicy}, split out because the
  *  combined function exceeds the complexity cap in eslint.config.mjs. */
 function remoteContainmentReason(text: string, opts: CommandPolicyOptions | undefined): string | undefined {
   const mount = opts?.remoteMountRoot?.trim();
   if (!mount) return undefined;
-  if (!WRITE_COMMAND.test(text) && !WRITE_REDIRECT.test(text) && !SED_IN_PLACE.test(text)) return undefined;
   // Write intent is only the gate: a command still has to *name* an offending
-  // path before it is refused, so `npm install` (which trips WRITE_COMMAND)
+  // path before it is refused, so `mkdir -p /srv/work/x` (a write command)
   // never blocks on its own.
-  for (const token of absolutePathTokens(text)) {
+  for (const token of writeCandidateTokens(text)) {
     const reason = offendingHomePath(token, mount, opts ?? {});
     if (reason) return reason;
   }

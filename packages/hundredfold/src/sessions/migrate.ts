@@ -209,8 +209,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_work_item ON sessions (work_item_id) WHE
 // Full-text search over message bodies. External-content FTS5 table (the index
 // lives here; `content` is read back from `messages` via rowid for snippets), so
 // it stays in lockstep with `messages` through the AI/AD/AU triggers below. Only
-// user/assistant rows are indexed — notification/tool rows are deliberately
-// excluded (they're machine chatter, not conversation). Pre-existing rows are
+// user/assistant rows are indexed here — notification/tool rows are machine
+// chatter, except the three kinds that carry a session's words (see
+// CREATE_RELAY_FTS). Pre-existing rows are
 // seeded by a yielded backfill after listen(). While that backfill is in flight,
 // the AD/AU triggers only issue an FTS delete for rowids known to be indexed:
 // already-drained legacy rows or post-watermark rows owned by the AI trigger.
@@ -249,6 +250,55 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
     OR new.rowid > COALESCE(CAST((SELECT value FROM meta WHERE key = 'fts_backfill_max') AS INTEGER), 0)
   );
 END;
+`;
+
+// Notifications that carry a session's words: a relayed message and a child's
+// reply or failure. Their `content` is the web UI's ~200-char banner; the whole
+// body is `meta.fullMessage`, which is what the receiving engine was handed and
+// what read_session shows. They get their own index over a view of that body so
+// a phrase past the banner cut is found (everything else a notification logs —
+// restart acknowledgements, status notices, nudges — stays unindexed). The view
+// is the external content, so the body is stored once. CASE keeps json_* from
+// running on a row that is not a valid relay (SQLite does not order AND terms).
+const RELAY_KINDS_SQL = "'agent-relay','child-reply','child-error'";
+function relayBodySql(row: 'new' | 'old' | ''): string {
+  const m = row ? `${row}.meta` : 'meta';
+  const r = row ? `${row}.role` : 'role';
+  return `CASE WHEN ${r} = 'notification' THEN CASE WHEN json_valid(${m}) THEN CASE WHEN json_extract(${m}, '$.kind') IN (${RELAY_KINDS_SQL}) AND json_type(${m}, '$.fullMessage') = 'text' THEN json_extract(${m}, '$.fullMessage') END END END`;
+}
+// The same watermark guard messages_fts uses: while the backfill is in flight, a delete or update only
+// touches the index for rowids it already holds (backfilled ones, or rows newer than the watermark that
+// the insert trigger owns). An FTS 'delete' of a row that is not indexed corrupts the index.
+function relayGuardSql(row: 'new' | 'old'): string {
+  return `(
+    COALESCE((SELECT value = '1' FROM meta WHERE key = 'relay_fts_backfill_done'), 0)
+    OR ${row}.rowid <= COALESCE(CAST((SELECT value FROM meta WHERE key = 'relay_fts_backfill_rowid') AS INTEGER), 0)
+    OR ${row}.rowid > COALESCE(CAST((SELECT value FROM meta WHERE key = 'relay_fts_backfill_max') AS INTEGER), 0)
+  )`;
+}
+const CREATE_RELAY_FTS = `
+CREATE VIEW IF NOT EXISTS relay_message_bodies AS
+SELECT rowid AS rid, ${relayBodySql('')} AS body FROM messages WHERE ${relayBodySql('')} IS NOT NULL;
+CREATE VIRTUAL TABLE IF NOT EXISTS relay_messages_fts USING fts5(body, content='relay_message_bodies', content_rowid='rid', tokenize='unicode61');
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ai AFTER INSERT ON messages WHEN new.role = 'notification' AND ${relayGuardSql('new')} BEGIN
+  INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE ${relayBodySql('new')} IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_ad AFTER DELETE ON messages WHEN old.role = 'notification' AND ${relayGuardSql('old')} BEGIN
+  INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE ${relayBodySql('old')} IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS relay_messages_fts_au AFTER UPDATE OF role, meta ON messages WHEN old.role = 'notification' OR new.role = 'notification' BEGIN
+  INSERT INTO relay_messages_fts(relay_messages_fts, rowid, body) SELECT 'delete', old.rowid, ${relayBodySql('old')} WHERE old.role = 'notification' AND ${relayGuardSql('old')} AND ${relayBodySql('old')} IS NOT NULL;
+  INSERT INTO relay_messages_fts(rowid, body) SELECT new.rowid, ${relayBodySql('new')} WHERE new.role = 'notification' AND ${relayGuardSql('new')} AND ${relayBodySql('new')} IS NOT NULL;
+END;
+`;
+
+/** Every object CREATE_RELAY_FTS makes, dropped by disableFtsForProcess. */
+export const DROP_RELAY_FTS = `
+DROP TRIGGER IF EXISTS relay_messages_fts_ai;
+DROP TRIGGER IF EXISTS relay_messages_fts_ad;
+DROP TRIGGER IF EXISTS relay_messages_fts_au;
+DROP TABLE IF EXISTS relay_messages_fts;
+DROP VIEW IF EXISTS relay_message_bodies;
 `;
 
 /**
@@ -376,6 +426,27 @@ export function setMeta(database: Database.Database, key: string, value: string)
 }
 
 /**
+ * Create the relay-body index and pin its backfill watermark. Cheap and atomic, so it is safe in the
+ * boot transaction. Relay rows that already exist are NOT indexed here: `relayFtsBackfillStep` (run
+ * after listen(), with the messages_fts backfill) seeds them in small yielded chunks, so a large
+ * history never holds the write lock past the busy timeout. Rows above the watermark belong to the
+ * insert trigger. Idempotent.
+ */
+function migrateRelayFts(database: Database.Database): void {
+  database.exec(`
+    DROP TRIGGER IF EXISTS relay_messages_fts_ai;
+    DROP TRIGGER IF EXISTS relay_messages_fts_ad;
+    DROP TRIGGER IF EXISTS relay_messages_fts_au;
+  `);
+  database.exec(CREATE_RELAY_FTS);
+  if (getMeta(database, 'relay_fts_backfill_done') !== '1' && getMeta(database, 'relay_fts_backfill_max') === null) {
+    const row = database.prepare('SELECT MAX(rowid) AS m FROM messages').get() as { m: number | null };
+    setMeta(database, 'relay_fts_backfill_max', String(row.m ?? 0));
+    setMeta(database, 'relay_fts_backfill_rowid', '0');
+  }
+}
+
+/**
  * Create the FTS5 search index + sync triggers, and record the backfill watermark.
  *
  * The triggers keep the index current for every message written from now on. Rows
@@ -400,6 +471,7 @@ export function migrateFtsSchema(database: Database.Database): void {
     DROP TRIGGER IF EXISTS messages_fts_au;
   `);
   database.exec(CREATE_FTS);
+  migrateRelayFts(database);
   // First time we see this DB and the backfill hasn't run: pin the watermark.
   if (getMeta(database, 'fts_backfill_done') !== '1' && getMeta(database, 'fts_backfill_max') === null) {
     const row = database.prepare('SELECT MAX(rowid) AS m FROM messages').get() as { m: number | null };

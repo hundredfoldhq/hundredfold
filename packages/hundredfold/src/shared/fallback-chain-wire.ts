@@ -38,6 +38,7 @@ export type FallbackSkipReason =
   | "scoped" // a department-scoped session runs on Claude accounts only
   | "remote" // the engine or profile cannot run on the session's host
   | "exhausted" // health says it is at its limit; tried only if nothing else is left
+  | "signed-out" // an opencode provider whose key it rejected: never tried until the key changes
   | "model-not-served"
   | "profile-unknown";
 

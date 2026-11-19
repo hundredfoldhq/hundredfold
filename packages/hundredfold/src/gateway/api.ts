@@ -7,7 +7,8 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, isSteerableEngine, reportsTurnProgress } from "../shared/types.js";
+import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -38,7 +39,7 @@ import { reroutedSessionMeta } from "../sessions/engine-override-window.js";
 import { stripControlChars, hasControlBytes } from "../shared/sanitize.js";
 import { CONNECTOR_ID_REQUIREMENTS, isValidConnectorId } from "../shared/connector-id.js";
 import { initDb } from "../shared/db.js";
-import { countPendingQueueItemsByKey } from "../sessions/queue-item-registry.js";
+import { countPendingQueueItemsByKey, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
 import { withdrawPendingSwitchOfDelivery } from "../sessions/pending-switch.js";
 import {
   listSessions,
@@ -69,6 +70,7 @@ import {
   getMessages,
   getMessagePage,
   enqueueQueueItem,
+  movePendingQueueItemToHead,
   markRunningQueueItemsCompletedForSession,
   shouldHoldParentCompletionQueueDispatch,
   listReleasableParentCompletionQueuesForSource,
@@ -165,7 +167,7 @@ import { resolveMessageAudiences, speechContextApplies } from "./speech-context.
 import { isJsonMediaType } from "./media-type.js";
 import { recoverPendingSessionDeliveries } from "../sessions/callbacks.js";
 import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_KEY } from "../sessions/delegation-completion-contract.js";
-import { callerMayActOnSession, sessionIsWithinReach } from "./session-reach-guard.js";
+import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
@@ -259,7 +261,7 @@ import { TodoDepartmentNotAllowedError } from "../shared/todo-departments-config
 import { DepartmentArchivedError, isDepartmentArchived } from "../work-items/department-archive.js";
 import { DepartmentBoundaryError, scopedDepartmentOf } from "../work-items/department-scope.js";
 import { parseStatusUpdateFields } from "./work-item-status-fields.js";
-import { parentOwnerEventDetail, parentOwnerMoveOptions } from "./work-item-ancestor-close.js";
+import { ancestorOwnerStanding, parentOwnerEventDetail, parentOwnerMoveOptions } from "./work-item-ancestor-close.js";
 import { employeeCloseComment, hasOperatorLane, resolveStatusLane, WORK_ITEM_STATUSES } from "./work-item-status-lane.js";
 import { assignWorkItem, changedStopCause, transition, TransitionError } from "../work-items/transitions.js";
 import { checkAssignee } from "./todo-assignee.js";
@@ -271,7 +273,6 @@ import { resolveOrgRoot } from "./work-item-owner.js";
 import { orgRegistry } from "./org-registry.js";
 import { isRemoteTarget, sshDestination } from "../shared/remote-target.js";
 import { cachedRemoteFacts } from "../engines/remote-stage.js";
-import { TODO_DISPATCHER_NAME } from "./system-employees.js";
 import { claimTodoForDelegation } from "./todo-claim.js";
 import { claimBeforeReplacing, freshSessionRefusal, parseFreshSession, REPLACED_SESSION_META_KEY, replaceLiveSession } from "./delegation-fresh-session.js";
 import { startTodoDispatcher } from "./todo-dispatch.js";
@@ -296,6 +297,7 @@ import {
 import { announceDelegation, claimHeldBy, landInLiveSession, reusedDelegationBody, reusedDelegationReceipt, delegationLoopError, delegationReplayBody } from "./delegation-handoff.js";
 import { liveEmployeeSession } from "../work-items/employee-sessions.js";
 import { recordNewDelegateSession, reportingParentSessionId } from "../work-items/employee-session-delegation.js";
+import { noticeTargetSessionId } from "../sessions/turn-requester.js";
 import { NOTE_FILE_MAX_BYTES, createNote, listNotes, readKnowledgeFile, readNote, searchKnowledge, updateNote, type NoteStoreResult } from "../notes/store.js";
 import { loadInstances, saveInstances, type Instance, type InstanceInput } from "../instances/directory.js";
 import { createInstance, type CreateInstanceInput, type CreateInstanceResult } from "../instances/create.js";
@@ -348,10 +350,11 @@ import { handleHeartbeatApi } from "./heartbeat-api.js";
 import { armChildWatch } from "../heartbeats/child-watch.js";
 import { handleSelfCompactionApi } from "./self-compaction-api.js";
 import { handleSessionContextApi } from "./session-context-api.js";
-import { messageDeliveryError, resolveMessageDelivery, shouldInterruptRunningTurn as interruptsRunningTurn } from "./message-interrupt.js";
+import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
+import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { isAutoCompacting } from "../sessions/auto-compaction.js";
-import { isRawEngineCommand } from "../shared/skill-commands.js";
+import { isCompactCommand, isRawEngineCommand } from "../shared/skill-commands.js";
 import { handleTerminalApi, type TerminalApiOptions } from "./terminal-api.js";
 import { isTerminalSession, TERMINAL_HAS_NO_TURN, TERMINAL_REFUSES_MESSAGES } from "../terminals/session.js";
 import { handleWorkItemKeptApi } from "./work-item-kept-api.js";
@@ -2202,8 +2205,9 @@ export async function handleApiRequest(
 
     // GET /api/sessions/:id/context?message=<id>&radius=<n> — GRS-020a: the
     // bounded ±radius window around a message anchor (a search hit), so a hit
-    // becomes readable in place. Message bodies are returned as stored; the
-    // session field is the COMPACT summary (GRS-020a-fix finding 5).
+    // becomes readable in place. Message bodies are returned as stored, except
+    // that a notification reads as the full body it carries rather than its
+    // banner; the session field is the COMPACT summary (GRS-020a-fix finding 5).
     params = matchRoute("/api/sessions/:id/context", pathname);
     if (method === "GET" && params) {
       const session = getSession(params.id);
@@ -3226,7 +3230,10 @@ export async function handleApiRequest(
     // moving a stuck attempt onto another engine) and deliberately NOT part of
     // PATCH: these live in a side table, and the PATCH field order feeds the
     // canonical edit fingerprint that existing idempotency receipts were made
-    // against. Same authority as labels: operator, creator, or assignee.
+    // against. Same authority as labels: operator, creator, or assignee; and
+    // the owner of an executing or blocked Todo above it, so an owner can stop
+    // the board walk starting a duplicate another session created in its tree.
+    // That last change is the one made on someone else's Todo, so it is logged.
     params = matchRoute("/api/work-items/:id/dispatch-config", pathname);
     if (method === "PUT" && params) {
       const caller = resolveWorkItemCaller(req, res, context);
@@ -3239,8 +3246,9 @@ export async function handleApiRequest(
         caller.kind === "operator" ||
         item.createdBy === workItemActor(caller) ||
         (employee !== null && (item.assignee === employee || item.createdBy === employee));
-      if (!allowed) {
-        return json(res, { error: "setting a Todo's dispatch config requires the operator, the item creator, or the assignee" }, 403);
+      const ownerStanding = !allowed && employee !== null ? ancestorOwnerStanding(employee, item) : undefined;
+      if (!allowed && !ownerStanding) {
+        return json(res, { error: "setting a Todo's dispatch config requires the operator, the item creator, the assignee, or the owner of an executing or blocked Todo above it" }, 403);
       }
       const parsed = await readJsonBody(req, res);
       if (!parsed.ok) return;
@@ -3256,13 +3264,28 @@ export async function handleApiRequest(
       if (body.autoStart !== undefined && typeof body.autoStart !== "boolean") {
         return badRequest(res, "autoStart must be a boolean");
       }
-      const result = setTodoDispatchConfig(params.id, {
+      const requested = {
         ...(body.skills !== undefined ? { skills: body.skills } : {}),
         ...(body.engine !== undefined ? { engine: body.engine === null ? null : (body.engine as string).trim() } : {}),
         ...(body.model !== undefined ? { model: body.model === null ? null : (body.model as string).trim() } : {}),
         ...(body.autoStart !== undefined ? { autoStart: body.autoStart as boolean } : {}),
-      }, context.getConfig());
+      };
+      const result = setTodoDispatchConfig(params.id, requested, context.getConfig());
       if (!result.ok) return badRequest(res, result.error);
+      if (ownerStanding) {
+        appendWorkItemEvent({
+          workItemId: params.id,
+          kind: "note",
+          actor: workItemActor(caller),
+          detail: writeDetail({
+            dispatchConfig: requested,
+            ...(employee ? { actorEmployee: employee } : {}),
+            parentOwner: true,
+            ...(ownerStanding.direct ? {} : { ancestorOwner: ownerStanding.ancestorId }),
+          }, caller.origin),
+          versionEffect: "audit",
+        });
+      }
       emitTodoProjectionEvent(context, params.id, "dispatch-config-updated");
       return json(res, { dispatchConfig: result.config });
     }
@@ -3553,7 +3576,6 @@ export async function handleApiRequest(
       //    mint as before. An idempotency key makes the minted sourceRef stable,
       //    so a retry after a pre-session failure reuses the same intent.
       let workItem: WorkItem;
-      let dispatcherHandoffFrom: string | undefined;
       if (requestedWorkItemId) {
         const existingWorkItem = getWorkItem(requestedWorkItemId);
         if (!existingWorkItem) return json(res, { error: `Todo ${requestedWorkItemId} not found` }, 404);
@@ -3569,10 +3591,6 @@ export async function handleApiRequest(
           );
           if (!authorized.ok) return json(res, { error: authorized.error }, authorized.status);
         }
-        dispatcherHandoffFrom = delegationCaller.kind === "session"
-          && getSession(delegationCaller.callerId)?.employee === TODO_DISPATCHER_NAME
-          ? delegationCaller.callerId
-          : undefined;
       } else {
         try {
           workItem = createWorkItem({
@@ -3618,7 +3636,7 @@ export async function handleApiRequest(
       });
       if (freshRefusal) return json(res, { error: freshRefusal.error }, freshRefusal.status);
       let claim = (reused && claimHeldBy(workItem.id, reused)) || (replaced && claimBeforeReplacing(workItem.id, replaced))
-        || claimTodoForDelegation(res, workItem.id, dispatcherHandoffFrom);
+        || claimTodoForDelegation(res, workItem.id, delegationCaller.kind === "session" ? delegationCaller.callerId : undefined);
       if (!claim) return;
 
       // 2. SPAWN — the irreversible step. A failure here PRESERVES the minted
@@ -3950,13 +3968,25 @@ export async function handleApiRequest(
         // Whoever may stop a session may start it again by messaging it; anyone
         // else is told it was not delivered, so it never wakes a handed-over folder.
         if (isStoppedByUser(session) && !sessionIsWithinReach(session, caller.id) && refuseStoppedSession(res, session)) return;
+        const callerIsAboveTarget = isAboveSession(session, caller.id);
+        const targetSessionId = params.id;
         const plan = prepareLateralSend({
           caller,
           targetSessionId: params.id,
           message: String(rawMessage),
           guards: sessionCommGuards,
           callerParentSessionId: callerParentId,
-          parentLink: callerParentId === session.id || targetParentId === caller.id,
+          // Named only in a refusal, so worked out only then: a live session
+          // above the caller, other than the peer, whose pair with the caller
+          // still has room (an escalation to it is pair-charged, below).
+          callerCoordinatorSessionId: () =>
+            coordinatorSessionId(caller, targetSessionId, (candidate) =>
+              !isSpentDispatcher(candidate)
+              && sessionCommGuards.pairCount(caller.id, candidate.id) < sessionCommGuards.pairMaxMessages()),
+          // A send between a session and one above it, either way, is a reply or
+          // an escalation inside one piece of work, never a relay.
+          parentLink: callerParentId === session.id || targetParentId === caller.id
+            || callerIsAboveTarget || isAboveSession(caller, session.id),
         });
         if (!plan.ok) {
           res.writeHead(plan.status, { "Content-Type": "application/json" });
@@ -3970,21 +4000,34 @@ export async function handleApiRequest(
         body.meta = plan.meta;
         if (targetParentId === caller.id) {
           parentFollowUp = { caller, message: String(rawMessage) };
-        } else if (callerParentId === session.id && caller.attemptToken) {
-          // The child is reporting UP to its parent via send_to_session. The
-          // automatic parent-completion callback fired at this child's settle
-          // would be a SECOND injection of the same turn (the operator sees a
-          // spurious "duplicate callback" wake). Mark the attempt so
-          // notifyParentSession suppresses that redundant callback.
+        } else if (noticeTargetSessionId(caller) === session.id && caller.attemptToken) {
+          // The child is reporting UP to whoever its notice goes to (its parent,
+          // or the session that sent it the message it is answering) via
+          // send_to_session. The automatic completion callback fired at this
+          // child's settle would be a SECOND injection of the same turn (the
+          // operator sees a spurious "duplicate callback" wake). Mark the
+          // attempt so notifyParentSession suppresses that redundant callback.
           recordChildReportedToParent(caller.id, caller.attemptToken);
         }
-        // A parent/child message is not a relay hop: it counts against the pair
-        // budget and leaves the receiver's chain untouched, so a spawned session
-        // starts at hop 1. Conservative on later failure (e.g. engine
-        // unavailable): the tag may be recorded for an undelivered message, which
-        // only ever tightens the budget, never loosens it.
+        // A message from a session above the target (its parent, its delegator
+        // or further up) is an instruction from whoever owns the work: it resets
+        // the target's chain and its pair counts with every session not above
+        // it, so a coordinator can let a long review carry on. Pairs with the
+        // sessions above the target are kept, so coordinators cannot reset each
+        // other's pairs and every reset is paid for. Applied before the delivery
+        // is recorded, so this message still counts in its own pair.
+        if (callerIsAboveTarget) {
+          const target = session;
+          sessionCommGuards.resetFromCoordinator(params.id, (otherId) => isAboveSession(target, otherId));
+        }
+        // A message to or from a session above, or a reply, is not a relay hop:
+        // it counts against the pair budget and never takes the receiver's chain
+        // deeper than the deeper of the two, so a spawned session starts at hop 1
+        // and a producer and reviewer can go round after round. Conservative on
+        // later failure (e.g. engine unavailable): the tag may be recorded for an
+        // undelivered message, which only ever tightens the budget.
         if (plan.parentLink) sessionCommGuards.recordPairDelivery(caller.id, params.id, plan.hops);
-        else sessionCommGuards.recordDelivery(params.id, plan.hops);
+        else sessionCommGuards.recordLateralDelivery(caller.id, params.id, plan);
       } else if (body.role === "notification" && isStoppedByUser(session)) {
         // No session sent it (a compaction turn, an operator relay): never a deliberate start.
         return void refuseStoppedSession(res, session);
@@ -4017,9 +4060,10 @@ export async function handleApiRequest(
           kind: "agent-relay",
           ...(relayFromSessionId ? { fromSessionId: relayFromSessionId } : {}),
           fromLabel,
+          viaOperator: true,
           hops: 1,
           maxHops: sessionCommGuards.maxHops(),
-          fullMessage: relayBody.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS),
+          ...fullMessageMeta(relayBody),
         };
       } else if (body.role !== "notification") {
         // A genuine user/operator message resets the target's relay-hop chain —
@@ -4051,9 +4095,8 @@ export async function handleApiRequest(
         const employee = typeof rawMeta.employee === "string" ? stripControlChars(rawMeta.employee).trim().slice(0, 160) : "";
         const employeeDisplay = typeof rawMeta.employeeDisplay === "string" ? stripControlChars(rawMeta.employeeDisplay).trim().slice(0, 160) : "";
         const childSessionId = typeof rawMeta.childSessionId === "string" ? stripControlChars(rawMeta.childSessionId).trim().slice(0, 160) : "";
-        const fullMessage = typeof rawMeta.fullMessage === "string"
-          ? rawMeta.fullMessage.slice(0, STRUCTURED_MESSAGE_BODY_MAX_CHARS)
-          : undefined;
+        const full = readFullMessageMeta(rawMeta);
+        const fullMessage = full?.fullMessage;
         if (rawMeta.kind === "agent-relay") {
           const fromSessionId = typeof rawMeta.fromSessionId === "string" ? stripControlChars(rawMeta.fromSessionId).trim().slice(0, 160) : "";
           const fromLabel = typeof rawMeta.fromLabel === "string" ? stripControlChars(rawMeta.fromLabel).trim().slice(0, 160) : "";
@@ -4069,9 +4112,10 @@ export async function handleApiRequest(
               ...(fromSessionId ? { fromSessionId } : {}),
               fromLabel,
               ...(fromEmployee ? { fromEmployee } : {}),
+              ...(rawMeta.viaOperator === true ? { viaOperator: true } : {}),
               hops,
               maxHops,
-              fullMessage,
+              ...full,
             };
           }
         } else if (kind && employee && childSessionId) {
@@ -4080,7 +4124,7 @@ export async function handleApiRequest(
             employee,
             ...(employeeDisplay ? { employeeDisplay } : {}),
             childSessionId,
-            ...(fullMessage !== undefined ? { fullMessage } : {}),
+            ...full,
           };
         } else if (rawMeta.kind === "manager-visibility" && employee && childSessionId) {
           const manager = typeof rawMeta.manager === "string" ? stripControlChars(rawMeta.manager).trim().slice(0, 160) : "";
@@ -4123,7 +4167,11 @@ export async function handleApiRequest(
       // Queued messages drain one per turn, in order, through the serial queue.
       const delivery = resolveMessageDelivery({ delivery: body.delivery, interrupt: body.interrupt });
       const pausableKey = session.sessionKey || session.sourceRef || session.id;
-      const shouldInterruptRunningTurn = interruptsRunningTurn({
+      // The operator's own Todo mention asks to reach a running turn. That is read
+      // from the durable delivery row alone, which only the gateway writes: a
+      // request body naming it would let any caller cut another session's turn.
+      const targetSessionId = session.id;
+      const runningAction = runningTurnAction({
         isNotification,
         prompt: String(prompt),
         interruptOnNewMessage: config.sessions?.interruptOnNewMessage,
@@ -4131,7 +4179,11 @@ export async function handleApiRequest(
         autoCompacting: isAutoCompacting(session.id),
         delivery,
         queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
+        reachRunningTurn: callbackDelivery?.payload.reachRunningTurn === true,
+        // Never into a running /compact: the summary must not take in new input.
+        canSteer: () => isSteerableEngine(engine) && !runningQueuePromptsForSession(targetSessionId).some(isCompactCommand) && engine.canSteer(targetSessionId),
       });
+      const shouldInterruptRunningTurn = runningAction === "interrupt";
       if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
 
       // Persist the message immediately. For notifications, store the clean
@@ -4182,6 +4234,10 @@ export async function handleApiRequest(
           }
         }
         callbackQueueNeedsDispatch = !queue.hasInFlightItem(queueItemId);
+        // A mention that reaches a running turn runs before anything queued earlier,
+        // a child's callback included: the turn ends, or a withdrawn steer is
+        // taken back, and the lane hands over to the head row. Nothing is cut off.
+        if (runningAction === "promote" || runningAction === "steer") movePendingQueueItemToHead(sessionKey, queueItemId);
       } else {
         const claim = claimIncomingTurn({
           sessionId: session.id, sessionKey, prompt, isNotification, role: messageRole, dedupeKey: lateralDedupeKey,
@@ -4329,6 +4385,12 @@ export async function handleApiRequest(
       }
 
       if (!callbackDelivery || callbackQueueNeedsDispatch) {
+        // Handed to the turn running now, which reads it at its next step. The row
+        // still waits behind that turn; its slot asks how the hand-over ended.
+        if (runningAction === "steer" && isSteerableEngine(engine)) {
+          logger.info(`Steering a Todo mention into running session ${session.id}`);
+          registerSteeredDelivery(queueItemId!, Promise.resolve().then(() => engine.steer(session.id, enginePrompt)));
+        }
         dispatchWebSessionRun(session, enginePrompt, engine, context, {
           queueItemId,
           attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined,

@@ -53,19 +53,19 @@ beforeEach(() => vi.clearAllMocks());
 describe("engine notices on the rate-limit paths", () => {
   it("are posted for a chain hop's substitute", async () => {
     const h = await hooks();
-    await h.onFallbackComplete!({ result: "ok", sessionId: "s2", notices: [NOTICE] }, { engine: "opencode", model: "x/y" });
+    await h.onFallbackComplete!({ result: "ok", sessionId: "s2", notices: [NOTICE] }, { engine: "opencode", model: "x/y", carriedLeftBackgroundTaskIds: [] });
     expect(notice).toHaveBeenCalledWith(NOTICE);
   });
 
   it("are posted for a parked retry that succeeded", async () => {
     const h = await hooks();
-    await h.onRetrySuccess!({ result: "ok", sessionId: "s2", notices: [NOTICE] });
+    await h.onRetrySuccess!({ result: "ok", sessionId: "s2", notices: [NOTICE] }, { carriedLeftBackgroundTaskIds: [] });
     expect(notice).toHaveBeenCalledWith(NOTICE);
   });
 
   it("are not posted when the engine asked for none", async () => {
     const h = await hooks();
-    await h.onRetrySuccess!({ result: "ok", sessionId: "s2" });
+    await h.onRetrySuccess!({ result: "ok", sessionId: "s2" }, { carriedLeftBackgroundTaskIds: [] });
     expect(notice).not.toHaveBeenCalledWith(NOTICE);
   });
 });

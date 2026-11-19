@@ -24,6 +24,9 @@ export interface OpencodeAccountStaging {
   providers(api: OpencodeApi): Record<string, OpencodeProviderBlock>;
   /** The error for a turn on `model` (`<provider>/<model>`) that a process of this CLI generation cannot serve (an account's model off its main endpoint, on 1.x), or undefined when it can. */
   unservedModel(model: string, api: OpencodeApi): string | undefined;
+  /** For a turn on `model` (`<provider>/<model>`) of an account whose base has no clone records yet, so its block would stage no
+   *  models: the account's name and its base. Undefined for any other model. */
+  unstaged(model: string): { account: string; base: string } | undefined;
   /** `<keyEnv>` → key, for each account whose variable is set in the gateway's environment. Set on a local child explicitly (the gateway scrubs what it passes down), and carried to a remote host through its 0600 account-keys file. */
   readonly env: Readonly<Record<string, string>>;
   /** What makes a warm server stale: each account's provider id, model list and a short hash of its key. Never the key. */
@@ -80,6 +83,11 @@ export function opencodeAccountStaging(
         if (planAccountProvider(account, models, api).dropped.some((id) => `${account.provider}/${id}` === model)) return unservedModelError(model, account.name);
       }
       return undefined;
+    },
+    unstaged(model) {
+      const hit = resolved.find(({ account }) => model.startsWith(`${account.provider}/`));
+      if (!hit || hit.models.length > 0 || hit.account.base === undefined) return undefined;
+      return { account: hit.account.name, base: hit.account.base };
     },
     env,
     fingerprint,

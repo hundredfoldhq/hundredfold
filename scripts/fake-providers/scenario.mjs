@@ -26,7 +26,8 @@
 // error), signed-out (claude only), retry-abandon (opencode only: a retry due far off,
 // which server mode turns into a rate limit), provider-error (opencode run mode only: OpenCode
 // 2's typed error, `{"outcome": "provider-error", "type": "provider.quota", "status": 402,
-// "message": "Insufficient account funds"}`). An unmatched invocation is `ok`.
+// "message": "Insufficient account funds"}`). An unmatched invocation is `ok`. Any claude outcome may add
+// `"armMonitor": "<task id>"`: the turn arms a background Monitor of that id, as the CLI reports one.
 //
 // Every invocation that takes an outcome is appended to the JSONL ledger
 // (FAKE_PROVIDER_LEDGER=<path>), which is also how the nth invocation is counted, so the

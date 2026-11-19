@@ -30,8 +30,9 @@ export interface MoveToMenuProps {
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
 }
 
-/** The menu's rows: the current column, then each column the card can go to. */
-function moveRows(item: WorkItemCompactWire, openChildren: number) {
+/** The menu's rows: the current column, then each column the card can go to. The card's context menu reads
+ *  the same rows, so a move is offered, gated and explained identically wherever it is made. */
+export function moveRows(item: WorkItemCompactWire, openChildren: number) {
   const targets = legalTargets(item.status, { openChildren })
   return COLUMN_ORDER.flatMap((status) => {
     if (status === item.status) return [{ status, disabled: false, reason: undefined }]
