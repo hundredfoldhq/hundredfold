@@ -2,7 +2,7 @@ import type { CompactionStats, EngineResult, EngineRunOpts } from "../shared/typ
 import { logger } from "../shared/logger.js";
 import type { OpencodeServer } from "./opencode-server.js";
 import { promptModel } from "./opencode-server-turn.js";
-import { COMPACTION_TIMEOUT_MS } from "./opencode-server-compaction.js";
+import { COMPACTION_TIMEOUT_MS, retryReseed } from "./opencode-server-compaction.js";
 import { contextTokensFromStep, type StepTokens } from "./opencode-protocol.js";
 import { record, str, type V2Message } from "./opencode-v2-events.js";
 import { sessionRoute, v2Headers, v2Messages, v2Request, v2UpdateSessionNotes } from "./opencode-v2-api.js";
@@ -90,9 +90,9 @@ export class OpencodeV2ServerCompaction {
     if (!this.inputId) throw new Error("the server queued the compaction without an id");
     await this.awaitOutcome(events, sessionId, this.inputId);
     logger.info(`opencode compaction summarized session ${sessionId}`);
-    await this.reseed(sessionId);
+    const reseedFailure = await this.reseed(sessionId);
     const report = await v2Messages(this.server, sessionId, 20).then((m) => compactionReport(m, this.inputId!)).catch(() => ({ compaction: {} }));
-    return { sessionId, result: "", numTurns: 1, ...report };
+    return { sessionId, result: "", numTurns: 1, ...report, ...(reseedFailure ? { notices: [reseedFailure] } : {}) };
   }
 
   /** Summarize with the turn's model, as 1.x does: 2.x uses the session's. */
@@ -136,15 +136,12 @@ export class OpencodeV2ServerCompaction {
   }
 
   /** Have the next turn put Hundredfold's system prompt back in front of the model.
-   *  Best effort: a failure costs the persona until the session's next fresh
-   *  start, not the compaction, and is logged loudly. */
-  private async reseed(sessionId: string): Promise<void> {
-    if (!this.opts.systemPrompt) return;
-    try {
-      await v2UpdateSessionNotes(this.server, sessionId, (notes) => ({ ...notes, reseed: true }));
-    } catch (err) {
-      logger.error(`opencode compaction could not note the system prompt re-seed on ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+   *  A failed note write is retried; one that persists costs the persona until
+   *  the session's next fresh start, not the compaction, so it is returned as a
+   *  notice the turn posts to the session. */
+  private async reseed(sessionId: string): Promise<string | undefined> {
+    if (!this.opts.systemPrompt) return undefined;
+    return retryReseed(sessionId, async () => { await v2UpdateSessionNotes(this.server, sessionId, (notes) => ({ ...notes, reseed: true })); }, () => Boolean(this.terminationReason));
   }
 }
 

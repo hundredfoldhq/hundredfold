@@ -43,6 +43,28 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const RESEED_ATTEMPTS = 3;
 const RESEED_RETRY_DELAY_MS = 500;
 
+const RESEED_FAILED_NOTICE = "This session was compacted, but its operating instructions could not be put back in front of the model, "
+  + "so it may have lost them. Start a fresh session if it behaves as if it has.";
+
+/** Run `attempt` (one try at putting the system prompt back) up to RESEED_ATTEMPTS times. Undefined when it landed
+ *  or `stopped()` says the turn was cut off; otherwise the notice the session is owed. */
+export async function retryReseed(label: string, attempt: () => Promise<void>, stopped: () => boolean): Promise<string | undefined> {
+  let failure = "";
+  for (let n = 1; n <= RESEED_ATTEMPTS; n++) {
+    if (stopped()) return undefined;
+    try {
+      await attempt();
+      return undefined;
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+      logger.warn(`opencode compaction could not re-seed the system prompt into ${label} (attempt ${n}/${RESEED_ATTEMPTS}): ${failure}`);
+      if (n < RESEED_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, RESEED_RETRY_DELAY_MS));
+    }
+  }
+  logger.error(`opencode compaction could not re-seed the system prompt into ${label}: ${failure}`);
+  return RESEED_FAILED_NOTICE;
+}
+
 export const RESEED_PREAMBLE =
   "[Hundredfold] Your context was just compacted. These are the operating instructions and the session context "
   + "this session runs under; they still apply in full, and the summary above does not replace them.";
@@ -174,21 +196,7 @@ export class OpencodeServerCompaction {
         metadata: HUNDREDFOLD_RESEED_METADATA,
       }],
     };
-    let failure = "";
-    for (let attempt = 1; attempt <= RESEED_ATTEMPTS; attempt++) {
-      if (this.terminationReason) return undefined;
-      try {
-        await this.request("POST", `${route}/message`, body);
-        return undefined;
-      } catch (err) {
-        failure = err instanceof Error ? err.message : String(err);
-        logger.warn(`opencode compaction could not re-seed the system prompt into ${route} (attempt ${attempt}/${RESEED_ATTEMPTS}): ${failure}`);
-        if (attempt < RESEED_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, RESEED_RETRY_DELAY_MS));
-      }
-    }
-    logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${failure}`);
-    return "This session was compacted, but its operating instructions could not be put back in front of the model, "
-      + "so it may have lost them. Start a fresh session if it behaves as if it has.";
+    return retryReseed(route, async () => { await this.request("POST", `${route}/message`, body); }, () => Boolean(this.terminationReason));
   }
 
   /** The model the session's newest user message ran on. */
