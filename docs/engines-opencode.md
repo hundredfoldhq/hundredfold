@@ -471,6 +471,7 @@ verified against 2.0.28 and 2.0.29:
   - `/compact` queues 2.x's own compaction (`POST …/compact`) and waits for `session.compaction.ended`, or `failed`, which is the turn's error.
   - It uses the turn's model, selected first.
   - The re-seed of the system prompt rides on the next turn, as above.
+  - opencode also compacts a session by itself once a turn's context crosses `limit.context - maxOutput`, and that summarizes the system prompt away too. A turn that saw it (2.x: `session.compaction.ended`) notes the re-seed on the session when it ends, and the next prompt carries it, once.
 - **Recovery.** A turn whose stream did not say how it ended reads its replies from `GET …/message`: the assistant items after its prompt, up to the next input.
 
 ## Model discovery

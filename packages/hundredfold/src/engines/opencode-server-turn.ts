@@ -7,6 +7,7 @@ import { basicAuthHeader, type OpencodeServer } from "./opencode-server.js";
 import { USER_STOP_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { abandonedRetryError, providerFailureReason, providerRetryOf, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
 import { metadataTag, readMetadataTag } from "./opencode-metadata-tag.js";
+import { lastUserModel, RESEED_FAILED_NOTICE, reseedSystemPrompt } from "./opencode-server-compaction.js";
 
 /**
  * One Hundredfold turn, sent straight to the session's opencode server over HTTP.
@@ -126,6 +127,8 @@ const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
 const HISTORY_LIMIT = 100;
 /** How much of one cancelled request the notice quotes. */
 const QUOTE_LIMIT = 500;
+/** How many of a session's newest messages say whether opencode compacted it during a turn. */
+const RESEED_WINDOW = 30;
 
 /** Metadata on every text part Hundredfold posts, which is how a later turn tells
  *  Hundredfold's prompts in the history from the operator's. opencode stores a text
@@ -334,6 +337,33 @@ function stoppedRequestText(message: StoredMessage): string {
   const request = hundredfoldPromptMetadata(message)?.request;
   if (typeof request !== "string") return requestText(message);
   return request.trim() || "(a request with no text)";
+}
+
+/** A compaction opencode ran: its stored user message carries a `compaction` part. */
+function isCompaction(message: StoredMessage): boolean {
+  return message.info?.role === "user" && (message.parts ?? []).some((p) => record(p)?.type === "compaction");
+}
+
+/** A system-prompt re-seed Hundredfold posted after a compaction (see opencode-server-compaction.ts). */
+function isReseed(message: StoredMessage): boolean {
+  return textParts(message).some((p) => readMetadataTag(record(p.metadata)) === "context-reseed");
+}
+
+/**
+ * Whether the system prompt is owed again, from the newest messages of a
+ * session (oldest first): a compaction summarized it away (it rides in the
+ * session's first message) unless a re-seed was posted after it. Undefined when
+ * the window shows no compaction at all, which says nothing either way.
+ * Exported for tests.
+ */
+export function reseedDue(messages: StoredMessage[]): boolean | undefined {
+  const lastIndex = (test: (message: StoredMessage) => boolean): number => {
+    for (let i = messages.length - 1; i >= 0; i--) if (test(messages[i]!)) return i;
+    return -1;
+  };
+  const lastCompaction = lastIndex(isCompaction);
+  if (lastCompaction < 0) return undefined;
+  return lastIndex(isReseed) < lastCompaction;
 }
 
 /** A Hundredfold prompt that carried a notice: everything older was named there, and
@@ -581,6 +611,13 @@ export class OpencodeServerTurn {
   /** The status poll, not the stream, noticed the turn end. */
   private missedIdle = false;
   private statusPoll?: NodeJS.Timeout;
+  /** The turn's stream showed opencode compacting the session: the summary replaced the first message, which is
+   *  where Hundredfold's system prompt rides (see opencode-server-compaction.ts). */
+  private compacted = false;
+  /** The session is owed a notice: its system prompt could not be put back after a compaction. */
+  private reseedNotice?: string;
+  /** The session's newest messages as the turn found them before posting its prompt. */
+  private startHistory: StoredMessage[] = [];
 
   constructor(
     private readonly server: OpencodeServer,
@@ -636,7 +673,8 @@ export class OpencodeServerTurn {
       this.controller.abort();
     }
     await this.stopPluginCopy();
-    return this.failedTurn(this.turn.result({
+    await this.reseedAfterNativeCompaction();
+    const result = this.failedTurn(this.turn.result({
       code: this.failure ? 1 : 0,
       terminationReason: this.terminationReason,
       stderr: this.failure ?? "",
@@ -645,6 +683,46 @@ export class OpencodeServerTurn {
       failure: this.failure ?? undefined,
       noAnswer: this.noAnswer(),
     }));
+    return this.reseedNotice ? { ...result, notices: [...(result.notices ?? []), this.reseedNotice] } : result;
+  }
+
+  /**
+   * opencode compacts a session by itself when a step's context crosses the
+   * model's budget, and that summarizes the system prompt away with the rest of
+   * the first message. When the turn's stream showed it, post the system prompt
+   * back once the turn has settled, as after a compaction Hundredfold started: a
+   * `noReply` message posted mid-turn would land between the turn's steps. The
+   * session's store has the last word (a re-seed already after the compaction
+   * means nothing is owed); the stream decides alone only when the newest
+   * messages show no compaction at all, a long turn having pushed it out of them.
+   * A turn that did not compact reads and posts nothing. A compaction the stream
+   * did not show (the turn settled before opencode began it) is found by the
+   * session's next turn, which reads the history anyway (see `start`).
+   */
+  private async reseedAfterNativeCompaction(): Promise<void> {
+    if (!this.compacted || !this.opts.systemPrompt || !this.sessionId) return;
+    let recent: StoredMessage[] = [];
+    try {
+      recent = await this.messages(RESEED_WINDOW);
+    } catch (err) {
+      logger.warn(`opencode server turn could not check ${this.sessionId} for a re-seed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (reseedDue(recent) === false) return;
+    logger.info(`opencode compacted session ${this.sessionId}: putting the system prompt back`);
+    await this.reseed();
+  }
+
+  /** Post the system prompt back (see {@link reseedAfterNativeCompaction}); what could not be is the session's notice. */
+  private async reseed(): Promise<void> {
+    const route = `/session/${encodeURIComponent(this.sessionId)}`;
+    try {
+      const model = promptModel(this.opts.model) ?? await lastUserModel(this.server, route);
+      if (!model) throw new Error("no model to post it with: the turn names none and the session has no prior prompt");
+      this.reseedNotice = await reseedSystemPrompt(this.server, route, model, this.opts, () => false);
+    } catch (err) {
+      logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${err instanceof Error ? err.message : String(err)}`);
+      this.reseedNotice = RESEED_FAILED_NOTICE;
+    }
   }
 
   /** A fallback plugin that aborts the turn re-sends its prompt on another model, and
@@ -819,6 +897,12 @@ export class OpencodeServerTurn {
     if (this.terminationReason) return;
     const found = this.opts.resumeSessionId ? await this.readHistory() : undefined;
     if (this.terminationReason) return;
+    // A compaction that outran the previous turn's own check (see reseedAfterNativeCompaction) is put right before this prompt.
+    if (this.opts.systemPrompt && reseedDue(this.startHistory) === true) {
+      logger.info(`opencode compacted session ${this.sessionId} since its system prompt was last sent: putting it back`);
+      await this.reseed();
+      if (this.terminationReason) return;
+    }
     this.posting = this.post(`/session/${encodeURIComponent(this.sessionId)}/prompt_async`, this.promptBody(found));
     await this.posting;
     this.posted = true;
@@ -849,6 +933,7 @@ export class OpencodeServerTurn {
     // busy period — which this turn's prompt joins — still ends the turn. Only
     // then is an unfinished reply really running: a server killed mid-reply
     // leaves one behind with no completion and no error (verified on 1.18.32).
+    this.startHistory = history;
     const running = busy ? runningReply(history) : undefined;
     if (busy) this.sawBusy = true;
     if (running) {
@@ -1039,6 +1124,9 @@ export class OpencodeServerTurn {
     "message.part.updated": (props) => this.onPart(props),
     "session.created": (props) => this.adoptChild(props),
     "session.updated": (props) => this.adoptChild(props),
+    "session.compacted": (props) => {
+      if (props.sessionID === this.sessionId) this.compacted = true;
+    },
     "session.status": (props) => {
       if (props.sessionID !== this.sessionId) return;
       const status = record(props.status);
@@ -1125,6 +1213,7 @@ export class OpencodeServerTurn {
   private onMessage(info: Record<string, unknown>): void {
     const id = str(info.id);
     if (!id || info.sessionID !== this.sessionId) return;
+    if (info.role === "assistant" && info.summary === true) this.compacted = true;
     if (info.role === "assistant") this.onAssistant(id, info);
     else if (info.role === "user" && id !== this.userMessageId) this.foreign.add(id);
   }
@@ -1179,6 +1268,7 @@ export class OpencodeServerTurn {
   private onPart(props: Record<string, unknown>): void {
     const part = record(props.part);
     if (!part || part.sessionID !== this.sessionId) return;
+    if (part.type === "compaction") this.compacted = true;
     const messageId = str(part.messageID) ?? "";
     if (messageId === this.userMessageId || this.foreign.has(messageId)) return;
     if (!this.own.has(messageId)) {

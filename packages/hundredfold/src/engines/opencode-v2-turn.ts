@@ -19,7 +19,7 @@ import { abandonedRetryError, providerFailureReason, SettleWait, type ProviderRe
 import { isAbortError, record, runLinesFromStoredReply, str, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
 import { cancelledV2Requests, HUNDREDFOLD_V2_PROMPT_METADATA, hundredfoldSessionNotes, type HundredfoldSessionNotes } from "./opencode-v2-history.js";
 import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes, v2WithdrawInbox } from "./opencode-v2-api.js";
-import { RESEED_PREAMBLE } from "./opencode-server-compaction.js";
+import { RESEED_PREAMBLE, retryReseed } from "./opencode-server-compaction.js";
 import { sameModelRef, unsupportedServerFlags, variantOf, type V2ModelRef } from "./opencode-variant.js";
 
 /**
@@ -145,6 +145,9 @@ export class OpencodeV2ServerTurn {
   private streamErred = false;
   private missedIdle = false;
   private statusPoll?: NodeJS.Timeout;
+  /** opencode compacted the session while the turn ran (`session.compaction.ended`): the summary replaced
+   *  the first message, which is where Hundredfold's system prompt rides. */
+  private compacted = false;
 
   constructor(
     private readonly server: OpencodeServer,
@@ -298,6 +301,7 @@ export class OpencodeV2ServerTurn {
       this.controller.abort();
     }
     await this.settleSteers();
+    const reseedNotice = await this.noteNativeCompaction();
     const result = this.failedTurn(this.turn.result({
       code: this.failure ? 1 : 0,
       terminationReason: this.terminationReason,
@@ -305,7 +309,26 @@ export class OpencodeV2ServerTurn {
       failure: this.failure ?? undefined,
       noAnswer: this.noAnswer(),
     }));
-    return this.ranOn ? { ...result, notices: [fallbackModelNotice(this.ranOn)] } : result;
+    const notices = [...(this.ranOn ? [fallbackModelNotice(this.ranOn)] : []), ...(reseedNotice ? [reseedNotice] : [])];
+    return notices.length ? { ...result, notices } : result;
+  }
+
+  /**
+   * opencode compacted the session by itself during this turn (it does when a
+   * step's context crosses the model's budget), which summarized the system
+   * prompt away. Note on the session that the next prompt owes it again, as after
+   * a compaction Hundredfold started (opencode-v2-compaction.ts). Nothing is noted
+   * for a turn that did not compact. Returns the notice the session is owed when
+   * the note could not be written.
+   */
+  private async noteNativeCompaction(): Promise<string | undefined> {
+    if (!this.compacted || !this.opts.systemPrompt || !this.sessionId) return undefined;
+    logger.info(`opencode compacted session ${this.sessionId} during a turn: its next prompt carries the system prompt again`);
+    return retryReseed(
+      this.sessionId,
+      async () => { await v2UpdateSessionNotes(this.server, this.sessionId, (notes) => ({ ...notes, reseed: true })); },
+      () => false,
+    );
   }
 
   /** As 1.x: a usage window says when it ends, and a prompt the server took
@@ -622,6 +645,7 @@ export class OpencodeV2ServerTurn {
       if (this.runsOwnReply() && !this.terminationReason) this.feed(this.lines.lineFor(event));
       this.onExecutionEnded();
     },
+    "session.compaction.ended": () => { this.compacted = true; },
     "session.created": (data) => this.adoptChild(data),
     "permission.asked": (data) => this.answerPermission(data),
     "form.created": (data) => this.dismissForm(record(data.form) ?? {}),

@@ -27,6 +27,9 @@
 //   NOIDLE      the turn ends with no signal at all on the stream: no final
 //               message.updated, no idle status, no session.idle
 //   STATUSIDLE  the turn ends with an idle session.status but no session.idle
+//   NATIVECOMPACT  opencode compacts the session by itself right after the turn's reply (a `compaction` part,
+//               then the summary message), as it does when a reply's context crosses the model's budget;
+//               with SEEDED too, a Hundredfold re-seed is stored right after the summary, as an earlier turn's would have been
 //   MULTISTEP   two tool round trips (each its own reply, finish=tool-calls),
 //               then the answer — the order real 1.18.31 emits
 //   TOOLONLY    one tool round trip, then a final reply with no text
@@ -320,6 +323,29 @@ function serve() {
     // The stored message carries its usage too, as the real server's does:
     // system prompt and tools included, cached or not.
     turn.reply.info.tokens = { input: 1200, output: 2, cache: { read: 20000, write: 600 } };
+    if (text.includes("NATIVECOMPACT")) nativeCompaction(sessionID, text);
+  }
+
+  /** opencode compacting the session by itself, as it does once a reply's context crosses the model's budget
+   *  (1.19): right after the reply that did, a user message with an automatic `compaction` part, answered by
+   *  the summary. The stream says so as it stores each. */
+  function nativeCompaction(sessionID, text) {
+    const s = sessions.get(sessionID);
+    const userId = newId("msg");
+    const user = { info: { id: userId, sessionID, role: "user", time: { created: Date.now() } }, parts: [{ id: newId("prt"), type: "compaction", auto: true, messageID: userId, sessionID }] };
+    s.messages.push(user);
+    messageUpdated(sessionID, user);
+    publish("message.part.updated", { sessionID, part: user.parts[0], time: Date.now() });
+    const summary = {
+      info: { id: newId("msg"), sessionID, role: "assistant", parentID: userId, summary: true, mode: "compaction", cost: 0.002, finish: "stop", tokens: { input: 1500, output: 300, cache: { read: 0, write: 0 } }, time: { created: Date.now(), completed: Date.now() } },
+      parts: [{ id: newId("prt"), type: "text", text: "## Objective\n- summary" }],
+    };
+    s.messages.push(summary);
+    messageUpdated(sessionID, summary);
+    if (text.includes("SEEDED")) {
+      const seedId = newId("msg");
+      s.messages.push({ info: { id: seedId, sessionID, role: "user", time: { created: Date.now() } }, parts: [{ id: newId("prt"), type: "text", text: "seed", synthetic: true, metadata: { hundredfold: "context-reseed" }, messageID: seedId, sessionID }] });
+    }
   }
 
   /** The PROVIDER* and NEWERREPLY* directives. True when the turn is over. */

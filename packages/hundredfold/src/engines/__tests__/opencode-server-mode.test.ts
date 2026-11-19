@@ -35,7 +35,7 @@ import {
   serverFingerprint,
   unsupportedVersionReason,
 } from "../opencode-server.js";
-import { noAnswerReason, SERVER_TURN_TIMING } from "../opencode-server-turn.js";
+import { noAnswerReason, reseedDue, SERVER_TURN_TIMING } from "../opencode-server-turn.js";
 import { MIN_OPENCODE_V2_SERVER_VERSION, needsStandalone } from "../opencode-version.js";
 import { clearOpencodeVersionCache } from "../../shared/opencode-bin-version.js";
 import { USER_MESSAGE_INTERRUPTION_REASON, USER_STOP_INTERRUPTION_REASON } from "../../sessions/interruption-reasons.js";
@@ -1156,6 +1156,137 @@ describe("OPENCODE_DISABLE_FFF on a spawned opencode", { timeout: 20_000 }, () =
       h.engine.killAll();
       await h.pool.stopAll();
     }
+  });
+});
+
+describe("OpencodeEngine in server mode — opencode's own compaction during a turn", { timeout: 20_000 }, () => {
+  type LogEntry = { method: string; url: string; body: Record<string, unknown> };
+  type Stored = { info: { role: string; summary?: boolean }; parts: Array<{ type: string; text?: string; synthetic?: boolean; metadata?: Record<string, unknown> }> };
+  const logOf = async (h: Harness) => (await api<LogEntry[]>(h.pool, "sess-1", "/test/log")).body;
+  const storedOf = async (h: Harness, session: string) => (await api<Stored[]>(h.pool, "sess-1", `/session/${session}/message`)).body;
+  const reseeds = (stored: Stored[]) => stored.filter((m) => m.parts.some((p) => p.metadata?.hundredfold === "context-reseed"));
+  const noReplyPosts = async (h: Harness) => (await logOf(h)).filter((e) => e.method === "POST" && e.url.endsWith("/message"));
+
+  it("puts the system prompt back once the turn settles, once for the compaction", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    expect(first.error).toBeUndefined();
+    expect(await noReplyPosts(h)).toEqual([]);
+
+    const compacting = await h.engine.run(runOpts({ prompt: "NATIVECOMPACT please", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(compacting.notices).toBeUndefined();
+    const route = `/session/${first.sessionId}`;
+    const posts = await noReplyPosts(h);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      url: `${route}/message`,
+      body: {
+        noReply: true,
+        model: { providerID: "opencode-go", modelID: "deepseek-v4.1-flash" },
+        parts: [{ type: "text", synthetic: true, metadata: { hundredfold: "context-reseed" } }],
+      },
+    });
+    const stored = await storedOf(h, first.sessionId);
+    const [seed] = reseeds(stored);
+    expect(seed!.parts[0]!.text).toMatch(/^\[Hundredfold\] Your context was just compacted\./);
+    expect(seed!.parts[0]!.text).toMatch(/You are Ada\.$/);
+    // After the summary, so the model reads it on top of it.
+    expect(stored.indexOf(seed!)).toBeGreaterThan(stored.findIndex((m) => m.info.summary === true));
+
+    // Turns after it, which did not compact, send nothing more.
+    for (const prompt of ["and then?", "once more"]) {
+      const next = await h.engine.run(runOpts({ prompt, resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+      expect(next.error).toBeUndefined();
+    }
+    expect(await noReplyPosts(h)).toHaveLength(1);
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+  });
+
+  it("posts nothing when a re-seed already follows the compaction the turn saw", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacting = await h.engine.run(runOpts({ prompt: "NATIVECOMPACT SEEDED", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(await noReplyPosts(h)).toEqual([]);
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+  });
+
+  it("posts nothing on a turn that did not compact, or on a session with no system prompt", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    await h.engine.run(runOpts({ prompt: "a plain turn", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(await noReplyPosts(h)).toEqual([]);
+
+    const bare = harness();
+    const started = await bare.engine.run(runOpts({ sessionId: "sess-bare" }));
+    await bare.engine.run(runOpts({ sessionId: "sess-bare", prompt: "NATIVECOMPACT", resumeSessionId: started.sessionId }));
+    const posts = (await api<LogEntry[]>(bare.pool, "sess-bare", "/test/log")).body.filter((e) => e.method === "POST" && e.url.endsWith("/message"));
+    expect(posts).toEqual([]);
+  });
+
+  it("tries again when the server refuses the re-seed once, and says nothing when it lands", async () => {
+    process.env.FAKE_OPENCODE_RESEED_FAIL = "1";
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacting = await h.engine.run(runOpts({ prompt: "NATIVECOMPACT", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(compacting.notices).toBeUndefined();
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+  });
+
+  it("answers the turn and tells the session when the re-seed cannot be put back, then puts it back before the next prompt", async () => {
+    process.env.FAKE_OPENCODE_RESEED_FAIL = "3";
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacting = await h.engine.run(runOpts({ prompt: "NATIVECOMPACT", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(compacting.result).toContain("answer:NATIVECOMPACT");
+    expect(compacting.notices).toEqual([expect.stringContaining("operating instructions could not be put back")]);
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(0);
+
+    // The compaction is still in the history, with no re-seed after it: the next turn puts it back first.
+    const next = await h.engine.run(runOpts({ prompt: "carry on", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(next.error).toBeUndefined();
+    expect(next.notices).toBeUndefined();
+    const stored = await storedOf(h, first.sessionId);
+    expect(reseeds(stored)).toHaveLength(1);
+    const posts = (await logOf(h)).filter((e) => e.method === "POST").map((e) => e.url.replace(`/session/${first.sessionId}`, ""));
+    expect(posts.slice(-2)).toEqual(["/message", "/prompt_async"]);
+  });
+
+  it("puts it back before the next prompt when opencode compacted after the previous turn, unseen by its stream", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    // A compaction nobody on this turn saw: the session's own server did it between turns.
+    await fetch(`${h.pool.get("sess-1")!.apiUrl}/session/${first.sessionId}/summarize`, {
+      method: "POST",
+      headers: { authorization: basicAuthHeader(h.pool.get("sess-1")!.password), "content-type": "application/json" },
+      body: JSON.stringify({ providerID: "opencode-go", modelID: "deepseek-v4.1-flash", auto: true }),
+    });
+    const next = await h.engine.run(runOpts({ prompt: "carry on", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(next.error).toBeUndefined();
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+    const posts = (await logOf(h)).filter((e) => e.method === "POST").map((e) => e.url.replace(`/session/${first.sessionId}`, ""));
+    expect(posts.slice(-3)).toEqual(["/summarize", "/message", "/prompt_async"]);
+    // And only once.
+    await h.engine.run(runOpts({ prompt: "and again", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+  });
+
+  it("reads a compaction in the newest messages as owed unless a re-seed came after it", () => {
+    const user = (...parts: Array<Record<string, unknown>>) => ({ info: { role: "user" }, parts });
+    const compaction = user({ type: "compaction" });
+    const seed = user({ type: "text", metadata: { hundredfold: "context-reseed" } });
+    const text = user({ type: "text", text: "hi" });
+    expect(reseedDue([])).toBeUndefined();
+    expect(reseedDue([text, { info: { role: "assistant" }, parts: [] }])).toBeUndefined();
+    expect(reseedDue([text, compaction])).toBe(true);
+    expect(reseedDue([text, compaction, text])).toBe(true);
+    expect(reseedDue([text, compaction, seed])).toBe(false);
+    expect(reseedDue([seed, text, compaction])).toBe(true);
+    expect(reseedDue([compaction, seed, text, compaction])).toBe(true);
+    expect(reseedDue([compaction, seed, text])).toBe(false);
   });
 });
 
