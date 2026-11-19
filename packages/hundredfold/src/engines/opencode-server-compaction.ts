@@ -39,6 +39,9 @@ export const HUNDREDFOLD_RESEED_METADATA = metadataTag("context-reseed");
 /** Summarizing a long session is one model call over all of it. */
 export const COMPACTION_TIMEOUT_MS = 15 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Putting the system prompt back is one small request after a summary that took far longer, so it is worth a few tries. */
+const RESEED_ATTEMPTS = 3;
+const RESEED_RETRY_DELAY_MS = 500;
 
 export const RESEED_PREAMBLE =
   "[Hundredfold] Your context was just compacted. These are the operating instructions and the session context "
@@ -142,32 +145,50 @@ export class OpencodeServerCompaction {
     if (done !== true) throw new Error(`summarize answered ${JSON.stringify(done)?.slice(0, 200)}`);
     logger.info(`opencode compaction summarized session ${sessionId} (${model.providerID}/${model.modelID})`);
 
-    await this.reseed(route, model);
+    const reseedFailure = await this.reseed(route, model);
     const { cost, compaction, summary } = await this.summaryReport(route);
-    return { sessionId, result: "", numTurns: 1, compaction, ...(summary ? { compactionSummary: summary } : {}), ...(cost ? { cost } : {}) };
+    return {
+      sessionId, result: "", numTurns: 1, compaction,
+      ...(summary ? { compactionSummary: summary } : {}),
+      ...(cost ? { cost } : {}),
+      ...(reseedFailure ? { notices: [reseedFailure] } : {}),
+    };
   }
 
   /** Put Hundredfold's system prompt back in front of the model (see the header).
-   *  Best effort: a failure costs the persona until the session's next fresh
-   *  start, not the compaction, and is logged loudly. */
-  private async reseed(route: string, model: { providerID: string; modelID: string }): Promise<void> {
-    if (!this.opts.systemPrompt) return;
+   *  A transient failure is retried; one that persists costs the persona until
+   *  the session's next fresh start, not the compaction, so it is logged loudly
+   *  and returned as a notice the turn posts to the session. Undefined when the
+   *  prompt is back (or there is none to put back). */
+  private async reseed(route: string, model: { providerID: string; modelID: string }): Promise<string | undefined> {
+    if (!this.opts.systemPrompt) return undefined;
     const agent = agentFromCliFlags(this.opts.cliFlags);
-    try {
-      await this.request("POST", `${route}/message`, {
-        noReply: true,
-        model,
-        ...(agent ? { agent } : {}),
-        parts: [{
-          type: "text",
-          text: `${RESEED_PREAMBLE}\n\n${this.opts.systemPrompt}`,
-          synthetic: true,
-          metadata: HUNDREDFOLD_RESEED_METADATA,
-        }],
-      });
-    } catch (err) {
-      logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${err instanceof Error ? err.message : String(err)}`);
+    const body = {
+      noReply: true,
+      model,
+      ...(agent ? { agent } : {}),
+      parts: [{
+        type: "text",
+        text: `${RESEED_PREAMBLE}\n\n${this.opts.systemPrompt}`,
+        synthetic: true,
+        metadata: HUNDREDFOLD_RESEED_METADATA,
+      }],
+    };
+    let failure = "";
+    for (let attempt = 1; attempt <= RESEED_ATTEMPTS; attempt++) {
+      if (this.terminationReason) return undefined;
+      try {
+        await this.request("POST", `${route}/message`, body);
+        return undefined;
+      } catch (err) {
+        failure = err instanceof Error ? err.message : String(err);
+        logger.warn(`opencode compaction could not re-seed the system prompt into ${route} (attempt ${attempt}/${RESEED_ATTEMPTS}): ${failure}`);
+        if (attempt < RESEED_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, RESEED_RETRY_DELAY_MS));
+      }
     }
+    logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${failure}`);
+    return "This session was compacted, but its operating instructions could not be put back in front of the model, "
+      + "so it may have lost them. Start a fresh session if it behaves as if it has.";
   }
 
   /** The model the session's newest user message ran on. */
