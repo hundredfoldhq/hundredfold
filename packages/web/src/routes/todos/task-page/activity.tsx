@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowUp, ChevronRight, FileText, Image as ImageIcon, Paperclip, X } from "@/components/ui/icon"
+import { ArrowUp, ChevronRight, FileText, Image as ImageIcon, Paperclip, Trash2, X } from "@/components/ui/icon"
 import {
   api,
   type Employee,
@@ -67,6 +67,24 @@ function CommentBlock({
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null)
+  // Focus follows the swap: into the safe choice when the question opens, back
+  // onto the Delete trigger when it is dismissed. A confirmed delete tombstones
+  // the comment and unmounts the whole row, so nothing is left to refocus.
+  const restoreFocusRef = useRef(false)
+  useEffect(() => {
+    if (confirmingDelete) cancelDeleteRef.current?.focus()
+    else if (restoreFocusRef.current) {
+      restoreFocusRef.current = false
+      deleteRef.current?.focus()
+    }
+  }, [confirmingDelete])
+  const cancelDelete = () => {
+    restoreFocusRef.current = true
+    setConfirmingDelete(false)
+  }
   return (
     <div className={`pb-0.5 pt-2 ${reply ? "ml-[30px]" : ""}`} data-testid={`activity-comment-${comment.id}`}>
       <div className="flex items-center gap-2">
@@ -174,16 +192,57 @@ function CommentBlock({
               Edit
             </button>
           )}
-          {onDelete && (
+          {onDelete && !confirmingDelete && (
             <button
+              ref={deleteRef}
               type="button"
               data-testid={`activity-delete-${comment.id}`}
               disabled={busy}
-              onClick={onDelete}
-              className="focus-outline inline-flex items-center rounded outline-none hover:text-[var(--text-secondary)] disabled:opacity-50 max-[700px]:min-h-[34px]"
+              onClick={() => setConfirmingDelete(true)}
+              className="focus-outline ml-auto inline-flex items-center gap-1 rounded text-[var(--system-red)] outline-none hover:underline disabled:opacity-50 max-[700px]:min-h-[34px]"
             >
+              <Trash2 size={12} aria-hidden />
               Delete
             </button>
+          )}
+          {onDelete && confirmingDelete && (
+            <div
+              role="group"
+              aria-label="Confirm deleting this comment"
+              data-testid={`activity-delete-confirm-${comment.id}`}
+              className="ml-auto flex items-center gap-3.5"
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return
+                event.stopPropagation()
+                cancelDelete()
+              }}
+            >
+              <span role="alert" className="text-[var(--text-secondary)]">
+                Delete this comment?
+              </span>
+              <button
+                ref={cancelDeleteRef}
+                type="button"
+                data-testid={`activity-delete-cancel-${comment.id}`}
+                onClick={cancelDelete}
+                className="focus-outline inline-flex items-center rounded outline-none hover:text-[var(--text-secondary)] max-[700px]:min-h-[34px]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid={`activity-delete-yes-${comment.id}`}
+                disabled={busy}
+                onClick={() => {
+                  setConfirmingDelete(false)
+                  onDelete()
+                }}
+                className="focus-outline inline-flex items-center gap-1 rounded font-semibold text-[var(--system-red)] outline-none hover:underline disabled:opacity-50 max-[700px]:min-h-[34px]"
+              >
+                <Trash2 size={12} aria-hidden />
+                Delete
+              </button>
+            </div>
           )}
         </div>
       )}

@@ -647,6 +647,67 @@ describe("attachments + activity", () => {
     await waitFor(() => expect(editWorkItemComment).toHaveBeenCalledWith("TSK-12", "wic_mine", editedBody))
 
     fireEvent.click(screen.getByTestId("activity-delete-wic_theirs"))
+    fireEvent.click(await screen.findByTestId("activity-delete-yes-wic_theirs"))
     await waitFor(() => expect(deleteWorkItemComment).toHaveBeenCalledWith("TSK-12", "wic_theirs"))
+  })
+
+  describe("comment delete confirmation", () => {
+    async function openThread() {
+      getWorkItem.mockResolvedValue(detailOf(full("TSK-12")))
+      listWorkItemComments.mockResolvedValue({
+        comments: [comment("wic_theirs", "agent words", "2026-07-22T09:00:00.000Z")],
+        total: 1,
+      })
+      deleteWorkItemComment.mockResolvedValue({ comment: comment("wic_theirs", "", "2026-07-22T09:00:00.000Z", { deletedAt: "2026-07-23T09:00:00.000Z" }) })
+      renderTask()
+      await screen.findByTestId("activity-comment-wic_theirs")
+    }
+
+    it("the first click only asks: no DELETE is sent, and Reply stays a separate control", async () => {
+      await openThread()
+      const reply = screen.getByTestId("activity-reply-wic_theirs")
+      const del = screen.getByTestId("activity-delete-wic_theirs")
+      expect(reply).not.toBe(del)
+      expect(reply.textContent).toBe("Reply")
+
+      fireEvent.click(del)
+
+      expect(screen.getByText("Delete this comment?")).toBeTruthy()
+      expect(screen.getByTestId("activity-delete-yes-wic_theirs")).toBeTruthy()
+      expect(deleteWorkItemComment).not.toHaveBeenCalled()
+    })
+
+    it("Confirm sends the DELETE exactly once", async () => {
+      await openThread()
+      fireEvent.click(screen.getByTestId("activity-delete-wic_theirs"))
+      fireEvent.click(screen.getByTestId("activity-delete-yes-wic_theirs"))
+      await waitFor(() => expect(deleteWorkItemComment).toHaveBeenCalledTimes(1))
+      expect(deleteWorkItemComment).toHaveBeenCalledWith("TSK-12", "wic_theirs")
+    })
+
+    it("Cancel sends nothing, leaves the comment, and returns focus to Delete", async () => {
+      await openThread()
+      fireEvent.click(screen.getByTestId("activity-delete-wic_theirs"))
+      const cancel = screen.getByTestId("activity-delete-cancel-wic_theirs")
+      await waitFor(() => expect(document.activeElement).toBe(cancel))
+
+      fireEvent.click(cancel)
+
+      expect(screen.queryByText("Delete this comment?")).toBeNull()
+      const del = screen.getByTestId("activity-delete-wic_theirs")
+      await waitFor(() => expect(document.activeElement).toBe(del))
+      expect(screen.getByText("agent words")).toBeTruthy()
+      expect(deleteWorkItemComment).not.toHaveBeenCalled()
+    })
+
+    it("Escape cancels from the confirmation", async () => {
+      await openThread()
+      fireEvent.click(screen.getByTestId("activity-delete-wic_theirs"))
+      fireEvent.keyDown(screen.getByTestId("activity-delete-cancel-wic_theirs"), { key: "Escape" })
+
+      expect(screen.queryByText("Delete this comment?")).toBeNull()
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("activity-delete-wic_theirs")))
+      expect(deleteWorkItemComment).not.toHaveBeenCalled()
+    })
   })
 })
