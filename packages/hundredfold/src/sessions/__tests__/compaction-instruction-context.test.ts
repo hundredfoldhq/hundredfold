@@ -33,7 +33,7 @@ const PERSONA_FACT = "The harbour password is KESTREL-17.";
 const HANDOFF = { goal: "ship the fix", done: "wrote the test", next: "run the suite", context: "branch fix/example" };
 
 const config = {
-  gateway: { port: 7777, host: "127.0.0.1" },
+  gateway: { port: 18123, host: "127.0.0.1" },
   engines: { default: "claude", claude: {}, opencode: { mode: "server" } },
   logging: { level: "info" },
 } as unknown as HundredfoldConfig;
