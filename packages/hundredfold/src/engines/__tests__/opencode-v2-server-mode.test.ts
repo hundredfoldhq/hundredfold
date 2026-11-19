@@ -1109,6 +1109,34 @@ describe("/compact on an OpenCode 2 server", { timeout: 30_000 }, () => {
     expect(await sessionMetadata(h, first.sessionId!)).toBeUndefined();
   });
 
+  it("tries the re-seed note again when the server refuses it once", async () => {
+    process.env.FAKE_V2_METADATA_FAIL = "1";
+    try {
+      const h = harness();
+      const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+      const result = await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "/compact", systemPrompt: "You are Ada." }));
+      expect(result.error).toBeUndefined();
+      expect(result.notices).toBeUndefined();
+      expect(await sessionMetadata(h, first.sessionId!)).toEqual({ hundredfold: { reseed: true } });
+    } finally {
+      delete process.env.FAKE_V2_METADATA_FAIL;
+    }
+  });
+
+  it("keeps the compaction and tells the session when the re-seed note cannot be written", async () => {
+    process.env.FAKE_V2_METADATA_FAIL = "100";
+    try {
+      const h = harness();
+      const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+      const result = await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "/compact", systemPrompt: "You are Ada." }));
+      expect(result.error).toBeUndefined();
+      expect(result.compaction?.preTokens).toBe(1200);
+      expect(result.notices).toEqual([expect.stringContaining("operating instructions could not be put back")]);
+    } finally {
+      delete process.env.FAKE_V2_METADATA_FAIL;
+    }
+  });
+
   it("keeps a re-seed a turn without a system prompt could not send, for the next turn that can", async () => {
     const h = harness();
     const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));

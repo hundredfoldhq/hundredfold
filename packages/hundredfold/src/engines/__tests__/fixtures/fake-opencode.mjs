@@ -102,6 +102,7 @@
 // answer to POST /session; FAKE_OPENCODE_HISTORY_DELAY_MS delays the answer
 // to GET /session/<id>/message?limit=N; FAKE_OPENCODE_PATCH_FAIL=1 makes
 // PATCH …/part/<id> answer 500, and FAKE_OPENCODE_PATCH_DELAY_MS delays it;
+// FAKE_OPENCODE_RESEED_FAIL=<n> answers the first n system-prompt re-seed messages 500;
 // FAKE_OPENCODE_SUMMARIZE_DELAY_MS holds POST …/summarize open; FAKE_OPENCODE_BOOTSTRAP_MS
 // holds every instance request (all but /global/health and /test/*) until the
 // server's first one is that old, as opencode bootstraps its instance on the
@@ -442,6 +443,7 @@ function serve() {
 
   let apiInfoDropped = false;
   let apiInfoFailed = 0;
+  let reseedFailed = 0;
   const server = http.createServer(async (req, res) => {
     const expected = password ? `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` : undefined;
     if (expected && req.headers.authorization !== expected) {
@@ -583,6 +585,7 @@ function serve() {
       const s = sessions.get(id);
       if (!s) return send({ name: "NotFoundError" }, 404);
       if (json.noReply !== true) return send({ error: "fake: only noReply messages" }, 400);
+      if ((json.parts ?? []).some((p) => p.metadata?.hundredfold === "context-reseed") && reseedFailed++ < Number(process.env.FAKE_OPENCODE_RESEED_FAIL ?? 0)) return send({ name: "UnknownError" }, 500);
       const userId = newId("msg");
       const parts = (json.parts ?? []).map((p) => ({ id: newId("prt"), ...p, messageID: userId, sessionID: id }));
       const user = { info: { id: userId, sessionID: id, role: "user", time: { created: Date.now() }, ...(json.model ? { model: json.model } : {}) }, parts };

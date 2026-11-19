@@ -64,6 +64,7 @@
 //   FAKE_V2_OPERATOR_BUSY_MS  an operator input (no Hundredfold metadata) is already
 //                             running in the session for that long whenever a
 //                             prompt arrives at an idle session
+//   FAKE_V2_METADATA_FAIL     answers the first n session metadata PATCHes 500
 //   FAKE_V2_LOG               a file each verb appends `<verb> <args>` to
 //   FAKE_V2_HEARTBEAT_MS      how often the event stream sends its `: heartbeat` comment (default 10 s)
 //   FAKE_V2_VERSION           what --version and /api/info report (default 2.0.29)
@@ -122,6 +123,7 @@ function serve() {
   let seq = 0;
   let mcpCalls = 0;
   let eventStreams = 0;
+  let metadataFailed = 0;
   let config = null;
   try { config = process.env.OPENCODE_CONFIG ? JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, "utf8")) : null; } catch { config = "unreadable"; }
   const info = {
@@ -555,6 +557,7 @@ function serve() {
     const method = req.method;
     if (rest === "" && method === "GET") return data(res, sessionInfo(s));
     if (rest === "" && method === "PATCH") {
+      if (metadataFailed++ < Number(process.env.FAKE_V2_METADATA_FAIL ?? 0)) { res.writeHead(500); res.end("fake: metadata write refused"); return; }
       if (body && "metadata" in body) s.metadata = body.metadata && Object.keys(body.metadata).length ? body.metadata : undefined;
       return noContent(res);
     }

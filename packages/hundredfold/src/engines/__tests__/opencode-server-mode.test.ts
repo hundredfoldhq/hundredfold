@@ -110,6 +110,7 @@ beforeEach(() => {
   delete process.env.FAKE_OPENCODE_HISTORY_DELAY_MS;
   delete process.env.FAKE_OPENCODE_PATCH_FAIL;
   delete process.env.FAKE_OPENCODE_PATCH_DELAY_MS;
+  delete process.env.FAKE_OPENCODE_RESEED_FAIL;
   delete process.env.FAKE_OPENCODE_SUMMARIZE_DELAY_MS;
   delete process.env.FAKE_OPENCODE_BOOTSTRAP_MS;
   delete process.env.FAKE_OPENCODE_EVENT_STALL;
@@ -1198,6 +1199,28 @@ describe("OpencodeEngine in server mode — /compact", { timeout: 20_000 }, () =
     expect(reseed.parts[0]!.text).toMatch(/^\[Hundredfold\] Your context was just compacted\./);
     expect(reseed.parts[0]!.text).toMatch(/You are Ada\.$/);
     expect(stored.some((m) => m.info.summary === true)).toBe(true);
+  });
+
+  it("tries the re-seed again when the server refuses it once, and says nothing when it lands", async () => {
+    process.env.FAKE_OPENCODE_RESEED_FAIL = "1";
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacted = await h.engine.run(runOpts({ prompt: "/compact", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacted.error).toBeUndefined();
+    expect(compacted.notices).toBeUndefined();
+    const route = `/session/${first.sessionId}`;
+    const stored = (await api<Stored[]>(h.pool, "sess-1", `${route}/message`)).body;
+    expect(stored.filter((m) => m.parts.some((p) => p.metadata?.hundredfold === "context-reseed"))).toHaveLength(1);
+  });
+
+  it("keeps the compaction and tells the session when the re-seed cannot be put back", async () => {
+    process.env.FAKE_OPENCODE_RESEED_FAIL = "100";
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacted = await h.engine.run(runOpts({ prompt: "/compact", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacted.error).toBeUndefined();
+    expect(compacted.compaction).toEqual({ preTokens: 21_800 });
+    expect(compacted.notices).toEqual([expect.stringContaining("operating instructions could not be put back")]);
   });
 
   it("does not report the re-seed as a request someone cancelled on the next turn", async () => {
