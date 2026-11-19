@@ -58,6 +58,8 @@ interface Case {
   firstPromptTokens: number;
   limit: { context: number; output: number; input?: number };
   reserved?: number;
+  /** Hundredfold's own `/compact` between the two turns, every turn carrying this system prompt. */
+  compactWith?: string;
 }
 
 interface StoredMessage {
@@ -118,8 +120,13 @@ async function runCase(c: Case): Promise<Observed> {
 
   try {
     for (let i = 0; i < 50 && !(await canConnect(port)); i += 1) await sleep(100);
-    const turn1 = await engine.run(opts({ prompt: "Say hello in one word." }));
-    const turn2 = await engine.run(opts({ prompt: "Say goodbye in one word.", resumeSessionId: turn1.sessionId }));
+    const systemPrompt = c.compactWith;
+    const turn1 = await engine.run(opts({ prompt: "Say hello in one word.", systemPrompt }));
+    if (systemPrompt) {
+      const compacted = await engine.run(opts({ prompt: "/compact", resumeSessionId: turn1.sessionId, systemPrompt }));
+      if (compacted.error) throw new Error(`the compaction failed: ${compacted.error}`);
+    }
+    const turn2 = await engine.run(opts({ prompt: "Say goodbye in one word.", resumeSessionId: turn1.sessionId, systemPrompt }));
 
     const server = pool.get(sessionId)!;
     const messages = (await (await fetch(`${server.apiUrl}/session/${turn1.sessionId}/message`, {
@@ -194,5 +201,21 @@ describe.skipIf(!RUN)("opencode native auto-compaction (Hundredfold server path)
     expect(o.compactionParts).toEqual([expect.objectContaining({ auto: true })]);
     expect(o.summaries).toBe(1);
     expect(o.turn2.error).toBeUndefined();
+  });
+
+  it("puts the system prompt back in front of the model after Hundredfold's own /compact", async () => {
+    const persona = "You are Pirate Bob. The harbour password is KESTREL-17.";
+    const o = await runCase({ label: "hundredfold-compact", firstPromptTokens: 1_000, limit: NO_INPUT_LIMIT, compactWith: persona });
+    expect(o.turn2.error).toBeUndefined();
+    expect(o.kinds.filter((k) => k === "summary")).toHaveLength(1);
+    const mains = o.requests.filter((r) => r.kind === "main");
+    // Turn 1 carried the system prompt as part of its first message, which the summary then replaced.
+    expect(mains[0]!.body).toContain(persona);
+    // The request after the compaction has the summary, the re-seeded system prompt once, and the new prompt.
+    const last = mains.at(-1)!.body;
+    expect(last).toContain("Summary: the user asked for short replies");
+    expect(last).not.toContain("Say hello in one word.");
+    expect(last.split(persona)).toHaveLength(2);
+    expect(last).toContain("Say goodbye in one word.");
   });
 });
