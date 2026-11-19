@@ -718,7 +718,7 @@ export class OpencodeServerTurn {
     try {
       const model = promptModel(this.opts.model) ?? await lastUserModel(this.server, route);
       if (!model) throw new Error("no model to post it with: the turn names none and the session has no prior prompt");
-      this.reseedNotice = await reseedSystemPrompt(this.server, route, model, this.opts, () => false);
+      this.reseedNotice = await reseedSystemPrompt(this.server, route, model, this.opts, () => Boolean(this.terminationReason));
     } catch (err) {
       logger.error(`opencode compaction could not re-seed the system prompt into ${route}: ${err instanceof Error ? err.message : String(err)}`);
       this.reseedNotice = RESEED_FAILED_NOTICE;

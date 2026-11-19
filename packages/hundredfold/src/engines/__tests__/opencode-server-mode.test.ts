@@ -1203,6 +1203,30 @@ describe("OpencodeEngine in server mode — opencode's own compaction during a t
     expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
   });
 
+  it("trusts the stream when a long turn pushed the compaction out of the newest messages", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacting = await h.engine.run(runOpts({ prompt: "NATIVECOMPACT FILLER", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(await noReplyPosts(h)).toHaveLength(1);
+    expect(reseeds(await storedOf(h, first.sessionId))).toHaveLength(1);
+  });
+
+  it("does not keep putting the re-seed back, or tell the session it failed, when the turn is stopped meanwhile", async () => {
+    process.env.FAKE_OPENCODE_RESEED_FAIL = "99";
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    const compacting = h.engine.run(runOpts({ prompt: "NATIVECOMPACT", resumeSessionId: first.sessionId, systemPrompt: "You are Ada." }));
+    await waitFor(async () => (await noReplyPosts(h)).length >= 1);
+    h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+    const result = await compacting;
+    const posted = (await noReplyPosts(h)).length;
+    expect(result.notices).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 1200));
+    expect((await noReplyPosts(h)).length).toBe(posted);
+    expect(posted).toBe(1);
+  });
+
   it("posts nothing when a re-seed already follows the compaction the turn saw", async () => {
     const h = harness();
     const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));

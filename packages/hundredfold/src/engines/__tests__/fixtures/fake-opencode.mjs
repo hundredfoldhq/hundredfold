@@ -29,6 +29,7 @@
 //   STATUSIDLE  the turn ends with an idle session.status but no session.idle
 //   NATIVECOMPACT  opencode compacts the session by itself right after the turn's reply (a `compaction` part,
 //               then the summary message), as it does when a reply's context crosses the model's budget;
+//               with FILLER too, forty more messages follow, pushing it out of the newest thirty;
 //               with SEEDED too, a Hundredfold re-seed is stored right after the summary, as an earlier turn's would have been
 //   MULTISTEP   two tool round trips (each its own reply, finish=tool-calls),
 //               then the answer — the order real 1.18.31 emits
@@ -342,6 +343,13 @@ function serve() {
     };
     s.messages.push(summary);
     messageUpdated(sessionID, summary);
+    // Enough later messages that the compaction is out of the newest few dozen.
+    if (text.includes("FILLER")) {
+      for (let i = 0; i < 40; i++) {
+        const id = newId("msg");
+        s.messages.push({ info: { id, sessionID, role: "user", time: { created: Date.now() } }, parts: [{ id: newId("prt"), type: "text", text: `filler ${i}`, messageID: id, sessionID }] });
+      }
+    }
     if (text.includes("SEEDED")) {
       const seedId = newId("msg");
       s.messages.push({ info: { id: seedId, sessionID, role: "user", time: { created: Date.now() } }, parts: [{ id: newId("prt"), type: "text", text: "seed", synthetic: true, metadata: { hundredfold: "context-reseed" }, messageID: seedId, sessionID }] });
