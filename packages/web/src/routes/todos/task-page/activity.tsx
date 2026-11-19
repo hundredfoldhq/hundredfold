@@ -184,6 +184,7 @@ function CommentBlock({
               data-testid={`activity-edit-start-${comment.id}`}
               disabled={busy}
               onClick={() => {
+                setConfirmingDelete(false)
                 setDraft(comment.body)
                 setEditing(true)
               }}
@@ -210,14 +211,14 @@ function CommentBlock({
               role="group"
               aria-label="Confirm deleting this comment"
               data-testid={`activity-delete-confirm-${comment.id}`}
-              className="ml-auto flex items-center gap-3.5"
+              className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3.5 gap-y-0.5"
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return
                 event.stopPropagation()
                 cancelDelete()
               }}
             >
-              <span role="alert" className="text-[var(--text-secondary)]">
+              <span role="alert" className="text-[var(--text-secondary)] max-[700px]:basis-full max-[700px]:text-right">
                 Delete this comment?
               </span>
               <button

@@ -674,6 +674,28 @@ describe("attachments + activity", () => {
 
       expect(screen.getByText("Delete this comment?")).toBeTruthy()
       expect(screen.getByTestId("activity-delete-yes-wic_theirs")).toBeTruthy()
+      // react-query fires mutationFn a tick after mutate(), so let it run before asserting nothing went out.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(deleteWorkItemComment).not.toHaveBeenCalled()
+    })
+
+    it("starting an edit drops the pending confirmation, so cancelling the edit does not bring it back", async () => {
+      getWorkItem.mockResolvedValue(detailOf(full("TSK-12")))
+      listWorkItemComments.mockResolvedValue({
+        comments: [comment("wic_mine", "my words", "2026-07-22T08:00:00.000Z", { authorKind: "operator", author: "operator" })],
+        total: 1,
+      })
+      renderTask()
+      await screen.findByTestId("activity-comment-wic_mine")
+      fireEvent.click(screen.getByTestId("activity-delete-wic_mine"))
+      expect(screen.getByText("Delete this comment?")).toBeTruthy()
+
+      fireEvent.click(screen.getByTestId("activity-edit-start-wic_mine"))
+      expect(screen.queryByText("Delete this comment?")).toBeNull()
+      fireEvent.click(screen.getByText("Cancel"))
+
+      expect(screen.queryByText("Delete this comment?")).toBeNull()
+      expect(screen.getByTestId("activity-delete-wic_mine")).toBeTruthy()
       expect(deleteWorkItemComment).not.toHaveBeenCalled()
     })
 
