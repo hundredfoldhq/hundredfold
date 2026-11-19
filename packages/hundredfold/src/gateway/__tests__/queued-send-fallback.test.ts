@@ -6,6 +6,7 @@ import {
   acceptWithoutExecuting, api, createParent, dbModule, eventually, makeContext, queueModule, registry, resetCallbackState, type ApiContext,
 } from "./helpers/callback-harness.js";
 import { sweepLateralSends } from "../lateral-send-watch.js";
+import { markSessionStopped } from "../../sessions/stopped-marker.js";
 import { makeResponse, withRouteBackedFetch } from "./helpers/callback-requests.js";
 import {
   CALLER_SESSION_CAPABILITY_HEADER, CALLER_SESSION_HEADER, TOOL_CALL_HEADER, TOOL_CALL_HEADER_VALUE, ensureSessionCapability,
@@ -60,7 +61,7 @@ function toolHeaders(callerSessionId: string): Record<string, string> {
  * it landed on, and a replacement sent meanwhile is the only one delivered. The
  * real route, queue, registry and rate-limit walk; only the engine is a stub.
  */
-function setup(opts: { limit?: boolean } = {}) {
+function setup(opts: { limit?: boolean; source?: string } = {}) {
   const limit = opts.limit !== false;
   const calls: Array<{ text: string; account: string }> = [];
   const gates: Array<() => void> = [];
@@ -81,7 +82,7 @@ function setup(opts: { limit?: boolean } = {}) {
   const base = makeContext(engine, queue);
   const config = { gateway: {}, sessions: {}, mcp: {}, engines: { default: "claude", claude: { bin: "claude", model: "opus", accounts: { A: { configDir: DIR_A }, B: { configDir: DIR_B } } } } };
   const context = { ...base, config, getConfig: () => config, sessionManager: { getEngine: () => engine, getEngines: () => new Map([["claude", engine]]), getQueue: () => queue } } as unknown as ApiContext;
-  const target = registry.createSession({ engine: "claude", model: "opus", employee: "worker-a", source: "web", sourceRef: "web:fb-target", sessionKey: "web:fb-target", connector: "web", prompt: "x" });
+  const target = registry.createSession({ engine: "claude", model: "opus", employee: "worker-a", source: opts.source ?? "web", sourceRef: "web:fb-target", sessionKey: "web:fb-target", connector: opts.source ?? "web", prompt: "x" });
   const caller = createParent("fb-caller");
   return { calls, gates, queue, context, target, caller };
 }
@@ -163,5 +164,48 @@ describe("an accepted message that has not run", () => {
       expect(queue.isRunning(target.sessionKey)).toBe(false);
       expect(delivered(calls, "plan A")).toHaveLength(1);
     });
+  }, 20000);
+  /** Lose the dispatch of one agent message to `target`, then sweep long after it was sent. */
+  async function sweepLost(opts: { stop?: boolean; noEngine?: boolean; source?: string }) {
+    const { calls, context, target, caller } = setup({ limit: false, source: opts.source });
+    const lost = { ...context, sessionManager: { ...context.sessionManager, getQueue: () => acceptWithoutExecuting() } } as unknown as ApiContext;
+    const sent = await post(lost, target.id, { message: "plan A" }, toolHeaders(caller.id));
+    expect(sent.body.status).toBe("queued");
+    if (opts.stop) markSessionStopped(target.id);
+    const sweepContext = opts.noEngine ? { ...context, sessionManager: { ...context.sessionManager, getEngine: () => undefined } } as unknown as ApiContext : context;
+    let result: ReturnType<typeof sweepLateralSends> | undefined;
+    await withRouteBackedFetch(context, {}, async () => {
+      result = sweepLateralSends(sweepContext, { now: Date.now() + 6 * 60_000 });
+      // The sender is woken with the full notice; its engine sees the whole text.
+      await eventually(() => expect(calls.filter((call) => call.text.includes("has not been delivered after"))).toHaveLength(1));
+    });
+    const notice = calls.find((call) => call.text.includes("has not been delivered after"))!.text;
+    return { calls, result: result!, notice, id: sent.body.queueItemId as string, target };
+  }
+
+  it("tells the sender a message was dropped, not that it is still queued, when the target was stopped", async () => {
+    const { calls, result, notice, id, target } = await sweepLost({ stop: true });
+    expect(result).toEqual({ rearmed: [], reported: [id] });
+    expect(statuses(target.id)).toEqual(["cancelled"]);
+    expect(delivered(calls, "plan A")).toHaveLength(0);
+    expect(notice).toContain("dropped");
+    expect(notice).not.toContain("still queued");
+  }, 20000);
+
+  it("tells the sender a message was dropped when the target's engine is unavailable", async () => {
+    const { result, notice, id, target } = await sweepLost({ noEngine: true });
+    expect(result).toEqual({ rearmed: [], reported: [id] });
+    expect(statuses(target.id)).toEqual(["cancelled"]);
+    expect(notice).toContain("dropped");
+    expect(notice).not.toContain("still queued");
+  }, 20000);
+
+  it("does not promise a run for a message to a connector-owned session nothing here can dispatch", async () => {
+    const { calls, result, notice, id, target } = await sweepLost({ source: "telegram" });
+    expect(result).toEqual({ rearmed: [], reported: [id] });
+    expect(statuses(target.id)).toEqual(["pending"]);
+    expect(delivered(calls, "plan A")).toHaveLength(0);
+    expect(notice).toContain("will not run by itself");
+    expect(notice).not.toContain("still queued");
   }, 20000);
 });
