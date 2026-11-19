@@ -56,6 +56,8 @@
 //               idle; /api/session/active stops listing the session)
 //   DROPSTREAM  one tool step, then every event stream ends and the server carries
 //               on unobserved
+//   NATIVECOMPACT  opencode compacts the session by itself first (compaction.started and .ended, reason auto),
+//               then the step answers `fake:nativecompact`
 //   (none)      the text `fake:<the text after the last --->`
 // A /compact fails (compaction.failed) when the session's newest user prompt
 // carries the directive FAILCOMPACT.
@@ -451,6 +453,18 @@ function serve() {
     return await textStep(s, "fake:retryloop");
   }
 
+  /** opencode compacting the session by itself at the top of an execution, because the last reply's context
+   *  crossed the model's budget (2.0.32): a compaction of its own (`reason: auto`, no input behind it) inside
+   *  the execution, then the input's step. */
+  async function nativeCompactTurn(s) {
+    publish("session.compaction.started", { sessionID: s.id, reason: "auto", recent: "" });
+    await sleep(s, 20);
+    const summary = "## Objective\n- Mock objective\n";
+    s.items.push({ type: "compaction", id: newId("msg"), time: { created: now() }, reason: "auto", status: "completed", cost: COST, tokens: TOKENS, model: s.model, summary, recent: "" });
+    publish("session.compaction.ended", { sessionID: s.id, reason: "auto", model: s.model, text: summary });
+    return await textStep(s, "fake:nativecompact");
+  }
+
   /** The directives, in the order they are tried. */
   const DIRECTIVES = [
     ["TOOL", toolTurn],
@@ -464,6 +478,7 @@ function serve() {
     ["RETRYLOOP", retryLoopTurn],
     ["RETRYSLOW", retrySlowTurn],
     ["NOTEXT", noTextTurn],
+    ["NATIVECOMPACT", nativeCompactTurn],
     ["OTHERMODEL", otherModelTurn],
     ["PERMISSION", permissionTurn],
     ["QUESTION", questionTurn],

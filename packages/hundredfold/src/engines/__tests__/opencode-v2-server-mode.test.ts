@@ -1082,6 +1082,62 @@ describe("requests the operator cancelled in the session", { timeout: 30_000 }, 
   });
 });
 
+describe("opencode's own compaction during a turn on an OpenCode 2 server", { timeout: 30_000 }, () => {
+  it("notes the system-prompt re-seed once the turn ends, and has the next prompt send it once", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    expect(await sessionMetadata(h, first.sessionId!)).toBeUndefined();
+
+    const compacting = await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "NATIVECOMPACT now", systemPrompt: "You are Ada." }));
+    expect(compacting.error).toBeUndefined();
+    expect(compacting.result).toBe("fake:nativecompact");
+    expect(compacting.notices).toBeUndefined();
+    // The prompt in flight was delivered before the compaction, so it cannot carry the system prompt: the next one does.
+    expect(promptsOf(await logOf(h)).at(-1)!.body!.text).not.toContain("You are Ada.");
+    expect(await sessionMetadata(h, first.sessionId!)).toEqual({ hundredfold: { reseed: true } });
+
+    const next = await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "after the compaction", systemPrompt: "You are Ada." }));
+    expect(next.result).toBe("fake:after the compaction");
+    const prompt = promptsOf(await logOf(h)).at(-1)!.body!;
+    expect(prompt.text).toBe(`${RESEED_PREAMBLE}\n\nYou are Ada.\n\n---\n\nafter the compaction`);
+    expect(await sessionMetadata(h, first.sessionId!)).toBeUndefined();
+
+    // Not again: a turn that did not compact sends the prompt as it is.
+    await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "and once more", systemPrompt: "You are Ada." }));
+    expect(promptsOf(await logOf(h)).at(-1)!.body!.text).toBe("and once more");
+    expect(await sessionMetadata(h, first.sessionId!)).toBeUndefined();
+  });
+
+  it("notes nothing for a turn that did not compact, or for a session with no system prompt", async () => {
+    const h = harness();
+    const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+    await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "a plain turn", systemPrompt: "You are Ada." }));
+    expect(await sessionMetadata(h, first.sessionId!)).toBeUndefined();
+
+    const bare = await h.engine.run(runOpts({ sessionId: "sess-bare" }));
+    const result = await h.engine.run(runOpts({ sessionId: "sess-bare", resumeSessionId: bare.sessionId, prompt: "NATIVECOMPACT now" }));
+    expect(result.error).toBeUndefined();
+    expect(await sessionMetadata(h, bare.sessionId!)).toBeUndefined();
+  });
+
+  it("tries the note again when the server refuses it once, and tells the session when it cannot be written", async () => {
+    for (const [refused, notices] of [["1", undefined], ["100", [expect.stringContaining("operating instructions could not be put back")]]] as const) {
+      process.env.FAKE_V2_METADATA_FAIL = refused;
+      try {
+        const h = harness();
+        const first = await h.engine.run(runOpts({ systemPrompt: "You are Ada." }));
+        const result = await h.engine.run(runOpts({ resumeSessionId: first.sessionId, prompt: "NATIVECOMPACT now", systemPrompt: "You are Ada." }));
+        expect(result.error).toBeUndefined();
+        expect(result.result).toBe("fake:nativecompact");
+        expect(result.notices).toEqual(notices);
+        if (!notices) expect(await sessionMetadata(h, first.sessionId!)).toEqual({ hundredfold: { reseed: true } });
+      } finally {
+        delete process.env.FAKE_V2_METADATA_FAIL;
+      }
+    }
+  });
+});
+
 describe("/compact on an OpenCode 2 server", { timeout: 30_000 }, () => {
   it("compacts through the server, notes the system-prompt re-seed, and has the next turn send it", async () => {
     const h = harness();

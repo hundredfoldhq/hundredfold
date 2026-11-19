@@ -317,6 +317,29 @@ describe.skipIf(!RUN)("opencode server mode on OpenCode 2", () => {
     expect(all).toContain("SYSTEM_PROMPT_MARKER");
   }, 120_000);
 
+  it("puts the system prompt back, once, after opencode compacts the session itself", async () => {
+    const marker = "SYSTEM_PROMPT_MARKER";
+    const count = (all: string) => all.split(marker).length - 1;
+    // The answer reports a context past the budget; opencode compacts at the top of the session's next execution,
+    // inside the next turn, whose delivered prompt cannot carry the system prompt: the turn after it does.
+    const filled = await turn("fill the context BIGCONTEXT");
+    expect(filled.result.error).toBeUndefined();
+    const compacting = await turn("the turn opencode compacts at the start of");
+    expect(compacting.result.error).toBeUndefined();
+    expect(compacting.result.notices).toBeUndefined();
+    expect(mainRequests().at(-1)!.all).toContain("Mock objective");
+    expect(mainRequests().at(-1)!.all).not.toContain("Your context was just compacted");
+    const next = await turn("after the native compaction");
+    expect(next.result.error).toBeUndefined();
+    const sent = mainRequests().at(-1)!.all;
+    expect(sent).toContain("Your context was just compacted");
+    expect(count(sent)).toBe(1);
+    // Once: a turn after that sends it no more.
+    await turn("and one more");
+    expect(mainRequests().at(-1)!.all).toContain("after the native compaction");
+    expect(count(mainRequests().at(-1)!.all)).toBe(1);
+  }, 120_000);
+
   it("retries a pre-stream 400 in place (error-retry plugin), so the turn answers", async () => {
     const { result } = await turn("once E400ONCE", { model: "opencode-go/m2" });
     expect(result.error).toBeUndefined();
