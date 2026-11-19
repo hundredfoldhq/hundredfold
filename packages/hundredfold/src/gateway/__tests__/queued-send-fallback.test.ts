@@ -26,8 +26,8 @@ vi.mock("../../sessions/claude-auth-watch.js", async (importOriginal) => ({
   observeClaudeTurnOutcome: () => {},
 }));
 
-const DIR_A = path.join(os.tmpdir(), "mar311-claude-a");
-const DIR_B = path.join(os.tmpdir(), "mar311-claude-b");
+const DIR_A = path.join(os.tmpdir(), "queued-send-claude-a");
+const DIR_B = path.join(os.tmpdir(), "queued-send-claude-b");
 vi.mock("../org-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../org-registry.js")>()),
   orgRegistry: () => new Map([["worker-a", { name: "worker-a", displayName: "Worker A", department: "x", rank: "employee", persona: "Worker.", engine: "claude", claudeConfigDir: DIR_A, fallback: [{ engine: "claude", profile: "B", model: "sonnet" }] }]]),
@@ -86,7 +86,9 @@ function setup(opts: { limit?: boolean } = {}) {
   return { calls, gates, queue, context, target, caller };
 }
 
-const delivered = (calls: Array<{ text: string }>, word: string) => calls.filter((call) => call.text.includes(word));
+// A message is delivered when it runs as its own turn. A prompt rebuilt for the account the session moved to may also carry it as
+// conversation context, which is not a delivery.
+const delivered = (calls: Array<{ text: string }>, word: string) => calls.filter((call) => call.text.startsWith("📨 Message from session") && call.text.includes(word));
 const statuses = (id: string) => (dbModule.initDb().prepare("SELECT status FROM queue_items WHERE session_id = ? ORDER BY position ASC").all(id) as Array<{ status: string }>).map((row) => row.status);
 
 describe("a queued send across an account move", () => {
