@@ -15,6 +15,7 @@
 // the hook) a `compact_boundary` system entry and a user entry marked `isCompactSummary` that
 // opens "This session is being continued from a previous conversation". The scenario decides
 // its outcome like any turn's: a rate-limited profile fails the compaction with a limit.
+// FAKE_COMPACT_SUMMARIZE_MS holds the whole compaction (a killed process leaves nothing, as the real CLI's would).
 // FAKE_COMPACT_SUMMARY_SHAPE=array writes the summary as text parts; FAKE_COMPACT_NO_SUMMARY=1
 // writes a boundary and no summary.
 //
@@ -145,8 +146,18 @@ function answered(text) {
   fire("Stop", hookPayload("Stop", base, { last_assistant_message: reply }));
 }
 
-/** What a manual `/compact` leaves: PostCompact first, then the boundary and the summary after a beat. */
+/** A manual `/compact`: the CLI summarizes first (FAKE_COMPACT_SUMMARIZE_MS, default none), so a process killed meanwhile leaves nothing. */
 function compacted(text) {
+  const summarizing = Number(process.env.FAKE_COMPACT_SUMMARIZE_MS ?? 0);
+  if (summarizing <= 0) return finishCompaction(text);
+  compacting += 1;
+  // The CLI paints a spinner while it summarizes; a silent process would be read as a finished command.
+  const spinner = setInterval(() => process.stdout.write("."), 400);
+  setTimeout(() => { clearInterval(spinner); compacting -= 1; finishCompaction(text); }, summarizing);
+}
+
+/** What a manual `/compact` leaves: PostCompact first, then the boundary and the summary after a beat. */
+function finishCompaction(text) {
   for (const entry of compactCommandEntries(text.replace(/^\/compact\s*/, ""), base)) fs.appendFileSync(transcriptPath, `${JSON.stringify(entry)}\n`);
   fire("PostCompact", hookPayload("PostCompact", base, { trigger: "manual" }));
   const delay = Number(process.env.FAKE_COMPACT_BOUNDARY_DELAY_MS ?? 150);

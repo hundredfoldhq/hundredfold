@@ -10,9 +10,11 @@ import {
   promotePendingQueueItem,
   withdrawPendingQueueItem,
 } from "../sessions/registry.js";
+import { compactionRunning } from "../sessions/compaction-in-flight.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { supersedeRunningTurn } from "../sessions/turn/superseded.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
+import { isCompactCommand } from "../shared/skill-commands.js";
 import { messageBodyError } from "../shared/message-body.js";
 import { isInterruptibleEngine, type InterruptibleEngine, type Session } from "../shared/types.js";
 import { readJsonBody } from "./http-helpers.js";
@@ -123,9 +125,12 @@ function isTurnRunning(engine: InterruptibleEngine, sessionId: string): boolean 
  *
  * Deliberately not `/stop`'s kill: that one also clears the queue, and here the
  * rest of the chain still has to drain behind the message being promoted.
+ * A running compaction is never cut off, even by this: the promoted message
+ * runs next, as soon as it has finished.
  */
 function interruptRunningTurn(context: ApiContext, session: Session): void {
   if (session.status !== "running") return;
+  if (compactionRunning(session.id)) return;
   const engine = context.sessionManager.getEngine(session.engine);
   if (!engine || !isInterruptibleEngine(engine) || !isTurnRunning(engine, session.id)) return;
   supersedeRunningTurn(session);
@@ -151,7 +156,7 @@ function sendAllNow({ res, context, session, params }: QueueRouteArgs): void {
   if (refusePaused(res, context, sessionKey)) return;
   const parked = getQueueItems(sessionKey).filter((row) => row.status === "pending");
   const count = parked.length;
-  const into = parked.find((row) => row.dispatch !== null);
+  const into = parked.find((row) => row.dispatch !== null && !isCompactCommand(row.prompt));
   if (into) mergePendingQueueItems(sessionKey, into.id);
   if (count > 0) interruptRunningTurn(context, session);
   context.emit("queue:updated", { sessionId: params.id, sessionKey });
