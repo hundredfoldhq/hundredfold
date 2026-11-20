@@ -3,6 +3,7 @@
 // Hundredfold hook relay. Invoked by Claude Code hooks as: node hook-relay.mjs <sessionId>
 // Reads hook JSON on stdin, POSTs to the gateway's /api/internal/hook.
 // Most relay failures exit 0 so Claude is not interrupted; policy hard-blocks exit non-zero.
+// A reply carrying `hookOutput` (the board reminder after a compaction) is printed for Claude Code to act on.
 //
 // The gateway writes this file with __CODENAME__ and __LEGACY_CODENAME__ replaced (shared/host-assets.ts). A session
 // started by an older gateway still carries the older name's variables, so both are read.
@@ -41,6 +42,12 @@ async function main() {
     headers: { "content-type": "application/json", [`x-${CODENAME}-hook-secret`]: info.secret },
     body,
   }).catch((err) => { logBestEffort(err); return null; });
+  // The gateway answers a SessionStart that follows a compaction with context to print;
+  // Claude Code adds what a SessionStart hook prints to the conversation.
+  if (response && response.ok) {
+    const reply = await response.json().catch(() => undefined);
+    if (reply && typeof reply.hookOutput === "object" && reply.hookOutput) process.stdout.write(JSON.stringify(reply.hookOutput));
+  }
   if (response && response.status === 451) {
     const text = await response.text().catch(() => "Command blocked by Hundredfold security policy");
     process.stderr.write(text || "Command blocked by Hundredfold security policy");

@@ -34,6 +34,7 @@ import o200k from "js-tiktoken/ranks/o200k_base";
 import { preflightTurn } from "../preflight.js";
 import { runEngineAttempt } from "../engine-run.js";
 import { runRateLimitTurn } from "../rate-limit-turn.js";
+import { compactionHookOutput, resetCompactionRemindersForTests } from "../compaction-reminder.js";
 import { spawnPrompt } from "../../../engines/claude-interactive.js";
 import { buildOpencodePrompt } from "../../../engines/opencode-protocol.js";
 import { buildResumeMessage } from "../../self-compaction.js";
@@ -89,6 +90,7 @@ function count(haystack: string, needle: string): number {
 }
 
 beforeEach(() => {
+  resetCompactionRemindersForTests();
   mcp.hundredfold = true;
   rateLimit.prompt = undefined;
 });
@@ -222,5 +224,44 @@ describe("board reminder in the engine prompt", () => {
       rateLimit: {} as never, originalResult: {} as never,
     } as never);
     expect(rateLimit.prompt).toBe(`hello\n\n${LINE}`);
+  });
+});
+
+describe("board reminder after the engine compacts a session", () => {
+  const compact = { hook_event_name: "SessionStart", source: "compact" };
+  const given = () => compactionHookOutput("s1", compact)?.hookSpecificOutput.additionalContext;
+
+  it("is what the compaction hook gives back, the line the turn carried", async () => {
+    await engineOpts(input("claude", "please look at the Todo"));
+    expect(given()).toBe(LINE);
+  });
+
+  it("is the instance's own text when it sets one", async () => {
+    await engineOpts(input("claude", "hello", { config: configWith({ boardReminder: "Board: custom." }) }));
+    expect(given()).toBe(`${BOARD_REMINDER_LABEL} Board: custom.`);
+  });
+
+  it("is not given for a session without the hundredfold MCP server", async () => {
+    mcp.hundredfold = false;
+    await engineOpts(input("claude", "hello"));
+    expect(given()).toBeUndefined();
+  });
+
+  it("is not given when the instance turned the reminder off", async () => {
+    await engineOpts(input("claude", "hello", { config: configWith({ boardReminder: false }) }));
+    expect(given()).toBeUndefined();
+  });
+
+  it("is not given to a compaction that is itself a slash command, which carries no reminder", async () => {
+    await engineOpts(input("claude", "please look at the Todo"));
+    expect(given()).toBe(LINE);
+    await engineOpts(input("claude", "/compact keep the Todo ids"));
+    expect(given()).toBeUndefined();
+  });
+
+  it("is given again once the next ordinary turn has run", async () => {
+    await engineOpts(input("claude", "/compact"));
+    await engineOpts(input("claude", buildResumeMessage({ goal: "g", done: "d", next: "n" })));
+    expect(given()).toBe(LINE);
   });
 });
