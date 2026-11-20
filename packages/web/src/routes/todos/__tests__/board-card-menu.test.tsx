@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import "@/test/preload-menus"
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react"
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ApiError, type WorkItemCompactWire, type WorkItemListWire, type WorkItemStatusWire } from "@/lib/api"
 import type { SprintWire } from "@/lib/sprint-api"
 import TodoBoardPage from "../board/board-page"
+import { cardDispatchRow } from "../board/dispatch-row"
+import { useDispatchWorkItem } from "../board/use-board"
 import { clearBoardScrollCache } from "../board/board-route"
 
 /* Right-click a card on the board: the menu of what the board can do with it
@@ -25,6 +27,7 @@ const listWorkItems = vi.fn()
 const setWorkItemStatus = vi.fn()
 const updateWorkItem = vi.fn()
 const keepWorkItem = vi.fn()
+const dispatchTodo = vi.fn()
 const getWorkItemTrees = vi.fn()
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -36,6 +39,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       setWorkItemStatus: (...args: unknown[]) => setWorkItemStatus(...args),
       updateWorkItem: (...args: unknown[]) => updateWorkItem(...args),
       setWorkItemKept: (...args: unknown[]) => keepWorkItem(...args),
+      dispatchTodo: (...args: unknown[]) => dispatchTodo(...args),
       getWorkItemTree: vi.fn().mockRejectedValue(new Error("no tree")),
       getWorkItemTrees: (...args: unknown[]) => getWorkItemTrees(...args),
       getWorkItem: vi.fn().mockRejectedValue(Object.assign(new Error("nf"), { status: 404 })),
@@ -334,5 +338,164 @@ describe("right-clicking a card on the board", () => {
     await act(async () => {})
     expect(rightClick(card)).toBe(true)
     expect(screen.queryByTestId("board-card-menu")).toBeNull()
+  })
+})
+
+describe("Dispatch on a card's menu", () => {
+  const dispatched = { workItemId: "TSK-1", sessionId: "ses-1", status: "running", reused: false }
+
+  it("offers Dispatch right after Open on a Todo that can start, and starts it as the Todo page's button does", async () => {
+    dispatchTodo.mockImplementation(async (id: string) => {
+      // The gateway links the Dispatcher and the Todo moves to In progress; the board's refetch then shows it.
+      rows = { backlog: [], executing: [compact(id, "executing"), ...(rows.executing ?? [])] }
+      return dispatched
+    })
+    renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-1"))
+    const menu = await menuOf()
+    const labels = menu.getAllByRole("menuitem").map((row) => row.textContent)
+    expect(labels.slice(0, 3)).toEqual(["Open", "Dispatch", "Keep on Home"])
+
+    fireEvent.click(menu.getByTestId("board-card-dispatch"))
+
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledWith("TSK-1"))
+    expect(dispatchTodo).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      const moved = screen.getByTestId("board-card-TSK-1")
+      expect(screen.getByTestId("board-column-executing").contains(moved)).toBe(true)
+    })
+    expect(screen.getByTestId("board-callout").textContent).toBe("TSK-1: Dispatcher started")
+    expect(screen.queryByTestId("task-probe")).toBeNull()
+  })
+
+  it("offers it on a blocked and an in-review Todo too, as the Todo page does", async () => {
+    rows = { blocked: [compact("TSK-2", "blocked")], in_review: [compact("TSK-4", "in_review")] }
+    renderBoard()
+    for (const id of ["TSK-2", "TSK-4"]) {
+      rightClick(await screen.findByTestId(`board-card-${id}`))
+      expect((await menuOf()).getByTestId("board-card-dispatch")).toBeTruthy()
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+      await waitFor(() => expect(screen.queryByTestId("board-card-menu")).toBeNull())
+    }
+  })
+
+  it("offers none on a Todo that is already running", async () => {
+    renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-3"))
+    const menu = await menuOf()
+    expect(menu.getByTestId("board-card-open")).toBeTruthy()
+    expect(menu.queryByTestId("board-card-dispatch")).toBeNull()
+  })
+
+  it("offers none on a closed Todo, and shows one whose start date is ahead disabled, with when it starts", () => {
+    const now = Date.parse("2026-11-20T12:00:00.000Z")
+    expect(cardDispatchRow(compact("TSK-9", "done"), false, now)).toBeNull()
+    expect(cardDispatchRow(compact("TSK-9", "cancelled"), false, now)).toBeNull()
+    expect(cardDispatchRow(compact("TSK-9", "executing"), false, now)).toBeNull()
+    expect(cardDispatchRow(compact("TSK-9", "backlog"), false, now)).toEqual({ disabled: false })
+    expect(cardDispatchRow({ ...compact("TSK-9", "backlog"), startAt: "2026-11-19T00:00:00.000Z" }, false, now)).toEqual({ disabled: false })
+    expect(cardDispatchRow({ ...compact("TSK-9", "backlog"), startAt: "2026-12-24T12:00:00.000Z" }, false, now)).toEqual({ disabled: true, reason: "Starts Dec 24" })
+    expect(cardDispatchRow(compact("TSK-9", "backlog"), true, now)).toEqual({ disabled: true, reason: "Starting Dispatcher…" })
+  })
+
+  it("shows a Todo that starts later disabled, with the reason, and does not dispatch it", async () => {
+    const later = new Date(Date.now() + 30 * 86_400_000).toISOString()
+    rows = { backlog: [{ ...compact("TSK-1", "backlog"), startAt: later }] }
+    renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-1"))
+    const row = (await menuOf()).getByTestId("board-card-dispatch")
+    expect(row.getAttribute("aria-disabled") ?? row.getAttribute("data-disabled")).not.toBeNull()
+    expect(row.textContent).toMatch(/^DispatchStarts [A-Z][a-z]{2} \d{1,2}$/)
+    fireEvent.click(row)
+    expect(dispatchTodo).not.toHaveBeenCalled()
+  })
+
+  it("is not offered to a board member, whose board has no card menu", async () => {
+    principal = { kind: "member", user: { id: "me", email: "me@example.test", displayName: "Mia Member" }, boards: [{ department: "platform", role: "collaborator" }] }
+    renderBoard()
+    const card = await screen.findByTestId("board-card-TSK-1")
+    await act(async () => {})
+    expect(rightClick(card)).toBe(true)
+    expect(screen.queryByTestId("board-card-dispatch")).toBeNull()
+  })
+
+  it("shows the gateway's refusal in the board's callout and leaves the card where it is", async () => {
+    dispatchTodo.mockRejectedValue(new ApiError(409, "Todo TSK-1 is already being worked by someone"))
+    renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-1"))
+    await menuOf()
+    fireEvent.click(screen.getByTestId("board-card-dispatch"))
+    await waitFor(() => expect(screen.getByTestId("board-callout").textContent).toContain("already being worked"))
+    expect(screen.getByTestId("board-column-backlog").contains(screen.getByTestId("board-card-TSK-1"))).toBe(true)
+  })
+
+  it("dispatches once from the keyboard, and returns focus to the card", async () => {
+    dispatchTodo.mockImplementation(async (id: string) => {
+      // The card changes column when the board next reads, a while after the menu has closed.
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      rows = { backlog: [], executing: [compact(id, "executing"), ...(rows.executing ?? [])] }
+      return dispatched
+    })
+    renderBoard()
+    const card = await screen.findByTestId("board-card-TSK-1")
+    card.focus()
+    fireEvent.keyDown(card, { key: "F10", shiftKey: true })
+    const menu = await menuOf()
+    await waitFor(() => expect(menu.getByTestId("board-card-open")).toBe(document.activeElement))
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" })
+    await waitFor(() => expect(menu.getByTestId("board-card-dispatch")).toBe(document.activeElement))
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" })
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Enter" })
+
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      const moved = screen.getByTestId("board-card-TSK-1")
+      expect(screen.getByTestId("board-column-executing").contains(moved)).toBe(true)
+      expect(document.activeElement).toBe(moved)
+    })
+    expect(dispatchTodo).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows the row disabled while the Todo's dispatch is still in flight", async () => {
+    let finish: (value: typeof dispatched) => void = () => {}
+    dispatchTodo.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    renderBoard()
+    rightClick(await screen.findByTestId("board-card-TSK-1"))
+    await menuOf()
+    fireEvent.click(screen.getByTestId("board-card-dispatch"))
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId("board-card-menu")).toBeNull())
+
+    rightClick(screen.getByTestId("board-card-TSK-1"))
+    const row = (await menuOf()).getByTestId("board-card-dispatch")
+    expect(row.textContent).toContain("Starting Dispatcher")
+    fireEvent.click(row)
+    expect(dispatchTodo).toHaveBeenCalledTimes(1)
+    await act(async () => finish(dispatched))
+  })
+})
+
+describe("useDispatchWorkItem", () => {
+  it("dispatches a Todo once for two presses in the same tick, and again once the first has settled", async () => {
+    const finishers = new Map<string, (value: { workItemId: string; sessionId: string; status: string; reused: boolean }) => void>()
+    dispatchTodo.mockImplementation((id: string) => new Promise((resolve) => { finishers.set(id, resolve) }))
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useDispatchWorkItem(() => {}), { wrapper })
+
+    act(() => {
+      result.current.dispatch("TSK-1")
+      result.current.dispatch("TSK-1")
+    })
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledTimes(1))
+    expect([...result.current.pending]).toEqual(["TSK-1"])
+    // Another Todo is its own dispatch.
+    act(() => result.current.dispatch("TSK-2"))
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledTimes(2))
+
+    await act(async () => finishers.get("TSK-1")!({ workItemId: "TSK-1", sessionId: "s", status: "running", reused: false }))
+    await waitFor(() => expect(result.current.pending.has("TSK-1")).toBe(false))
+    act(() => result.current.dispatch("TSK-1"))
+    await waitFor(() => expect(dispatchTodo).toHaveBeenCalledTimes(3))
   })
 })
