@@ -431,6 +431,8 @@ describe("Dispatch on a card's menu", () => {
 
   it("dispatches once from the keyboard, and returns focus to the card", async () => {
     dispatchTodo.mockImplementation(async (id: string) => {
+      // The card changes column when the board next reads, a while after the menu has closed.
+      await new Promise((resolve) => setTimeout(resolve, 80))
       rows = { backlog: [], executing: [compact(id, "executing"), ...(rows.executing ?? [])] }
       return dispatched
     })

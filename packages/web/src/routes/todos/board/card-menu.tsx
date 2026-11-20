@@ -47,7 +47,7 @@ export interface BoardCardMenuOptions {
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
   onKeep?: (vars: { id: string; kept: boolean }) => void
   /** Dispatch the Todo, as the Todo page's button does. Absent = no Dispatch row. `pending` lists the Todos being dispatched. */
-  dispatch?: { run: (id: string) => void; pending: ReadonlySet<string> }
+  dispatch?: { run: (id: string, opts?: { refocus?: boolean }) => void; pending: ReadonlySet<string> }
   /** Sprints to offer, when the board has them in reach (not on a phone). */
   sprints?: CardSprints
 }
@@ -102,8 +102,9 @@ export function useBoardCardMenu(options: BoardCardMenuOptions) {
 }
 
 /** The menu was opened from a card by the keyboard: focus goes back to that card, which a move has by now put in
- *  another column. (A pointer open leaves focus where it was.) */
-function focusCardSoon(id: string) {
+ *  another column. (A pointer open leaves focus where it was.) A dispatch is not optimistic, so its card changes column
+ *  when the board next reads, and the dispatch asks for the focus again then. */
+export function focusCardSoon(id: string) {
   window.setTimeout(() => document.querySelector<HTMLElement>(`[data-board-card="${CSS.escape(id)}"]`)?.focus(), 0)
 }
 
@@ -127,7 +128,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
         <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-open" onSelect={() => onOpen(item.id, item)}>
           Open
         </ContextMenuItem>
-        {dispatch && <DispatchItem item={item} dispatch={dispatch} />}
+        {dispatch && <DispatchItem item={item} dispatch={dispatch} keyboard={target.point.keyboard === true} />}
         {onKeep && (
           <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-keep" onSelect={() => onKeep({ id: item.id, kept: item.kept !== true })}>
             {item.kept === true ? "Remove from Home" : "Keep on Home"}
@@ -165,7 +166,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
 }
 
 /** Dispatch, from the card's menu: the Todo page's button, shown only where it can be pressed or explained (cardDispatchRow). */
-function DispatchItem({ item, dispatch }: { item: WorkItemCompactWire; dispatch: NonNullable<BoardCardMenuOptions["dispatch"]> }) {
+function DispatchItem({ item, dispatch, keyboard }: { item: WorkItemCompactWire; dispatch: NonNullable<BoardCardMenuOptions["dispatch"]>; keyboard: boolean }) {
   const row = cardDispatchRow(item, dispatch.pending.has(item.id))
   if (!row) return null
   return (
@@ -173,7 +174,7 @@ function DispatchItem({ item, dispatch }: { item: WorkItemCompactWire; dispatch:
       className={`${MENU_ITEM_CLASS} ${row.reason ? "items-start py-2" : ""}`}
       disabled={row.disabled}
       data-testid="board-card-dispatch"
-      onSelect={() => dispatch.run(item.id)}
+      onSelect={() => dispatch.run(item.id, { refocus: keyboard })}
     >
       <span className="flex flex-col items-start">
         Dispatch

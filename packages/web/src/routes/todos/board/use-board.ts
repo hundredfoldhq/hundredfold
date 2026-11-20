@@ -14,6 +14,7 @@ import { TODO_QUERY_FRESHNESS, TODO_WRITE_KEY } from "@/lib/query-keys"
 import { todoStatusMutationOptions } from "../todo-status-mutation"
 import type { BoardId } from "./board-route"
 import { boardKey } from "./board-route"
+import { focusCardSoon } from "./card-menu"
 import { BOARD_STATUS_ORDER, CLOSED_STATUSES, EXCEPTION_STATUSES, isClosedStatus, isColumnInStatusFilter, PIPELINE_STATUSES } from "./status-scope"
 
 /* Todos v2 slice 6 — the board data layer (design-doc §11 queries).
@@ -291,23 +292,28 @@ export function useKeepWorkItem(announce: (message: string) => void) {
 export function useDispatchWorkItem(announce: (message: string) => void) {
   const qc = useQueryClient()
   const inFlight = useRef(new Set<string>())
+  /** Todos whose menu was opened from the keyboard: their card gets the focus back once the board shows it where it went. */
+  const refocus = useRef(new Set<string>())
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const mutation = useMutation({
     mutationKey: TODO_WRITE_KEY,
     mutationFn: (id: string) => api.dispatchTodo(id),
     onSuccess: (result, id) => announce(result.reused ? `${id}: Dispatcher is already working` : `${id}: Dispatcher started`),
     onError: (error) => announce(operatorSafeTodoError(error, error instanceof ApiError ? error.message : "Couldn't start the Dispatcher")),
-    onSettled: (_data, _error, id) => {
+    onSettled: async (_data, _error, id) => {
       inFlight.current.delete(id)
       setPending(new Set(inFlight.current))
-      void qc.invalidateQueries({ queryKey: ["work-items"] })
       void qc.invalidateQueries({ queryKey: ["work-item-sessions", id] })
+      await qc.invalidateQueries({ queryKey: ["work-items"] })
+      // The card was re-drawn in its new column by that read, taking the focus it had with it.
+      if (refocus.current.delete(id)) focusCardSoon(id)
     },
   })
   const { mutate } = mutation
-  const dispatch = useCallback((id: string) => {
+  const dispatch = useCallback((id: string, opts?: { refocus?: boolean }) => {
     if (inFlight.current.has(id)) return
     inFlight.current.add(id)
+    if (opts?.refocus) refocus.current.add(id)
     setPending(new Set(inFlight.current))
     mutate(id)
   }, [mutate])
