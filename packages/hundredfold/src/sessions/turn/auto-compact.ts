@@ -192,6 +192,20 @@ function recordCompaction(run: TurnRun, compactPlan: TurnPlan, attempt: EngineAt
   return nativeId;
 }
 
+/**
+ * A live view still holds the size streamed while the summary ran, and the turn goes
+ * straight on, so nothing else would correct it before the turn's first reply.
+ */
+function tellSurfaceCompacted(run: TurnRun, result: EngineResult, decision: AutoCompactGo): void {
+  const stats = result.compaction;
+  const postTokens = stats?.postTokens ?? result.contextTokens;
+  const preTokens = stats?.preTokens ?? decision.contextTokens;
+  run.surface.compacted?.({
+    ...(typeof preTokens === "number" ? { preTokens } : {}),
+    ...(typeof postTokens === "number" ? { postTokens } : {}),
+  });
+}
+
 /** The turn's plan, resuming the engine session the compaction left behind. */
 function planAfterCompaction(plan: TurnPlan, nativeId: string | undefined): TurnPlan {
   if (!nativeId || nativeId === plan.resumeNativeId) return plan;
@@ -320,6 +334,7 @@ async function compactThenRun(pending: Pending): Promise<PreTurnCompaction> {
     return { kind: "run", plan };
   }
   const nativeId = recordCompaction(run, compactPlan, attempt, decision);
+  tellSurfaceCompacted(run, attempt.result, decision);
   await run.surface.notice(autoCompactDoneNotice(decision, attempt.result.compaction));
   return { kind: "run", plan: planAfterCompaction(plan, nativeId) };
 }

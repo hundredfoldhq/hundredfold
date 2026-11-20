@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Engine, EngineResult, EngineRunOpts, HundredfoldConfig, StreamDelta } from "../../shared/types.js";
+import type { CompactionStats } from "../../shared/compaction-stats.js";
 import type { TurnReceipt, TurnSurface } from "../turn/types.js";
 
 /**
@@ -31,10 +32,12 @@ interface Recorded {
   deltas: StreamDelta[];
   replies: string[];
   receipts: TurnReceipt[];
+  /** What the surface was told of confirmed compactions, with the meter's reading at that moment. */
+  compactions: Array<{ stats: CompactionStats; meter: number | null | undefined }>;
 }
 
-function recordingSurface(): { surface: TurnSurface; seen: Recorded } {
-  const seen: Recorded = { events: [], notices: [], deltas: [], replies: [], receipts: [] };
+function recordingSurface(sessionId?: string): { surface: TurnSurface; seen: Recorded } {
+  const seen: Recorded = { events: [], notices: [], deltas: [], replies: [], receipts: [], compactions: [] };
   const surface: TurnSurface = {
     started: async () => { seen.events.push("started"); },
     delta: (d) => { seen.events.push(`delta:${d.type}`); seen.deltas.push(d); },
@@ -42,6 +45,7 @@ function recordingSurface(): { surface: TurnSurface; seen: Recorded } {
     reply: async (text) => { seen.replies.push(text); },
     waiting: async () => {},
     settled: async (receipt) => { seen.events.push("settled"); seen.receipts.push(receipt); },
+    compacted: (stats) => { seen.compactions.push({ stats, meter: sessionId ? reg.getSession(sessionId)?.lastContextTokens : undefined }); },
   };
   return { surface, seen };
 }
@@ -124,6 +128,46 @@ describe("/compact through runTurn", () => {
     const settled = reg.getSession(sessionId)!;
     expect(settled.status).toBe("idle");
     expect(settled.lastContextTokens).toBe(2_706);
+  });
+
+  it("tells the surface of a confirmed compaction once the meter holds the size after it", async () => {
+    const sessionId = establishedSession("claude", "web:compact-told");
+    reg.updateSession(sessionId, { lastContextTokens: 123_456 });
+    const { engine } = recordingEngine("claude", async () => ({
+      sessionId: "claude-thread-1", result: "", compaction: { preTokens: 123_456, postTokens: 2_706 }, contextTokens: 2_706,
+    }));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne("claude", engine, sessionId, "/compact", surface);
+
+    // Told before the turn completes, so a live view corrects its streamed figure first.
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 123_456, postTokens: 2_706 }, meter: 2_706 }]);
+  });
+
+  it("tells the surface of an opencode compaction that reports no size after it, with none to give", async () => {
+    const sessionId = establishedSession("opencode", "web:compact-told-oc");
+    const { engine } = recordingEngine("opencode", async () => ({
+      sessionId: "opencode-thread-1", result: "", compaction: { preTokens: 48_200 },
+    }));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne("opencode", engine, sessionId, "/compact", surface);
+
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 48_200 }, meter: null }]);
+  });
+
+  it("does not tell the surface of a compaction the engine never confirmed, or that failed", async () => {
+    const unconfirmed = establishedSession("claude", "web:compact-told-none");
+    const { surface: quiet, seen: quietSeen } = recordingSurface(unconfirmed);
+    await runOne("claude", recordingEngine("claude", async () => ({ sessionId: "claude-thread-1", result: "" })).engine, unconfirmed, "/compact", quiet);
+    expect(quietSeen.compactions).toEqual([]);
+
+    const failed = establishedSession("claude", "web:compact-told-failed");
+    const { surface: failing, seen: failedSeen } = recordingSurface(failed);
+    await runOne("claude", recordingEngine("claude", async () => ({
+      sessionId: "claude-thread-1", result: "", error: "boom", compaction: { preTokens: 5_000, postTokens: 900 },
+    })).engine, failed, "/compact", failing);
+    expect(failedSeen.compactions).toEqual([]);
   });
 
   it("confirms an opencode compaction with the size it replaced", async () => {

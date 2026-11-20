@@ -8,6 +8,7 @@ import type {
   StreamDelta,
 } from "../../shared/types.js";
 import type { UpdateSessionFields } from "../registry.js";
+import type { CompactionStats } from "../../shared/compaction-stats.js";
 
 /** Org orientation for a turn, or the reason the roster could not be read. */
 export interface TurnHierarchy {
@@ -43,6 +44,12 @@ export interface TurnSurface {
   reply(text: string): Promise<void>;
   /** Enter (true) or leave (false) the rate-limit waiting affordance. */
   waiting(active: boolean): Promise<void>;
+  /**
+   * A compaction was confirmed and the session's context meter already holds the new
+   * size. A live view replaces the figure it streamed; transports without one ignore it.
+   * Optional: only the dashboard's surface has a view to correct.
+   */
+  compacted?(stats: CompactionStats): void;
   /** A terminal receipt was written: clear affordances, publish completion. */
   settled(receipt: TurnReceipt): Promise<void>;
 }

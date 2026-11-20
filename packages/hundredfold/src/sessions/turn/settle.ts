@@ -255,11 +255,23 @@ function answeredReceipt(
     durationMs: result.durationMs,
     accounting: { cost: result.cost, numTurns: result.numTurns, ...(model ? { model } : {}) },
     ...filed,
+    ...confirmedCompaction(run, result, quietPreempted),
     fields: servedFields(run.input, buildTerminalFields(run, meteredContextTokens(run, result), verdict, { stillLost: !resumesAfter(run, filed), result }), !result.error && !quietPreempted),
     employee: run.input.employee,
     // An interrupted turn stays silent upward: whoever interrupted it reports.
     notifyParent: !quietPreempted,
   };
+}
+
+/**
+ * The sizes of the compaction this turn confirmed, for a live view still showing the
+ * figure streamed while the summary ran. Nothing for a turn that is not a compaction,
+ * or whose compaction failed, went unconfirmed or was cut off.
+ */
+function confirmedCompaction(run: TurnRun, result: EngineResult, quietPreempted: boolean): Pick<SettleTurnInput, "compaction"> {
+  if (!run.plan.compaction || !result.compaction || result.error || quietPreempted) return {};
+  const postTokens = typeof result.contextTokens === "number" ? result.contextTokens : result.compaction.postTokens;
+  return { compaction: { ...result.compaction, ...(postTokens !== undefined ? { postTokens } : {}) } };
 }
 
 /**

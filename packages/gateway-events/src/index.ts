@@ -14,6 +14,10 @@ export interface GatewayEventMap {
   /** A gateway turn started (true) or stopped (false) waiting for a turn the
    *  operator typed into the claude terminal to finish. */
   "session:terminal-wait": { sessionId: string; waiting: boolean }
+  /** A compaction was confirmed. `postTokens` is the context size after it, when the engine
+   *  reported one: a browser replaces its streamed (pre-compaction) figure with it, or drops
+   *  the figure when there is none. `preTokens` is the size before. */
+  "session:compacted": { sessionId: string; preTokens?: number; postTokens?: number }
   "session:interrupted": { sessionId: string; reason: string }
   "session:completed": {
     sessionId: string
@@ -109,6 +113,7 @@ export const GATEWAY_EVENTS = {
   sessionStopped: "session:stopped",
   sessionExternalTurn: "session:external-turn",
   sessionTerminalWait: "session:terminal-wait",
+  sessionCompacted: "session:compacted",
   sessionInterrupted: "session:interrupted",
   sessionCompleted: "session:completed",
   sessionDelta: "session:delta",

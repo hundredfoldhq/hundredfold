@@ -73,6 +73,37 @@ describe("auto-compaction through runTurn", () => {
     expect(isAutoCompacting(sessionId)).toBe(false);
   });
 
+  it("tells the surface of the compaction before the turn's own run, with the meter already on the new size", async () => {
+    const sessionId = coldSession("claude", "web:ac-told", 180_000, 30 * MINUTE);
+    const { engine } = recordingEngine("claude", async (_opts, call) => call === 1
+      ? { sessionId: "claude-thread-1", result: "", compaction: { preTokens: 180_000, postTokens: 9_000 }, contextTokens: 9_000 }
+      : answered("claude-thread-1"));
+    const { surface, seen } = recordingSurface(sessionId);
+    const events: string[] = [];
+    const inner = surface.compacted!;
+    surface.compacted = (stats) => { events.push("compacted"); inner(stats); };
+    const innerDelta = surface.delta;
+    surface.delta = (d) => { events.push(`delta:${d.type}`); innerDelta(d); };
+
+    await runOne(engine, sessionId, "carry on", surface, configWith(ENABLED));
+
+    // The status while it compacts, then the size after it, then the turn goes on.
+    expect(events).toEqual(["delta:status", "compacted"]);
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 180_000, postTokens: 9_000 }, meter: 9_000 }]);
+  });
+
+  it("tells the surface of an opencode compaction with the size it replaced and none after", async () => {
+    const sessionId = coldSession("opencode", "web:ac-told-oc", 120_000, 10 * MINUTE);
+    const { engine } = recordingEngine("opencode", async (_opts, call) => call === 1
+      ? { sessionId: "opencode-thread-1", result: "", compaction: { preTokens: 120_000 } }
+      : answered("opencode-thread-1"));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne(engine, sessionId, "next step please", surface, configWith(ENABLED, "opencode"));
+
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 120_000 }, meter: null }]);
+  });
+
   // A wake reaches the engine as a notification: a Todo mention, a child's
   // callback, another session's message. Each is a turn like any other.
   it.each([

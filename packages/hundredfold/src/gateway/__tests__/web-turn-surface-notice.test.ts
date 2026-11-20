@@ -42,4 +42,23 @@ describe("web turn surface notices", () => {
     expect(reg.getMessages(session.id).map((m) => [m.role, m.content, m.meta])).toEqual([["notification", "⚠️ claude · work hit its usage limit. Moving to claude · spare.", { fallbackHop: hop }]]);
     expect(emitted).toEqual([{ event: "session:notification", payload: { sessionId: session.id, message: "⚠️ claude · work hit its usage limit. Moving to claude · spare.", meta: { fallbackHop: hop } } }]);
   });
+
+  it("report a confirmed compaction to the live chat with the sizes it has", () => {
+    const session = reg.createSession({ engine: "claude", source: "web", sourceRef: "web:compacted" });
+    const emitted: Array<{ event: string; payload: unknown }> = [];
+    const surface = createWebTurnSurface({
+      sessionId: session.id,
+      emit: ((event: string, payload: unknown) => { emitted.push({ event, payload }); }) as never,
+      connectors: new Map(),
+      getConfig: () => ({}) as HundredfoldConfig,
+    });
+
+    surface.compacted!({ preTokens: 182_000, postTokens: 31_000 });
+    surface.compacted!({ preTokens: 48_200 });
+
+    expect(emitted).toEqual([
+      { event: "session:compacted", payload: { sessionId: session.id, preTokens: 182_000, postTokens: 31_000 } },
+      { event: "session:compacted", payload: { sessionId: session.id, preTokens: 48_200 } },
+    ]);
+  });
 });

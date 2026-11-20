@@ -193,6 +193,12 @@ export function useQueryInvalidation() {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
           break
+        case 'session:compacted':
+          // The session's context size just changed under any figure a view cached.
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.contextUsage(p.sessionId as string) })
+          }
+          return
         case 'session:deleted':
           // Drop it from the merged list now; merge-on-refetch would otherwise
           // keep it as a previously-loaded extra.
