@@ -1,8 +1,9 @@
-import { useMemo } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { usePersonMatch } from "../person-filter"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query"
 import {
   api,
+  ApiError,
   type DepartmentSummaryWire,
   type WorkItemCompactWire,
   type WorkItemStatusWire,
@@ -282,6 +283,35 @@ export function useKeepWorkItem(announce: (message: string) => void) {
       void qc.invalidateQueries({ queryKey: ["work-items"] })
     },
   })
+}
+
+/** Dispatch a Todo from the board: the Todo page's own call (`api.dispatchTodo`), with the gateway's refusal shown in the
+ *  board's callout. A Todo already being dispatched is not dispatched again: the guard is a ref, so two presses in the
+ *  same tick (a double click, Enter twice) find it set before React has re-rendered. `pending` lists the Todos in flight. */
+export function useDispatchWorkItem(announce: (message: string) => void) {
+  const qc = useQueryClient()
+  const inFlight = useRef(new Set<string>())
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
+  const mutation = useMutation({
+    mutationKey: TODO_WRITE_KEY,
+    mutationFn: (id: string) => api.dispatchTodo(id),
+    onSuccess: (result, id) => announce(result.reused ? `${id}: Dispatcher is already working` : `${id}: Dispatcher started`),
+    onError: (error) => announce(operatorSafeTodoError(error, error instanceof ApiError ? error.message : "Couldn't start the Dispatcher")),
+    onSettled: (_data, _error, id) => {
+      inFlight.current.delete(id)
+      setPending(new Set(inFlight.current))
+      void qc.invalidateQueries({ queryKey: ["work-items"] })
+      void qc.invalidateQueries({ queryKey: ["work-item-sessions", id] })
+    },
+  })
+  const { mutate } = mutation
+  const dispatch = useCallback((id: string) => {
+    if (inFlight.current.has(id)) return
+    inFlight.current.add(id)
+    setPending(new Set(inFlight.current))
+    mutate(id)
+  }, [mutate])
+  return { dispatch, pending }
 }
 
 /** The tray's quick add — a sub-task born in backlog under its parent. */

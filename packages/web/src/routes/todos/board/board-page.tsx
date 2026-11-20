@@ -34,7 +34,7 @@ import { FilteredEmptyCard } from "./board-empty"
 import { BoardColumn, DragSlot } from "./column"
 import { ClosedColumnGroup, ClosedColumnHeader, ClosedRail } from "./closed-rail"
 import { departmentTitle } from "./board-switcher"
-import { boardDetailIds, useBoardData, useBoardRank, useBoardTransition, useBoardTrees, useCreateSubTask, useKeepWorkItem } from "./use-board"
+import { boardDetailIds, useBoardData, useBoardRank, useBoardTransition, useBoardTrees, useCreateSubTask, useDispatchWorkItem, useKeepWorkItem } from "./use-board"
 import {
   BOARD_STATUS_ORDER, CLOSED_STATUSES, EXCEPTION_STATUSES, isClosedStatus, isColumnInStatusFilter, OPEN_COLUMN_ORDER, PIPELINE_STATUSES, visibleItemCount,
 } from "./status-scope"
@@ -507,6 +507,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     return columns
   }, [data.columns, itemsByStatus, filters.due])
   const keep = useKeepWorkItem(announce)
+  const dispatchTodo = useDispatchWorkItem(announce)
   // Right-click (or Shift+F10 / the Menu key on a focused card) opens the card's actions. A member's board has none of the operator's controls, so none of these.
   const cardMenu = useBoardCardMenu({
     itemsByStatus,
@@ -515,6 +516,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     onOpen,
     onMove: moveCard,
     onKeep: keep.mutate,
+    dispatch: { run: dispatchTodo.dispatch, pending: dispatchTodo.pending },
     sprints: sprintTools.cardSprints,
   })
   // Clearing goes through the same setter as any other change, so the cleared

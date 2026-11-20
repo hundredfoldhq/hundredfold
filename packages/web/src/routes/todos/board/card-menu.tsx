@@ -11,10 +11,11 @@ import type { WorkItemCompactWire, WorkItemStatusWire } from "@/lib/api"
 import { STATUS_LABEL } from "@/lib/todos"
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, SprintCardItems, type CardSprints } from "../sprints/sprint-card-menu"
 import { StatusCircle } from "../state-glyph"
+import { cardDispatchRow } from "./dispatch-row"
 import { moveRows } from "./move-menu"
 
 /* Right-click a board card for the actions the board has, without dragging it
- * or opening it: Open, a move to any column the card can legally go to, keep
+ * or opening it: Open, Dispatch (the Todo page's own button, for a Todo that can start), a move to any column the card can legally go to, keep
  * on Home, and, on a desktop, a move between sprints.
  *
  * The moves are the "Move to…" menu's own rows (moveRows, off the same
@@ -45,6 +46,8 @@ export interface BoardCardMenuOptions {
   onOpen: (id: string, item: WorkItemCompactWire) => void
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
   onKeep?: (vars: { id: string; kept: boolean }) => void
+  /** Dispatch the Todo, as the Todo page's button does. Absent = no Dispatch row. `pending` lists the Todos being dispatched. */
+  dispatch?: { run: (id: string) => void; pending: ReadonlySet<string> }
   /** Sprints to offer, when the board has them in reach (not on a phone). */
   sprints?: CardSprints
 }
@@ -114,7 +117,7 @@ function findCard(itemsByStatus: BoardCardMenuOptions["itemsByStatus"], id: stri
 
 function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; options: BoardCardMenuOptions; onClose: () => void }) {
   const { item } = target
-  const { sprints, onKeep, onOpen, onMove } = options
+  const { sprints, onKeep, onOpen, onMove, dispatch } = options
   // The current column is where the card already is: only the others are moves.
   const moves = moveRows(item, options.openChildrenOf(item.id)).filter((row) => row.status !== item.status)
   return (
@@ -124,6 +127,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
         <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-open" onSelect={() => onOpen(item.id, item)}>
           Open
         </ContextMenuItem>
+        {dispatch && <DispatchItem item={item} dispatch={dispatch} />}
         {onKeep && (
           <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-keep" onSelect={() => onKeep({ id: item.id, kept: item.kept !== true })}>
             {item.kept === true ? "Remove from Home" : "Keep on Home"}
@@ -157,5 +161,24 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
         )}
       </ContextMenuContent>
     </PointMenu>
+  )
+}
+
+/** Dispatch, from the card's menu: the Todo page's button, shown only where it can be pressed or explained (cardDispatchRow). */
+function DispatchItem({ item, dispatch }: { item: WorkItemCompactWire; dispatch: NonNullable<BoardCardMenuOptions["dispatch"]> }) {
+  const row = cardDispatchRow(item, dispatch.pending.has(item.id))
+  if (!row) return null
+  return (
+    <ContextMenuItem
+      className={`${MENU_ITEM_CLASS} ${row.reason ? "items-start py-2" : ""}`}
+      disabled={row.disabled}
+      data-testid="board-card-dispatch"
+      onSelect={() => dispatch.run(item.id)}
+    >
+      <span className="flex flex-col items-start">
+        Dispatch
+        {row.reason && <span className="text-[11px] font-normal text-[var(--text-tertiary)]">{row.reason}</span>}
+      </span>
+    </ContextMenuItem>
   )
 }
