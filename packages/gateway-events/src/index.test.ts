@@ -29,6 +29,17 @@ describe("decodeGatewayEvent", () => {
     expect(decodeGatewayEvent({ event: "hooks:run", payload: { ...payload, status: 3 } })).toBeNull()
   })
 
+  it("accepts a compaction frame with or without its sizes, and rejects a malformed one", () => {
+    const payload = { sessionId: "s-1", preTokens: 182_000, postTokens: 31_000 }
+    expect(decodeGatewayEvent({ event: "session:compacted", payload })).toEqual({ event: "session:compacted", payload })
+    expect(decodeGatewayEvent({ event: "session:compacted", payload: { sessionId: "s-1" } })).toEqual({
+      event: "session:compacted",
+      payload: { sessionId: "s-1" },
+    })
+    expect(decodeGatewayEvent({ event: "session:compacted", payload: { sessionId: "s-1", postTokens: "31k" } })).toBeNull()
+    expect(decodeGatewayEvent({ event: "session:compacted", payload: { postTokens: 31_000 } })).toBeNull()
+  })
+
   it("accepts a queue frame naming every withdrawn message, and rejects a malformed list", () => {
     const payload = { sessionId: "s-1", sessionKey: "k", depth: 0, withdrawnMessageIds: ["m-1", "m-2"] }
     expect(decodeGatewayEvent({ event: "queue:updated", payload })).toEqual({ event: "queue:updated", payload })

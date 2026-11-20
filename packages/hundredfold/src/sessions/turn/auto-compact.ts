@@ -172,8 +172,7 @@ function withBudgetHold(current: Session, hold: BudgetHold | null): UpdateSessio
  */
 function recordCompaction(run: TurnRun, compactPlan: TurnPlan, attempt: EngineAttempt, decision: AutoCompactGo): string | undefined {
   const { result } = attempt;
-  const postTokens = result.compaction?.postTokens ?? result.contextTokens;
-  const meter = typeof postTokens === "number" ? postTokens : null;
+  const meter = compactedMeter(result);
   const sessionId = run.input.session.id;
   recordTurnAccounting(sessionId, { cost: result.cost, numTurns: result.numTurns, ...(compactPlan.model ? { model: compactPlan.model } : {}) });
   const nativeId = result.sessionId?.trim() || compactPlan.resumeNativeId;
@@ -190,6 +189,25 @@ function recordCompaction(run: TurnRun, compactPlan: TurnPlan, attempt: EngineAt
     ...withBudgetHold(current, holdAfterCompaction(decision.policy, compactPlan.engineName, meter ?? undefined)),
   }));
   return nativeId;
+}
+
+/**
+ * A live view still holds the size streamed while the summary ran, and the turn goes
+ * straight on, so nothing else would correct it before the turn's first reply.
+ */
+function tellSurfaceCompacted(run: TurnRun, result: EngineResult, decision: AutoCompactGo): void {
+  const preTokens = result.compaction?.preTokens ?? decision.contextTokens;
+  const postTokens = compactedMeter(result);
+  run.surface.compacted?.({
+    ...(typeof preTokens === "number" ? { preTokens } : {}),
+    ...(typeof postTokens === "number" ? { postTokens } : {}),
+  });
+}
+
+/** The size the meter is written with after a confirmed compaction, or null when the engine reported none. */
+function compactedMeter(result: EngineResult): number | null {
+  const postTokens = result.compaction?.postTokens ?? result.contextTokens;
+  return typeof postTokens === "number" ? postTokens : null;
 }
 
 /** The turn's plan, resuming the engine session the compaction left behind. */
@@ -320,6 +338,7 @@ async function compactThenRun(pending: Pending): Promise<PreTurnCompaction> {
     return { kind: "run", plan };
   }
   const nativeId = recordCompaction(run, compactPlan, attempt, decision);
+  tellSurfaceCompacted(run, attempt.result, decision);
   await run.surface.notice(autoCompactDoneNotice(decision, attempt.result.compaction));
   return { kind: "run", plan: planAfterCompaction(plan, nativeId) };
 }

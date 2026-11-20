@@ -49,6 +49,8 @@ describe("auto-compaction through runTurn: when it does not succeed", () => {
     expect(seen.notices).toEqual([expect.stringContaining(reason)]);
     expect(seen.notices[0]).toContain("the next message runs on the full context");
     expect(seen.receipts[0]!.result).toBe("done");
+    // A compaction that did not happen is not announced to a live view.
+    expect(seen.compactions).toEqual([]);
   });
 
   it("compacts again on the retry after a login failure took both the compaction and the message", async () => {
@@ -123,5 +125,18 @@ describe("auto-compaction through runTurn: when it does not succeed", () => {
     const settled = reg.getSession(sessionId)!;
     expect(settled.status).toBe("interrupted");
     expect(readUnseenInterruptedPrompts(settled)).toEqual(["the original message"]);
+  });
+
+  it("does not tell the surface of a compaction a newer message cut off, even one the engine confirmed", async () => {
+    const sessionId = coldSession("claude", "web:ac-preempt-told", 180_000, 30 * MINUTE);
+    const { engine } = recordingEngine("claude", async () => {
+      supersedeRunningTurn(reg.getSession(sessionId)!);
+      return { sessionId: "claude-thread-1", result: "", compaction: { preTokens: 180_000, postTokens: 9_000 }, contextTokens: 9_000 };
+    });
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne(engine, sessionId, "the original message", surface, configWith(ENABLED));
+
+    expect(seen.compactions).toEqual([]);
   });
 });

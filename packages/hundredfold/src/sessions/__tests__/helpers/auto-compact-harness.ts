@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Engine, EngineResult, EngineRunOpts, HundredfoldConfig, StreamDelta } from "../../../shared/types.js";
+import type { CompactionStats } from "../../../shared/compaction-stats.js";
 import type { TurnReceipt, TurnSurface } from "../../turn/types.js";
 
 /**
@@ -22,10 +23,12 @@ export interface Recorded {
   notices: string[];
   deltas: StreamDelta[];
   receipts: TurnReceipt[];
+  /** What the surface was told of confirmed compactions, with the meter's reading at that moment. */
+  compactions: Array<{ stats: CompactionStats; meter: number | null | undefined }>;
 }
 
-export function recordingSurface(): { surface: TurnSurface; seen: Recorded } {
-  const seen: Recorded = { events: [], notices: [], deltas: [], receipts: [] };
+export function recordingSurface(sessionId?: string): { surface: TurnSurface; seen: Recorded } {
+  const seen: Recorded = { events: [], notices: [], deltas: [], receipts: [], compactions: [] };
   const surface: TurnSurface = {
     started: async () => { seen.events.push("started"); },
     delta: (d) => { seen.events.push(`delta:${d.type}`); seen.deltas.push(d); },
@@ -33,6 +36,7 @@ export function recordingSurface(): { surface: TurnSurface; seen: Recorded } {
     reply: async () => {},
     waiting: async () => {},
     settled: async (receipt) => { seen.events.push("settled"); seen.receipts.push(receipt); },
+    compacted: (stats) => { seen.compactions.push({ stats, meter: sessionId ? reg.getSession(sessionId)?.lastContextTokens : undefined }); },
   };
   return { surface, seen };
 }

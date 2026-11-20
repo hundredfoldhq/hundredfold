@@ -40,7 +40,9 @@ export function useSettlingLiveTokens(
   const [lastLive, setLastLive] = useState<number | null>(null)
   const [endedAt, setEndedAt] = useTurnEnd(loading, () => setLastLive(null))
   const streamed = loading ? positive(live) : null
-  if (streamed !== null && streamed !== lastLive) setLastLive(streamed)
+  // While a turn runs the remembered figure follows the live one, a drop to none included: a
+  // compaction that reports no size empties it, and the stale reading must not come back at turn end.
+  if (loading && streamed !== lastLive) setLastLive(streamed)
   const holding = !loading && endedAt !== null && updatedAt <= endedAt
   useEffect(() => {
     if (!holding) return

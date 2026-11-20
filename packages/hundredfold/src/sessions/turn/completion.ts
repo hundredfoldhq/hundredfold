@@ -7,6 +7,7 @@ import {
   type UpdateSessionFields,
 } from "../registry.js";
 import { notifyParentSessionAndWait } from "../callbacks.js";
+import type { CompactionStats } from "../../shared/compaction-stats.js";
 import type { TurnSurface } from "./types.js";
 
 /** The three ways a turn can end. Anything else is not terminal. */
@@ -52,6 +53,8 @@ export interface SettleTurnInput {
   notifyParent?: boolean;
   /** The turn was answered after a usage limit, so a reply that repeats the one the parent already has is not relayed again. */
   afterLimit?: boolean;
+  /** The sizes of a compaction this turn confirmed. Told to the surface once the receipt is written, so the figure it carries is the meter's. */
+  compaction?: CompactionStats;
   surface: TurnSurface;
 }
 
@@ -80,6 +83,7 @@ export async function settleTurn(input: SettleTurnInput): Promise<Session | unde
 
   const settled = writeReceipt(input, settledAt);
   if (!settled) return undefined;
+  if (input.compaction) input.surface.compacted?.(input.compaction);
 
   const report = {
     result: input.result ?? null,

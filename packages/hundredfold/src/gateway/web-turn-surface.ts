@@ -1,5 +1,6 @@
 import type { Connector, HundredfoldConfig, JsonObject, StreamDelta } from "../shared/types.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
+import type { CompactionStats } from "../shared/compaction-stats.js";
 import { logger } from "../shared/logger.js";
 import { getSession, insertMessage } from "../sessions/registry.js";
 import type { TurnReceipt, TurnSurface } from "../sessions/turn/types.js";
@@ -27,6 +28,19 @@ function recordNotice(sessionId: string, emit: GatewayEmit, text: string, meta?:
   }
 }
 
+/** Tell the live chat a compaction was confirmed, with whichever sizes the engine gave. */
+function emitCompacted(emit: GatewayEmit, sessionId: string, stats: CompactionStats): void {
+  try {
+    emit("session:compacted", {
+      sessionId,
+      ...(stats.preTokens !== undefined ? { preTokens: stats.preTokens } : {}),
+      ...(stats.postTokens !== undefined ? { postTokens: stats.postTokens } : {}),
+    });
+  } catch (err) {
+    logger.warn(`Failed to emit compaction for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /**
  * Carry a turn over the dashboard: stream deltas to the live view, keep
  * lifecycle prose in the transcript, and relay the answer onward to a chat
@@ -34,7 +48,6 @@ function recordNotice(sessionId: string, emit: GatewayEmit, text: string, meta?:
  */
 export function createWebTurnSurface(options: WebTurnSurfaceOptions): TurnSurface {
   const { sessionId, emit } = options;
-
   return {
     async started() {
       // `session:started` is emitted at dispatch, before the queue slot opens,
@@ -58,6 +71,7 @@ export function createWebTurnSurface(options: WebTurnSurfaceOptions): TurnSurfac
         logger.warn(`Failed to emit stream delta for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
+    compacted: (stats) => emitCompacted(emit, sessionId, stats),
     async notice(text: string, meta?: JsonObject) {
       recordNotice(sessionId, emit, text, meta);
     },
