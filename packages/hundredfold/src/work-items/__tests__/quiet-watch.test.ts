@@ -23,6 +23,7 @@ let watch: typeof import("../quiet-watch.js");
 let registry: typeof import("../../sessions/registry.js");
 let background: typeof import("../../sessions/background-work.js");
 let events: typeof import("../event-log.js");
+let autoStart: typeof import("../auto-start.js");
 let db: import("better-sqlite3").Database;
 
 beforeAll(async () => {
@@ -32,6 +33,7 @@ beforeAll(async () => {
   registry = await import("../../sessions/registry.js");
   background = await import("../../sessions/background-work.js");
   events = await import("../event-log.js");
+  autoStart = await import("../auto-start.js");
   db = (await import("../../shared/db.js")).initDb();
 });
 
@@ -179,6 +181,65 @@ describe("a quiet executing Todo", () => {
     expect(kinds(child.id)).toEqual(["quiet_nudged", "quiet_escalated"]);
   });
 
+  it("tells the owner's session that delegated the child instead of re-dispatching a parent it works", () => {
+    // The owner works the parent from the session that delegated the child, which is not linked to the parent.
+    const parent = executingTodo(OWNER);
+    const delegator = sessionOn(OWNER, null);
+    const child = executingTodo(WORKER, parent.id);
+    sessionOn(WORKER, child.id, "idle", { parent: delegator });
+    at(16);
+    sweep();
+    at(40);
+    sweep();
+    expect(deps.redispatch).not.toHaveBeenCalled();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: delegator, sourceId: child.id, deliveryKind: "todo-quiet-escalation" });
+    expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail)
+      .toMatchObject({ to: "session", sessionId: delegator });
+  });
+
+  it("tells the owner's session that created a board-walk child, which reports to the Dispatcher", () => {
+    const parent = executingTodo(OWNER);
+    const creator = sessionOn(OWNER, null);
+    const dispatcher = sessionOn(DISPATCHER, null);
+    counter += 1;
+    const child = store.createWorkItem({
+      title: `child ${counter}`, status: "backlog", source: "session", sourceRef: `session:${creator}:${counter}`, assignee: WORKER, parentId: parent.id,
+    });
+    transitions.transition(child.id, "executing", "board-walk");
+    sessionOn(WORKER, child.id, "idle", { parent: dispatcher });
+    at(16);
+    sweep();
+    at(40);
+    sweep();
+    expect(deps.redispatch).not.toHaveBeenCalled();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: creator, deliveryKind: "todo-quiet-escalation" });
+  });
+
+  it("still re-dispatches the parent when the session its producer reports to is not the owner's", () => {
+    const parent = executingTodo(OWNER);
+    const other = sessionOn(WORKER, null);
+    const child = executingTodo(WORKER, parent.id);
+    sessionOn(WORKER, child.id, "idle", { parent: other });
+    at(16);
+    sweep();
+    at(40);
+    sweep();
+    expect(deps.redispatch).toHaveBeenCalledTimes(1);
+    expect(deps.redispatch.mock.calls[0]![0]).toBe(parent.id);
+  });
+
+  it("re-dispatches the parent when the delegating owner session can no longer be messaged", () => {
+    const parent = executingTodo(OWNER);
+    const delegator = sessionOn(OWNER, null, "error");
+    const child = executingTodo(WORKER, parent.id);
+    sessionOn(WORKER, child.id, "idle", { parent: delegator });
+    at(16);
+    sweep();
+    at(40);
+    sweep();
+    expect(deps.redispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("escalates a root Todo to the session its producer reports to", () => {
     const manager = sessionOn(OWNER, null);
     const item = executingTodo(WORKER);
@@ -230,6 +291,76 @@ describe("a quiet executing Todo", () => {
     at(56);
     sweep();
     expect(deliveries()[2]).toMatchObject({ targetSessionId: workerSession, deliveryKind: "todo-quiet-nudge" });
+  });
+});
+
+describe("a child that finished and follows its parent's lifecycle", () => {
+  const noAutoStart = (id: string) => autoStart.writeAutoStartRow(db, id, false, new Date().toISOString());
+
+  it("is not escalated once its producer answered the nudge, and it is told to nobody", () => {
+    const { child, workerSession } = tree();
+    noAutoStart(child.id);
+    at(16);
+    sweep();
+    spoke(workerSession, 17);
+    at(33);
+    sweep();
+    expect(delivered).toHaveLength(1);
+    expect(deps.redispatch).not.toHaveBeenCalled();
+    expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail).toMatchObject({ to: "none" });
+    // The hold is visible on the Todo, so the board and the stall check can see it.
+    const comments = db.prepare("SELECT body, author_kind FROM work_item_comments WHERE work_item_id = ?").all(child.id) as Array<{ body: string; author_kind: string }>;
+    expect(comments).toEqual([expect.objectContaining({ author_kind: "system", body: expect.stringContaining("held as finished") })]);
+    at(120);
+    sweep();
+    expect(delivered).toHaveLength(1);
+    expect(kinds(child.id)).toEqual(["quiet_nudged", "quiet_escalated"]);
+  });
+
+  it("is escalated when the nudged session errored after the nudge", () => {
+    const { ownerSession, child, workerSession } = tree();
+    noAutoStart(child.id);
+    at(16);
+    sweep();
+    db.prepare("UPDATE sessions SET status = 'error', last_activity = ? WHERE id = ?").run(new Date(base + 17 * MIN).toISOString(), workerSession);
+    at(40);
+    sweep();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: ownerSession, deliveryKind: "todo-quiet-escalation" });
+    expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail).toMatchObject({ to: "session" });
+  });
+
+  it("is escalated when the nudged session errored and another assignee session ran since", () => {
+    const { ownerSession, child, workerSession } = tree();
+    noAutoStart(child.id);
+    at(16);
+    sweep();
+    const other = sessionOn(WORKER, child.id);
+    db.prepare("UPDATE sessions SET status = 'error' WHERE id = ?").run(workerSession);
+    spoke(other, 17);
+    at(40);
+    sweep();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: ownerSession, deliveryKind: "todo-quiet-escalation" });
+    expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail).toMatchObject({ to: "session" });
+  });
+
+  it("is still escalated when its producer never answered the nudge", () => {
+    const { ownerSession, child } = tree();
+    noAutoStart(child.id);
+    at(16);
+    sweep();
+    at(40);
+    sweep();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: ownerSession, deliveryKind: "todo-quiet-escalation" });
+  });
+
+  it("is still escalated when the board walk would start it", () => {
+    const { ownerSession, workerSession } = tree();
+    at(16);
+    sweep();
+    spoke(workerSession, 17);
+    at(33);
+    sweep();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: ownerSession, deliveryKind: "todo-quiet-escalation" });
   });
 });
 

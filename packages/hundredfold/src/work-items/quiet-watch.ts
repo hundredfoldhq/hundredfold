@@ -6,10 +6,12 @@ import { deliverClaimedSessionDelivery } from "../sessions/callbacks.js";
 import { isAwaitingOwnBackgroundTask, runtimeActivity } from "../sessions/background-work.js";
 import { addComment } from "./comment-add.js";
 import { parentOwnerSession } from "./child-settle-wake.js";
+import { owningEmployeeSession } from "./todo-owner-session.js";
 import { withReportingParent } from "./employee-session-delegation.js";
 import { canMessageSession } from "./employee-sessions.js";
 import { isExecutionAttempt } from "./link-role.js";
 import { attemptActivity } from "./recovery-controller.js";
+import { getTodoDispatchConfig } from "./dispatch-config.js";
 import { childWork, type ChildWork } from "./quiet-children.js";
 import { appendWorkItemEvent, getWorkItem, listWorkItems, type WorkItem } from "./store.js";
 import { DISPATCHER_ALREADY_RUNNING, type AvailabilityRearmResult } from "./availability-resume.js";
@@ -68,6 +70,11 @@ interface QuietTodo {
   children: ChildWork;
   row: QuietWatchRow | undefined;
 }
+
+const minutesSince = (since: number, now: number): string => {
+  const minutes = Math.max(1, Math.round((now - since) / 60_000));
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+};
 
 const time = (iso: string | null | undefined): number => Date.parse(iso ?? "") || 0;
 
@@ -178,17 +185,47 @@ function reportingSession(producer: Session | undefined, isSystemEmployee: (name
   return session.employee && isSystemEmployee(session.employee) ? undefined : session;
 }
 
-/** Whoever owns the work from above: the parent's owner, then who the producer reports to. */
+/** Whoever owns the work from above: the parent's owner, then who the producer reports to.
+ *  A parent is re-dispatched only when its owner has no session to tell. The
+ *  session that delegated the child is the commonest place the owner works the
+ *  parent from: it need not be linked to the parent, so it is looked for beside
+ *  the parent's own sessions, and a second session started for the owner would
+ *  hold the parent without any of its context. */
 function escalationTarget(quiet: QuietTodo, deps: QuietWatchDeps): EscalationTarget {
-  const owned = ownedParent(quiet.item, deps.isEmployee);
-  if (owned) {
-    const session = parentOwnerSession(owned.parent, owned.owner);
-    if (session && session.id !== quiet.producer?.id) return { kind: "session", session };
-    if (owned.parent.status === "executing") return { kind: "redispatch", parent: owned.parent };
-  }
   const assigneeSession = quiet.producer ?? (quiet.assigneeSessionId ? getSession(quiet.assigneeSessionId) : undefined);
   const reporting = reportingSession(assigneeSession, deps.isSystemEmployee ?? (() => false));
+  const owned = ownedParent(quiet.item, deps.isEmployee);
+  const aboveParent = owned ? parentTarget(owned, quiet, reporting) : undefined;
+  if (aboveParent) return aboveParent;
   return reporting ? { kind: "session", session: reporting } : { kind: "none" };
+}
+
+/** The parent owner's session, else the owner's session that delegated or created
+ *  the child (the reporting session, or the one the child's own record names: a
+ *  board-walk start reports to the Dispatcher instead), else a re-dispatch of an
+ *  `executing` parent. */
+function parentTarget(owned: { parent: WorkItem; owner: string }, quiet: QuietTodo, reporting: Session | undefined): EscalationTarget | undefined {
+  const notProducer = (session: Session | undefined): session is Session => !!session && session.id !== quiet.producer?.id;
+  const parentSession = parentOwnerSession(owned.parent, owned.owner);
+  if (notProducer(parentSession)) return { kind: "session", session: parentSession };
+  if (notProducer(reporting) && reporting.employee === owned.owner) return { kind: "session", session: reporting };
+  const delegating = owningEmployeeSession(quiet.item, owned.owner);
+  if (notProducer(delegating)) return { kind: "session", session: delegating };
+  return owned.parent.status === "executing" ? { kind: "redispatch", parent: owned.parent } : undefined;
+}
+
+/** A child the board walk will not start (`autoStart` off: the operator's own
+ *  convention for a child the owner is already doing), whose nudged session is
+ *  still there and started a turn on the nudge, is held as finished and
+ *  following its parent's lifecycle, not escalated. The signal is that the nudge
+ *  started a turn, not what the producer said in it, so the hold is made
+ *  visible on the Todo. A nudged session that has since errored or been stopped
+ *  is a stall, not a finished producer. */
+function finishedAwaitingParent(quiet: QuietTodo, deps: QuietWatchDeps): boolean {
+  const { item, row, producer } = quiet;
+  if (!row?.nudgedAt || !item.parentId || getTodoDispatchConfig(item.id)?.autoStart !== false) return false;
+  if (!producer || producer.id !== row.nudgeSessionId || !ownedParent(item, deps.isEmployee)) return false;
+  return time(producer.lastActivity) > time(row.nudgedAt);
 }
 
 function escalationInput(quiet: QuietTodo, now: number): QuietEscalationInput {
@@ -243,6 +280,27 @@ function redispatchParent(parent: WorkItem, quiet: QuietTodo, input: QuietEscala
   }
 }
 
+/** Record that the producer is held as finished, once, and say so on the Todo. */
+function holdFinished(quiet: QuietTodo, now: number): void {
+  initDb().transaction(() => {
+    recordQuietEscalation(quiet.item.id, quiet.stint, new Date(now).toISOString());
+    audit(quiet, "quiet_escalated", { to: "none", held: "nudge started a turn, automatic start off" });
+  })();
+  try {
+    addComment({
+      workItemId: quiet.item.id,
+      author: QUIET_WATCH_ACTOR,
+      authorKind: "system",
+      body: `Quiet for ${minutesSince(quiet.quietSince, now)} after the gateway nudged its session, which then ran a turn. `
+        + "Automatic start is off for this Todo, so it is held as finished and following its parent's lifecycle, "
+        + "and nobody was told. If it is stalled, nudge or reassign it, or move it to `blocked`.",
+      idempotencyKey: `quiet-hold:${quiet.item.id}:${quiet.stint}`,
+    });
+  } catch (error) {
+    logger.warn(`[quiet-watch] Could not comment on ${quiet.item.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function escalate(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
   const input = escalationInput(quiet, now);
   const target = escalationTarget(quiet, deps);
@@ -264,6 +322,7 @@ function escalate(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
 function step(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
   if (quiet.row?.escalatedAt) return;
   if (!quiet.row?.nudgedAt && quiet.producer) nudge(quiet, quiet.producer, now);
+  else if (finishedAwaitingParent(quiet, deps)) holdFinished(quiet, now);
   else escalate(quiet, deps, now);
 }
 
