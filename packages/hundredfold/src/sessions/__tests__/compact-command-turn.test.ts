@@ -170,6 +170,45 @@ describe("/compact through runTurn", () => {
     expect(failedSeen.compactions).toEqual([]);
   });
 
+  it("tells the surface the size the meter is written with, never one the meter does not hold", async () => {
+    const sessionId = establishedSession("claude", "web:compact-told-agree");
+    reg.updateSession(sessionId, { lastContextTokens: 123_456 });
+    // Stats carry a size after the compaction but the engine gave no reading: the meter is emptied.
+    const { engine } = recordingEngine("claude", async () => ({
+      sessionId: "claude-thread-1", result: "", compaction: { preTokens: 123_456, postTokens: 2_706 },
+    }));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne("claude", engine, sessionId, "/compact", surface);
+
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 123_456 }, meter: null }]);
+  });
+
+  it("does not tell the surface of a compaction a newer message cut off", async () => {
+    const sessionId = establishedSession("claude", "web:compact-told-preempted");
+    const { engine } = recordingEngine("claude", async () => {
+      supersedeRunningTurn(reg.getSession(sessionId)!);
+      return { sessionId: "claude-thread-1", result: "", compaction: { preTokens: 5_000, postTokens: 900 }, contextTokens: 900 };
+    });
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne("claude", engine, sessionId, "/compact", surface);
+
+    expect(seen.compactions).toEqual([]);
+  });
+
+  it("does not tell the surface of compaction stats on a turn that was not a compaction", async () => {
+    const sessionId = establishedSession("claude", "web:compact-told-plain");
+    const { engine } = recordingEngine("claude", async () => ({
+      sessionId: "claude-thread-1", result: "an answer", compaction: { preTokens: 5_000, postTokens: 900 }, contextTokens: 900,
+    }));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne("claude", engine, sessionId, "just a message", surface);
+
+    expect(seen.compactions).toEqual([]);
+  });
+
   it("confirms an opencode compaction with the size it replaced", async () => {
     const sessionId = establishedSession("opencode", "web:compact-opencode");
     const { engine, prompts } = recordingEngine("opencode", async () => ({

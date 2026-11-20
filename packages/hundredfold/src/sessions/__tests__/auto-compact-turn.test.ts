@@ -104,6 +104,30 @@ describe("auto-compaction through runTurn", () => {
     expect(seen.compactions).toEqual([{ stats: { preTokens: 120_000 }, meter: null }]);
   });
 
+  it("falls back to the size the decision saw when the engine reports none before it, and sizes the meter from the same figure", async () => {
+    const sessionId = coldSession("opencode", "web:ac-told-fallback", 120_000, 10 * MINUTE);
+    const { engine } = recordingEngine("opencode", async (_opts, call) => call === 1
+      ? { sessionId: "opencode-thread-1", result: "", compaction: {} }
+      : answered("opencode-thread-1"));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne(engine, sessionId, "next step please", surface, configWith(ENABLED, "opencode"));
+
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 120_000 }, meter: null }]);
+  });
+
+  it("tells the surface the size the meter holds when the compaction stats and the engine's reading differ", async () => {
+    const sessionId = coldSession("claude", "web:ac-told-priority", 180_000, 30 * MINUTE);
+    const { engine } = recordingEngine("claude", async (_opts, call) => call === 1
+      ? { sessionId: "claude-thread-1", result: "", compaction: { preTokens: 180_000, postTokens: 9_000 }, contextTokens: 7_000 }
+      : answered("claude-thread-1"));
+    const { surface, seen } = recordingSurface(sessionId);
+
+    await runOne(engine, sessionId, "carry on", surface, configWith(ENABLED));
+
+    expect(seen.compactions).toEqual([{ stats: { preTokens: 180_000, postTokens: 9_000 }, meter: 9_000 }]);
+  });
+
   // A wake reaches the engine as a notification: a Todo mention, a child's
   // callback, another session's message. Each is a turn like any other.
   it.each([

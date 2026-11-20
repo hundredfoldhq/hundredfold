@@ -270,8 +270,10 @@ function answeredReceipt(
  */
 function confirmedCompaction(run: TurnRun, result: EngineResult, quietPreempted: boolean): Pick<SettleTurnInput, "compaction"> {
   if (!run.plan.compaction || !result.compaction || result.error || quietPreempted) return {};
-  const postTokens = typeof result.contextTokens === "number" ? result.contextTokens : result.compaction.postTokens;
-  return { compaction: { ...result.compaction, ...(postTokens !== undefined ? { postTokens } : {}) } };
+  // The size the meter is written with, so what the view is told is what a reload would show.
+  const metered = meteredContextTokens(run, result);
+  const { preTokens } = result.compaction;
+  return { compaction: { ...(preTokens !== undefined ? { preTokens } : {}), ...(typeof metered === "number" ? { postTokens: metered } : {}) } };
 }
 
 /**

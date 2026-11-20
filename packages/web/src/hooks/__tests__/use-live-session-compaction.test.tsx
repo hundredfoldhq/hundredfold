@@ -56,13 +56,16 @@ function Pane() {
   const live = useLiveSession(SID, { subscribe })
   const session = live.session as { status?: string; lastContextTokens?: number | null } | null
   return (
-    <SessionStatusCluster
-      sessionId={SID}
-      loading={live.loading}
-      status={session?.status}
-      lastContextTokens={session?.lastContextTokens}
-      liveContextTokens={live.liveContextTokens}
-    />
+    <>
+      <SessionStatusCluster
+        sessionId={SID}
+        loading={live.loading}
+        status={session?.status}
+        lastContextTokens={session?.lastContextTokens}
+        liveContextTokens={live.liveContextTokens}
+      />
+      <output data-testid="held">{`live=${String(live.liveContextTokens)} record=${String(session?.lastContextTokens)}`}</output>
+    </>
   )
 }
 
@@ -128,6 +131,35 @@ describe('the context meter after a compaction inside a running turn', () => {
     emit('session:compacted', { sessionId: SID, preTokens: 182_000 })
 
     await waitFor(() => expect(ringText()).toBe('n/a'))
+  })
+
+  it('never brings the stale figure back when the turn ends before the usage refetch lands', async () => {
+    await runningAt182k()
+    gatewayHolds(null)
+    emit('session:compacted', { sessionId: SID, preTokens: 182_000 })
+    await waitFor(() => expect(ringText()).toBe('n/a'))
+
+    // The turn ends; the usage answer is slow, so the meter shows whatever it holds meanwhile.
+    getContextUsage.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(usageFixture({ sessionId: SID, contextTokens: null, contextWindow: WINDOW })), 400)
+    }))
+    const seen = new Set<string | null>()
+    const sampler = setInterval(() => seen.add(ringText()), 25)
+    emit('session:completed', { sessionId: SID, result: 'done', error: null })
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    clearInterval(sampler)
+
+    expect([...seen]).toEqual(['n/a'])
+  })
+
+  it('treats a reported size of zero as none', async () => {
+    await runningAt182k()
+    gatewayHolds(null)
+
+    emit('session:compacted', { sessionId: SID, preTokens: 182_000, postTokens: 0 })
+
+    await waitFor(() => expect(ringText()).toBe('n/a'))
+    expect(screen.getByTestId('held').textContent).toBe('live=null record=null')
   })
 
   it('refetches the usage answer even when no turn of this pane is running', async () => {

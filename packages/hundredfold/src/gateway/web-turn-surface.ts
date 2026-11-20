@@ -48,7 +48,6 @@ function emitCompacted(emit: GatewayEmit, sessionId: string, stats: CompactionSt
  */
 export function createWebTurnSurface(options: WebTurnSurfaceOptions): TurnSurface {
   const { sessionId, emit } = options;
-
   return {
     async started() {
       // `session:started` is emitted at dispatch, before the queue slot opens,
@@ -81,7 +80,9 @@ export function createWebTurnSurface(options: WebTurnSurfaceOptions): TurnSurfac
       if (!session) return;
       await deliverConnectorReply(session, text, options.connectors);
     },
-    async waiting() {}, // The dashboard reads the waiting state off the session row directly.
+    async waiting() {
+      // The dashboard reads the waiting state off the session row directly.
+    },
     async settled(receipt: TurnReceipt) {
       emit("session:completed", {
         sessionId,

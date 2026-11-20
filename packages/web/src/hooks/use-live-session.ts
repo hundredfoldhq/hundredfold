@@ -1027,8 +1027,9 @@ export function useLiveSession(
       if (event === 'session:compacted') {
         // A compaction was confirmed, possibly in the middle of a running turn, where
         // nothing else corrects the figure streamed while the summary ran. Take the size
-        // after it, or drop the figure when the engine reported none; the record's own
-        // reading follows, which is what the context meter re-reads usage on.
+        // after it, or drop the figure when the engine reported none. The record's reading
+        // and the usage query's invalidation (use-query-invalidation) each make the meter
+        // re-read usage on their own; both are here so a pane that mounts either one is covered.
         const post = typeof p.postTokens === 'number' && p.postTokens > 0 ? p.postTokens : null
         setLiveContextTokens(post)
         setCurrentSession((prev) => prev ? { ...prev, lastContextTokens: post } : prev)
