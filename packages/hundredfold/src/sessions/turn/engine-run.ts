@@ -12,6 +12,7 @@ import { settleTurn } from "./completion.js";
 import type { TurnHeartbeat } from "./heartbeat.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
+import { rememberCompactionReminder } from "./compaction-reminder.js";
 import { withPauseNotice } from "../pause-notice.js";
 
 /** One engine invocation plus the context that was built for it. */
@@ -33,6 +34,19 @@ export interface EngineAttemptArgs {
 }
 
 /**
+ * The prompt the engine is called with: the turn's message and the board reminder. If the engine
+ * compacts the conversation during the turn, the reminder goes with it, so the reminder this
+ * prompt carries (none, for an engine command) is noted for the hook relay to give back
+ * (compaction-reminder.ts).
+ */
+function promptForEngine(sessionId: string, plan: TurnPlan): string {
+  const message = withPauseNotice(plan.promptToRun, plan.pauseNotice);
+  const prompt = withBoardReminder(message, plan.boardReminder);
+  rememberCompactionReminder(sessionId, prompt === message ? undefined : plan.boardReminder);
+  return prompt;
+}
+
+/**
  * Run the engine once for this turn. The system prompt is rebuilt per attempt
  * because a model fallback changes the platform context, and the context
  * fingerprint recorded against the resumed engine session must match the prompt
@@ -44,7 +58,7 @@ export async function runEngineAttempt(args: EngineAttemptArgs): Promise<EngineA
   const prepared = plan.prepareContext(args.model);
 
   const result = await plan.engine.run({
-    prompt: withBoardReminder(withPauseNotice(plan.promptToRun, plan.pauseNotice), plan.boardReminder),
+    prompt: promptForEngine(sessionId, plan),
     resumeSessionId: plan.resumeSessionId,
     systemPrompt: prepared.systemPrompt,
     platformContextRefresh: prepared.refresh,

@@ -308,6 +308,7 @@ import {
   type TailscaleServeMapping,
 } from "../instances/access.js";
 import { isLoopback, validateHookPost } from "./hook-endpoint.js";
+import { compactionHookOutput } from "../sessions/turn/compaction-reminder.js";
 import {
   authenticateGatewayRequest,
   authCookieHeaders,
@@ -4916,7 +4917,10 @@ export async function handleApiRequest(
           recordEngineSessionId(hundredfoldSessionId, "claude", hook.session_id);
         }
       }
-      return json(res, { message: "ok" });
+      // Claude Code runs this hook after it compacts the conversation; what the relay prints from
+      // the reply goes back into the conversation (sessions/turn/compaction-reminder.ts).
+      const hookOutput = compactionHookOutput(hundredfoldSessionId, hook);
+      return json(res, hookOutput ? { message: "ok", hookOutput } : { message: "ok" });
     }
 
     return notFound(res);
