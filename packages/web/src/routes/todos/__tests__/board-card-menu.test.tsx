@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import "@/test/preload-menus"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { MemoryRouter, Route, Routes, useParams } from "react-router-dom"
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ApiError, type WorkItemCompactWire, type WorkItemListWire, type WorkItemStatusWire } from "@/lib/api"
 import type { SprintWire } from "@/lib/sprint-api"
@@ -48,6 +48,16 @@ vi.mock("@/lib/api", async (importOriginal) => {
   }
 })
 
+// The pop-up carries a whole board of its own; what the card menu owes is which Todo it opens it for, and what happens on close.
+vi.mock("../board/sub-board-dialog-lazy", () => ({
+  LazySubBoardDialog: ({ rootId, onClose, closeOnOpenTodo }: { rootId: string; onClose: () => void; closeOnOpenTodo?: boolean }) => (
+    <div data-testid="sub-board-dialog" data-root={rootId} data-close-on-open={String(closeOnOpenTodo)}>
+      <button type="button" onClick={onClose}>Close pop-up</button>
+    </div>
+  ),
+  preloadSubBoardDialog: () => {},
+}))
+
 const sprintApi = vi.hoisted(() => ({ listSprints: vi.fn(), setWorkItemSprint: vi.fn() }))
 vi.mock("@/lib/sprint-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sprint-api")>()
@@ -92,11 +102,23 @@ function TaskProbe() {
   return <div data-testid="task-probe" data-todo={todoId} />
 }
 
+function HistoryProbe() {
+  const navigate = useNavigate()
+  const { pathname, search } = useLocation()
+  return (
+    <>
+      <span data-testid="location" data-where={`${pathname}${search}`} />
+      <button type="button" data-testid="history-back" onClick={() => navigate(-1)} />
+    </>
+  )
+}
+
 function renderBoard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={["/todos/b/platform"]}>
+        <HistoryProbe />
         <Routes>
           <Route path="/todos/b/:board" element={<TodoBoardPage />} />
           <Route path="/todos/:todoId" element={<TaskProbe />} />
@@ -148,6 +170,20 @@ beforeEach(() => {
 afterEach(() => {
   Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia })
 })
+
+/** Cards whose Todo has sub-Todos: the roll-up the board fetches for its cards says so. */
+function withSubTodos(...ids: string[]) {
+  getWorkItemTrees.mockImplementation((asked: string[]) =>
+    Promise.resolve({ trees: Object.fromEntries(asked.filter((id) => ids.includes(id)).map((id) => [id, subTree(id)])) }),
+  )
+}
+function subTree(id: string) {
+  return {
+    root: { id, status: "executing", children: [{ id: `${id}-1`, status: "backlog", children: [] }] },
+    totals: { executing: 1, backlog: 1 },
+    spendUsd: 0,
+  }
+}
 
 describe("right-clicking a card on the board", () => {
   it("opens the card's menu in place of the browser's, and leaves the rest of the board's right-click alone", async () => {
@@ -335,4 +371,108 @@ describe("right-clicking a card on the board", () => {
     expect(rightClick(card)).toBe(true)
     expect(screen.queryByTestId("board-card-menu")).toBeNull()
   })
+
+  describe("View as board", () => {
+    it("is a row of the menu for a Todo that has sub-Todos, and opens the pop-up for that Todo", async () => {
+      withSubTodos("TSK-3")
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-3")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+      rightClick(card)
+      const menu = await menuOf()
+      // Next to Open, before the moves.
+      const labels = menu.getAllByRole("menuitem").map((row) => row.textContent)
+      expect(labels.slice(0, 2)).toEqual(["Open", "View as board"])
+
+      fireEvent.click(menu.getByTestId("board-card-view-board"))
+
+      const dialog = await screen.findByTestId("sub-board-dialog")
+      expect(dialog.getAttribute("data-root")).toBe("TSK-3")
+      expect(screen.queryByTestId("board-card-menu")).toBeNull()
+      // The board stays where it was; the pop-up is not a page.
+      expect(screen.getByTestId("location").getAttribute("data-where")).toBe("/todos/b/platform")
+      expect(screen.queryByTestId("task-probe")).toBeNull()
+      expect(dialog.getAttribute("data-close-on-open")).toBe("false")
+    })
+
+    it("is not a row for a Todo with no sub-Todos", async () => {
+      withSubTodos("TSK-3")
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-4")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+      rightClick(card)
+      const menu = await menuOf()
+      expect(menu.getByTestId("board-card-open")).toBeTruthy()
+      expect(menu.queryByTestId("board-card-view-board")).toBeNull()
+      expect(screen.queryByText("View as board")).toBeNull()
+    })
+
+    it("opens from the keyboard, and closing it puts focus back on the card", async () => {
+      withSubTodos("TSK-3")
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-3")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+      card.focus()
+      fireEvent.keyDown(card, { key: "F10", shiftKey: true })
+      const menu = await menuOf()
+      fireEvent.click(menu.getByTestId("board-card-view-board"))
+      await screen.findByTestId("sub-board-dialog")
+      ;(document.activeElement as HTMLElement | null)?.blur()
+
+      fireEvent.click(screen.getByText("Close pop-up"))
+
+      await waitFor(() => expect(screen.getByTestId("location").getAttribute("data-where")).toBe("/todos/b/platform"))
+      await waitFor(() => expect(screen.queryByTestId("sub-board-dialog")).toBeNull())
+      await waitFor(() => expect(document.activeElement).toBe(card))
+    })
+
+    it("closes on the browser's Back and opens again on Forward, as the Todo page's pop-up does", async () => {
+      withSubTodos("TSK-3")
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-3")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+      rightClick(card)
+      fireEvent.click((await menuOf()).getByTestId("board-card-view-board"))
+      await screen.findByTestId("sub-board-dialog")
+
+      fireEvent.click(screen.getByTestId("history-back"))
+      await waitFor(() => expect(screen.queryByTestId("sub-board-dialog")).toBeNull())
+      expect(screen.getByTestId("board-card-TSK-3")).toBeTruthy()
+      expect(screen.getByTestId("location").getAttribute("data-where")).toBe("/todos/b/platform")
+    })
+
+    it("is not in the phone's Move to… menu for a Todo without sub-Todos, and is for one with", async () => {
+      setViewport(true)
+      withSubTodos("TSK-3")
+      renderBoard()
+      await screen.findByTestId("board-card-TSK-3")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+
+      await openMoveMenu("TSK-4")
+      expect(screen.queryByTestId("board-view-board-TSK-4")).toBeNull()
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+
+      await openMoveMenu("TSK-3")
+      fireEvent.click(await screen.findByTestId("board-view-board-TSK-3"))
+      expect((await screen.findByTestId("sub-board-dialog")).getAttribute("data-root")).toBe("TSK-3")
+    })
+
+    it("is not offered to a board member, even for a Todo with sub-Todos", async () => {
+      principal = { kind: "member", user: { id: "me", email: "me@example.test", displayName: "Mia Member" }, boards: [{ department: "platform", role: "collaborator" }] }
+      withSubTodos("TSK-3")
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-3")
+      await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
+      expect(rightClick(card)).toBe(true)
+      expect(screen.queryByTestId("board-card-menu")).toBeNull()
+      expect(screen.queryByTestId("board-view-board-TSK-3")).toBeNull()
+    })
+  })
 })
+
+async function openMoveMenu(id: string) {
+  const trigger = await screen.findByTestId(`board-move-${id}`)
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+  fireEvent.click(trigger)
+  await screen.findByRole("menu")
+}

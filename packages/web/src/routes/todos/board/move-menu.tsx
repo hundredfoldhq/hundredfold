@@ -1,13 +1,15 @@
-import { ArrowRightLeft } from "@/components/ui/icon"
+import { ArrowRightLeft, Layers } from "@/components/ui/icon"
 import type { WorkItemCompactWire, WorkItemStatusWire } from "@/lib/api"
 import { STATUS_LABEL } from "@/lib/todos"
 import { legalTargets } from "@/lib/legal-targets"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { StatusCircle } from "../state-glyph"
@@ -28,6 +30,8 @@ export interface MoveToMenuProps {
   /** Sub-tasks not yet done or cancelled (the close gate's pre-check). */
   openChildren: number
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
+  /** Offers "View as board" for a Todo that has sub-Todos, the phone's way to the card's context-menu row. Absent = no row. */
+  onViewAsBoard?: (id: string) => void
 }
 
 /** The menu's rows: the current column, then each column the card can go to. The card's context menu reads
@@ -48,7 +52,23 @@ export function moveRows(item: WorkItemCompactWire, openChildren: number) {
   })
 }
 
-export function MoveToMenu({ item, openChildren, onMove }: MoveToMenuProps) {
+function ViewAsBoardItem({ id, onViewAsBoard }: { id: string; onViewAsBoard: (id: string) => void }) {
+  return (
+    <>
+      <DropdownMenuItem
+        data-testid={`board-view-board-${id}`}
+        onSelect={() => onViewAsBoard(id)}
+        className="min-h-11 gap-2 rounded-[9px] px-2.5 text-[length:var(--text-footnote)] font-medium text-[var(--text-primary)] focus:bg-[var(--fill-secondary)]"
+      >
+        <Layers size={16} aria-hidden />
+        View as board
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+    </>
+  )
+}
+
+export function MoveToMenu({ item, openChildren, onMove, onViewAsBoard }: MoveToMenuProps) {
   const rows = moveRows(item, openChildren)
   // A tap here is not a tap on the card: the menu is portalled, but React events still bubble
   // through it to the card's own click, which opens the Todo.
@@ -66,6 +86,7 @@ export function MoveToMenu({ item, openChildren, onMove }: MoveToMenuProps) {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[220px] rounded-[var(--radius-lg)] p-1.5">
+          {onViewAsBoard && <ViewAsBoardItem id={item.id} onViewAsBoard={onViewAsBoard} />}
           <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[.04em] text-[var(--text-tertiary)]">
             Move to
           </DropdownMenuLabel>

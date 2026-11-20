@@ -51,7 +51,9 @@ import { useBoardFilters } from "./use-board-filters"
 import { useBoardMemberView } from "./use-board-member-view"
 import { MovedOffBoard } from "./moved-off-board"
 import { useBoardSprints } from "../sprints/use-board-sprints"
-import { useBoardCardMenu } from "./card-menu"
+import { focusCardSoon, useBoardCardMenu } from "./card-menu"
+import { useCardSubBoard } from "./use-card-sub-board"
+import { LazySubBoardDialog } from "./sub-board-dialog-lazy"
 import { GroupSkeleton } from "./group-skeleton"
 
 /* Todos v2 slice 6 — the board surface (design contract:
@@ -98,7 +100,7 @@ export default function TodoBoardPage() {
 /** The board over whatever location it is given (board-location.tsx). `embedded` is the chat layout
  *  tab: its pane supplies the chrome, so the route's shell is left out. */
 export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
-  const { board, setBoard, searchParams, setSearchParams, navigationType, openTodo, pinAsTab } = useBoardLocation()
+  const { board, setBoard, searchParams, setSearchParams, navigationType, openTodo, pinAsTab, routed } = useBoardLocation()
   const key = boardKey(board)
   const Frame = embedded ? TAB_FRAME : ROUTE_FRAME
   const isAttention = board.kind === "attention"
@@ -377,6 +379,15 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     [trees.data],
   )
 
+  // A card's sub-Todos at any level, from the roll-up the board already fetched for its cards.
+  const subTodosOf = useCallback(
+    (id: string): number => {
+      const tree = trees.data?.get(id)
+      return tree ? rollupOf(tree, tree.root.status)?.total ?? 0 : 0
+    },
+    [trees.data],
+  )
+
   const { drag, registerColumn, liftPointerDown, reducedMotion } = useBoardDrag(itemsByStatus, openChildrenOf, {
     onRank: commitRank,
     onTransition: (item, to, index) => commitTransition(item, to, index),
@@ -507,11 +518,24 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     return columns
   }, [data.columns, itemsByStatus, filters.due])
   const keep = useKeepWorkItem(announce)
+  // "View as board" opens the card's sub-Todos in the pop-up the Todo page opens, over this board; closing it puts focus back on the card. On a phone (and at
+  // the board's own route) Back closes it, as it does the Todo page's; a desktop tab holds it in memory, as the page does there.
+  const cardSubBoard = useCardSubBoard(routed === true || (mobile && !subtree))
+  const viewAsBoard = gate.member ? undefined : cardSubBoard.show
+  // However it closes (Escape, the corner button, Back), focus goes back to the card that opened it.
+  const subBoardOpenId = cardSubBoard.openId
+  const lastSubBoardId = useRef<string | null>(subBoardOpenId)
+  useEffect(() => {
+    if (!subBoardOpenId && lastSubBoardId.current) focusCardSoon(lastSubBoardId.current)
+    lastSubBoardId.current = subBoardOpenId
+  }, [subBoardOpenId])
   // Right-click (or Shift+F10 / the Menu key on a focused card) opens the card's actions. A member's board has none of the operator's controls, so none of these.
   const cardMenu = useBoardCardMenu({
     itemsByStatus,
     enabled: !gate.member && (!mobile || phoneMoves),
     openChildrenOf,
+    onViewAsBoard: viewAsBoard,
+    subTodosOf,
     onOpen,
     onMove: moveCard,
     onKeep: keep.mutate,
@@ -547,6 +571,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
             onKeep={gate.member ? undefined : keep.mutate}
             onLiftPointerDown={phoneMoves || gate.member ? undefined : liftPointerDown}
             onMove={phoneMoves && !gate.member ? moveCard : undefined}
+            onViewAsBoard={viewAsBoard}
           />
         </div>,
       )
@@ -866,6 +891,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
       )}
 
       {cardMenu.menu}
+      {cardSubBoard.openId && !gate.member && <LazySubBoardDialog rootId={cardSubBoard.openId} onClose={cardSubBoard.hide} closeOnOpenTodo={!cardSubBoard.pushes} />}
       {sprintTools.overlays}
     </Frame>
   )
