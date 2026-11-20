@@ -329,6 +329,20 @@ describe("a child that finished and follows its parent's lifecycle", () => {
     expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail).toMatchObject({ to: "session" });
   });
 
+  it("is escalated when the nudged session errored and another assignee session ran since", () => {
+    const { ownerSession, child, workerSession } = tree();
+    noAutoStart(child.id);
+    at(16);
+    sweep();
+    const other = sessionOn(WORKER, child.id);
+    db.prepare("UPDATE sessions SET status = 'error' WHERE id = ?").run(workerSession);
+    spoke(other, 17);
+    at(40);
+    sweep();
+    expect(deliveries()[1]).toMatchObject({ targetSessionId: ownerSession, deliveryKind: "todo-quiet-escalation" });
+    expect(events.listWorkItemEvents(child.id).find((event) => event.kind === "quiet_escalated")!.detail).toMatchObject({ to: "session" });
+  });
+
   it("is still escalated when its producer never answered the nudge", () => {
     const { ownerSession, child } = tree();
     noAutoStart(child.id);
