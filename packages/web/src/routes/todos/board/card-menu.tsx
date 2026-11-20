@@ -7,15 +7,18 @@ import {
   PointMenu,
   type MenuPoint,
 } from "@/components/ui/context-menu"
+import { Layers } from "@/components/ui/icon"
 import type { WorkItemCompactWire, WorkItemStatusWire } from "@/lib/api"
 import { STATUS_LABEL } from "@/lib/todos"
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, SprintCardItems, type CardSprints } from "../sprints/sprint-card-menu"
 import { StatusCircle } from "../state-glyph"
+import { preloadSubBoardDialog } from "./sub-board-dialog-lazy"
 import { moveRows } from "./move-menu"
 
 /* Right-click a board card for the actions the board has, without dragging it
- * or opening it: Open, a move to any column the card can legally go to, keep
- * on Home, and, on a desktop, a move between sprints.
+ * or opening it: Open, View as board (its sub-Todos in a pop-up, when it has
+ * any), a move to any column the card can legally go to, keep on Home, and, on
+ * a desktop, a move between sprints.
  *
  * The moves are the "Move to…" menu's own rows (moveRows, off the same
  * legalTargets() map the drag, the pickers and the Needs-you menu read), and a
@@ -43,6 +46,12 @@ export interface BoardCardMenuOptions {
   enabled: boolean
   openChildrenOf: (id: string) => number
   onOpen: (id: string, item: WorkItemCompactWire) => void
+  /** The element holding this board's cards, where a card is looked up to put focus back on it. Absent = the page. */
+  scope?: () => ParentNode | null
+  /** Opens the card's sub-Todos as a board. Absent = no row. */
+  onViewAsBoard?: (id: string) => void
+  /** Sub-Todos at any level, from the board's roll-up (0 until it lands): the row is only offered for a Todo that has some. */
+  subTodosOf?: (id: string) => number
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
   onKeep?: (vars: { id: string; kept: boolean }) => void
   /** Sprints to offer, when the board has them in reach (not on a phone). */
@@ -90,7 +99,7 @@ export function useBoardCardMenu(options: BoardCardMenuOptions) {
 
   const close = () => {
     setTarget(null)
-    if (target?.point.keyboard) focusCardSoon(target.item.id)
+    if (target?.point.keyboard) focusCardSoon(target.item.id, latest.current.scope)
   }
   const menu = target && live
     ? <BoardCardMenu key={target.seq} target={{ ...target, item: live }} options={options} onClose={close} />
@@ -100,8 +109,10 @@ export function useBoardCardMenu(options: BoardCardMenuOptions) {
 
 /** The menu was opened from a card by the keyboard: focus goes back to that card, which a move has by now put in
  *  another column. (A pointer open leaves focus where it was.) */
-function focusCardSoon(id: string) {
-  window.setTimeout(() => document.querySelector<HTMLElement>(`[data-board-card="${CSS.escape(id)}"]`)?.focus(), 0)
+export function focusCardSoon(id: string, scope?: () => ParentNode | null) {
+  // Looked up in the board that has the card, not the page: the same Todo can be on two boards at once (a pop-up's flat
+  // board under another pop-up), and the first copy in the document is not always the one the person came from.
+  window.setTimeout(() => (scope?.() ?? document).querySelector<HTMLElement>(`[data-board-card="${CSS.escape(id)}"]`)?.focus(), 0)
 }
 
 function findCard(itemsByStatus: BoardCardMenuOptions["itemsByStatus"], id: string): WorkItemCompactWire | undefined {
@@ -112,9 +123,20 @@ function findCard(itemsByStatus: BoardCardMenuOptions["itemsByStatus"], id: stri
   return undefined
 }
 
+function ViewAsBoardRow({ onSelect }: { onSelect: () => void }) {
+  // The pop-up is a chunk of its own: fetch it while the menu is open, so the press that chooses the row finds it loaded.
+  useEffect(preloadSubBoardDialog, [])
+  return (
+    <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-view-board" onSelect={onSelect}>
+      <Layers size={14} aria-hidden />
+      View as board
+    </ContextMenuItem>
+  )
+}
+
 function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; options: BoardCardMenuOptions; onClose: () => void }) {
   const { item } = target
-  const { sprints, onKeep, onOpen, onMove } = options
+  const { sprints, onKeep, onOpen, onMove, onViewAsBoard } = options
   // The current column is where the card already is: only the others are moves.
   const moves = moveRows(item, options.openChildrenOf(item.id)).filter((row) => row.status !== item.status)
   return (
@@ -124,6 +146,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
         <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-open" onSelect={() => onOpen(item.id, item)}>
           Open
         </ContextMenuItem>
+        {onViewAsBoard && (options.subTodosOf?.(item.id) ?? 0) > 0 && <ViewAsBoardRow onSelect={() => onViewAsBoard(item.id)} />}
         {onKeep && (
           <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-keep" onSelect={() => onKeep({ id: item.id, kept: item.kept !== true })}>
             {item.kept === true ? "Remove from Home" : "Keep on Home"}
