@@ -232,7 +232,12 @@ check. Part D notices within minutes.
       producer reports to unless that is a system employee (the Dispatcher that started
       board-walk work can only nudge again), else a system comment on the Todo. If the
       Todo has a parent in `executing` and no owner session can be messaged, the parent
-      is re-dispatched with the escalation as the reason. The message names the Todo,
+      is re-dispatched with the escalation as the reason, unless the session the producer
+      reports to (the one that delegated the child) is the parent owner's: the owner works
+      the parent from there, so it is told instead and no second session starts. A child
+      with automatic start off whose producer answered the nudge has handed its part in
+      and follows its parent's lifecycle: the quiet-watch records that once
+      (`quiet_escalated`, `to: "none"`) and tells nobody. The message names the Todo,
       its producer session and how long nothing has run, and offers only what works:
       read the session, then message it, or take the work back or reassign it. A
       re-dispatch of the child is offered only when none of its assignee's sessions can

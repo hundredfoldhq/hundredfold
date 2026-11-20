@@ -10,6 +10,7 @@ import { withReportingParent } from "./employee-session-delegation.js";
 import { canMessageSession } from "./employee-sessions.js";
 import { isExecutionAttempt } from "./link-role.js";
 import { attemptActivity } from "./recovery-controller.js";
+import { getTodoDispatchConfig } from "./dispatch-config.js";
 import { childWork, type ChildWork } from "./quiet-children.js";
 import { appendWorkItemEvent, getWorkItem, listWorkItems, type WorkItem } from "./store.js";
 import { DISPATCHER_ALREADY_RUNNING, type AvailabilityRearmResult } from "./availability-resume.js";
@@ -178,17 +179,38 @@ function reportingSession(producer: Session | undefined, isSystemEmployee: (name
   return session.employee && isSystemEmployee(session.employee) ? undefined : session;
 }
 
-/** Whoever owns the work from above: the parent's owner, then who the producer reports to. */
+/** Whoever owns the work from above: the parent's owner, then who the producer reports to.
+ *  A parent is re-dispatched only when its owner has no session to tell. The
+ *  session that delegated the child is the commonest place the owner works the
+ *  parent from: it need not be linked to the parent, so it is looked for beside
+ *  the parent's own sessions, and a second session started for the owner would
+ *  hold the parent without any of its context. */
 function escalationTarget(quiet: QuietTodo, deps: QuietWatchDeps): EscalationTarget {
-  const owned = ownedParent(quiet.item, deps.isEmployee);
-  if (owned) {
-    const session = parentOwnerSession(owned.parent, owned.owner);
-    if (session && session.id !== quiet.producer?.id) return { kind: "session", session };
-    if (owned.parent.status === "executing") return { kind: "redispatch", parent: owned.parent };
-  }
   const assigneeSession = quiet.producer ?? (quiet.assigneeSessionId ? getSession(quiet.assigneeSessionId) : undefined);
   const reporting = reportingSession(assigneeSession, deps.isSystemEmployee ?? (() => false));
+  const owned = ownedParent(quiet.item, deps.isEmployee);
+  const aboveParent = owned ? parentTarget(owned, quiet, reporting) : undefined;
+  if (aboveParent) return aboveParent;
   return reporting ? { kind: "session", session: reporting } : { kind: "none" };
+}
+
+/** The parent owner's session, else the reporting session when it is the owner's, else a re-dispatch of an `executing` parent. */
+function parentTarget(owned: { parent: WorkItem; owner: string }, quiet: QuietTodo, reporting: Session | undefined): EscalationTarget | undefined {
+  const session = parentOwnerSession(owned.parent, owned.owner);
+  if (session && session.id !== quiet.producer?.id) return { kind: "session", session };
+  if (reporting?.employee === owned.owner) return { kind: "session", session: reporting };
+  return owned.parent.status === "executing" ? { kind: "redispatch", parent: owned.parent } : undefined;
+}
+
+/** A child whose producer answered the nudge, and which the board walk will not
+ *  start, has handed its part in and follows its parent's lifecycle (the owner
+ *  said to leave its status alone): finished, not stalled. */
+function finishedAwaitingParent(quiet: QuietTodo, deps: QuietWatchDeps): boolean {
+  const { item, row } = quiet;
+  if (!row?.nudgedAt || !item.parentId || getTodoDispatchConfig(item.id)?.autoStart !== false) return false;
+  if (!ownedParent(item, deps.isEmployee)) return false;
+  const nudged = row.nudgeSessionId ? getSession(row.nudgeSessionId) : undefined;
+  return !!nudged && time(nudged.lastActivity) > time(row.nudgedAt);
 }
 
 function escalationInput(quiet: QuietTodo, now: number): QuietEscalationInput {
@@ -243,6 +265,14 @@ function redispatchParent(parent: WorkItem, quiet: QuietTodo, input: QuietEscala
   }
 }
 
+/** Record that the producer is finished and waiting on the parent, once, and tell nobody. */
+function holdFinished(quiet: QuietTodo, now: number): void {
+  initDb().transaction(() => {
+    recordQuietEscalation(quiet.item.id, quiet.stint, new Date(now).toISOString());
+    audit(quiet, "quiet_escalated", { to: "none", held: "producer finished, child follows its parent's lifecycle" });
+  })();
+}
+
 function escalate(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
   const input = escalationInput(quiet, now);
   const target = escalationTarget(quiet, deps);
@@ -264,6 +294,7 @@ function escalate(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
 function step(quiet: QuietTodo, deps: QuietWatchDeps, now: number): void {
   if (quiet.row?.escalatedAt) return;
   if (!quiet.row?.nudgedAt && quiet.producer) nudge(quiet, quiet.producer, now);
+  else if (finishedAwaitingParent(quiet, deps)) holdFinished(quiet, now);
   else escalate(quiet, deps, now);
 }
 
