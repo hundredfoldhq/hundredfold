@@ -522,11 +522,12 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
   // the board's own route) Back closes it, as it does the Todo page's; a desktop tab holds it in memory, as the page does there.
   const cardSubBoard = useCardSubBoard(routed === true || (mobile && !subtree))
   const viewAsBoard = gate.member ? undefined : cardSubBoard.show
+  const scopeOfBoard = useCallback(() => boardScrollRef.current, [boardScrollRef])
   // However it closes (Escape, the corner button, Back), focus goes back to the card that opened it.
   const subBoardOpenId = cardSubBoard.openId
   const lastSubBoardId = useRef<string | null>(subBoardOpenId)
   useEffect(() => {
-    if (!subBoardOpenId && lastSubBoardId.current) focusCardSoon(lastSubBoardId.current)
+    if (!subBoardOpenId && lastSubBoardId.current) focusCardSoon(lastSubBoardId.current, scopeOfBoard)
     lastSubBoardId.current = subBoardOpenId
   }, [subBoardOpenId])
   // Right-click (or Shift+F10 / the Menu key on a focused card) opens the card's actions. A member's board has none of the operator's controls, so none of these.
@@ -534,6 +535,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     itemsByStatus,
     enabled: !gate.member && (!mobile || phoneMoves),
     openChildrenOf,
+    scope: scopeOfBoard,
     onViewAsBoard: viewAsBoard,
     subTodosOf,
     onOpen,

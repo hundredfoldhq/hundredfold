@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import { ArrowRightLeft, Layers } from "@/components/ui/icon"
 import type { WorkItemCompactWire, WorkItemStatusWire } from "@/lib/api"
 import { STATUS_LABEL } from "@/lib/todos"
@@ -13,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { StatusCircle } from "../state-glyph"
+import { preloadSubBoardDialog } from "./sub-board-dialog-lazy"
 import { CLOSED_STATUSES, OPEN_COLUMN_ORDER } from "./status-scope"
 
 /** The columns left to right, as the board shows them. */
@@ -53,6 +55,8 @@ export function moveRows(item: WorkItemCompactWire, openChildren: number) {
 }
 
 function ViewAsBoardItem({ id, onViewAsBoard }: { id: string; onViewAsBoard: (id: string) => void }) {
+  // The pop-up is a chunk of its own: fetch it while the menu is open, so the tap that chooses the row finds it loaded.
+  useEffect(preloadSubBoardDialog, [])
   return (
     <>
       <DropdownMenuItem
