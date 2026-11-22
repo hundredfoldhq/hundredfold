@@ -247,7 +247,7 @@ function promptFileProblems(promptFile: unknown, home: string): string[] {
 function limitsProblems(limits: Obj | undefined): string[] {
   if (!limits) return [];
   return [
-    ...inRange("voice.limits.maxUtteranceSeconds", limits.maxUtteranceSeconds, [5, 600], true),
+    ...inRange("voice.limits.maxUtteranceSeconds", limits.maxUtteranceSeconds, [5, 120], true),
     ...inRange("voice.limits.maxConcurrentAttachments", limits.maxConcurrentAttachments, [1, 64], true),
   ];
 }

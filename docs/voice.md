@@ -79,7 +79,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
 | `promptFile` | — | A path inside the instance home holding the instructions. `prompt` wins if both are set. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
-| `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 600. The local speech-to-text takes at most about 130 seconds of one utterance. |
+| `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). |
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
 

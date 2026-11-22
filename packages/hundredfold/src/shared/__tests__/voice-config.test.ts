@@ -22,7 +22,7 @@ describe("voiceConfigProblems", () => {
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
       prompt: "x".repeat(8000), holdingLine: "y".repeat(300),
-      limits: { maxUtteranceSeconds: 5, maxConcurrentAttachments: 64 }, local: { device: "gpu" },
+      limits: { maxUtteranceSeconds: 120, maxConcurrentAttachments: 64 }, local: { device: "gpu" },
     })).toEqual([]);
   });
 
@@ -53,6 +53,8 @@ describe("voiceConfigProblems", () => {
     ["voice.prompt", { prompt: 4 }, "voice.prompt"],
     ["voice.holdingLine", { holdingLine: "y".repeat(301) }, "voice.holdingLine"],
     ["voice.limits.maxUtteranceSeconds", { limits: { maxUtteranceSeconds: 4 } }, "voice.limits.maxUtteranceSeconds"],
+    ["voice.limits.maxUtteranceSeconds", { limits: { maxUtteranceSeconds: 121 } }, "voice.limits.maxUtteranceSeconds"],
+    ["voice.limits.maxUtteranceSeconds", { limits: { maxUtteranceSeconds: 600 } }, "voice.limits.maxUtteranceSeconds"],
     ["voice.limits.maxConcurrentAttachments", { limits: { maxConcurrentAttachments: 0 } }, "voice.limits.maxConcurrentAttachments"],
     ["voice.local.device", { local: { device: "tpu" } }, "voice.local.device"],
     ["voice.limits", { limits: [] }, "voice.limits must be a mapping"],
