@@ -2,6 +2,8 @@ import fs from "node:fs";
 import { readClaudeUsageHistory, usageHistoryPath, type UsageSample } from "./claude-usage-history.js";
 import { declaredClaudeAccounts, declaredRemoteClaudeAccounts } from "./claude-accounts-config.js";
 import { accountForEmployee, DEFAULT_CLAUDE_ACCOUNT } from "./engine-account.js";
+import { opencodeAccountKey } from "./fallback-chain-opencode-group.js";
+import { declaredOpencodeAccounts } from "./opencode-accounts-config.js";
 import type { FallbackLimitReadings } from "./fallback-chain-health.js";
 import type { Employee, HundredfoldConfig } from "./types.js";
 
@@ -31,13 +33,13 @@ function newestSample(account: string): UsageSample | undefined {
   return sample;
 }
 
-/** The newest usage reading recorded for one Claude account, or undefined when none has been read. */
+/** The newest usage reading recorded for one account (a Claude account key, or an opencode account's `opencode/<provider>`), or undefined when none has been read. */
 export function latestAccountReading(account: string): UsageSample | undefined {
   return newestSample(account);
 }
 
 export function latestLimitReadings(config: HundredfoldConfig, extraAccounts: Iterable<string> = []): FallbackLimitReadings {
-  const accounts = new Set([DEFAULT_CLAUDE_ACCOUNT, ...declaredClaudeAccounts(config).map((account) => account.key), ...declaredRemoteClaudeAccounts(config).map((account) => account.key), ...extraAccounts]);
+  const accounts = new Set([DEFAULT_CLAUDE_ACCOUNT, ...declaredClaudeAccounts(config).map((account) => account.key), ...declaredRemoteClaudeAccounts(config).map((account) => account.key), ...declaredOpencodeAccounts(config).map((account) => opencodeAccountKey(account.provider)), ...extraAccounts]);
   const readings: FallbackLimitReadings = {};
   for (const account of accounts) readings[account] = newestSample(account);
   return readings;

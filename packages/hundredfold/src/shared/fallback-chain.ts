@@ -8,6 +8,7 @@ import { resolveSubstituteModel } from "./engine-fallback.js";
 import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type FallbackExpansionMode } from "./fallback-chain-expand.js";
 import { linkHealth } from "./fallback-chain-health.js";
 import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
+import { opencodeMemberTarget, opencodeOwnModel } from "./fallback-chain-opencode-group.js";
 import {
   fallbackGroupOf, fallbackLinkKey, fallbackLinkLabel,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
@@ -145,12 +146,22 @@ function withModel(env: FallbackChainEnv, subject: FallbackChainSpec, link: Fall
   return { engine: link.engine, ...(link.profile === undefined ? {} : { profile: link.profile }), ...(model === undefined ? {} : { model }) };
 }
 
+/**
+ * The target an expanded link runs and whether it can serve at all. A member of an opencode group is an
+ * account, so it runs the subject's own model key on its provider; any other link gets the model rules above.
+ */
+function targetOf(env: FallbackChainEnv, subject: FallbackChainSpec, link: FallbackLink, group: ExpandedFallbackLink["group"]): { target: FallbackLink; unserved: boolean } {
+  if (group && link.engine === "opencode") return opencodeMemberTarget(env.config, link, opencodeOwnModel(env.config, subject.own.model));
+  return { target: withModel(env, subject, link), unserved: false };
+}
+
 /** An expanded link with the group it came from, and why the subject cannot use it, when it cannot. */
 function annotated(
-  env: FallbackChainEnv, subject: FallbackChainSpec, expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"] },
+  env: FallbackChainEnv, subject: FallbackChainSpec,
+  expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"]; unserved?: boolean },
 ): ResolvedFallbackLink {
-  const { resolved, target, group } = expanded;
-  const skip = skipReason(env, subject, target);
+  const { resolved, target, group, unserved } = expanded;
+  const skip = skipReason(env, subject, target) ?? (unserved ? "model-not-served" : undefined);
   const detail = skip ? skipDetail(env.config, subject.scope, target, skip) : undefined;
   const member = group ? { ...resolved, group: { index: group.index, written: group.written } } : resolved;
   return skip ? { ...member, skip, ...(detail ? { skipDetail: detail } : {}) } : member;
@@ -174,11 +185,11 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {
-    const target = withModel(env, subject, link);
+    const { target, unserved } = targetOf(env, subject, link, group);
     const resolved = resolvedLink(env, target, origin, link, { claudeAccount });
     if (seen.has(resolved.key)) continue;
     seen.add(resolved.key);
-    links.push(annotated(env, subject, { resolved, target, group }));
+    links.push(annotated(env, subject, { resolved, target, group, unserved }));
   }
   return links.some((link) => link.group) ? orderGroupLinks(env, links, own.model) : links;
 }

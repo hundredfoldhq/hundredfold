@@ -1,5 +1,10 @@
 import { latestAccountReading } from "./fallback-chain-limits.js";
+import { isEngineExhausted, type EngineHealthReading } from "./engine-health.js";
 import { isLinkExhausted, isLinkSignedOut, type FallbackHealthInputs } from "./fallback-chain-health.js";
+import {
+  isOpencodeAccountKey, isOpencodeGroup, opencodeAccountKey, opencodeLinkAccountKey, opencodeModelKeyOf, ownOpencodeAccount,
+} from "./fallback-chain-opencode-group.js";
+import { declaredOpencodeAccounts } from "./opencode-accounts-config.js";
 import { linkAccount } from "./fallback-chain-links.js";
 import { DEFAULT_CLAUDE_ACCOUNT } from "./engine-account.js";
 import { pickGroupAccount, rankGroupAccounts, type GroupCandidate } from "./fallback-account-pick.js";
@@ -19,25 +24,51 @@ import type { HundredfoldConfig } from "./types.js";
 /** What resolving a chain reads to rank a group: health and the limits readings. */
 export type GroupRankInputs = FallbackHealthInputs;
 
-/** An account's candidate: its latest usage sample (the injected readings when given, else the one on disk) and whether health or a signed-out login rules it out. */
-export function accountCandidate(inputs: FallbackHealthInputs, account: string, label: string): GroupCandidate {
-  const now = inputs.now ?? new Date();
+/** The health keys that rule an opencode account out for a session on `model`: the provider's own, and the session's model on it (`opencode/<provider>/<model key>`). */
+function opencodeHealthKeys(account: string, model: string | null | undefined): string[] {
+  const key = opencodeModelKeyOf(model);
+  return key === undefined ? [account] : [account, `${account}/${key}`];
+}
+
+/** Whether health holds an opencode account's provider, or the session's model on it, at its limit now (an expired or invalid key is such a hold), and when the last of those holds reopens. */
+function opencodeStanding(health: EngineHealthReading, account: string, model: string | null | undefined, now: Date): { exhausted: boolean; reopensAt: number } {
+  const holds = opencodeHealthKeys(account, model).filter((key) => isEngineExhausted(health, key, now));
+  const reopens = holds.map((key) => Date.parse(health[key]?.until ?? ""));
+  return { exhausted: holds.length > 0, reopensAt: reopens.length > 0 && reopens.every(Number.isFinite) ? Math.max(...reopens) : Number.NaN };
+}
+
+/** The standing of a Claude account: exhausted by health or signed out, and when health says it reopens. */
+function claudeStanding(health: EngineHealthReading, account: string, now: Date): { exhausted: boolean; reopensAt: number } {
   const identity = { engine: "claude", model: undefined, account };
-  const exhausted = isLinkExhausted(inputs.health, identity, now) || isLinkSignedOut(inputs.health, identity, now);
-  const until = inputs.health[account]?.until;
-  const reopens = until === undefined ? Number.NaN : Date.parse(until);
+  const exhausted = isLinkExhausted(health, identity, now) || isLinkSignedOut(health, identity, now);
+  return { exhausted, reopensAt: Date.parse(health[account]?.until ?? "") };
+}
+
+/**
+ * An account's candidate: its latest usage sample (the injected readings when given, else the one on disk)
+ * and whether health or a signed-out login rules it out. `account` is a Claude account key or an opencode
+ * account's `opencode/<provider>`; for the latter `model` (the session's own) names the model whose own hold counts.
+ */
+export function accountCandidate(inputs: FallbackHealthInputs, account: string, label: string, model?: string | null): GroupCandidate {
+  const now = inputs.now ?? new Date();
+  const { exhausted, reopensAt } = isOpencodeAccountKey(account) ? opencodeStanding(inputs.health, account, model, now) : claudeStanding(inputs.health, account, now);
   return {
     account,
     label,
     exhausted,
     reading: inputs.limits === undefined ? latestAccountReading(account) : inputs.limits[account],
-    ...(exhausted && Number.isFinite(reopens) ? { reopensAt: reopens } : {}),
+    ...(exhausted && Number.isFinite(reopensAt) ? { reopensAt } : {}),
   };
 }
 
-/** The ranking of some Claude links (the members of a group), best first, for a session that will run `model`. */
-export function rankLinks(inputs: GroupRankInputs, links: readonly Pick<ResolvedFallbackLink, "account" | "label">[], model: string | undefined): AccountHeadroom[] {
-  const candidates = links.map((link) => accountCandidate(inputs, link.account, link.label));
+/** The key a group member is ranked, read and charged under: its account for a Claude member, `opencode/<provider>` for an opencode member (whose own `account` is the engine's). */
+export function groupMemberKey(link: Pick<ResolvedFallbackLink, "engine" | "model" | "account">): string {
+  return opencodeLinkAccountKey(link) ?? link.account;
+}
+
+/** The ranking of some group links (the members of a group), best first, for a session that will run `model`. */
+export function rankLinks(inputs: GroupRankInputs, links: readonly Pick<ResolvedFallbackLink, "engine" | "model" | "account" | "label">[], model: string | undefined): AccountHeadroom[] {
+  const candidates = links.map((link) => accountCandidate(inputs, groupMemberKey(link), link.label, model));
   return rankGroupAccounts(candidates, { now: inputs.now ?? new Date(), model });
 }
 
@@ -60,10 +91,10 @@ export function orderGroupLinks(inputs: GroupRankInputs, links: ResolvedFallback
     const ranking = rankLinks(inputs, members, model);
     const byAccount = new Map(ranking.map((headroom) => [headroom.account, headroom]));
     const order = new Map(ranking.map((headroom, rank) => [headroom.account, rank]));
-    const ordered = [...usable].sort((a, b) => order.get(a.account)! - order.get(b.account)!);
+    const ordered = [...usable].sort((a, b) => order.get(groupMemberKey(a))! - order.get(groupMemberKey(b))!);
     const rest = members.filter((link) => link.skip !== undefined);
     [...ordered, ...rest].forEach((link, slot) => {
-      const headroom = byAccount.get(link.account);
+      const headroom = byAccount.get(groupMemberKey(link));
       out[indices[slot]!] = { ...link, group: { ...link.group!, ...(headroom ? { headroom } : {}) } };
     });
   }
@@ -119,13 +150,33 @@ export function startPickOf(inputs: GroupRankInputs, home: HomeGroup, resolved: 
   const { ownAccount } = context;
   const candidates = home.members.flatMap(({ link, account }): GroupCandidate[] => {
     if (account !== ownAccount) {
-      const member = resolved.find((candidate) => candidate.account === account && candidate.group !== undefined);
+      const member = resolved.find((candidate) => groupMemberKey(candidate) === account && candidate.group !== undefined);
       if (!member || member.skip !== undefined || (account === DEFAULT_CLAUDE_ACCOUNT && ownAccount !== DEFAULT_CLAUDE_ACCOUNT)) return [];
     }
-    return [accountCandidate(inputs, account, fallbackLinkLabel(link))];
+    return [accountCandidate(inputs, account, fallbackLinkLabel(link), context.model)];
   });
   return pickGroupAccount(candidates, {
     now: inputs.now ?? new Date(), model: context.model,
     trigger: "start", source: context.source, groupIndex: home.index,
   });
+}
+
+/**
+ * The first entry of an opencode subject's chain as a group when it is an opencode group holding the
+ * session's own account: the declared account whose provider serves `ownModel`. None when the model's
+ * provider is no declared account (such a subject is never balanced), the group is not an opencode
+ * group, or it does not hold the own account. A member's key is `opencode/<provider>` of its account;
+ * a member naming no declared account has none and is left out.
+ */
+export function opencodeHomeGroupOf(config: HundredfoldConfig, entries: readonly FallbackChainEntry[], ownModel: string | null | undefined): (HomeGroup & { ownAccount: string }) | undefined {
+  const written = fallbackGroupOf(entries[0]);
+  const own = ownOpencodeAccount(config, ownModel);
+  if (!written || !own || !isOpencodeGroup(written)) return undefined;
+  const accounts = declaredOpencodeAccounts(config);
+  const members = written.group.flatMap((link): GroupMember[] => {
+    const account = accounts.find((candidate) => candidate.name === link.profile);
+    return account ? [{ link, account: opencodeAccountKey(account.provider) }] : [];
+  });
+  const ownAccount = opencodeAccountKey(own.provider);
+  return members.some((member) => member.account === ownAccount) ? { index: 0, written, members, ownAccount } : undefined;
 }

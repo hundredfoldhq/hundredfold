@@ -236,6 +236,28 @@ engines:
 - **A session gets only the accounts its chain reaches.** Each key belongs to its own workspace, so a session's opencode processes (and a remote host's keys file) get the block and key of an account only when that account's provider is the provider of the session's own model, of a model on an opencode link in its resolved chain (its employee's, its account's or its engine's chain, or a stored per-session fallback target), or of the model the turn runs on. A session whose chain reaches no account gets no account block and no key. A server's fingerprint carries the accounts it was started with, so a chain change that adds an account restarts the server at the next turn.
 - **Conversations carry over.** All accounts share one opencode data directory, so a hop from `opencode-go/x` to `opencode-go-b/x` is the same thread on another model.
 
+### Account groups
+
+Declared accounts can be balanced: a `{ group: [...] }` entry at the head of an opencode employee's `fallback` or of `engines.opencode.fallback` holds accounts by `profile`, and a new opencode session is to be spread across them in proportion to each account's headroom instead of always billing the first.
+
+```yaml
+engines:
+  opencode:
+    model: opencode-go/glm-5
+    accounts:
+      go-a: { provider: opencode-go }                  # the built-in provider, declared so a group can name it
+      go-b: { provider: opencode-go-b, base: opencode-go, keyEnv: OPENCODE_GO_B_API_KEY }
+    fallback:
+      - group:
+          - { engine: opencode, profile: go-a }
+          - { engine: opencode, profile: go-b }
+```
+
+- A member is `engine: opencode` with `profile` naming a declared account, never a model. A member stands for the session's own model key on its provider: for a session on `opencode-go/glm-5`, `go-b` is `opencode-go-b/glm-5`, and an account that does not serve the key is skipped for that session.
+- The headroom is read from a usage history per account (`opencode/<provider>`), which the engine-health refresh appends to every fifteen minutes from OpenCode Go's own meter, or from the turn ledger when an account has `usageLimits` and the meter did not answer. An account with no reading counts as unknown. The provider meter is the reading to rely on: OpenCode 2.x `run` mode records turns at $0 in the ledger, so a ledger-only account reads as full headroom.
+- A subject whose model's provider is not a declared account is never balanced: declare the built-in provider (`go-a` above) to include it.
+- `GET /api/fallback-chains` shows `startPick` for such a subject. The rules, the refusals and the sentences are in [fallback chains](fallback-chains.md#opencode-account-groups).
+
 ### Failure classes
 
 A provider call that fails is read from opencode's own error, `{type, message, status}`, which both the `run` and server transports put into the turn's error text as `<type>: <message> (HTTP <status>)`. The type and status decide the class; the prose patterns the gateway uses for every engine apply only to an error that carries no `provider.*` type. Each class is held against what it is about, so the next turn, and any new session that takes its engine from its employee's default (a session that names its engine or model keeps what it named), skips it **without sending it a request**:
