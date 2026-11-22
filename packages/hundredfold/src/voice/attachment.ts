@@ -96,9 +96,9 @@ export class VoiceAttachment {
     return this.suspendedAt !== null;
   }
 
-  /** When the client went away, or null while it is attached. */
+  /** When the client went away and nothing has come back for it yet, or null while a socket is attached (a reconnect in progress counts as attached). */
   get suspendedSince(): number | null {
-    return this.suspendedAt;
+    return this.socket === null ? this.suspendedAt : null;
   }
 
   // ── socket in ──────────────────────────────────────────────────────────────

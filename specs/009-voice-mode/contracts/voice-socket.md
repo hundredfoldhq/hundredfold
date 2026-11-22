@@ -54,7 +54,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 | `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `cues? {enabled, volume}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
 | `vad` | `speaking: boolean` | the gateway's VAD state (UI only) |
 | `transcript` | `utteranceId`, `text`, `final` | partial or final |
-| `stop_playback` | `reason: "speech" \| "new_reply"` | stop playing and drop what is buffered: the gateway's VAD heard speech over playback before the client's onset did (`speech`), or a newer reply is about to be spoken and the older one is abandoned (`new_reply`) |
+| `stop_playback` | `reason: "speech" \| "new_reply"` | stop playing and drop what is buffered: the gateway's VAD heard speech over playback before the client's onset did (`speech`), or a newer reply is about to be spoken and the older one is abandoned (`new_reply`). After a `new_reply` stop the next segments are meant to be heard at once: a client that drops audio for a short window after a stop (the native client's interruption guard) must not apply that window to `new_reply` |
 | `turn` | `state`, `tool?` | `idle` / `thinking` / `working` / `speaking` |
 | `segment_start` | `segmentId`, `messageId`, `text` | before that segment's audio |
 | `segment_end` | `segmentId` | after its last audio frame |

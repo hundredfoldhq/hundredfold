@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHarness, SESSION, type Harness } from "./hub-harness.js";
 import { settle } from "./fakes.js";
+import type { VoiceAttachment } from "../attachment.js";
 
 /** Say hello on a fresh socket and bye on it, as one tap-to-tap run of voice mode does. */
 async function runAndStop(h: Harness, spoken: string): Promise<void> {
@@ -77,6 +78,76 @@ describe("a new reply jumps to the new text", () => {
     h.event("session:started");
     await settle();
     expect(socket.ofType("stop_playback")).toHaveLength(0);
+  });
+
+  describe("a barge-in cut that still waits for the person's words is not cut a second time by a turn that starts", () => {
+    /** A reply mid-way, cut by the person speaking over it; a turn then starts while their words are still awaited. */
+    async function cutWaitingForWords(h: Harness, attachment: VoiceAttachment) {
+      h.event("session:started");
+      h.delta("text", "Alpha one two three. ");
+      await settle();
+      let release!: () => void;
+      h.tts.gate = new Promise<void>((resolve) => { release = resolve; });
+      h.delta("text", "Beta one two three four. Gamma ends it. ");
+      await settle();
+      attachment.onText(h.json({ type: "barge_in", segmentId: 2, playedMs: 0 }));
+      release();
+      h.tts.gate = null;
+      await settle();
+    }
+
+    it("nothing was said: no extra stop, and the unheard sentences still resume", async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      await cutWaitingForWords(h, attachment);
+      socket.clear();
+
+      // A turn queued behind the cut speaks into the hold; a further turn then starts. Neither cuts what is queued.
+      h.event("session:started");
+      h.delta("text", "Queued answer. ");
+      h.event("session:completed", { result: "Queued answer.", error: null });
+      await settle();
+      h.event("session:started");
+      await settle();
+      expect(socket.ofType("stop_playback").filter((f) => f.reason === "new_reply")).toHaveLength(0);
+
+      h.vad().start();
+      h.audio(attachment, 6);
+      h.vad().end();
+      h.stt.last().final("");
+      await settle();
+      expect(h.delivered).toHaveLength(0);
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(expect.arrayContaining(["Beta one two three four.", "Queued answer."]));
+    });
+
+    it("words were said: no extra stop, the held reply is let go and the new turn speaks on its own", async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      await cutWaitingForWords(h, attachment);
+      socket.clear();
+
+      // A turn queued behind the cut speaks into the hold; a further turn then starts. Neither cuts what is queued.
+      h.event("session:started");
+      h.delta("text", "Queued answer. ");
+      h.event("session:completed", { result: "Queued answer.", error: null });
+      await settle();
+      h.event("session:started");
+      await settle();
+      expect(socket.ofType("stop_playback").filter((f) => f.reason === "new_reply")).toHaveLength(0);
+
+      h.vad().start();
+      h.audio(attachment, 6);
+      h.vad().end();
+      h.stt.last().final("never mind that");
+      await settle();
+      expect(h.delivered.at(-1)).toMatchObject({ text: "never mind that" });
+      expect(socket.ofType("segment_start").map((f) => f.text)).not.toContain("Beta one two three four.");
+      socket.clear();
+      h.delta("text", "Fresh answer. ");
+      h.event("session:completed", { result: "Fresh answer.", error: null });
+      await settle();
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Fresh answer."]);
+    });
   });
 });
 
@@ -192,5 +263,23 @@ describe("voice stopped and started again", () => {
     expect(refused.socket.closed).toMatchObject({ code: 4429 });
     expect(h.hub.get("c")).toBe(live.attachment);
   });
-});
 
+  it("a client that is reconnecting is not let go to make room: only a connection with no socket is", async () => {
+    const h = createHarness({ config: { limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 1 } } });
+    const first = h.connect({ sessionId: "a" });
+    h.hub.socketClosed(first.attachment, first.socket as never, 1006);
+    // The client is back on a new socket but has not said hello yet.
+    const back = h.connect({ sessionId: "a", hello: false });
+    expect(back.attachment).toBe(first.attachment);
+
+    const other = h.connect({ sessionId: "c" });
+    expect(other.socket.closed).toMatchObject({ code: 4429 });
+    expect(h.hub.get("a")).toBe(first.attachment);
+    expect(back.socket.closed).toBeNull();
+    expect(back.socket.ofType("detached")).toHaveLength(0);
+
+    back.attachment.onText(h.json({ type: "hello", protocol: 1, mode: "hands-free", client: "web" }));
+    await settle();
+    expect(back.socket.ofType("ready")).toHaveLength(1);
+  });
+});
