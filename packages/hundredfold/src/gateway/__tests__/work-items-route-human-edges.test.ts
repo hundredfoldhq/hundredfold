@@ -13,6 +13,9 @@ describe("PUT /api/work-items/:id/status — the operator human-surface lane (To
     // Drag-to-Backlog reopen: closed work loses its closedAt as it comes back.
     ["done", "backlog", { status: "backlog", closedAt: null }],
     ["cancelled", "backlog", { status: "backlog", closedAt: null }],
+    // Closed too soon: straight back to review, no detour through backlog.
+    ["done", "in_review", { status: "in_review", closedAt: null }],
+    ["cancelled", "in_review", { status: "in_review", closedAt: null }],
     ["blocked", "backlog", { status: "backlog" }],
     ["blocked", "in_review", { status: "in_review" }],
     // Resuming stopped work: a manual start from blocked is the operator's.
@@ -49,7 +52,8 @@ describe("PUT /api/work-items/:id/status — the operator human-surface lane (To
   it.each([
     ["a truly illegal edge", "in_review", "backlog", [/illegal transition in_review → backlog/]],
     // A declared edge, but a manual start is never from a closed Todo.
-    ["a manual start from done", "done", "executing", [/illegal/]],
+    ["a manual start from done", "done", "executing", [/illegal manual transition done → executing/, /declared edges from done are backlog, in_review/, /send it back from in_review/]],
+    ["a block from a closed Todo", "cancelled", "blocked", [/illegal transition cancelled → blocked/, /declared edges from cancelled are backlog, in_review/]],
     // The refusal names every status, so the operator can see what was allowed.
     ["an unknown status", "backlog", "paused", [/status must be one of/, /backlog/]],
   ] as const)("still refuses an operator PUT along %s", async (_name, from, target, messages) => {
@@ -62,7 +66,34 @@ describe("PUT /api/work-items/:id/status — the operator human-surface lane (To
     );
     expect(cap.status).toBe(400);
     for (const message of messages) expect(cap.body.error).toMatch(message);
+    expect(cap.body.error).not.toMatch(/human surface/);
     expect(store.getWorkItem(item.id)?.status).toBe(from);
+  });
+
+  it("records the reopen as a status_change event by the operator, with the closed timestamp cleared", async () => {
+    const item = store.createWorkItem({ title: "Reopen audit", status: "done" });
+    const cap = makeRes();
+    await api.handleApiRequest(
+      makeReq("PUT", `/api/work-items/${item.id}/status`, { status: "in_review" }, operatorHeaders),
+      cap.res,
+      ctx,
+    );
+    expect(cap.status).toBe(200);
+    expect(store.listWorkItemEvents(item.id).at(-1)).toMatchObject({ kind: "status_change", fromStatus: "done", toStatus: "in_review" });
+  });
+
+  it("does not hand the reopen to an agent session: closed work stays the operator's", async () => {
+    const caller = reg.createSession({ engine: "codex", source: "web", sourceRef: "agent-reopen-pin", employee: "platform-worker" });
+    const closed = store.createWorkItem({ title: "Agent cannot reopen", status: "done", assignee: "platform-worker" });
+    const cap = makeRes();
+    await api.handleApiRequest(
+      makeReq("POST", `/api/work-items/${closed.id}/status`, { status: "in_review", note: "reopening" }, toolHeaders(caller.id)),
+      cap.res,
+      ctx,
+    );
+    expect(cap.status).toBe(403);
+    expect(cap.body.error).toMatch(/reopening closed work is the operator's/);
+    expect(store.getWorkItem(closed.id)?.status).toBe("done");
   });
 
   it("keeps the agent lane demanding a note to block, which the operator PUT lane does not", async () => {

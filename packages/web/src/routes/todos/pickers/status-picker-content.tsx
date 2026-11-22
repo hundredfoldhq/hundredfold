@@ -1,6 +1,6 @@
 import type { WorkItemStatusWire } from "@/lib/api"
 import { STATUS_LABEL } from "@/lib/todos"
-import { legalTargets } from "@/lib/legal-targets"
+import { legalTargets, unreachableRule } from "@/lib/legal-targets"
 import { StatusCircle } from "../state-glyph"
 import type { PickerContentProps } from "./picker-contents"
 import { PickerNote, PickerRow } from "./picker-shell"
@@ -77,12 +77,18 @@ export function StatusPickerContent({
           testId={`status-option-${target.status}`}
         />
       ))}
-      {omitted.length > 0 && (
-        <PickerNote>
-          Only legal moves are listed — {omitted.map((s) => STATUS_LABEL[s]).join(" and ")}{" "}
-          {omitted.length === 1 ? "isn't" : "aren't"} reachable from {STATUS_LABEL[from]}.
-        </PickerNote>
-      )}
+      {omitted.length > 0 && <OmittedNote from={from} omitted={omitted} />}
     </>
+  )
+}
+
+/** Says which statuses `from` cannot reach, and the rule that makes them so. */
+function OmittedNote({ from, omitted }: { from: WorkItemStatusWire; omitted: WorkItemStatusWire[] }) {
+  const rule = unreachableRule(from)
+  return (
+    <PickerNote>
+      Only legal moves are listed — {omitted.map((s) => STATUS_LABEL[s]).join(" and ")}{" "}
+      {omitted.length === 1 ? "isn't" : "aren't"} reachable from {STATUS_LABEL[from]}.{rule ? ` ${rule}` : ""}
+    </PickerNote>
   )
 }
