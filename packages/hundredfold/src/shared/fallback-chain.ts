@@ -167,17 +167,21 @@ function annotated(
   return skip ? { ...member, skip, ...(detail ? { skipDetail: detail } : {}) } : member;
 }
 
-/**
- * The keys that stand for the subject's own target: its own link, a remote subject's unprofiled spelling of it
- * (a link naming no profile runs the account it has), and an opencode target naming no model on the engine's
- * configured one (a group member on that model is the own account).
- */
-function ownTargetKeys(config: HundredfoldConfig, subject: FallbackChainSpec, own: ResolvedFallbackLink): string[] {
+/** The keys that stand for the subject's own target: its own link, and a remote subject's unprofiled spelling of it (a link naming no profile runs the account it has). */
+function ownTargetKeys(subject: FallbackChainSpec, own: ResolvedFallbackLink): string[] {
   const keys = [own.key];
   if (subject.scope.remote && own.profile !== undefined) keys.push(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
-  const effective = own.engine === "opencode" && own.model === undefined ? opencodeOwnModel(config, undefined) : undefined;
-  if (effective !== undefined) keys.push(fallbackLinkKey({ engine: "opencode", model: effective }));
   return keys;
+}
+
+/**
+ * The key a member of an opencode group has when it is the subject's own account while the subject names no model
+ * (it runs the engine's configured one, so the own link's key, `opencode||`, does not spell it). Only a group member is
+ * dropped for it: a link a chain names outright stays, as it always has.
+ */
+function ownMemberKey(config: HundredfoldConfig, own: ResolvedFallbackLink): string | undefined {
+  const effective = own.engine === "opencode" && own.model === undefined ? opencodeOwnModel(config, undefined) : undefined;
+  return effective === undefined ? undefined : fallbackLinkKey({ engine: "opencode", model: effective });
 }
 
 /**
@@ -192,13 +196,14 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   // An account chain names its Claude accounts itself; an engine chain's unprofiled Claude link is the subject's own login.
   const claudeAccount = subject.mode === "engine" ? subject.claudeAccount : undefined;
   const own = resolvedLink(env, subject.own, "config", subject.own, { claudeAccount, healthProvider: unpinnedHealthProvider(env.config, subject.own) });
-  const seen = new Set<string>(ownTargetKeys(env.config, subject, own));
+  const seen = new Set<string>(ownTargetKeys(subject, own));
+  const ownMember = ownMemberKey(env.config, own);
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {
     const { target, unserved } = targetOf(env, subject, link, group);
     const resolved = resolvedLink(env, target, origin, link, { claudeAccount });
-    if (seen.has(resolved.key)) continue;
+    if (seen.has(resolved.key) || (group && resolved.key === ownMember)) continue;
     seen.add(resolved.key);
     links.push(annotated(env, subject, { resolved, target, group, unserved }));
   }
