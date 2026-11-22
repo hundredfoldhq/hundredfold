@@ -31,6 +31,7 @@
 
 ## Notes
 
+- Revised 2026-11-22 after the spec review gate: board members, local providers, locked screen. Re-validated: all items pass.
 - Validation, iteration 1: SC-003 asked for playback to stop within 300 ms, which the
   default interruption sensitivity (a short stretch of speech before it counts) could not
   meet. Revised to 500 ms at default settings, sensitivity included. All items pass.
