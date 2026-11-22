@@ -82,6 +82,8 @@ describe("NativeVoiceSession", () => {
     expect(nativeStartMessage("PERMISSION_DENIED")).toMatch(/permission/i)
     expect(nativeStartMessage(new Error("boom"))).toBe("Couldn't start voice mode on this device.")
     expect(nativeStartMessage(undefined)).toBe("Couldn't start voice mode on this device.")
+    expect(nativeStartMessage("constructor")).toBe("Couldn't start voice mode on this device.")
+    expect(nativeStartMessage("__proto__")).toBe("Couldn't start voice mode on this device.")
   })
 
   it("an ok:false answer is a failure", async () => {

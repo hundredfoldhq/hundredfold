@@ -43,7 +43,7 @@ function errorCode(error: unknown): string {
 
 export function nativeStartMessage(error: unknown): string {
   const code = errorCode(error)
-  return START_ERRORS[code] ?? GENERIC_START_ERROR
+  return Object.hasOwn(START_ERRORS, code) ? START_ERRORS[code] : GENERIC_START_ERROR
 }
 
 const NATIVE_STATES = new Set(["connecting", "running", "paused", "stopped"])
