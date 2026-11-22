@@ -105,12 +105,13 @@ describe("attachment lifecycle and limits", () => {
     expect(h.connect({ sessionId: "b" }).socket.ofType("ready")).toHaveLength(1);
   });
 
-  it("voice off: nothing attaches", () => {
+  it("voice off: nothing attaches, and the client is told voice is off, not that its chat is gone", () => {
     const h = createHarness();
     h.state.config = null;
     const { socket, attachment } = h.connect();
     expect(attachment).toBeNull();
-    expect(socket.closed?.code).toBe(VOICE_CLOSE.sessionGone);
+    expect(socket.ofType("detached")).toEqual([{ type: "detached", reason: "disabled" }]);
+    expect(socket.closed).toMatchObject({ code: 1000, reason: "disabled" });
   });
 
   it.each([
@@ -215,7 +216,15 @@ describe("attachment lifecycle and limits", () => {
       expect(h.hub.size()).toBe(0);
     });
 
-    it("without a goodbye (1006, 1005) leaves the attachment suspended for ten minutes, then drops it", () => {
+    it.each([1005, 1009])("%i (no status, an oversize frame) ends the attachment at once and frees its slot", (code) => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.hub.socketClosed(attachment, socket, code);
+      expect(h.hub.size()).toBe(0);
+      expect(attachment.suspended).toBe(false);
+    });
+
+    it("without a goodbye (1006) leaves the attachment suspended for ten minutes, then drops it", () => {
       const h = createHarness();
       const { socket, attachment } = h.connect();
       h.hub.socketClosed(attachment, socket, 1006);

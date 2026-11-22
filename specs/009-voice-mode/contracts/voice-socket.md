@@ -10,6 +10,8 @@ shared by the gateway, the web client and (by mirror) the native client.
 | Condition | Result |
 |---|---|
 | voice absent or disabled | socket destroyed (no route), as for an unknown path |
+| voice switched off after the upgrade was accepted | `detached {reason: "disabled"}`, then closed `1000` with reason `disabled` |
+| no credential at all | 403 with a neutral "Authentication is required." |
 | operator: `verifyGatewayAuth`, or a same-origin browser when auth is not required (the `/ws/pty` rule) | accepted |
 | member cookie: `memberMayUpgrade` allows `/ws/voice/:id` **and** the member may send messages to the session | accepted, joins the member socket sweep |
 | cross-origin browser | 403 (`rejectCrossOriginUpgrade`) |
@@ -58,8 +60,10 @@ shared by the gateway, the web client and (by mirror) the native client.
 
 ## Close codes
 
-`1000` normal (`bye`), `1001` shutdown, `4401` access lost, `4404` session gone, `4409`
+`1000` normal (`bye`, and reason `unavailable` after an `error` with code `speech_unavailable`: a provider is down, so the attachment is refused at `hello`), `1001` shutdown, `4401` access lost, `4404` session gone, `4409`
 in use by another principal, `4429` attachment limit, `4400` protocol error.
+
+A close the gateway sees as `1000`, `1001`, `1005` (no status), `1009` (oversize frame) or any `44xx` above ends the attachment. Any other close without a `bye` (a dropped connection, `1006`) suspends it for the resume window.
 
 ## Invariants (tested)
 

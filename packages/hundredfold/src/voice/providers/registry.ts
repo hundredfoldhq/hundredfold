@@ -3,6 +3,7 @@
  * speech sidecar and one install, held here so the API, the hub and the providers all see
  * the same process and the same install state.
  */
+import { voiceKeyEnvironment } from "../../shared/child-env.js";
 import type { ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import type { VoiceProviderSet } from "../hub-types.js";
 import type { SttProvider, TtsProvider, VadStream } from "../provider.js";
@@ -59,18 +60,21 @@ export function closeSharedLocalSpeech(): void {
 
 const usesLocal = (resolved: ResolvedVoiceConfig): boolean => resolved.stt.provider === "local" || resolved.tts.provider === "local";
 
+/** Where a provider reads its key: the caller's environment, else the gateway's with the voice keys it took at load. */
+const keyEnvironment = (deps: ProviderDeps): NodeJS.ProcessEnv => deps.env ?? voiceKeyEnvironment();
+
 export function createSttProvider(resolved: ResolvedVoiceConfig, deps: ProviderDeps = {}): SttProvider {
   switch (resolved.stt.provider) {
-    case "openai": return new OpenAiSttProvider(resolved.stt, { env: deps.env, endpoints: deps.endpoints });
-    case "openai-compatible": return new OpenAiCompatibleSttProvider(resolved.stt, deps.env);
+    case "openai": return new OpenAiSttProvider(resolved.stt, { env: keyEnvironment(deps), endpoints: deps.endpoints });
+    case "openai-compatible": return new OpenAiCompatibleSttProvider(resolved.stt, keyEnvironment(deps));
     default: return new LocalSttProvider(deps.local ?? sharedLocalSpeech(resolved, deps.home));
   }
 }
 
 export function createTtsProvider(resolved: ResolvedVoiceConfig, deps: ProviderDeps = {}): TtsProvider {
   switch (resolved.tts.provider) {
-    case "openai": return new OpenAiTtsProvider(resolved.tts, { env: deps.env, endpoints: deps.endpoints });
-    case "openai-compatible": return new OpenAiCompatibleTtsProvider(resolved.tts, deps.env);
+    case "openai": return new OpenAiTtsProvider(resolved.tts, { env: keyEnvironment(deps), endpoints: deps.endpoints });
+    case "openai-compatible": return new OpenAiCompatibleTtsProvider(resolved.tts, keyEnvironment(deps));
     default: return new LocalTtsProvider(deps.local ?? sharedLocalSpeech(resolved, deps.home), resolved.tts);
   }
 }
