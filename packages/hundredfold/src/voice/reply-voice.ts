@@ -22,6 +22,8 @@ interface Reply {
   heard: string | undefined;
   /** For replies the engine wrote on its own: the stored messages this one speaks, in order. */
   rows?: StoredReply[];
+  /** A cut of this pass was answered with words: what was heard is recorded, and nothing more is. */
+  closed?: boolean;
 }
 
 /** How many recent spoken passes of such replies are remembered, for the barge-in that cuts one. */
@@ -132,9 +134,18 @@ export class ReplyVoice {
       if (this.reply) this.pipeline.markReply(this.reply.id);
       void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
     } else {
-      this.pipeline.resumeWith(unheard);
+      this.resumeStreamed(cut, unheard);
     }
     this.pipeline.release();
+  }
+
+  /** A streamed reply's sentences go on as its own; one that had already finished is told once they are spoken. */
+  private resumeStreamed(cut: CutResult | null, unheard: readonly string[]): void {
+    if (cut?.replyKey !== undefined) this.pipeline.markReply(cut.replyKey);
+    this.pipeline.resumeWith(unheard);
+    if (this.reply) this.pipeline.markReply(this.reply.id);
+    const finished = cut?.replyKey !== undefined && this.last?.id === cut.replyKey ? this.last : undefined;
+    if (finished) void this.pipeline.whenIdle().then(() => this.safeApplyMeta(finished));
   }
 
   /** Words were said: the new turn brings its own reply. */
@@ -144,7 +155,7 @@ export class ReplyVoice {
     const cut = this.lastCut;
     this.lastCut = null;
     const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
-    if (cut && pass) return this.recordPassHeard(cut);
+    if (cut && pass) return this.recordPassHeard(cut, pass);
     const reply = this.reply ?? this.last;
     if (!reply) return;
     reply.heard = heard;
@@ -299,30 +310,62 @@ export class ReplyVoice {
       for (const row of speakable) this.missed.push({ messageId: row.id, text: row.content });
       return;
     }
-    const pass = this.newReply();
-    pass.rows = speakable;
+    const pass = this.passToSpeakIn();
+    pass.rows = [...(pass.rows ?? []), ...speakable];
     for (const row of speakable) this.pipeline.speakText(row.content, row.id);
-    this.passes.push(pass);
-    if (this.passes.length > RETAINED_PASSES) this.passes.shift();
     // A gateway reply still streaming keeps its own sentences.
     if (this.reply) this.pipeline.markReply(this.reply.id);
     void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
   }
 
+  /** The pass a report is spoken in, marked as the reply the pipeline's next sentences belong to: the live one, else a new one. */
+  private passToSpeakIn(): Reply {
+    const live = this.livePass();
+    if (live) {
+      this.pipeline.markReply(live.id);
+      return live;
+    }
+    const pass = this.newReply();
+    this.passes.push(pass);
+    if (this.passes.length > RETAINED_PASSES) this.passes.shift();
+    return pass;
+  }
+
+  /**
+   * The pass being spoken, or stopped by a barge-in that has not yet been answered: a report arriving then is part of
+   * it, one reply for the person talking over it, rather than a reply of its own that the same cut would drop unspoken.
+   */
+  private livePass(): Reply | undefined {
+    const pass = this.passes[this.passes.length - 1];
+    if (!pass || pass.closed) return undefined;
+    const stopped = this.lastCut?.replyKey === pass.id && this.pipeline.isHeld();
+    return stopped || this.pipeline.hasUnplayedFor(pass.id) ? pass : undefined;
+  }
+
   /** Each stored message of a spoken pass learns what of it went out. */
   private applyPassMeta(pass: Reply): void {
+    if (pass.closed) return;
     for (const row of pass.rows ?? []) {
       const spoken = this.pipeline.spokenFor(pass.id, row.id);
       if (spoken) this.options.deps.mergeMessageMeta(row.id, { voice: { spokenText: spoken } });
     }
   }
 
-  /** A cut pass: the message the cut fell in keeps what was heard, the ones before it were heard whole, the ones after not at all. */
-  private recordPassHeard(cut: CutResult): void {
+  /**
+   * A cut pass: the message the cut fell in keeps what was heard, the ones before it were heard whole, the ones after
+   * not at all, nor any that joined the pass after the cut.
+   */
+  private recordPassHeard(cut: CutResult, pass: Reply): void {
+    pass.closed = true;
     try {
+      const recorded = new Set<string>();
       for (const part of cut.heardBy) {
         if (!part.messageId) continue;
+        recorded.add(part.messageId);
         this.options.deps.mergeMessageMeta(part.messageId, { voice: { spokenText: part.text || null, interrupted: part.complete ? null : true } });
+      }
+      for (const row of pass.rows ?? []) {
+        if (!recorded.has(row.id)) this.options.deps.mergeMessageMeta(row.id, { voice: { spokenText: null, interrupted: true } });
       }
     } catch (error) {
       this.logMetaFailure(error);
