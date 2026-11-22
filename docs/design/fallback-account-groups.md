@@ -437,6 +437,28 @@ employee outside them.
 target, a limit walks the other members by headroom, and the return at the
 reset goes back to the pinned account's directory, never the employee's.
 
+**Live verification (part I).** Part G proved the above with SessionManager tests that answer ssh with a local shell. The
+fake-provider harness (`scripts/verify-fallback-chains.sh`, scenarios `rp`, `rr`, `rt`, `ru`) now runs it on a throwaway
+instance: a remote employee whose target is `user@127.0.0.1`, reached through an `ssh` stand-in placed first on the instance's
+PATH, which runs the host's commands in a local `sh -c` under a temporary host home with the fake `claude` first on its PATH.
+The real gateway stages that host, opens its reverse tunnel and launches there; the scenarios assert
+`transportMeta.remoteAccountPin`, `transportMeta.accountPick` and the `CLAUDE_CONFIG_DIR` each turn ran with.
+Isolation, piece by piece: no sshd and no listener other than loopback ones (the tunnel's forwarder, the staging port probe);
+no real `claude` (the fake, linked into the host home's `bin/`); every path the host touches (its home, profile
+directories, staging, the system-wide policy directories the readiness probe reads, which the stand-in maps into the host
+home) is inside the verification root; the caller's home and `~/.ssh` are never an environment, argument or path; the stand-in
+refuses any destination but `user@127.0.0.1` and every option the gateway does not use, and a scenario fails if it refused
+anything or if the network guard's log is not empty.
+Not covered by the live run, because the harness cannot make it real without a real host: the gateway's own 15-minute
+read of a remote account's usage over SSH (the fake profiles hold no token, so nothing is read; the scenarios seed the
+histories the pick reads, as the Claude and opencode ones do), the terminal attach (`-tt` with a person at it), and a remote
+opencode employee (the fake `opencode` is not on the host's PATH). The usage read has its own unit tests
+(`remote-account-usage`); the other two are exercised by no scenario here (the third is §10's "remote opencode
+employees", not run).
+The first live run found a gap in the start paths: a new chat or spawn of a remote employee recorded the pick but dropped the
+pin (`spawn-session.ts` copied `accountPick` and `claudeConfigDir` from the validated selection and not
+`remoteAccountPin`), so the session ran as the employee's own login. Fixed in the same change, with a test that fails without it.
+
 ## The follow-up in parts
 
 | Part | Scope |

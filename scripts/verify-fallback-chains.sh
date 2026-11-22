@@ -108,7 +108,7 @@ check_port() {
 instance_env() {
   env -i PATH="$VERIFY_ROOT/bin:$NODE_DIR:/usr/bin:/bin" HOME="$HOST_HOME" LANG=C.UTF-8 TERM=dumb TMPDIR="$VERIFY_ROOT/tmp" \
     XDG_CONFIG_HOME="$HOST_HOME/.config" XDG_DATA_HOME="$HOST_HOME/.local/share" XDG_CACHE_HOME="$HOST_HOME/.cache" XDG_STATE_HOME="$HOST_HOME/.local/state" \
-    FAKE_PROVIDER_OPENCODE_MODELS="own-provider/model-own,x-provider/model-x,y-provider/model-y" \
+    FAKE_PROVIDER_OPENCODE_MODELS="own-provider/model-own,x-provider/model-x,y-provider/model-y,group-b-provider/model-own" \
     FAKE_PROVIDER_SCENARIO="$VERIFY_ROOT/scenario.json" FAKE_PROVIDER_LEDGER="$VERIFY_ROOT/ledger.jsonl" FAKE_PROVIDER_NET_LOG="$VERIFY_ROOT/network-refusals.jsonl" \
     HUNDREDFOLD_CLAUDE_USAGE_API=off NODE_OPTIONS="--require $DRIVER_DIR/network-guard.cjs" HUNDREDFOLD_REPO="$GATEWAY_REPO" HUNDREDFOLD_SANDBOX_NODE_BIN="$NODE_BIN" "$@"
 }
@@ -187,9 +187,11 @@ trap 'exit 130' INT TERM
 run_mode() {
   local mode="$1"
   HOST_HOME="$VERIFY_ROOT/host-$mode"
+  # The "remote host" of the remote-employee scenarios: a home of its own that the ssh shim runs commands in.
+  REMOTE_HOME="$VERIFY_ROOT/remote-$mode"
   SANDBOX_HOME="$HOST_HOME/.hundredfold-$INSTANCE"
   mkdir -p "$HOST_HOME/.config" "$HOST_HOME/.local/share" "$HOST_HOME/.cache" "$HOST_HOME/.local/state"
-  for path in "$HOST_HOME" "$SANDBOX_HOME" "$HOST_HOME/profile-a" "$HOST_HOME/profile-b" "$SANDBOX_HOME/.claude-sandbox" "$VERIFY_ROOT/tmp"; do
+  for path in "$HOST_HOME" "$SANDBOX_HOME" "$HOST_HOME/profile-a" "$HOST_HOME/profile-b" "$SANDBOX_HOME/.claude-sandbox" "$VERIFY_ROOT/tmp" "$REMOTE_HOME" "$REMOTE_HOME/profile-ra" "$REMOTE_HOME/profile-rb" "$VERIFY_ROOT/bin/ssh"; do
     refuse_unless_temporary "path" "$path"
   done
   check_port "$PORT"
@@ -200,7 +202,8 @@ run_mode() {
   # Set before create: a sandbox that is only partly made is still torn down (destroy checks its own marker).
   STARTED=1
   sandbox create "$INSTANCE" --port "$PORT" >/dev/null || return 1
-  instance_env "$NODE_BIN" "$DRIVER_DIR/seed.mjs" --sandbox-home "$SANDBOX_HOME" --host-home "$HOST_HOME" \
+  mkdir -p "$REMOTE_HOME"
+  instance_env "$NODE_BIN" "$DRIVER_DIR/seed.mjs" --sandbox-home "$SANDBOX_HOME" --host-home "$HOST_HOME" --remote-home "$REMOTE_HOME" \
     --gateway-repo "$GATEWAY_REPO" --harness-root "$REPO" --mode "$mode" > "$VERIFY_ROOT/layout-$mode.json" || return 1
   # The helper's health wait prints a curl error per poll while the gateway boots; only what else it says matters.
   sandbox start "$INSTANCE" >/dev/null 2>"$VERIFY_ROOT/start.err" || { grep -v "^curl: (7)" "$VERIFY_ROOT/start.err" >&2; return 1; }
@@ -220,7 +223,7 @@ for index in "${!modes[@]}"; do
   run_mode "${modes[$index]}" || STATUS=1
   if (( index < ${#modes[@]} - 1 )) || (( ! KEEP )); then
     teardown_instance "$VERIFY_ROOT"; STARTED=0
-    if (( index < ${#modes[@]} - 1 )); then rm -r "$HOST_HOME"; fi
+    if (( index < ${#modes[@]} - 1 )); then rm -r "$HOST_HOME" "$REMOTE_HOME"; fi
   fi
 done
 exit "$STATUS"

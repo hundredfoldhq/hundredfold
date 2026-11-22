@@ -76,7 +76,7 @@ function sharesOf(keys, pick) {
   return byAccount;
 }
 
-function expectWithin(label, actual, expected, tolerance) {
+export function expectWithin(label, actual, expected, tolerance) {
   expectTrue(`${label}: ${expected} ±${tolerance}`, Math.abs(actual - expected) <= tolerance, `got ${actual}`);
 }
 
@@ -197,7 +197,7 @@ async function returnToPinned(h) {
 }
 
 /** Spawn, delegate, a Todo wake and the Todo Dispatcher through the API: each returns the id of the session it started. */
-const startVia = {
+export const startVia = {
   async spawn(h, { employee, tag, parent }) {
     const spawned = await h.api("POST", "/api/sessions", { prompt: `Reply briefly. ${tag}`, employee, parentSessionId: parent, source: "web" });
     expectEqual("spawn: status", spawned.status, 201);
@@ -228,7 +228,7 @@ const startVia = {
 };
 
 /** A Todo assigned to `employee`; returns its id. */
-async function newTodo(h, title, body, employee) {
+export async function newTodo(h, title, body, employee) {
   const todo = await h.api("POST", "/api/work-items", { title, body });
   expectEqual("Todo: created", todo.status, 201);
   const id = todo.body.workItem?.id ?? todo.body.id;
@@ -242,7 +242,7 @@ async function newTodo(h, title, body, employee) {
  * here and reports that its turn decided nothing. It is driven for what it can show: the tick runs its turn on
  * the fakes, and starts no session on the Todo by itself.
  */
-async function boardWalkTick(h, employee) {
+export async function boardWalkTick(h, employee) {
   const walkId = await newTodo(h, "Walk fixture", "A Todo for the board walk to see.", employee);
   const tick = await h.api("POST", "/api/board-walk/tick?wait=1");
   expectEqual("board walk tick: status", tick.status, 200);
