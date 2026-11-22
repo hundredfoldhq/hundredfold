@@ -306,28 +306,39 @@ export class SpeechPipeline {
   }
 
   private async synthesise(segment: Segment, job: Job, signal: AbortSignal): Promise<void> {
-    const { tts, voice, speed, language } = this.options;
+    const { tts, voice, language } = this.options;
     const resampler = new Pcm16Resampler(tts.sampleRate, VOICE_OUTPUT_SAMPLE_RATE);
-    const wanted = typeof speed === "function" ? speed() : speed;
-    // The provider is asked for the pace when it applies one; otherwise the audio is stretched here, so every provider speaks at the pace.
-    const stretcher = tts.honoursSpeed === false && wanted !== 1 ? new Pcm16TimeStretcher(wanted) : null;
+    const { speed, stretcher } = this.pace();
     try {
-      const request = { ...(voice ? { voice } : {}), speed: stretcher ? 1 : wanted, language, signal };
+      const request = { ...(voice ? { voice } : {}), speed, language, signal };
       for await (const chunk of tts.synthesize(segment.text, request)) {
         if (signal.aborted) return;
         const resampled = resampler.push(chunk);
-        const pcm = stretcher ? stretcher.push(resampled) : resampled;
-        if (pcm.length > 0) job.chunks.push(pcm);
-        this.wake(job);
+        this.addAudio(job, stretcher ? stretcher.push(resampled) : resampled);
       }
-      const rest = stretcher && !signal.aborted ? stretcher.flush() : null;
-      if (rest && rest.length > 0) job.chunks.push(rest);
+      if (stretcher && !signal.aborted) this.addAudio(job, stretcher.flush());
     } catch (error) {
       if (!signal.aborted) job.error = error;
     } finally {
       job.done = true;
       this.wake(job);
     }
+  }
+
+  /**
+   * The speed to ask the provider for, and the stretch that makes it up when the provider cannot. The provider is
+   * asked whenever it applies the speed; otherwise it is asked for the natural pace and the audio is stretched here.
+   */
+  private pace(): { speed: number; stretcher: Pcm16TimeStretcher | null } {
+    const { speed, tts } = this.options;
+    const wanted = typeof speed === "function" ? speed() : speed;
+    if (tts.honoursSpeed !== false || wanted === 1) return { speed: wanted, stretcher: null };
+    return { speed: 1, stretcher: new Pcm16TimeStretcher(wanted) };
+  }
+
+  private addAudio(job: Job, pcm: Buffer): void {
+    if (pcm.length > 0) job.chunks.push(pcm);
+    this.wake(job);
   }
 
   /** Let every sender waiting on a job see that the generation moved on. */

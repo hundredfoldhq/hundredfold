@@ -118,29 +118,42 @@ export class Pcm16TimeStretcher {
   }
 
   private run(final: boolean): Buffer {
-    const { FRAME, HOP, SEARCH } = Pcm16TimeStretcher;
     const out: number[] = [];
-    for (;;) {
-      const nominal = Math.round(this.frame * this.analysisHop);
-      if (final ? nominal >= this.total : this.base + this.input.length < Math.max(nominal + SEARCH, this.prevPos + HOP) + FRAME) break;
-      const pos = this.frame === 0 ? 0 : this.bestPosition(nominal);
-      const window = Pcm16TimeStretcher.WINDOW;
-      for (let i = 0; i < HOP; i++) {
-        const sample = this.at(pos + i);
-        out.push(this.frame === 0 ? sample : this.tail[i] + sample * window[i]);
-      }
-      for (let i = 0; i < HOP; i++) this.tail[i] = this.at(pos + HOP + i) * window[HOP + i];
-      this.prevPos = pos;
-      this.frame += 1;
-      this.discardBefore(Math.min(Math.round(this.frame * this.analysisHop) - SEARCH, pos + HOP));
-    }
-    if (final && this.frame > 0) for (let i = 0; i < HOP; i++) out.push(this.tail[i]);
-    // The padding that finished the last frame is not speech: end where the input says the audio does.
-    if (final) out.length = Math.max(0, Math.min(out.length, Math.ceil(this.total / this.speed) - this.emitted));
+    while (this.canMakeFrame(final)) this.makeFrame(out);
+    if (final) this.finish(out);
     this.emitted += out.length;
     const result = Buffer.alloc(out.length * 2);
     out.forEach((value, i) => result.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(value))), i * 2));
     return result;
+  }
+
+  /** The next frame can be cut: all the input it looks at has arrived, or the input is over and some is left. */
+  private canMakeFrame(final: boolean): boolean {
+    const { FRAME, HOP, SEARCH } = Pcm16TimeStretcher;
+    const nominal = Math.round(this.frame * this.analysisHop);
+    if (final) return nominal < this.total;
+    return this.base + this.input.length >= Math.max(nominal + SEARCH, this.prevPos + HOP) + FRAME;
+  }
+
+  /** Cut the next frame, blend its first half into the last frame's second half, and keep its second half to blend into the next. */
+  private makeFrame(out: number[]): void {
+    const { HOP, SEARCH, WINDOW } = Pcm16TimeStretcher;
+    const pos = this.frame === 0 ? 0 : this.bestPosition(Math.round(this.frame * this.analysisHop));
+    for (let i = 0; i < HOP; i++) {
+      const sample = this.at(pos + i);
+      out.push(this.frame === 0 ? sample : this.tail[i] + sample * WINDOW[i]);
+    }
+    for (let i = 0; i < HOP; i++) this.tail[i] = this.at(pos + HOP + i) * WINDOW[HOP + i];
+    this.prevPos = pos;
+    this.frame += 1;
+    this.discardBefore(Math.min(Math.round(this.frame * this.analysisHop) - SEARCH, pos + HOP));
+  }
+
+  /** The last frame's second half, then a cut where the input says the audio ends: the padding that finished the frame is not speech. */
+  private finish(out: number[]): void {
+    const { HOP } = Pcm16TimeStretcher;
+    if (this.frame > 0) for (let i = 0; i < HOP; i++) out.push(this.tail[i]);
+    out.length = Math.max(0, Math.min(out.length, Math.ceil(this.total / this.speed) - this.emitted));
   }
 
   /** The start, near `nominal`, of the frame that continues the last one most smoothly. */

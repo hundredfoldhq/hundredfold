@@ -9,12 +9,11 @@ import { FakeTts, settle } from "./fakes.js";
  * tts-1): audio gets shorter as speed goes up. With `applies` false it ignores the request, as gpt-4o-mini-tts does.
  */
 class PacedTts extends FakeTts {
-  speeds: Array<number | undefined> = [];
   constructor(private readonly applies = true) {
     super();
     if (!applies) (this as { honoursSpeed?: boolean }).honoursSpeed = false;
   }
-  async *synthesize(text: string, options: TtsSynthesisOptions): AsyncIterable<Buffer> {
+  override async *synthesize(text: string, options: TtsSynthesisOptions): AsyncIterable<Buffer> {
     this.calls.push(text);
     this.speeds.push(options.speed);
     const ms = (text.length * 10) / (this.applies ? (options.speed ?? 1) : 1);
