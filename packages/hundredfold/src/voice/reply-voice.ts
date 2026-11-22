@@ -165,8 +165,13 @@ export class ReplyVoice {
     this.emitTurn();
   }
 
-  /** The turn ended, completed or cut off. */
-  onTurnEnded(flush: boolean): void {
+  /**
+   * The turn ended, completed or cut off. `result` is the reply as the engine settled it: a turn that streamed
+   * nothing (an engine that answers all at once) is spoken from it, and one that streamed it already adds nothing,
+   * as for a snapshot.
+   */
+  onTurnEnded(flush: boolean, result: string): void {
+    this.onText(result, true);
     const cutOff = this.pendingMeta;
     this.pendingMeta = null;
     if (cutOff && cutOff !== this.reply) this.applyMeta(cutOff);
@@ -181,7 +186,11 @@ export class ReplyVoice {
     this.tool = undefined;
     if (reply) this.finishReply(reply, flush);
     this.emitTurn();
-    this.closeExchange();
+    // The exchange is over once what it will say has gone out, not when the model finishes: an engine that answers
+    // all at once ends its turn before the first sentence has been made.
+    const exchange = this.exchange;
+    if (this.suspended) return;
+    void this.pipeline.whenIdle().then(() => this.closeExchange(exchange));
   }
 
   // ── suspension ─────────────────────────────────────────────────────────────
@@ -224,6 +233,8 @@ export class ReplyVoice {
     }
     if (flush) this.pipeline.endReply();
     this.last = reply;
+    // Pin the stored message now, while it is the newest: a later reply must not be taken for it.
+    this.resolveMessage(reply);
     void this.pipeline.whenIdle().then(() => this.applyMeta(reply));
   }
 
@@ -263,8 +274,7 @@ export class ReplyVoice {
   }
 
   /** An exchange whose turn ended with nothing spoken still reports its stt time. */
-  private closeExchange(): void {
-    const exchange = this.exchange;
+  private closeExchange(exchange: Exchange | null): void {
     if (!exchange || !exchange.turnStarted || exchange.metricsSent) return;
     exchange.metricsSent = true;
     this.options.send({ type: "metrics", utteranceId: exchange.utteranceId, sttMs: exchange.sttMs, ttfaMs: null });

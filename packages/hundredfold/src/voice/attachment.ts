@@ -160,13 +160,20 @@ export class VoiceAttachment {
   onSessionEvent(event: string, payload: Record<string, unknown>): void {
     if (this.ended) return;
     switch (event) {
-      case "session:started": return this.voice.onStarted();
       case "session:delta": return this.onDelta(payload);
-      case "session:completed": return this.onTurnEnded(true);
-      case "session:interrupted": return this.onTurnEnded(false);
+      case "session:deleted": case "session:stopped": return this.detach("session_gone");
+      default: return this.onTurnEvent(event, payload);
+    }
+  }
+
+  /** The events that mark a turn: its start, its end, and what the session owes its engine afterwards. */
+  private onTurnEvent(event: string, payload: Record<string, unknown>): void {
+    switch (event) {
+      case "session:started": return this.voice.onStarted();
+      case "session:completed": return this.onTurnEnded(true, typeof payload.result === "string" ? payload.result : "");
+      case "session:interrupted": return this.onTurnEnded(false, "");
       case "session:compacted": return this.dispatcher.promptOwed();
       case "session:background": return this.announceBackground();
-      case "session:deleted": case "session:stopped": return this.detach("session_gone");
       default:
     }
   }
@@ -183,8 +190,8 @@ export class VoiceAttachment {
     }
   }
 
-  private onTurnEnded(flush: boolean): void {
-    this.voice.onTurnEnded(flush);
+  private onTurnEnded(flush: boolean, result: string): void {
+    this.voice.onTurnEnded(flush, result);
     this.announceBackground();
   }
 

@@ -190,17 +190,27 @@ export class SpeechPipeline {
     this.notifyIdle();
   }
 
+  /** The reply a cut belongs to: the one the playing sentence is of, else the newest that was started. */
+  private replyOfCut(segmentId: number | null): number | undefined {
+    const spoken = this.history.filter((s) => !s.holding);
+    const playing = segmentId === null ? undefined : spoken.find((s) => s.id === segmentId);
+    if (playing) return playing.replyKey;
+    return [...spoken].reverse().find((s) => s.state !== "queued")?.replyKey ?? spoken[spoken.length - 1]?.replyKey;
+  }
+
   private heardAndUnheard(segmentId: number | null, playedMs: number): CutResult {
-    const sent = this.history.filter((s) => s.state === "sent" || s.state === "played");
-    const upTo = segmentId ?? Number.POSITIVE_INFINITY;
-    const whole = sent.filter((s) => (segmentId === null ? s.state === "played" : s.id < upTo));
+    const key = this.replyOfCut(segmentId);
+    // Only the interrupted reply: sentences of earlier replies, and holding lines, are neither heard of it nor resumed.
+    const scope = this.history.filter((s) => !s.holding && s.replyKey === key);
+    const sent = scope.filter((s) => s.state === "sent" || s.state === "played");
+    const whole = sent.filter((s) => (segmentId === null ? s.state === "played" : s.id < segmentId));
     const playing = segmentId === null ? undefined : sent.find((s) => s.id === segmentId);
     const ratio = playing && playing.sentMs > 0 ? Math.min(1, Math.max(0, playedMs / playing.sentMs)) : 0;
     const heard = [...whole.map((s) => s.text), ...(playing ? [partOf(playing.text, ratio)] : [])].filter(Boolean).join(" ");
     const wholeIds = new Set(whole.map((s) => s.id));
-    const unheard = [...this.history.filter((s) => !wholeIds.has(s.id) && s.state !== "cut" && s.state !== "played"), ...this.queue]
-      .filter((s, i, all) => all.indexOf(s) === i && (s.id !== playing?.id || ratio < 1))
-      .map((s) => s.text);
+    const pending = [...scope, ...this.queue.filter((s) => !s.holding && s.replyKey === key)]
+      .filter((s, i, all) => all.indexOf(s) === i && !wholeIds.has(s.id) && s.state !== "cut" && s.state !== "played");
+    const unheard = pending.filter((s) => s.id !== playing?.id || ratio < 1).map((s) => s.text);
     return { heard, unheard };
   }
 

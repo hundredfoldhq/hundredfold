@@ -111,6 +111,24 @@ describe("SpeechPipeline", () => {
     expect(cut.unheard).toEqual(["Not yet reported two."]);
   });
 
+  it("what was heard, and what is resumed, belong to the reply that was cut, not the one before it or a holding line", async () => {
+    const { pipeline, json } = make();
+    pipeline.markReply(1);
+    pipeline.feed("Earlier reply sentence one. ");
+    await settle();
+    pipeline.markPlayed(1);
+    pipeline.speakLine("Still working on that.");
+    pipeline.markReply(2);
+    pipeline.feed("Second reply opens here. Second reply goes on. ");
+    await settle();
+    const ids = json.filter((f) => f.type === "segment_start").map((f) => f.segmentId as number);
+    expect(ids).toEqual([1, 2, 3, 4]);
+    const cut = pipeline.cut(3, 0);
+    expect(cut.heard).toBe("");
+    expect(cut.unheard).toEqual(["Second reply opens here.", "Second reply goes on."]);
+    expect(pipeline.spokenFor(1)).toBe("Earlier reply sentence one.");
+  });
+
   it("resumes from the first sentence not heard, ahead of text that arrived while it was held", async () => {
     const { pipeline, json, tts } = make();
     pipeline.feed("Heard one is fine. Cut two was mid. ");

@@ -154,6 +154,77 @@ describe("snapshots are never re-spoken", () => {
   });
 });
 
+describe("time to first audio on an engine that answers all at once", () => {
+  it("is measured to the first audio byte, not reported as nothing when the turn ends first", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    await h.say(attachment, "what is it");
+    let release!: () => void;
+    h.tts.gate = new Promise<void>((resolve) => { release = resolve; });
+    h.clock.advance(200);
+    h.event("session:started");
+    h.event("session:completed", { result: "Here is the answer.", error: null });
+    await settle();
+    expect(socket.ofType("metrics")).toHaveLength(0);
+    h.clock.advance(450);
+    release();
+    await settle();
+    expect(socket.ofType("metrics")).toEqual([{ type: "metrics", utteranceId: "id2", sttMs: 0, ttfaMs: 650 }]);
+  });
+
+  it("a reply still pins its own stored message when a newer one appears before it is touched again", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await h.say(attachment, "one");
+    h.state.replyMessage = "row-1";
+    await h.reply("First reply.");
+    h.state.replyMessage = "row-2";
+    await h.reply("Second reply.");
+    h.state.replyMessage = "row-3";
+    attachment.onText(h.json({ type: "barge_in", segmentId: 2, playedMs: 5 }));
+    await h.say(attachment, "talk over it");
+    expect(h.merges.filter((m) => (m.patch as { voice: { interrupted?: boolean } }).voice.interrupted).map((m) => m.id)).toEqual(["row-2"]);
+  });
+});
+
+describe("an engine that answers all at once", () => {
+  it("a turn that streamed nothing is spoken from the result it settled with", async () => {
+    const h = createHarness();
+    const { socket } = h.connect();
+    h.event("session:started");
+    h.event("session:completed", { result: "Answered in one piece. With two sentences.", error: null });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Answered in one piece.", "With two sentences."]);
+  });
+
+  it("a result that only repeats what streamed adds nothing, and one that is not an extension of it is left alone", async () => {
+    const h = createHarness();
+    const { socket } = h.connect();
+    h.event("session:started");
+    h.delta("text", "Streamed in pieces. ");
+    h.event("session:completed", { result: "Streamed in pieces. ", error: null });
+    h.event("session:started");
+    h.delta("text", "First block. ");
+    h.delta("tool_use", "", { toolName: "Bash" });
+    h.delta("text", "Second block. ");
+    h.event("session:completed", { result: "Second block.", error: null });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Streamed in pieces.", "First block.", "Second block."]);
+  });
+
+  it("a reply the client missed while suspended is kept from its result too", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    h.hub.socketClosed(first.attachment, first.socket, 1006);
+    h.event("session:started");
+    h.event("session:completed", { result: "Done while you were away.", error: null });
+    const back = h.connect();
+    back.attachment.onText(h.json({ type: "resume", suspendedMs: 10 }));
+    await settle();
+    expect(back.socket.ofType("segment_start").map((f) => f.text)).toEqual(["Done while you were away."]);
+  });
+});
+
 describe("code and the like stay in the text", () => {
   it("fenced code, tables, paths and links are not spoken", async () => {
     const h = createHarness();
