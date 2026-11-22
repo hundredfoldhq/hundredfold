@@ -14,9 +14,10 @@ another ends it with allowance unused.
 
 A chain entry may be a **group**: a set of Claude accounts. When a new
 session starts and its own account is in the group at the head of its chain,
-the gateway picks the member with the most usage headroom, pins the session
-there, and makes the group's other members its next fallback links, ahead of
-the rest of the chain.
+the gateway picks a member, spreading new sessions across the group in
+proportion to each account's usage headroom, pins the session there, and makes
+the group's other members its next fallback links (most headroom first), ahead
+of the rest of the chain.
 
 ```yaml
 # before: fixed order, account "work" always serves new sessions
@@ -24,8 +25,8 @@ fallback:
   - { engine: claude, profile: spare }
   - { engine: opencode, model: opencode-go/glm-5 }
 
-# after: a new session starts on whichever of the default login, "spare" and
-# "work" has the most headroom; the other two are its next links
+# after: new sessions are spread across the default login, "spare" and "work"
+# in proportion to their headroom; the other two are each session's next links
 fallback:
   - group:
       - { engine: claude }                 # the default login
@@ -105,12 +106,17 @@ login member is not a candidate for an employee whose own login is a named
 profile (the session row has no way to say "default login" over an employee's
 profile); it stays a fallback member.
 
-### 4. The pick
+### 4. The pick: a split weighted by headroom
+
+The balancer does not always take the account with the most headroom. Usage
+readings lag (they refresh every 15 minutes) and sessions start in bursts (a
+board walk, a plan fanning out children), so "take the best" would send a whole
+burst to one account. New sessions are spread across the group **in proportion
+to headroom** instead.
 
 Input per candidate: the newest usage sample of its account
 (`latestAccountReading`, the per-account history the 15-minute engine-health
-refresh writes), its engine-health record, and how many sessions are active on
-it now.
+refresh writes) and its engine-health record.
 
 - **Headroom** = 100 − the highest `usedPercent` across the windows that apply
   (the tightest window wins). A window whose `resetsAt` has passed counts as 0
@@ -118,28 +124,48 @@ it now.
   applies only when the session's model is of that family (case-insensitive
   match of the family word, e.g. `7d Opus` for an `opus` or `claude-opus-*`
   model); `5h`, `7d` and a scoped window naming no model always apply, and so
-  does every window when the session's model is unknown. Headroom is compared in whole percent (floor).
+  does every window when the session's model is unknown. Whole percent (floor).
 - **Freshness**: a sample is fresh when it is at most
   `2 × ENGINE_HEALTH_REFRESH_INTERVAL_MS` (30 minutes) old, stale when older,
   unknown when there is none.
-- **Tiers**, best first: fresh and healthy; stale and healthy; unknown and
-  healthy; exhausted (its health record says it is at its limit, or its login
-  is recorded as signed out). An account that cannot be read is never
-  preferred over one that can.
-- **Order within a tier**: headroom, highest first (stale and fresh compare
-  on their recorded headroom; unknown has none); then fewest active sessions
-  (sessions with status `running` or `waiting` whose current account is that
-  account); then the group's written order. Deterministic for a given state.
-- **All exhausted**: pin the member whose health record reopens first, then let
-  the existing creation reroute (`rerouteAtCreation`) move the session to the
-  first healthy link after the group, with the pinned account as the own target
-  it returns to.
-- The pick never calls a provider: it reads only what is on disk and in health,
-  so creation stays synchronous and cheap.
+- **Weight (the curve)**, linear in headroom:
 
-Accepted limitation: readings refresh every 15 minutes, so a burst of new
-sessions inside one refresh goes to the same account unless headroom ties. The
-active-session tie-break spreads a burst across accounts at equal headroom.
+  | Candidate | Weight |
+  |---|---|
+  | fresh reading | headroom |
+  | stale reading | headroom ÷ 2 |
+  | no reading, while another candidate has one | 0 |
+  | no candidate has a reading | 1 each (an even split) |
+  | at its limit (health says exhausted, or its login is signed out), or headroom 0 | 0 |
+
+  An account's share of new sessions is its weight over the sum of weights.
+  So headroom 60 vs 40 splits 60/40, 90 vs 10 splits 90/10, 50 vs 50 splits
+  evenly, and an exhausted account gets none. The curve is monotonic and never
+  starves an account with headroom: any account above 0 gets its share.
+- **Selection: smooth weighted round-robin**, deterministic. Each candidate
+  set (keyed by its sorted account keys) keeps a credit per account, in
+  memory. At each start every candidate's credit grows by its weight, the
+  highest credit wins (ties: the group's written order), and the winner's
+  credit drops by the sum of the weights. Over any run of starts the counts
+  follow the weights as closely as whole numbers allow (60/40 gives
+  A B A A B A B A A B ...), and a burst inside one reading interval splits by
+  construction, because each start is charged to its account at once: the
+  credit is the record of starts the usage data has not seen yet. Credits
+  start at 0 after a restart. No randomness, so tests assert exact counts.
+- **Charged only on a real start.** The pick is computed by a pure function;
+  the credit is charged by a separate `recordAccountStart` call made only
+  after the session row is created. Validation-only calls (dispatch config,
+  previews, `startPick`, the board walk's view) never charge it.
+- **All weights 0** (every member exhausted): pin the member whose health
+  record reopens first, then let the existing creation reroute
+  (`rerouteAtCreation`) move the session to the first healthy link after the
+  group, with the pinned account as the own target it returns to.
+- The pick never calls a provider: it reads only what is on disk, in health
+  and in its credit table, so creation stays synchronous and cheap.
+- **Fallback order inside a group** is not weighted: when a limit moves a
+  session along its chain, the group's remaining members are tried by
+  headroom, highest first (stale and unknown after fresh, exhausted last,
+  ties by written order), then the rest of the chain.
 
 ### 5. Pinning and stickiness
 
@@ -194,7 +220,8 @@ interface AccountHeadroom {
   headroomPercent?: number;      // absent when unknown
   tightest?: { window: string; usedPercent: number; resetsAt?: string };
   readingAt?: string;            // ISO time of the sample
-  activeSessions: number;
+  weight: number;                // per the curve in 4
+  sharePercent: number;          // weight over the sum of weights, whole percent
 }
 
 interface AccountPick {
@@ -203,8 +230,8 @@ interface AccountPick {
   source: FallbackChainSource;   // the subject whose chain holds the group
   groupIndex: number;            // its entry index in that chain
   picked: string;                // account key
-  reason: "most-headroom" | "tie" | "only-candidate" | "no-readings" | "all-exhausted";
-  candidates: AccountHeadroom[]; // ranked, best first
+  reason: "weighted" | "only-candidate" | "no-readings" | "all-exhausted";
+  candidates: AccountHeadroom[]; // with the weights at the time, by headroom, highest first
 }
 ```
 
