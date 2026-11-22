@@ -88,10 +88,13 @@ export class VoiceHub {
     this.closeProviders();
   }
 
-  /** A principal lost access to a session: their attachment there ends, with `access_lost`. Another principal's is left alone. */
+  /** A principal lost access to a session: their attachment there ends, with `access_lost`. Another principal's is left alone, and so is another sign-in of the same member. */
   revoke(sessionId: string, principal: VoicePrincipal): void {
     const attachment = this.attachments.get(sessionId);
-    if (attachment && samePrincipal(attachment.principal, principal)) attachment.detach("access_lost");
+    if (!attachment || !samePrincipal(attachment.principal, principal)) return;
+    const held = attachment.principal;
+    if (held.kind === "member" && principal.kind === "member" && held.userSessionId !== principal.userSessionId) return;
+    attachment.detach("access_lost");
   }
 
   shutdown(): void {

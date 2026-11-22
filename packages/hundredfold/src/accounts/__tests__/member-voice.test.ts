@@ -174,7 +174,7 @@ describe("a member's voice upgrade", () => {
     const closed = new Promise<void>((resolve) => ws.on("close", () => resolve()));
     ws.send(JSON.stringify({ type: "hello", protocol: 1, mode: "hands-free", client: "web" }));
     for (let i = 0; i < 300 && runtime.hub.get(sessionId)?.principal === undefined; i += 1) await new Promise((r) => setTimeout(r, 10));
-    // Another session of the same member is unaffected: only this attachment's principal is revoked.
+    // An operator attachment on another session is unaffected: only this member's attachment is revoked.
     const registry = await import("../../sessions/registry.js");
     const otherId = registry.createSession({ engine: "codex", source: "web", sourceRef: `web:member-voice-other-${Date.now()}` }).id;
     const operatorSide = { sent: [] as string[], closed: null as number | null };

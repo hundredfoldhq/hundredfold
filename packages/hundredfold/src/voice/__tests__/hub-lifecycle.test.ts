@@ -171,6 +171,16 @@ describe("attachment lifecycle and limits", () => {
     expect(h.hub.size()).toBe(0);
   });
 
+  it("revoke for one sign-in leaves the same member's attachment from another sign-in alone", () => {
+    const h = createHarness();
+    const pat = h.connect({ sessionId: "m", principal: member("pat") });
+    h.hub.revoke("m", { kind: "member", userId: "pat", userSessionId: "us-other-device" });
+    expect(pat.socket.ofType("detached")).toEqual([]);
+    expect(pat.socket.closed).toBeNull();
+    h.hub.revoke("m", member("pat"));
+    expect(pat.socket.closed?.code).toBe(VOICE_CLOSE.accessLost);
+  });
+
   it("a provider that is down is reported as speech_unavailable with a reason that carries no address, and the socket closes", () => {
     const h = createHarness();
     h.stt.available = false;
