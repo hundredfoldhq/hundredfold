@@ -158,6 +158,85 @@ describe("SpeechPipeline", () => {
     expect(pipeline.spokenFor(1)).toBe("Alpha one two three. Beta one two three four. Gamma ends it. Something else.");
   });
 
+  describe("a reply cut and resumed with more text that arrived during the hold", () => {
+    const ALPHA = "Alpha one two three.";
+    const BETA = "Beta one two three four.";
+    const GAMMA = "Gamma goes on here.";
+    const DELTA = "Delta arrives later.";
+    const EPSILON = "Epsilon ends it all.";
+
+    // Ids: Alpha 1, Beta 2, Gamma 3, Delta 4, Epsilon 5, then the replays Beta 6 and Gamma 7 are
+    // queued ahead of Delta and Epsilon, so the client plays 1, 6, 7, 4, 5.
+    async function cutOnBetaThenMoreText() {
+      const made = make();
+      made.pipeline.markReply(1);
+      made.pipeline.feed(`${ALPHA} ${BETA} ${GAMMA} `);
+      await settle();
+      const cut = made.pipeline.cut(2, 0);
+      made.pipeline.hold();
+      made.pipeline.feed(`${DELTA} ${EPSILON} `);
+      await settle();
+      made.pipeline.resumeWith(cut.unheard);
+      return { ...made, cut };
+    }
+
+    it("what was spoken is in the order it was played, not the order the sentences were made", async () => {
+      const { pipeline } = await cutOnBetaThenMoreText();
+      pipeline.release();
+      await settle();
+      expect(pipeline.spokenFor(1)).toBe([ALPHA, BETA, GAMMA, DELTA, EPSILON].join(" "));
+    });
+
+    it("a cut later in the replay hears the sentences played before it in play order", async () => {
+      const { pipeline } = await cutOnBetaThenMoreText();
+      pipeline.release();
+      await settle();
+      const cut = pipeline.cut(5, 0);
+      expect(cut.heard).toBe([ALPHA, BETA, GAMMA, DELTA].join(" "));
+      expect(cut.unheard).toEqual([EPSILON]);
+    });
+
+    it("a cut early in the replay resumes what was sent in play order", async () => {
+      const { pipeline } = await cutOnBetaThenMoreText();
+      pipeline.release();
+      await settle();
+      const cut = pipeline.cut(1, 0);
+      expect(cut.unheard).toEqual([BETA, GAMMA, DELTA, EPSILON]);
+    });
+
+    it("a second cut before anything was sent resumes the replays ahead of the text that arrived in the hold", async () => {
+      const { pipeline } = await cutOnBetaThenMoreText();
+      const cut = pipeline.cut(null, 0);
+      expect(cut.heard).toBe(ALPHA);
+      expect(cut.unheard).toEqual([BETA, GAMMA, DELTA, EPSILON]);
+    });
+  });
+
+  it("a sentence that made no audio was not heard, even though it was made after the one playing", async () => {
+    const { pipeline, tts } = make();
+    tts.failOn = "boom";
+    pipeline.markReply(1);
+    pipeline.feed("Alpha one two three. This will boom. ");
+    await settle();
+    const cut = pipeline.cut(1, 0);
+    expect(cut.heard).toBe("");
+    expect(cut.unheard).toEqual(["Alpha one two three."]);
+  });
+
+  it("what was held when words answered the cut is not stood in for by a later resume of the same sentences", async () => {
+    const { pipeline } = make();
+    pipeline.markReply(1);
+    pipeline.feed("Alpha one two three. Beta one two three four. ");
+    await settle();
+    const cut = pipeline.cut(2, 0);
+    expect(cut.unheard).toEqual(["Beta one two three four."]);
+    pipeline.discardQueued();
+    pipeline.markReply(2);
+    pipeline.resumeWith(["Beta one two three four."]);
+    await settle();
+    expect(pipeline.spokenFor(1)).toBe("Alpha one two three. Beta one two three four.");
+  });
+
   it("discarding what was held drops it, so the new turn's reply is the only thing spoken", async () => {
     const { pipeline, tts } = make();
     pipeline.cut(null, 0);
