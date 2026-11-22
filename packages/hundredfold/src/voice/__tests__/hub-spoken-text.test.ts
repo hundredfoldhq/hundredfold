@@ -385,7 +385,7 @@ describe("a report queued behind a gateway reply that is cut", () => {
   }
 
   /** The reply and the report are sent, none of it played: the client is still on the reply's second sentence. */
-  async function sentNotPlayed() {
+  async function sentNotPlayed(segmentId: number | null = 2) {
     const h = createHarness();
     const { socket, attachment } = h.connect();
     h.state.replyMessage = h.store("assistant", REPLY);
@@ -393,7 +393,7 @@ describe("a report queued behind a gateway reply that is cut", () => {
     const [report] = h.externalTurn(REPORT_TWO);
     await settle();
     expect(texts(socket)).toEqual([ALPHA, BETA, GAMMA, DELTA, EPSILON]);
-    bargeIn(attachment, 2, 0);
+    bargeIn(attachment, segmentId, 0);
     return { h, socket, attachment, report };
   }
 
@@ -430,6 +430,20 @@ describe("a report queued behind a gateway reply that is cut", () => {
       await noWordsFollow(h);
       expect(texts(socket)).toEqual([BETA, GAMMA, DELTA, EPSILON]);
       expect(lastPatch(h, report)).toEqual({ voice: { spokenText: REPORT_TWO } });
+    });
+
+    it("a cut that names no sentence, then words: the reply was heard of nothing and the report is not counted as heard", async () => {
+      const { h, attachment, report } = await sentNotPlayed(null);
+      await h.say(attachment, "stop now");
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "", interrupted: true } });
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: null, interrupted: true } });
+    });
+
+    it("a cut that names no sentence, then no words: the reply starts over and so does the report", async () => {
+      const { h, socket } = await sentNotPlayed(null);
+      socket.clear();
+      await noWordsFollow(h);
+      expect(texts(socket)).toEqual([ALPHA, BETA, GAMMA, DELTA, EPSILON]);
     });
 
     it("a report played before the cut one keeps all of it", async () => {
