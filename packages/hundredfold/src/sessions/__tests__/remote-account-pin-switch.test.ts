@@ -40,6 +40,8 @@ const { buildPendingSwitch } = await import("../switch-request.js");
 const { sessionRemoteTarget, threadSlot } = await import("../session-account.js");
 const { remoteScopeFor } = await import("../session-cwd.js");
 const { readRemoteAccountPin } = await import("../remote-account-pin.js");
+const { validateNewSessionSelection } = await import("../session-patch.js");
+const { recordEngineUnavailable } = await import("../../shared/engine-health.js");
 
 let registry: typeof import("../registry.js");
 let orgRegistry: typeof import("../../gateway/org-registry.js");
@@ -51,12 +53,14 @@ const config = {
   gateway: { port: 7798, host: "127.0.0.1" },
   engines: {
     default: "claude",
-    claude: { bin: "claude", model: "opus", accounts: { spare: { ...HOST, configDir: SPARE_DIR } }, fallback: [GROUP, "codex"] },
+    claude: { bin: "claude", model: "opus", accounts: { spare: { ...HOST, configDir: SPARE_DIR } }, fallback: [GROUP, { engine: "opencode", model: "x-provider/model-x" }] },
     codex: { bin: "codex", model: "gpt-5.5" },
+    opencode: { bin: process.execPath, model: "x-provider/model-x" },
   },
   models: {
     claude: { default: "opus", models: [{ id: "opus", label: "Opus" }, { id: "sonnet", label: "Sonnet" }] },
     codex: { default: "gpt-5.5", models: [{ id: "gpt-5.5" }] },
+    opencode: { default: "x-provider/model-x", models: [] },
   },
   remote: { root: ROOT, mount: "/mnt/hundredfold" },
   connectors: {},
@@ -161,6 +165,9 @@ describe("the operator's engine-only switch (patchSessionTarget), remote", () =>
     expect(pickOf(row)).toMatchObject({ picked: SPARE_KEY, trigger: "switch" });
     expect(readRemoteAccountPin(row.transportMeta)).toEqual(PIN);
     expect(threadSlot(row, "claude")).toBe(SPARE_KEY);
+    // The conversation is kept under the pinned account's slot, not its employee's.
+    expect(Object.keys(row.engineSessions ?? {})).toContain(SPARE_KEY);
+    expect(Object.keys(row.engineSessions ?? {})).not.toContain(OWN_KEY);
     expect(sessionRemoteTarget(orgRegistry.orgRegistry(config).get("remote-dev"), remoteScopeFor(config.remote, row), row)).toMatchObject({ remoteClaudeConfigDir: SPARE_DIR });
   });
 
@@ -214,5 +221,23 @@ describe("a remote session's own switch (compact_session), remote", () => {
     const row = registry.getSession(session.id)!;
     expect(readRemoteAccountPin(row.transportMeta)).toEqual(PIN);
     expect(row.claudeConfigDir).toBeNull();
+  });
+});
+
+describe("a new session of a remote employee through the API's selection", () => {
+  it("is pinned, and when the pinned account is spent starts on the employee's own login with the pinned account as the one it returns to", () => {
+    const open = validateNewSessionSelection(config, {}, { employee: "remote-dev" });
+    expect(open).toMatchObject({ ok: true, engine: "claude", accountPick: { picked: SPARE_KEY }, remoteAccountPin: PIN });
+    expect(open).not.toHaveProperty("claudeConfigDir");
+    expect(open).not.toHaveProperty("reroute");
+
+    recordEngineUnavailable(SPARE_KEY, "usage limit", Math.floor(Date.now() / 1000) + 7200, new Date(), { host: "build-host" });
+    // The pick weighs the spent account at nothing, so a new session starts on its employee's own login: no pin, nothing to leave.
+    expect(validateNewSessionSelection(config, {}, { employee: "remote-dev" })).toMatchObject({ ok: true, accountPick: { picked: OWN_KEY } });
+    recordEngineUnavailable(OWN_KEY, "usage limit", Math.floor(Date.now() / 1000) + 10800, new Date(), { host: "build-host" });
+    // Both spent: it is pinned where it reopens first, and the reroute moves it to the next link with the pin as the account it returns to.
+    const spent = validateNewSessionSelection(config, {}, { employee: "remote-dev" });
+    expect(spent).toMatchObject({ ok: true, accountPick: { picked: SPARE_KEY, reason: "all-exhausted" }, remoteAccountPin: PIN, engine: "opencode" });
+    expect(spent.reroute).toMatchObject({ from: "claude" });
   });
 });

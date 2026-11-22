@@ -10,7 +10,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../shared/models.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../shared/models.js")>()),
   engineAvailable: () => true,
-  getModelRegistry: () => ({}),
 }));
 vi.mock("../../engines/remote-stage.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../engines/remote-stage.js")>()),
@@ -24,6 +23,9 @@ vi.mock("../../shared/engine-health.js", async (importOriginal) => ({
 
 import { claudeAuthScope } from "../claude-auth-watch.js";
 import { rerouteAtCreation } from "../fallback-reroute.js";
+import { pinAccountAtCreation } from "../account-pin.js";
+import { launchFor } from "../substitute-launch.js";
+import { sessionFallbackChain } from "../../shared/fallback-chain.js";
 import { chooseSubstituteOrReason, type ChooseSubstituteInput } from "../rate-limit-substitute.js";
 import { rateLimitAccount, substituteHealth } from "../rate-limit-account.js";
 import { metaWithRemoteAccountPin, pinIsOnHostOf, readRemoteAccountPin } from "../remote-account-pin.js";
@@ -204,5 +206,53 @@ describe("a creation reroute off a pinned account", () => {
 
   it("starts where it would for a pinned account that is healthy", () => {
     expect(rerouteAtCreation(args({ [OWN_KEY]: spent(2) }))).toBeUndefined();
+  });
+});
+
+describe("a pinned session's chain and launches", () => {
+  const registry = availabilityRegistry({}, (name) => name === "claude" || name === "opencode");
+  const remote = { ...HOST, remoteCwd: "/srv/work/dev", remoteClaudeConfigDir: HOME_DIR };
+  const engineChain = { ...config, engines: { ...config.engines, claude: { ...(config.engines.claude as object), fallback: [GROUP, { engine: "opencode", model: "x/m" }] } } } as unknown as HundredfoldConfig;
+  const pick = (source: string) => ({ source, groupIndex: 0, picked: SPARE_KEY, trigger: "start", reason: "weighted", at: new Date().toISOString(), candidates: [] });
+
+  it("keeps the chain the pick came from after its employee is given a chain of its own", () => {
+    const edited = employee({ fallback: [{ engine: "opencode", model: "x/m" }] });
+    const session = makeSession({ employee: "dev", transportMeta: { remoteAccountPin: PIN, accountPick: pick("engine") } as never });
+    const { source, links } = sessionFallbackChain({ config: engineChain, employee: edited, session, registry, health: {}, scope: { scoped: false, remote: true, host: "me@build-host" } });
+    expect(source).toBe("engine");
+    expect(links.filter((link) => link.engine === "claude").map((link) => link.account)).toEqual(expect.arrayContaining([SPARE_KEY, OWN_KEY, OTHER_KEY]));
+    // Without the pick the same session reads the employee's new chain.
+    const unpicked = sessionFallbackChain({ config: engineChain, employee: edited, session: makeSession({ employee: "dev", transportMeta: { remoteAccountPin: PIN } as never }), registry, health: {}, scope: { scoped: false, remote: true, host: "me@build-host" } });
+    expect(unpicked.source).toBe("employee");
+  });
+
+  it("launches a link that is the session's own pinned account on the pinned directory, and its employee's login on the employee's", () => {
+    const input = (session: ReturnType<typeof makeSession>, account: string) => ({ config, session, employee: employee(), account, remote, remoteTarget: remote }) as unknown as ChooseSubstituteInput;
+    const link = (account: string) => ({ engine: "claude", account, key: account, label: account, origin: "config" }) as never;
+    // The session stands on its employee's login (an override), so a link naming the pinned account is a swap back onto the pin's directory.
+    const standing = pinned(PIN, { transportMeta: { remoteAccountPin: PIN, engineOverride: { substituteAccount: OWN_KEY, substituteConfigDir: HOME_DIR, originalAccount: SPARE_KEY } } as never });
+    expect(launchFor(input(standing, OWN_KEY), false, link(SPARE_KEY))).toMatchObject({ accounts: { original: OWN_KEY, substitute: SPARE_KEY, substituteConfigDir: SPARE_DIR } });
+    expect(launchFor(input(pinned(), SPARE_KEY), false, link(OWN_KEY))).toMatchObject({ accounts: { original: SPARE_KEY, substitute: OWN_KEY, substituteConfigDir: HOME_DIR } });
+    expect(launchFor(input(pinned(), SPARE_KEY), false, link(OTHER_KEY))).toMatchObject({ accounts: { substitute: OTHER_KEY, substituteConfigDir: OTHER_DIR } });
+  });
+
+  it("still launches on the pinned directory after the account is undeclared: the directory is in the record", () => {
+    const undeclared = { ...config, engines: { ...config.engines, claude: { bin: "claude", model: "opus" } } } as unknown as HundredfoldConfig;
+    const standing = pinned(PIN, { transportMeta: { remoteAccountPin: PIN, engineOverride: { substituteAccount: OWN_KEY, substituteConfigDir: HOME_DIR, originalAccount: SPARE_KEY } } as never });
+    const input = { config: undeclared, session: standing, employee: employee(), account: OWN_KEY, remote, remoteTarget: remote } as unknown as ChooseSubstituteInput;
+    expect(launchFor(input, false, { engine: "claude", account: SPARE_KEY, key: SPARE_KEY, label: "spare", origin: "config" } as never)).toMatchObject({ accounts: { original: OWN_KEY, substitute: SPARE_KEY, substituteConfigDir: SPARE_DIR } });
+    expect(target(employee(), standing)).toMatchObject({ remoteClaudeConfigDir: HOME_DIR });
+    expect(target(employee(), pinned())).toMatchObject({ remoteClaudeConfigDir: SPARE_DIR });
+  });
+
+  it("reads another host's health records as no record when it picks", () => {
+    const spent = { state: "exhausted" as const, until: new Date(Date.now() + 3600_000).toISOString(), recheckAt: new Date(Date.now() + 3600_000).toISOString() };
+    const limits = Object.fromEntries([OWN_KEY, SPARE_KEY].map((account) => [account, { at: Date.now(), windows: [{ name: "5h", usedPercent: 50, resetsAt: Math.floor(Date.now() / 1000) + 3600 }] }]));
+    const chosen = (host: string) => pinAccountAtCreation({
+      config: engineChain, employee: employee({ fallback: undefined }), engine: "claude", model: "opus",
+      inputs: { health: { [SPARE_KEY]: { ...spent, host } as never }, limits: limits as never },
+    }).accountPick!.candidates.find((candidate) => candidate.account === SPARE_KEY);
+    expect(chosen("other-host")).toMatchObject({ state: "fresh" });
+    expect(chosen("build-host")).toMatchObject({ state: "exhausted", weight: 0 });
   });
 });
