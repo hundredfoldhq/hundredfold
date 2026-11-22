@@ -184,7 +184,9 @@ export class Dispatcher {
   /** The envelope for this message: the full prompt first (or after a compaction or engine switch), a reminder after. */
   private envelope(text: string, engineName: string, notes: readonly string[]): string {
     const full = !this.promptSent || this.promptEngine !== engineName;
-    const envelope = buildVoiceEnvelope({ text, prompt: this.options.config.prompt, full, notes });
+    // The style is read from the live config each turn, so an edit reaches a conversation already open.
+    const style = (this.options.deps.config() ?? this.options.config).stylePrompt;
+    const envelope = buildVoiceEnvelope({ text, prompt: this.options.config.prompt, style, full, notes });
     if (envelope) {
       this.promptSent = true;
       this.promptEngine = engineName;

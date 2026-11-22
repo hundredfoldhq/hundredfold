@@ -89,6 +89,11 @@ export interface Config {
     turnDetection?: string | { type?: string; [key: string]: unknown }
     noiseReduction?: string
   }
+  /** The voice-mode block; only the keys this page edits are named, the rest survive a save. */
+  voice?: {
+    enabled?: boolean
+    stylePrompt?: string
+  }
   portal?: {
     companyName?: string
     companyPrefix?: string

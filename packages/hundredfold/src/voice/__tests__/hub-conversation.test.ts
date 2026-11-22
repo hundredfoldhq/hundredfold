@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VOICE_PROMPT_OPEN, VOICE_REMINDER, interruptedNote } from "../envelope.js";
-import { createHarness, SESSION } from "./hub-harness.js";
+import { baseConfig, createHarness, SESSION } from "./hub-harness.js";
 import { settle } from "./fakes.js";
 
 describe("a spoken round trip (US1)", () => {
@@ -273,6 +273,42 @@ describe("the voice envelope on a spoken turn", () => {
     await h.say(attachment, "two");
     await h.say(attachment, "three");
     expect(h.delivered.map((d) => d.envelope.includes(VOICE_PROMPT_OPEN))).toEqual([true, true, false]);
+  });
+
+  it("a configured style rides on the first turn's prompt and on every later turn's reminder", async () => {
+    const h = createHarness({ config: { stylePrompt: "Shorter, funnier, make jokes." } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    await h.say(attachment, "second");
+    await h.say(attachment, "third");
+    expect(h.delivered[0].envelope).toContain("Shorter, funnier, make jokes.");
+    expect(h.delivered[0].envelope).toContain(VOICE_PROMPT_OPEN);
+    for (const later of h.delivered.slice(1)) expect(later.envelope).toContain("[Voice: style directions from the user: Shorter, funnier, make jokes.]");
+    expect(h.delivered.every((d) => !d.text.includes("jokes"))).toBe(true);
+  });
+
+  it("no style set leaves every envelope as it was", async () => {
+    const h = createHarness({ config: { stylePrompt: "" } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    await h.say(attachment, "second");
+    expect(h.delivered[0].envelope).not.toContain("Style directions");
+    expect(h.delivered[1].envelope).toBe(`${VOICE_REMINDER}\n\n`);
+  });
+
+  it("a style changed by a config reload reaches the conversation already open, with no new attachment", async () => {
+    const h = createHarness({ config: { stylePrompt: "Be formal." } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    h.state.config = baseConfig({ stylePrompt: "Be playful." });
+    h.event("config:reloaded", {});
+    await h.say(attachment, "second");
+    h.state.config = baseConfig({ stylePrompt: "" });
+    await h.say(attachment, "third");
+    expect(h.delivered[0].envelope).toContain("Be formal.");
+    expect(h.delivered[1].envelope).toContain("Be playful.");
+    expect(h.delivered[1].envelope).not.toContain("Be formal.");
+    expect(h.delivered[2].envelope).toBe(`${VOICE_REMINDER}\n\n`);
   });
 
   it("a replaced prompt in the configuration is the one sent", async () => {

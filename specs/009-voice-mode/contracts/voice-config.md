@@ -34,6 +34,7 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `autoBackground.afterSeconds` | number | `5` | 1 to 600 |
 | `prompt` | string | built-in voice prompt (below) | ≤ 8000 chars |
 | `promptFile` | instance-relative path | — | must stay inside the instance home; `prompt` wins if both |
+| `stylePrompt` | string | unset (no change) | ≤ 2000 chars; added to the voice instructions on every voice turn, read live from the loaded config |
 | `holdingLine` | string | "Still working on the last thing. I'll come to that as soon as it's done." | ≤ 300 chars |
 | `limits.maxUtteranceSeconds` | integer | `60` | 5 to 120 (the sidecar's 4 MB body is about 131 s of 16 kHz PCM16) |
 | `limits.maxConcurrentAttachments` | integer | `4` | 1 to 64 |

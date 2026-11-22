@@ -10,8 +10,9 @@
  *     [Voice mode]                       (the full prompt, first turn only)
  *     <prompt, any number of lines>
  *     [End of voice instructions]
+ *     <style directions, when configured>   (inside the block)
  *     [Voice: transcribed from speech ...]
- *     [Voice: ...]                       (one line each: reminder, interrupted, backgrounded)
+ *     [Voice: ...]                       (one line each: reminder, style, interrupted, backgrounded)
  *
  * A prompt that starts with `/` gets nothing: text in front of a command turns
  * it into text for the model.
@@ -28,6 +29,8 @@ export interface VoiceEnvelopeInput {
   text: string;
   /** The voice prompt (built in or configured). */
   prompt: string;
+  /** The operator's style directions (`voice.stylePrompt`); empty or absent adds nothing. They ride on every turn. */
+  style?: string;
   /** The full prompt goes on this turn, not just the reminder. */
   full: boolean;
   /** Extra one-line facts for this turn: an interruption, work moved to the background. */
@@ -49,6 +52,16 @@ function safePrompt(prompt: string): string {
   return prompt.split(VOICE_PROMPT_CLOSE).join("").split(VOICE_PROMPT_OPEN).join("").trim();
 }
 
+/** Heading of the style directions inside the full prompt block. */
+export const VOICE_STYLE_HEADING = "Style directions from the user (follow these in how you sound):";
+
+/** The style directions as one line, for the turns that carry the reminder instead of the full prompt. */
+function styleLine(style: string): string {
+  return `[Voice: style directions from the user: ${oneLine(style, MAX_STYLE_LINE)}]`;
+}
+
+const MAX_STYLE_LINE = 2000;
+
 /** The note for a turn that follows an interrupted reply. */
 export function interruptedNote(heardText: string): string {
   const heard = oneLine(heardText, 400);
@@ -66,10 +79,14 @@ export function backgroundedNote(tasks: readonly { taskId: string; description: 
 export function buildVoiceEnvelope(input: VoiceEnvelopeInput): string {
   if (isSlashText(input.text)) return "";
   const lines: string[] = [];
+  const style = safePrompt(input.style ?? "");
   if (input.full) {
-    lines.push(VOICE_PROMPT_OPEN, safePrompt(input.prompt), VOICE_PROMPT_CLOSE, VOICE_TRANSCRIBED);
+    lines.push(VOICE_PROMPT_OPEN, safePrompt(input.prompt));
+    if (style) lines.push("", VOICE_STYLE_HEADING, style);
+    lines.push(VOICE_PROMPT_CLOSE, VOICE_TRANSCRIBED);
   } else {
     lines.push(VOICE_REMINDER);
+    if (style) lines.push(styleLine(style));
   }
   for (const note of input.notes ?? []) lines.push(note);
   return `${lines.join("\n")}\n\n`;
