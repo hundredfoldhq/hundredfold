@@ -858,7 +858,7 @@ export interface EngineLimitWindow {
 
 /** Why a provider's own usage reading is missing. A fixed code and fixed copy: never the provider's body, never a credential. */
 export type ProviderUsageReasonCode =
-  | "no-key" | "unauthorized" | "no-subscription" | "forbidden" | "rate-limited" | "http-error" | "network" | "timeout" | "bad-response";
+  | "no-key" | "key-expired" | "unauthorized" | "no-subscription" | "forbidden" | "rate-limited" | "http-error" | "network" | "timeout" | "bad-response";
 
 /**
  * What a provider reports of its own plan usage for one credential (OpenCode Go's usage endpoint), as opposed to what

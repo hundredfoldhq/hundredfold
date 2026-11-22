@@ -21,6 +21,7 @@ export const OPENCODE_GO_USAGE_SOURCE = "OpenCode Go usage API";
 /** The provider id the usage endpoint answers for; an account whose `base` is this one signs in with a Go key too. */
 export const OPENCODE_GO_PROVIDER = "opencode-go";
 
+const USER_AGENT = "hundredfold-gateway (limits)";
 const REQUEST_TIMEOUT_MS = 5_000;
 /** How long a reading is reused. Short, so a page load after a turn sees fresh numbers, long enough that a burst of loads is one request. */
 export const GO_USAGE_TTL_MS = 60_000;
@@ -37,6 +38,7 @@ const METERS: readonly { key: string; name: string; minutes: number }[] = [
 
 const REASON_MESSAGES: Record<ProviderUsageReasonCode, string> = {
   "no-key": "No OpenCode Go key is available to read usage with.",
+  "key-expired": "The OpenCode Go key has expired (401). Create a new key in the OpenCode console and replace it; signing in again does not renew it.",
   unauthorized: "OpenCode Go rejected the key (401). Replace it and usage will show again.",
   "no-subscription": "This key has no OpenCode Go subscription, so there is no usage to show.",
   forbidden: "OpenCode Go refused the request (403): the key is not covered or the region is restricted.",
@@ -90,8 +92,13 @@ function isEntitlementError(body: unknown): boolean {
   return str(error?.type) === "EntitlementError";
 }
 
+/** The provider's machine-readable code on an error body (`error.code`), if it gave one. */
+function errorCode(body: unknown): string | undefined {
+  return isRecord(body) && isRecord(body.error) ? str(body.error.code) : undefined;
+}
+
 function reasonForStatus(status: number, body: unknown): ProviderUsageReasonCode {
-  if (status === 401) return "unauthorized";
+  if (status === 401) return errorCode(body) === "api_key_expired" ? "key-expired" : "unauthorized";
   if (status === 403) return isEntitlementError(body) ? "no-subscription" : "forbidden";
   if (status === 429) return "rate-limited";
   return "http-error";
@@ -113,7 +120,8 @@ async function requestUsage(key: string, options: FetchGoUsageOptions, now: Date
   try {
     return await (options.fetchImpl ?? fetch)(options.url ?? OPENCODE_GO_USAGE_URL, {
       method: "GET",
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      // The provider's edge refuses requests with no recognisable client (a bare fetch looks like a script), which would read as an outage.
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "User-Agent": USER_AGENT },
       // A redirect would carry the request somewhere the key was never meant to go.
       redirect: "error",
       signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),

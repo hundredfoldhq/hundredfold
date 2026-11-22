@@ -56,9 +56,12 @@ describe("fetchGoUsage", () => {
     expect(String(url)).toBe("https://opencode.ai/inference/go/v1/usage");
     expect((init as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${KEY}` });
     expect((init as RequestInit).redirect).toBe("error");
+    // A request with no recognisable client is refused at the provider's edge and would read as an outage.
+    expect((init as RequestInit).headers).toMatchObject({ "User-Agent": expect.stringMatching(/\S/) });
   });
 
   it.each([
+    [401, { error: { type: "authentication_error", code: "api_key_expired", message: "expired" } }, "key-expired"],
     [401, { type: "error", error: { type: "AuthError", message: "bad key" } }, "unauthorized"],
     [403, { type: "error", error: { type: "EntitlementError", message: "OpenCode Go subscription required." } }, "no-subscription"],
     [403, "region blocked", "forbidden"],
