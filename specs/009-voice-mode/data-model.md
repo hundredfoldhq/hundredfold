@@ -72,6 +72,7 @@ other keys.
 | assistant message | `voice.spokenText` | string | barge-in (what was heard), or the reply's end (all of it) |
 | assistant message | `voice.interrupted` | boolean | barge-in |
 | assistant message | `voice.ttfaMs` | number | the first audio byte of the reply |
+| assistant message | `externalTurn` (top level, not under `voice`) | `true` | stored by the transcript sync for a reply the engine wrote outside a gateway turn (a background-work report, a reply typed in the terminal); voice speaks these rows. Written whether voice is on or off |
 
 Validation: strings capped at the message length cap; `audioMs` and `ttfaMs` are
 non-negative integers. The web reads `voice` to draw the spoken mark, the unheard tail

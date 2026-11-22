@@ -376,7 +376,6 @@ export class SpeechPipeline {
   }
 }
 
-/** The leading part of a sentence heard when `ratio` of its audio played, cut at a word. */
 /** What was heard of each stored message of a cut reply, in order; a streamed reply is one part with no message id. */
 function heardParts(scope: readonly Segment[], wholeIds: ReadonlySet<number>, playing: Segment | undefined, ratio: number): HeardPart[] {
   const parts: HeardPart[] = [];
@@ -390,6 +389,7 @@ function heardParts(scope: readonly Segment[], wholeIds: ReadonlySet<number>, pl
   return parts;
 }
 
+/** The leading part of a sentence heard when `ratio` of its audio played, cut at a word. */
 export function partOf(text: string, ratio: number): string {
   const words = text.split(/\s+/).filter(Boolean);
   return words.slice(0, Math.floor(words.length * ratio)).join(" ");

@@ -28,8 +28,9 @@ Run guide for proving the feature end to end. Contracts:
 1. Add `voice: { enabled: true }`, reload.
 2. `GET /api/voice/config` → `install.state` `not_installed`. `POST /api/voice/install`.
 3. Poll until `install.state` is `ready`. Expect `stt.provider: local`,
-   `tts.voice: af_heart` (or the operator's pick), `available: true`, and a device of
-   `gpu` on the build machine.
+   `tts.voice: af_heart` (or the operator's pick) and `available: true`. The config
+   reply carries no device field: `voice.local.device: auto` picks the GPU when
+   `nvidia-smi` reports one, and `nvidia-smi` lists the sidecar's process once it runs.
 
 ## 3. Spoken round trip (US1, SC-001, SC-002)
 

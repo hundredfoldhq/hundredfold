@@ -154,7 +154,7 @@ describe("no provider key on the wire", () => {
       expect(reply.text).not.toContain(SENTINEL);
       expect(reply.text).not.toContain("VOICE_TEST_KEY"); // not even the variable's name: the client needs neither
     }
-  });
+  }, 30_000); // importing the whole API module takes most of the default 5 s on a loaded machine
 
   it("a key written into the configuration by mistake is redacted too", () => {
     const cfg = { voice: { enabled: true, stt: { apiKey: "sk-written-in-by-mistake-1234" } } } as unknown as HundredfoldConfig;
