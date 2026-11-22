@@ -25,6 +25,12 @@ export const MERGED_MESSAGE_SEPARATOR = "\n\n";
 const PARKED_MESSAGES =
   "FROM queue_items WHERE session_key = ? AND status = 'pending' AND internal = 0 AND dispatch_payload IS NOT NULL";
 
+/** The first spoken row's voice instructions, which stay with the merged text. */
+function firstVoiceEnvelope(dispatches: readonly QueueDispatch[]): { voiceEnvelope?: string } {
+  const envelope = dispatches.find((parsed) => parsed.voiceEnvelope)?.voiceEnvelope;
+  return envelope ? { voiceEnvelope: envelope } : {};
+}
+
 /**
  * Fold every parked operator message of the lane into `intoId`, in the order
  * they would have run: one text joined by blank lines, every attachment, and
@@ -62,6 +68,8 @@ export function mergePendingQueueItems(sessionKey: string, intoId: string): stri
     const dispatch: QueueDispatch = {
       attachments: [...new Set(dispatches.flatMap((parsed) => parsed.attachments))],
       speechDerived: dispatches.every((parsed) => parsed.speechDerived),
+      // The first spoken row's instructions stay with the merged text, so a send-now never drops them.
+      ...firstVoiceEnvelope(dispatches),
       foldedMessageIds: folded.flatMap((row) => (row.message_id ? [row.message_id] : [])),
     };
     db.prepare("UPDATE queue_items SET prompt = ?, dispatch_payload = ?, position = ?, internal = 1 WHERE id = ? AND status = 'pending'")

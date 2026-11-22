@@ -20,6 +20,7 @@ import { logger } from "../shared/logger.js";
 import type { Engine, Session } from "../shared/types.js";
 import { createWebTurnSurface } from "./web-turn-surface.js";
 import { resolveMessageAudiences } from "./speech-context.js";
+import { withVoiceEnvelope } from "../voice/envelope.js";
 // Type-only, so the pair below can name the context every web route already
 // carries without this module and api.ts importing each other at runtime.
 import { startDelegatedTurn } from "./delegation-handoff.js";
@@ -130,7 +131,10 @@ function requestForTurn(
   // Its text always. Its attachments only if it recorded any: the notification,
   // workflow and plugin paths enqueue without a payload and still carry files on
   // the closure, and overriding those with "none" would silently drop them.
-  const prompt = resolveMessageAudiences(parked.prompt, parked.dispatch?.speechDerived === true).engine;
+  const prompt = withVoiceEnvelope(
+    resolveMessageAudiences(parked.prompt, parked.dispatch?.speechDerived === true).engine,
+    parked.dispatch?.voiceEnvelope,
+  );
   if (!parked.dispatch) return { ...dispatched, prompt };
   return { ...dispatched, prompt, attachments: parked.dispatch.attachments.length > 0 ? parked.dispatch.attachments : undefined };
 }

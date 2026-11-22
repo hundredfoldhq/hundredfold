@@ -21,7 +21,7 @@ describe("a member's cookie is default-deny", () => {
     ["POST", "/api/boards/ops/invites"], ["POST", "/api/account/setup"], ["POST", "/api/account/password"],
     ["GET", "/api/auth/devices"], ["POST", "/api/auth/pairing-codes"], ["POST", "/api/internal/hook"], ["GET", "/api/files"],
     ["GET", "/api/plugins/x/events"], ["GET", "/api/terminals"], ["GET", "/api/member"], ["GET", "/api/membership"], ["PUT", "/api/work-items/OPS-1/person"],
-    ["GET", "/api/member/../people"], ["POST", "/api/auth/state"], ["GET", "/api/auth/logout"], ["POST", "/api/auth/login"],
+    ["GET", "/api/member/../people"], ["GET", "/api/voice/config"], ["POST", "/api/voice/install"], ["POST", "/api/auth/state"], ["GET", "/api/auth/logout"], ["POST", "/api/auth/login"],
   ];
   it.each(GENERAL)("%s %s answers 403 and never reaches the general API", async (method, url) => {
     const reply = await h.request(method, url, { cookie: pat.cookie, body: method === "GET" ? undefined : {} });

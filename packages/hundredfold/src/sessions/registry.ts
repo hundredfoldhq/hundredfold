@@ -2405,6 +2405,60 @@ export function insertMessageAfter(
   return id;
 }
 
+/**
+ * Merge `patch` into a stored message's `meta`, keeping every key it does not
+ * name. One statement (RFC 7396 merge patch), so two writers of different keys
+ * never lose each other's update. Objects merge recursively, so `{voice: {a}}`
+ * leaves a stored `voice.b` alone; a `null` value removes its key. Creates the
+ * meta when the row has none. An unknown id changes nothing. Returns whether a
+ * row was updated.
+ */
+export function mergeMessageMeta(messageId: string, patch: JsonObject): boolean {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE messages SET meta = json_patch(COALESCE(meta, '{}'), ?) WHERE id = ?",
+  ).run(JSON.stringify(patch), messageId);
+  return result.changes > 0;
+}
+
+/**
+ * The newest assistant text row of a session written at or after `sinceMs`:
+ * the stored message a reply that just finished became. Tool-call rows are not
+ * replies. Undefined when none exists yet.
+ */
+export function latestAssistantMessageId(sessionId: string, sinceMs: number): string | undefined {
+  const db = initDb();
+  const row = db.prepare(
+    `SELECT id FROM messages
+     WHERE session_id = ? AND role = 'assistant' AND tool_call IS NULL AND timestamp >= ?
+     ORDER BY timestamp DESC, rowid DESC LIMIT 1`,
+  ).get(sessionId, sinceMs) as { id: string } | undefined;
+  return row?.id;
+}
+
+/** Stamped on assistant text the transcript sync stored for a reply the engine wrote on its own (no gateway turn streamed it). */
+export const EXTERNAL_TURN_META_KEY = "externalTurn";
+
+/** What a voice attachment reads of such a reply. */
+export interface ExternalReplyRow {
+  id: string;
+  content: string;
+}
+
+/**
+ * Assistant text the transcript sync stored for the engine's own replies since `sinceMs`, in insertion order. Only
+ * rows the sync stamped: a gateway turn's rows (streamed, settled, error notices) are never among them, and a
+ * timestamp bound needs no cursor that deleted rows could invalidate.
+ */
+export function externalRepliesSince(sessionId: string, sinceMs: number): ExternalReplyRow[] {
+  return initDb().prepare(
+    `SELECT id, content FROM messages
+     WHERE session_id = ? AND role = 'assistant' AND timestamp > ? AND COALESCE(partial, 0) = 0 AND tool_call IS NULL
+       AND json_extract(meta, '$.${EXTERNAL_TURN_META_KEY}') = 1
+     ORDER BY rowid ASC`,
+  ).all(sessionId, sinceMs) as ExternalReplyRow[];
+}
+
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   const rows = db

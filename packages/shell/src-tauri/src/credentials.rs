@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{commands::NativeError, origin::CanonicalOrigin};
 
+#[cfg(target_vendor = "apple")]
 const SERVICE: &str = "run.hundredfold.shell.gateway";
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -24,16 +28,19 @@ pub trait CredentialStore: Send + Sync {
 
 pub type SharedCredentialStore = Arc<dyn CredentialStore>;
 
+#[cfg(target_vendor = "apple")]
 pub struct OsCredentialStore;
 
 fn account(origin: &CanonicalOrigin) -> String {
     format!("{:x}", Sha256::digest(origin.as_str().as_bytes()))
 }
 
+#[cfg(target_vendor = "apple")]
 fn entry(origin: &CanonicalOrigin) -> Result<keyring::Entry, NativeError> {
     keyring::Entry::new(SERVICE, &account(origin)).map_err(|_| NativeError::credential_store())
 }
 
+#[cfg(target_vendor = "apple")]
 impl CredentialStore for OsCredentialStore {
     fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
         match entry(origin)?.get_password() {
@@ -66,41 +73,72 @@ impl CredentialStore for OsCredentialStore {
     }
 }
 
-#[cfg(test)]
-pub mod test_store {
-    use super::{account, CanonicalOrigin, CredentialStore, GatewayCredential};
-    use crate::commands::NativeError;
-    use std::{collections::HashMap, sync::Mutex};
+/// Credentials held in memory for the life of the process.
+///
+/// Used where there is no OS-backed store: the keyring build enables the Apple
+/// backend only, so on Android its default is a mock whose entries do not
+/// persist, and a pairing would be unusable the moment it was made. This store
+/// is **not** secure storage and is not persisted: the user pairs again after
+/// the app process ends.
+#[derive(Default)]
+pub struct SessionCredentialStore(Mutex<HashMap<String, GatewayCredential>>);
 
-    #[derive(Default)]
-    pub struct MemoryCredentialStore(Mutex<HashMap<String, GatewayCredential>>);
+impl CredentialStore for SessionCredentialStore {
+    fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .get(&account(origin))
+            .cloned())
+    }
 
-    impl CredentialStore for MemoryCredentialStore {
-        fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
-            Ok(self.0.lock().unwrap().get(&account(origin)).cloned())
-        }
+    fn put(
+        &self,
+        origin: &CanonicalOrigin,
+        credential: &GatewayCredential,
+    ) -> Result<(), NativeError> {
+        self.0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .insert(account(origin), credential.clone());
+        Ok(())
+    }
 
-        fn put(
-            &self,
-            origin: &CanonicalOrigin,
-            credential: &GatewayCredential,
-        ) -> Result<(), NativeError> {
-            self.0
-                .lock()
-                .unwrap()
-                .insert(account(origin), credential.clone());
-            Ok(())
-        }
+    fn delete(&self, origin: &CanonicalOrigin) -> Result<bool, NativeError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .remove(&account(origin))
+            .is_some())
+    }
+}
 
-        fn delete(&self, origin: &CanonicalOrigin) -> Result<bool, NativeError> {
-            Ok(self.0.lock().unwrap().remove(&account(origin)).is_some())
-        }
+/// The credential store for this platform: Keychain on Apple platforms, the
+/// process-lifetime store elsewhere.
+pub fn platform_store() -> SharedCredentialStore {
+    #[cfg(target_vendor = "apple")]
+    {
+        Arc::new(OsCredentialStore)
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        Arc::new(SessionCredentialStore::default())
     }
 }
 
 #[cfg(test)]
+pub mod test_store {
+    pub type MemoryCredentialStore = super::SessionCredentialStore;
+}
+
+#[cfg(test)]
 mod tests {
-    use super::{account, test_store::MemoryCredentialStore, CredentialStore, GatewayCredential};
+    use super::{
+        account, test_store::MemoryCredentialStore, CredentialStore, GatewayCredential,
+        SessionCredentialStore,
+    };
     use crate::origin::CanonicalOrigin;
 
     #[test]
@@ -113,6 +151,44 @@ mod tests {
         assert_eq!(
             account(&a),
             account(&CanonicalOrigin::parse("http://127.0.0.1:7779").unwrap())
+        );
+    }
+
+    /// The in-memory store backs pairing on platforms with no OS credential store, so
+    /// it must never write a credential anywhere. It holds nothing but a
+    /// `Mutex<HashMap>`, and the production code of this module (everything before
+    /// the test module) names no filesystem API.
+    #[test]
+    fn the_session_store_never_touches_the_filesystem() {
+        let source = include_str!("credentials.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for api in [
+            "std::fs",
+            "fs::",
+            "File::",
+            "OpenOptions",
+            "create_dir",
+            "std::io::Write",
+            "tempfile",
+            "dirs::",
+            "std::env::temp_dir",
+        ] {
+            assert!(
+                !production.contains(api),
+                "credentials.rs must not use {api}: the in-memory store is never written to disk"
+            );
+        }
+        // And it still round-trips, so the check above is guarding something real.
+        let store = SessionCredentialStore::default();
+        let origin = CanonicalOrigin::parse("http://127.0.0.1:7779").unwrap();
+        let credential = GatewayCredential {
+            cookie_header: "auth=never-on-disk".into(),
+            device_id: "device".into(),
+        };
+        store.put(&origin, &credential).unwrap();
+        assert_eq!(
+            store.get(&origin).unwrap().unwrap().cookie_header,
+            "auth=never-on-disk"
         );
     }
 

@@ -11,6 +11,7 @@ import { setOpencodeAccountKeyEnv } from "./child-env.js";
 import { rememberOpencodeAccounts } from "./opencode-subscription.js";
 import { autoCompactProblems } from "./auto-compact-config.js";
 import { contextConfigProblems } from "./context-config.js";
+import { voiceConfigProblems } from "./voice-config.js";
 import { sessionFallbackConfigProblems } from "./session-fallback-config.js";
 import type { HundredfoldConfig } from "./types.js";
 import { todoRecoveryProblems } from "./todo-recovery-config.js";
@@ -104,7 +105,7 @@ export function validateConfigShape(config: unknown, options: { tolerateDuplicat
     problems.push(...opencodeUsageLimitsProblems(c.engines), ...opencodeSubscriptionProblems(c.engines), ...validateOpencodeAccounts(c.engines, configEnvReferences(c)), ...autoCompactProblems(c.engines));
   }
 
-  problems.push(...validateRealtime(c.realtime));
+  problems.push(...validateRealtime(c.realtime), ...voiceConfigProblems(c.voice));
 
   return problems;
 }
@@ -323,7 +324,7 @@ const CONFIG_TOP_LEVEL_KEY_SET: Record<keyof HundredfoldConfig, true> = {
   hundredfold: true, gateway: true, engines: true, models: true, connectors: true,
   logging: true, mcp: true, plugins: true, budgets: true, sessions: true,
   cron: true, notifications: true, workflows: true, portal: true, context: true, knowledge: true,
-  stt: true, talk: true, realtime: true, remote: true, terminal: true, hooks: true,
+  stt: true, talk: true, realtime: true, voice: true, remote: true, terminal: true, hooks: true,
 };
 export const CONFIG_TOP_LEVEL_KEYS = [...new Set([...Object.keys(CONFIG_TOP_LEVEL_KEY_SET), ...nameAliases((n) => n.codename)])]; // the instance block under either codename: a save must not drop an older file's
 

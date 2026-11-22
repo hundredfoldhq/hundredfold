@@ -1,0 +1,11 @@
+[package]
+name = "hundredfold-voice-core"
+version = "0.1.0"
+description = "Platform-independent core of the native voice client: wire frames, frame bridge, and the session state machine"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

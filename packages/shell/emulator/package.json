@@ -1,0 +1,11 @@
+{
+  "name": "hundredfold-shell-emulator-tools",
+  "private": true,
+  "type": "module",
+  "description": "Host-side helpers for the Android emulator voice run. Not part of the workspace: run `npm install` here.",
+  "dependencies": {
+    "@grpc/grpc-js": "1.14.7",
+    "@grpc/proto-loader": "0.8.1",
+    "ws": "8.21.1"
+  }
+}

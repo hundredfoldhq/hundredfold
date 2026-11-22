@@ -343,6 +343,7 @@ import { claudeProfileFromDir, type ClaudeProfile } from "../shared/claude-profi
 import { declaredAccountByKey } from "../shared/claude-accounts-config.js";
 import { claudeAccountKey } from "../shared/engine-account.js";
 import { handleTalkApi } from "./talk-api.js";
+import { handleVoiceApi } from "./voice-api.js";
 import { onboardingNeeded, applyEngineChoice, personalizeOperatingManual } from "./onboarding-policy.js";
 import {
   CONTAINER_RESTART_UNSUPPORTED_MESSAGE,
@@ -404,6 +405,8 @@ export interface ApiContext {
   gatewayBootId?: string;
   getConfig: () => HundredfoldConfig;
   emit: GatewayEmit;
+  /** Whether voice mode was set up at boot (the voice runtime exists); absent where voice is not wired. */
+  voiceRunning?: () => boolean;
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   /** Re-read config.yaml into memory immediately (same as the file-watcher does,
@@ -845,9 +848,22 @@ function originMatchesLoopbackViteProxy(
   }
 }
 
+const FETCH_METADATA_HEADERS = ["sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"] as const;
+
+/**
+ * Whether a request is the no-auth gateway's own browser page, trusted as the operator.
+ *
+ * A fetch must carry same-origin fetch metadata. A WebSocket handshake reached
+ * through the server's upgrade handler (`options.upgradeHandshake`) may carry
+ * none: Chromium sends no Sec-Fetch-* on a WebSocket, so there the exact Origin
+ * match, which every browser sends and no page can forge, is the cross-site
+ * defence. Fetch metadata that is present must still say same-origin; on a
+ * WebSocket its destination may be "empty" (Firefox) or "websocket" (WebKit).
+ */
 export function isSameOriginBrowserRequest(
-  req: Pick<HttpRequest, "headers" | "rawHeaders" | "socket">,
+  req: Pick<HttpRequest, "headers" | "rawHeaders" | "socket" | "method">,
   config: Pick<HundredfoldConfig, "gateway">,
+  options: { upgradeHandshake?: boolean } = {},
 ): boolean {
   if (shouldRequireGatewayAuth(config)) return false;
   const socket = req.socket;
@@ -860,12 +876,18 @@ export function isSameOriginBrowserRequest(
     || !isLoopbackAuthorityHost(authority.hostname)
     || !authorityMatchesListener(authority, socket.localAddress!, socket.localPort)) return false;
 
-  const fetchSite = singleRequestHeader(req, "sec-fetch-site");
-  const fetchMode = singleRequestHeader(req, "sec-fetch-mode");
-  const fetchDest = singleRequestHeader(req, "sec-fetch-dest");
   const upgrade = singleRequestHeader(req, "upgrade")?.toLowerCase();
-  const expectedMode = upgrade === "websocket" ? "websocket" : "cors";
-  if (fetchSite !== "same-origin" || fetchMode !== expectedMode || fetchDest !== "empty") return false;
+  const websocketHandshake = options.upgradeHandshake === true && upgrade === "websocket" && req.method === "GET";
+  const noFetchMetadata = FETCH_METADATA_HEADERS.every((name) => requestHeaderValues(req, name).length === 0);
+  if (!(websocketHandshake && noFetchMetadata)) {
+    const fetchSite = singleRequestHeader(req, "sec-fetch-site");
+    const fetchMode = singleRequestHeader(req, "sec-fetch-mode");
+    const fetchDest = singleRequestHeader(req, "sec-fetch-dest");
+    const expectedMode = upgrade === "websocket" ? "websocket" : "cors";
+    // WebKit labels a WebSocket handshake's destination "websocket"; Firefox uses "empty".
+    const destOk = fetchDest === "empty" || (expectedMode === "websocket" && fetchDest === "websocket");
+    if (fetchSite !== "same-origin" || fetchMode !== expectedMode || !destOk) return false;
+  }
 
   const origins = requestHeaderValues(req, "origin");
   if (origins.length > 1 || (upgrade === "websocket" && origins.length !== 1)) return false;
@@ -1313,6 +1335,8 @@ export async function handleApiRequest(
     if (controlPlaneAction && !requireOperatorControlPlaneAuthority(req, res, controlPlaneAction, context)) {
       return;
     }
+
+    if (await handleVoiceApi(req, res, { method, pathname, url }, { getConfig: context.getConfig, emit: context.emit, ...(context.voiceRunning ? { voiceRunning: context.voiceRunning } : {}) })) return;
 
     if (method === "GET" && pathname === "/api/callback-deliveries/dead-letter") {
       if (!requireCallbackRecoveryAuthority(req, res, context)) return;

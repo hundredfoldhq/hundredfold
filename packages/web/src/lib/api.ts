@@ -9,6 +9,7 @@ import type {
 } from "@/routes/notes/types"
 import { createConfigApi } from "@/lib/api-config"
 import { createSttApi } from "@/lib/api-stt"
+import { createVoiceApi } from "@/lib/api-voice"
 import { createTodoCaptureApi } from "@/lib/api-todo-capture"
 import type { EngineLimitsResponse } from "@/lib/api-engine-limits"
 import type { SessionWaitsResponse } from "@/lib/session-waits"
@@ -717,6 +718,7 @@ export const api = {
   completeOnboarding: (data: { companyName?: string; companyPrefix?: string | null; portalName?: string; operatorName?: string; operatorEmoji?: string; language?: string; engine?: string; model?: string; effortLevel?: string }) =>
     post<{ status: string; portal: { companyName?: string; companyPrefix?: string; portalName?: string; operatorName?: string; operatorEmoji?: string; language?: string } }>("/api/onboarding", data),
   ...createSttApi({ get, post, put, authFetch }),
+  ...createVoiceApi({ get, post }),
   ...createTodoCaptureApi({ get, post }),
   getSessionQueue: (id: string) => get<QueueItem[]>(`/api/sessions/${id}/queue`),
   cancelQueueItem: (sessionId: string, itemId: string) => del<{ status: string; messageId?: string }>(`/api/sessions/${sessionId}/queue/${itemId}`),
