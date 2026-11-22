@@ -332,7 +332,19 @@ def load_models(hello: dict[str, Any]) -> Models:
     stt = ParakeetOnnx(specs["stt"], providers)
     tts = KokoroOnnx(specs["tts"], providers)
     vad = SileroOnnx(specs["vad"]["model"])
+    warm_up(stt, tts)
     return Models(vad, stt, tts, "gpu" if device == "gpu" and tts.device == "gpu" else "cpu")
+
+
+def warm_up(stt: SttModel, tts: TtsModel) -> None:
+    """One throwaway decode and synthesis, so the first spoken turn does not pay for the CUDA
+    kernels and graph setup. A failure here is not fatal: the first real request will say why."""
+    try:
+        stt.recognize(bytes(MIN_STT_SAMPLES * 2))
+        for _ in tts.synthesize("Ready.", tts.voices[0] if tts.voices else "af_heart", 1.0, "en"):
+            pass
+    except Exception:
+        sys.stderr.write("warm-up failed:\n" + traceback.format_exc())
 
 
 # ── the server ───────────────────────────────────────────────────────────────

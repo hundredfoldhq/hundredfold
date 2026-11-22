@@ -85,6 +85,8 @@ export class SpeechSidecarClient {
   private closed = false;
   private readonly vadHandlers = new Map<string, VadEventHandler[]>();
   private readonly stt = new Map<string, SttWaiter>();
+  /** Utterances cancelled before their decode went out (the sidecar was still starting): never sent. */
+  private readonly cancelledUtterances = new Set<string>();
   private readonly tts = new Map<string, TtsWaiter>();
   private helloWaiter: { resolve(info: SidecarReady): void; reject(error: Error): void } | null = null;
 
@@ -260,6 +262,7 @@ export class SpeechSidecarClient {
     const release = this.lease();
     try {
       await this.ensureReady();
+      if (this.cancelledUtterances.has(ids.utterance)) throw new Error("cancelled");
       const key = `${ids.utterance}:${kind === "final"}`;
       const text = new Promise<string>((resolve, reject) => this.stt.set(key, { resolve, fail: reject }));
       this.write({ op: `stt.${kind}`, ...ids }, pcm);
@@ -271,6 +274,8 @@ export class SpeechSidecarClient {
 
   /** Cancel an utterance's decodes: the sidecar sends nothing more for it, and waiting callers are failed. */
   cancelUtterance(utterance: string): void {
+    this.cancelledUtterances.add(utterance);
+    if (this.cancelledUtterances.size > 1024) this.cancelledUtterances.delete(this.cancelledUtterances.values().next().value as string);
     this.cancel(utterance);
     for (const kind of [false, true]) this.stt.get(`${utterance}:${kind}`)?.fail(new Error("cancelled"));
   }

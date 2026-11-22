@@ -32,7 +32,10 @@ function handle(header, body) {
     case "stt.partial":
     case "stt.final":
       if (mode === "nostt") return;
-      return send({ op: "stt.text", stream: header.stream, utterance: header.utterance, text: `${header.op}:${body.length}`, final: header.op === "stt.final" });
+      return setTimeout(
+        () => send({ op: "stt.text", stream: header.stream, utterance: header.utterance, text: `${header.op}:${body.length}`, final: header.op === "stt.final" }),
+        header.op === "stt.partial" ? Number(process.env.FAKE_PARTIAL_DELAY_MS ?? 0) : 0,
+      );
     case "cancel":
       cancelled.add(header.id);
       return;
