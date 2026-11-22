@@ -108,6 +108,8 @@ export interface BoardCardProps {
   onLiftPointerDown?: (event: React.PointerEvent, item: WorkItemCompactWire) => void
   /** Offers "Move to…" on the card, the phone's way to change column. Absent = no action. */
   onMove?: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
+  /** With `onMove`: lists "View as board" in that menu. Absent = no row. */
+  onViewAsBoard?: (id: string) => void
   dragging?: boolean
   /** Rendered as the floating drag preview: lifted treatment, inert. */
   ghost?: boolean
@@ -131,6 +133,7 @@ export const BoardCard = memo(function BoardCard({
   onKeep,
   onLiftPointerDown,
   onMove,
+  onViewAsBoard,
   dragging,
   ghost,
   flat,
@@ -202,7 +205,7 @@ export const BoardCard = memo(function BoardCard({
           {/* The label gives way before the name: it shortens to an ellipsis, the chip keeps its width. */}
           {item.movedToAnotherBoard && <MovedLabel testId={`board-moved-${item.id}`} className="min-w-0 shrink" />}
           <AssigneeCircles assignee={item.assignee} humanAssignee={item.humanAssignee} byName={byName} />
-          {onMove && !ghost && <MoveToMenu item={item} openChildren={rollup ? rollup.total - rollup.closed : 0} onMove={onMove} />}
+          {onMove && !ghost && <MoveToMenu item={item} openChildren={rollup ? rollup.total - rollup.closed : 0} onMove={onMove} onViewAsBoard={rollup ? onViewAsBoard : undefined} />}
         </span>
       </div>
 

@@ -17,6 +17,9 @@ export interface BoardLocation {
   openTodo: (id: string, state?: Record<string, unknown>) => void
   /** Pins this board as a chat layout tab. Only a sub-board in a pop-up has one, and only where a tab can be pinned. */
   pinAsTab?: () => void
+  /** The board is the page's own route, so a pop-up opened over it may push a history entry of that route (Back closes it). A pop-up
+   *  over a pane, a tab or another pop-up holds its state in memory instead and never writes the address. */
+  routed?: boolean
 }
 
 export const BoardLocationContext = createContext<BoardLocation | null>(null)
@@ -52,7 +55,7 @@ export function RouteBoardLocationProvider({ children }: { children: ReactNode }
     [navigate],
   )
   const value = useMemo<BoardLocation>(
-    () => ({ board, setBoard, searchParams, setSearchParams, navigationType, openTodo }),
+    () => ({ board, setBoard, searchParams, setSearchParams, navigationType, openTodo, routed: true }),
     [board, setBoard, searchParams, setSearchParams, navigationType, openTodo],
   )
   return <BoardLocationContext.Provider value={value}>{children}</BoardLocationContext.Provider>

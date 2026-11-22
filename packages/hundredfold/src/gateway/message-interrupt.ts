@@ -33,9 +33,10 @@ export function messageDeliveryError(delivery: unknown): string | undefined {
  * does by default (`sessions.interruptOnNewMessage`); a notification — a child
  * callback, a relay — never does. Nor does `/compact`: it waits for the running
  * turn, since cutting work off to compact it would lose the very turn the
- * summary should include. Nor does anything while the running turn is still
- * auto-compacting a cold session in front of its own message: cut
- * off, that compaction is wasted and the next turn starts it over. Nor does
+ * summary should include. Nor does anything while a compaction is under way or
+ * queued for the session (an auto-compaction in front of its own message, or a
+ * `/compact` turn, an operator's or the session's own): cut off, the compaction
+ * is wasted and the context never shrinks, and the message waits behind it. Nor does
  * anything while the queue is paused: nothing would drain, so cutting the turn
  * off would only lose its reply.
  * An explicit per-message `delivery` overrides the global default in both
@@ -46,14 +47,14 @@ export function shouldInterruptRunningTurn(o: {
   prompt: string;
   interruptOnNewMessage: boolean | undefined;
   turnRunning: boolean;
-  /** The running turn is auto-compacting before its message. */
-  autoCompacting?: boolean;
+  /** A compaction is running for the session or queued to run next: see `compactionInFlight`. */
+  compacting?: boolean;
   /** Per-message choice; overrides `interruptOnNewMessage` when set. */
   delivery?: MessageDelivery;
   /** Whether the session's queue is paused; asked only when the answer matters. */
   queuePaused?: () => boolean;
 }): boolean {
-  if (o.isNotification || !o.turnRunning || o.autoCompacting) return false;
+  if (o.isNotification || !o.turnRunning || o.compacting) return false;
   if (isCompactCommand(o.prompt)) return false;
   if (o.delivery === "queue") return false;
   const wouldInterrupt = o.delivery === "now" || (o.interruptOnNewMessage ?? true);
@@ -75,7 +76,7 @@ export type RunningTurnAction = "queue" | "interrupt" | "steer" | "promote";
  * and subagents. It is handed to the running turn when the engine can take it
  * (`"steer"`), else moved to the head of its lane (`"promote"`) to be the next
  * thing the session reads. Neither looks at `interruptOnNewMessage`. The same
- * guards as above hold it back: no turn running, a running auto-compaction, a
+ * guards as above hold it back: no turn running, a compaction under way or queued, a
  * compact command and a paused queue all leave it queued behind the turn.
  */
 export function runningTurnAction(o: {
@@ -83,7 +84,7 @@ export function runningTurnAction(o: {
   prompt: string;
   interruptOnNewMessage: boolean | undefined;
   turnRunning: boolean;
-  autoCompacting?: boolean;
+  compacting?: boolean;
   delivery?: MessageDelivery;
   queuePaused?: () => boolean;
   /** The operator's own mention, per the delivery row. */
@@ -98,6 +99,6 @@ export function runningTurnAction(o: {
 }
 
 /** Whether there is a running turn a mention may reach: one that is neither compacting, nor about to compact, nor held by a pause. */
-function reachableTurnRunning(o: { prompt: string; turnRunning: boolean; autoCompacting?: boolean; queuePaused?: () => boolean }): boolean {
-  return o.turnRunning && !o.autoCompacting && !isCompactCommand(o.prompt) && !o.queuePaused?.();
+function reachableTurnRunning(o: { prompt: string; turnRunning: boolean; compacting?: boolean; queuePaused?: () => boolean }): boolean {
+  return o.turnRunning && !o.compacting && !isCompactCommand(o.prompt) && !o.queuePaused?.();
 }

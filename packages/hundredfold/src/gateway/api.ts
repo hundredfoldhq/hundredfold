@@ -354,7 +354,7 @@ import { handleSessionContextApi } from "./session-context-api.js";
 import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
 import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
-import { isAutoCompacting } from "../sessions/auto-compaction.js";
+import { compactionInFlight } from "../sessions/compaction-in-flight.js";
 import { isCompactCommand, isRawEngineCommand } from "../shared/skill-commands.js";
 import { handleTerminalApi, type TerminalApiOptions } from "./terminal-api.js";
 import { isTerminalSession, TERMINAL_HAS_NO_TURN, TERMINAL_REFUSES_MESSAGES } from "../terminals/session.js";
@@ -4177,7 +4177,8 @@ export async function handleApiRequest(
         prompt: String(prompt),
         interruptOnNewMessage: config.sessions?.interruptOnNewMessage,
         turnRunning,
-        autoCompacting: isAutoCompacting(session.id),
+        // A compaction under way or next in line runs to completion; the message waits behind it.
+        compacting: turnRunning && compactionInFlight(session.id),
         delivery,
         queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
         reachRunningTurn: callbackDelivery?.payload.reachRunningTurn === true,
