@@ -5,7 +5,7 @@
  * It follows the same rules as the sidecar's endpointer: speech starts after `minSpeechMs` above
  * the level and ends after `silenceMs` below it; `start.atMs` is already moved back by `prerollMs`.
  */
-import type { VadStream } from "../provider.js";
+import type { VadEventHandler, VadStream } from "../provider.js";
 
 export interface EnergyVadParams { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number }
 
@@ -26,7 +26,7 @@ export function rms(frame: Buffer): number {
 }
 
 export class EnergyVad implements VadStream {
-  private readonly handlers: Array<(event: { kind: "start" | "end"; atMs: number }) => void> = [];
+  private readonly handlers: VadEventHandler[] = [];
   private pending: Buffer = Buffer.alloc(0);
   private frame = 0;
   private speaking = false;
@@ -44,7 +44,7 @@ export class EnergyVad implements VadStream {
     this.silenceFrames = Math.max(1, Math.ceil(params.silenceMs / FRAME_MS));
   }
 
-  on(handler: (event: { kind: "start" | "end"; atMs: number }) => void): void {
+  on(handler: VadEventHandler): void {
     this.handlers.push(handler);
   }
 
