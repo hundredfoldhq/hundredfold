@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideBargeIn, foregroundWorkOf, isLongWork, type BargeInInput } from "../barge-in-policy.js";
+import { decideBargeIn, foregroundWorkOf, isLongWork, UNREPORTED_WORK, type BargeInInput } from "../barge-in-policy.js";
 
 const NOW = 100_000;
 const THRESHOLD = 5_000;
@@ -67,8 +67,27 @@ describe("the barge-in decision table (contracts/providers.md)", () => {
 });
 
 describe("foregroundWorkOf", () => {
-  it("is whatever the engine reports, and none for an engine with no way to say", () => {
+  it("is whatever the engine reports, and none only for an engine that reports none", () => {
     expect(foregroundWorkOf({ foregroundWork: () => long }, "s1")).toBe(long);
-    expect(foregroundWorkOf({}, "s1")).toBeNull();
+    expect(foregroundWorkOf({ foregroundWork: () => null }, "s1")).toBeNull();
+  });
+
+  it("an engine with no way to say is taken to be running long work that cannot be backgrounded", () => {
+    const work = foregroundWorkOf({}, "s1");
+    expect(work).toBe(UNREPORTED_WORK);
+    expect(work).toMatchObject({ tool: "unknown", backgroundable: false });
+    expect(isLongWork(work!, NOW, THRESHOLD)).toBe(true);
+  });
+
+  it("so on such an engine the decision is steer or queue with the holding line, never interrupt_now or a soft interrupt", () => {
+    const longWork = foregroundWorkOf({}, "s1");
+    expect(decideBargeIn({ ...base, longWork, steerable: true }).kind).toBe("steer_with_holding");
+    expect(decideBargeIn({ ...base, longWork, steerable: false }).kind).toBe("queue_with_holding");
+    expect(decideBargeIn({ ...base, longWork, soft: true, steerable: true }).kind).toBe("steer_with_holding");
+  });
+
+  it("interrupt_now is only for an engine that reports foreground work and reports none", () => {
+    const reportsNone = foregroundWorkOf({ foregroundWork: () => null }, "s1");
+    expect(decideBargeIn({ ...base, longWork: reportsNone }).kind).toBe("interrupt_now");
   });
 });

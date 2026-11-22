@@ -72,11 +72,18 @@ export function decideBargeIn(input: BargeInInput): BargeInDecision {
 }
 
 /**
- * The foreground tool call an engine reports for a session, or null when it
- * reports none. An engine with no way to say (neither the soft interrupt nor
- * OpenCode's plain method) reports none, as the contract has it.
+ * What an engine with no way to say what is running is taken to be running while its turn runs: long work that
+ * cannot be backgrounded (contract, providers.md). It gets steer or queue with the holding line, and never
+ * `interrupt_now`, which would kill work the engine will never tell us about (FR-014).
+ */
+export const UNREPORTED_WORK: ForegroundWork = { tool: "unknown", startedAt: 0, description: null, backgroundable: false };
+
+/**
+ * The foreground tool call an engine reports for a session. An engine that implements `foregroundWork` and
+ * reports none has nothing running (null: `interrupt_now` is allowed); an engine that does not implement it is
+ * taken to be running {@link UNREPORTED_WORK}. Only meaningful while the session's turn is running.
  */
 export function foregroundWorkOf(engine: object, sessionId: string): ForegroundWork | null {
   const candidate = engine as { foregroundWork?: (sessionId: string) => ForegroundWork | null };
-  return typeof candidate.foregroundWork === "function" ? candidate.foregroundWork(sessionId) : null;
+  return typeof candidate.foregroundWork === "function" ? candidate.foregroundWork(sessionId) : UNREPORTED_WORK;
 }

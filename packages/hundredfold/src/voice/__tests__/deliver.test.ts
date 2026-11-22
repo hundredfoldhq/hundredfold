@@ -28,7 +28,7 @@ interface StubEngine {
   [member: string]: unknown;
 }
 
-function stubEngine(over: { steerable?: boolean } = {}): StubEngine {
+function stubEngine(over: { steerable?: boolean; reportsWork?: boolean } = {}): StubEngine {
   const engine: StubEngine = {
     name: "stub", runs: [], kills: [], steered: [], turnRunning: false, work: null,
     run: async (opts) => { engine.runs.push({ prompt: opts.prompt, sessionId: opts.sessionId }); return { result: "ok" }; },
@@ -39,6 +39,7 @@ function stubEngine(over: { steerable?: boolean } = {}): StubEngine {
     killIdle: () => {},
     foregroundWork: () => engine.work,
   };
+  if (over.reportsWork === false) delete engine.foregroundWork;
   if (over.steerable) {
     engine.canSteer = () => true;
     engine.steer = async (_id: string, prompt: string) => { engine.steered.push(prompt); return "steered"; };
@@ -167,6 +168,15 @@ describe("a running turn is cut only when nothing long runs in it", () => {
     expect(emitted).not.toContain("session:interrupted");
     const rows = registry.getMessages(session.id).filter((m) => m.role === "user");
     expect(rows).toHaveLength(1);
+  });
+
+  it("interrupt on an engine that cannot say what is running is carried out as a queued message: it is taken to be running long work", async () => {
+    engine = stubEngine({ reportsWork: false });
+    const session = newSession("running");
+    engine.turnRunning = true;
+    await deliver.deliverVoiceMessage(context, { sessionId: session.id, text: "stop that", envelope: "", meta, mode: "interrupt", operator: true });
+    expect(engine.kills).toEqual([]);
+    expect(emitted).not.toContain("session:interrupted");
   });
 
   it("interrupt on a session whose turn is not running kills nothing", async () => {

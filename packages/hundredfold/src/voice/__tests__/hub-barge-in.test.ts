@@ -249,13 +249,27 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
     const steer = await speakDuringWork({ engine: { steerable: true }, work: "none" });
     expect(steer.h.delivered[0].mode).toBe("steer");
     expect(steer.socket.ofType("holding")).toHaveLength(0);
-    const plain = await speakDuringWork({ engine: {}, work: "none" });
+    const plain = await speakDuringWork({ engine: { reportsWork: true }, work: "none" });
     expect(plain.h.delivered[0].mode).toBe("interrupt");
+    expect(plain.socket.ofType("holding")).toHaveLength(0);
   });
 
-  it("an engine that cannot say what is running is asked to send-now, as a typed message would", async () => {
-    const { h } = await speakDuringWork({ engine: {}, work: "long" });
-    expect(h.delivered[0].mode).toBe("interrupt");
+  describe("an engine that cannot say what is running is taken to be running long work (it is never killed)", () => {
+    it.each([
+      ["not steerable", { reportsWork: false }, "queue"],
+      ["steerable", { steerable: true, reportsWork: false }, "steer"],
+    ] as const)("%s: held with a holding line, kill never called", async (_name, engine, mode) => {
+      const { h, socket } = await speakDuringWork({ engine, work: "none" });
+      expect(h.delivered.map((d) => d.mode)).toEqual([mode]);
+      expect(socket.ofType("holding")).toHaveLength(1);
+      expect(h.engine.kills).toEqual([]);
+      expect(h.engine.softCalls).toEqual([]);
+    });
+
+    it("an engine that reports and reports nothing running is the only one asked to send-now", async () => {
+      const { h } = await speakDuringWork({ engine: { reportsWork: true }, work: "none" });
+      expect(h.delivered.map((d) => d.mode)).toEqual(["interrupt"]);
+    });
   });
 
   describe("a call younger than the threshold is given until then (FR-013)", () => {
@@ -457,7 +471,7 @@ describe("a soft interrupt that would abort the call is never used", () => {
 
 describe("the old thread's tail is not spoken over the new answer", () => {
   it("after a send-now, text of the cut turn is dropped until a turn boundary, then the new reply is spoken", async () => {
-    const h = createHarness();
+    const h = createHarness({ engine: { reportsWork: true } });
     h.state.turnRunning = true;
     const { socket, attachment } = h.connect();
     h.event("session:started");
