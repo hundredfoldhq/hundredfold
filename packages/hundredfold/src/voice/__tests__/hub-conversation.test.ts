@@ -158,7 +158,7 @@ describe("code and the like stay in the text", () => {
   it("fenced code, tables, paths and links are not spoken", async () => {
     const h = createHarness();
     const { socket } = h.connect();
-    await h.reply("Done.\n```\nrm -rf /\n```\n| a | b |\n|---|---|\nSee /etc/hosts or https://x.test/y. All fine.\n");
+    await h.reply("Done.\n```\nrm -rf build\n```\n| a | b |\n|---|---|\nSee /etc/hosts or https://x.test/y. All fine.\n");
     expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Done.", "See or the link on screen", "All fine."]);
   });
 });

@@ -37,14 +37,14 @@ describe("SpeakableSplitter", () => {
 
   it("never speaks table rows, paths, links or ids, and says the link is on screen", () => {
     const reply = [
-      "I changed it in /srv/app/src/main.ts and ./lib/util.ts today.",
+      "I changed it in /opt/example/src/main.ts and ./lib/util.ts today.",
       "| name | value |",
       "|------|-------|",
       "| a | 1 |",
       "See https://example.com/a/b for more, or commit 3f2a9c4d8e1b7a60.",
     ].join("\n");
     const spoken = speak(reply, 6).join(" ");
-    expect(spoken).not.toMatch(/srv|main\.ts|util\.ts|name|value|\|/);
+    expect(spoken).not.toMatch(/opt|main\.ts|util\.ts|name|value|\|/);
     expect(spoken).toContain("the link on screen");
     expect(spoken).not.toContain("3f2a9c4d8e1b7a60");
     expect(spoken).toContain("I changed it in");
