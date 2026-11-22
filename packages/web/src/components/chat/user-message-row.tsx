@@ -2,6 +2,7 @@ import { type MediaAttachment, type Message } from '@/lib/conversations'
 import { CollapsibleUserText } from './collapsible-user-text'
 import { MessageMedia } from './message-media'
 import { SendFailureRow } from './send-failure-row'
+import { VoiceMark } from './spoken-reply'
 
 /* The operator's own side of the transcript: their bubble, its attachments, and
  * the row a failed send leaves behind. No avatar — the bubble's side already
@@ -13,12 +14,14 @@ interface UserMessageRowProps {
   /** Empty when the message is attachments only, which renders no bubble. */
   text: string
   content: React.ReactNode
+  /** The user said this aloud (voice mode): a small mic mark under the bubble. */
+  spoken?: boolean
   media: MediaAttachment[]
   entering?: boolean
   onRetry?: (text: string, media?: MediaAttachment[]) => void
 }
 
-export function UserMessageRow({ msg, messageId, text, content, media, entering, onRetry }: UserMessageRowProps) {
+export function UserMessageRow({ msg, messageId, text, content, spoken, media, entering, onRetry }: UserMessageRowProps) {
   return (
     <div className="flex flex-col items-end px-[var(--space-3)] lg:px-[var(--space-8)]">
       {text && (
@@ -26,6 +29,7 @@ export function UserMessageRow({ msg, messageId, text, content, media, entering,
           <CollapsibleUserText messageId={messageId}>{content}</CollapsibleUserText>
         </div>
       )}
+      {text && spoken && <VoiceMark />}
       {media.length > 0 && (
         <div data-send-state={msg.sendState} className="user-msg-bubble">
           <MessageMedia media={media} isUser={true} />

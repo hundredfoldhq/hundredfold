@@ -105,6 +105,8 @@ interface ChatInputProps {
   terminalActionsSlot?: React.ReactNode
   /** Optional per-session status items (context meter), right after the model chip. */
   sessionStatusSlot?: React.ReactNode
+  /** Voice-mode control, beside the dictation mic. Absent unless the gateway has voice on. */
+  voiceSlot?: React.ReactNode
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -199,6 +201,7 @@ export function ChatInput({
   statusSlot,
   terminalActionsSlot,
   sessionStatusSlot,
+  voiceSlot,
 }: ChatInputProps) {
   const { value, setValue, pendingSend } = useChatDraft(sessionId)
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -279,7 +282,7 @@ export function ChatInput({
     applyTranscriptRef.current(text ?? '')
   })
   // Floors assume the toolbar's fixed parts; extra fixed controls leave no room to spare.
-  const toolbarFloors = stt.languages.length <= 1 && !terminalActionsSlot
+  const toolbarFloors = stt.languages.length <= 1 && !terminalActionsSlot && !voiceSlot
 
   // Consume files dropped onto the chat area by the parent
   const consumedRef = useRef<File[] | undefined>(undefined)
@@ -938,6 +941,10 @@ export function ChatInput({
               {terminalActionsSlot}
             </div>
           )}
+
+          {/* Voice mode — a spoken conversation with the session. Sits before the
+              dictation mic; absent (no box, no gap) unless voice is on. */}
+          {voiceSlot}
 
           {/* Voice input / STT button — tap-and-hold = push-to-talk, quick tap =
               toggle. While recording the button morphs into a compact waveform. */}

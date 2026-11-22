@@ -12,6 +12,9 @@ import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { ScrollingEmptyState } from '@/components/chat/chat-transcript-empty'
 import { ChatHydrationOverlay, useHydrationSpinner } from '@/components/chat/chat-hydration'
 import { SessionQueueContext, useSessionQueue } from '@/components/chat/use-session-queue'
+import { useVoice } from '@/components/chat/use-voice'
+import { VoiceCaption } from '@/components/chat/voice-caption'
+import { VoiceControl } from '@/components/chat/voice-control'
 import { QueuedBar } from '@/components/chat/queued-bar'
 import { BackgroundActivityStatus } from '@/components/chat/background-activity-status'
 import { useSubagentView } from '@/components/chat/use-subagent-view'
@@ -170,6 +173,7 @@ export function ChatPane({
     loadRetrying,
   } = live
   const sessionQueue = useSessionQueue(sessionId, subscribe)
+  const voice = useVoice(sessionId, backgroundActivity, () => { if (sessionId) void reloadSession(sessionId) })
   // A message cancelled out of the queue never ran: it leaves the transcript.
   const shownMessages = useMemo(() => sessionQueue.withdrawn.size === 0 ? messages
     : messages.filter((message) => !sessionQueue.withdrawn.has(message.id)), [messages, sessionQueue.withdrawn])
@@ -601,6 +605,7 @@ export function ChatPane({
       {/* Queued messages wait above the composer too: force-send them all,
           in order, without hunting for each card in the transcript. */}
       {sessionId ? <QueuedBar count={sessionQueue.pendingCount} onSendAllNow={sessionQueue.sendAllNow} /> : null}
+      <VoiceCaption voice={voice} />
 
       {/* Input — chat-style composer for every view, including CLI (the PTY engine
           accepts attachments + the prompt is injected into xterm via bracketed-paste). */}
@@ -669,6 +674,7 @@ export function ChatPane({
             liveContextTokens={liveContextTokens}
           />
         ) : undefined}
+        voiceSlot={voice.enabled ? <VoiceControl voice={voice} /> : undefined}
         terminalActionsSlot={
           viewMode === 'cli' && sessionId ? (
             <CliKeybar onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
