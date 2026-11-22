@@ -228,6 +228,45 @@ describe("replies the engine wrote outside a gateway turn (FR-016)", () => {
     });
   });
 
+  describe("a report arriving while a streamed reply is cut and held", () => {
+    const reply = "Alpha one two three. Beta one two three four. Gamma ends it.";
+    const report = "The deploy finished. Everything is green.";
+    const lastPatch = (h: ReturnType<typeof createHarness>, id: string) => h.merges.filter((m) => m.id === id).map((m) => m.patch).at(-1);
+
+    async function cutReply() {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.state.replyMessage = h.store("assistant", reply);
+      await h.reply(reply);
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Alpha one two three.", "Beta one two three four.", "Gamma ends it."]);
+      attachment.onText(JSON.stringify({ type: "barge_in", segmentId: 2, playedMs: 0 }));
+      const [late] = h.externalTurn(report);
+      await settle();
+      return { h, socket, attachment, late };
+    }
+
+    it("when words follow, the report records nothing heard and none of it is spoken", async () => {
+      const { h, socket, attachment, late } = await cutReply();
+      socket.clear();
+      await h.say(attachment, "stop now");
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: null, interrupted: true } });
+      expect(socket.ofType("segment_start")).toEqual([]);
+      expect(h.tts.calls).not.toContain("The deploy finished.");
+      // The cut reply still records what was heard of it.
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three.", interrupted: true } });
+    });
+
+    it("with no words, the cut reply goes on from the first sentence not heard and the report is spoken once", async () => {
+      const { h, socket } = await cutReply();
+      socket.clear();
+      h.clock.advance(BARGE_IN_GRACE_MS + 1);
+      await settle();
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual([
+        "Beta one two three four.", "Gamma ends it.", "The deploy finished.", "Everything is green.",
+      ]);
+    });
+  });
+
   it("a session with no attachment reads nothing", () => {
     const h = createHarness();
     let reads = 0;
