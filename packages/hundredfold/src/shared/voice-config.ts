@@ -145,7 +145,7 @@ const LANGUAGE = /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/;
 const ENV_REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_HOLDING_LINE_CHARS = 300;
-const MAX_STYLE_PROMPT_CHARS = 2000;
+export const MAX_STYLE_PROMPT_CHARS = 2000;
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);

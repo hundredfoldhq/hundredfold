@@ -87,7 +87,6 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
 
-
 ### Voice style
 
 `stylePrompt` is for taste, `prompt` is for replacing the instructions. The built-in instructions stay in place and your text is added to them, so the replies keep their spoken shape and take on your voice:
@@ -99,7 +98,7 @@ voice:
     Replies much shorter, more personal, a bit funny. Make jokes.
 ```
 
-The first spoken turn of a conversation carries the full instructions with your directions under "Style directions from the user"; every later turn carries them again as one line next to the short reminder, so an edit never has to wait for a new conversation. Typed messages never carry them, and neither does a message that starts with `/`.
+The first spoken turn of a conversation carries the full instructions with your directions under "Style directions from the user"; every later turn carries them again as one line next to the short reminder (a multi-line style is joined into one line there). That line says it replaces any earlier style directions, so an edit takes effect in a conversation already open; clearing the style sends one line saying to ignore the earlier directions. Typed messages never carry the style, and neither does a message that starts with `/`. Voice mode starts with the gateway, so turning `voice.enabled` on needs a restart before the first spoken turn; after that, edits to the style need none.
 
 Provider keys are never sent to a browser, in any response, message or error. They are read from the gateway's environment when a provider is created and kept only inside it.
 

@@ -50,6 +50,13 @@ Built-in voice prompt:
 
 Per-turn reminder: `[Voice: spoken reply. Short, plain sentences; no markdown or code read aloud.]`
 
+Style directions (`voice.stylePrompt`, when set; a turn that starts with `/` carries none):
+
+- First turn (full prompt): inside the `[Voice mode]` block, after the instructions, under the heading `Style directions from the user (follow these in how you sound):`.
+- Later turns: one line after the reminder, `[Voice: style directions from the user, replacing any earlier style directions: <style, on one line>]`.
+- When the style goes from set to empty: `[Voice: the user's style directions were removed; ignore any earlier style directions.]` once, on the next reminder turn.
+- The block markers inside the style or the prompt are stripped, repeatedly, so nesting cannot rebuild one.
+
 ## `GET /api/voice/config`
 
 Operator only. Refused to department-scoped callers (`department-scope/rules.ts`,

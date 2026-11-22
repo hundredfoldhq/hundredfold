@@ -72,6 +72,8 @@ export class Dispatcher {
   /** The full voice prompt has gone on a turn since attach, compaction or engine switch. */
   private promptSent = false;
   private promptEngine: string | null = null;
+  /** The style the engine was last told (in the full block or a line); "" when none. */
+  private styleSent = "";
 
   constructor(private readonly options: DispatcherOptions) {}
 
@@ -134,7 +136,7 @@ export class Dispatcher {
     voice.expect({ utteranceId: input.utterance.id, sttMs: input.utterance.sttMs, joinsRunningTurn: delivery.mode === "steer" });
     if (delivery.holding) voice.speakHolding(config.holdingLine);
     if (delivery.suppress) voice.suppressUntilBoundary();
-    const before = { sent: this.promptSent, engine: this.promptEngine };
+    const before = { sent: this.promptSent, engine: this.promptEngine, style: this.styleSent };
     const envelope = this.envelope(input.words, plan.engineName, delivery.notes);
     try {
       await deps.deliver({
@@ -144,6 +146,7 @@ export class Dispatcher {
     } catch (error) {
       this.promptSent = before.sent;
       this.promptEngine = before.engine;
+      this.styleSent = before.style;
       throw error;
     }
   }
@@ -184,12 +187,16 @@ export class Dispatcher {
   /** The envelope for this message: the full prompt first (or after a compaction or engine switch), a reminder after. */
   private envelope(text: string, engineName: string, notes: readonly string[]): string {
     const full = !this.promptSent || this.promptEngine !== engineName;
-    // The style is read from the live config each turn, so an edit reaches a conversation already open.
+    // The style is read from the live config each turn, so an edit reaches a conversation already open. The
+    // snapshot is only a fallback for a moment with no live voice config; the attachment detaches on that reload.
     const style = (this.options.deps.config() ?? this.options.config).stylePrompt;
-    const envelope = buildVoiceEnvelope({ text, prompt: this.options.config.prompt, style, full, notes });
+    // Set before and empty now: the earlier directions sit in the engine's history and must be told to go.
+    const styleCleared = !full && style === "" && this.styleSent !== "";
+    const envelope = buildVoiceEnvelope({ text, prompt: this.options.config.prompt, style, styleCleared, full, notes });
     if (envelope) {
       this.promptSent = true;
       this.promptEngine = engineName;
+      this.styleSent = style;
     }
     return envelope;
   }

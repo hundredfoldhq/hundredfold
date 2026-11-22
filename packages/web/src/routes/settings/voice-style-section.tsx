@@ -1,7 +1,7 @@
 import { Textarea } from "@/components/ui/textarea"
 import { Section } from "./shared"
 
-/** The same limit the gateway puts on `voice.stylePrompt`. */
+/** The same limit the gateway puts on `voice.stylePrompt` (`MAX_STYLE_PROMPT_CHARS` in the gateway's voice config). */
 export const VOICE_STYLE_MAX_CHARS = 2000
 
 const EXAMPLE = "Replies much shorter, more personal, a bit funny. Make jokes."
@@ -37,7 +37,7 @@ export function VoiceStyleSection({
       />
       <div className="mt-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
         Added to the voice instructions on every voice turn, in the browser and the app. Leave it empty for the
-        default. Applies on the next spoken turn.
+        default. Applies on the next spoken turn, once voice mode is running (turning it on needs a gateway restart).
       </div>
     </Section>
   )
