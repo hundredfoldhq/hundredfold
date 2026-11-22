@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { floatToInt16 } from "../pcm"
 import { VoicePlayer } from "../player"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
-import type { VoiceSocketHandlers } from "../socket"
+import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
+import { GATEWAY_SOCKET_OPEN, type GatewaySocketConnection } from "@/lib/gateway-transport"
 import { FakeAudioContext, pcm } from "./fakes"
 
 class Emitter {
@@ -470,5 +471,82 @@ describe("reconnecting", () => {
     await r.session.start()
     expect(r.sockets).toHaveLength(2)
     expect(r.contexts).toHaveLength(2)
+  })
+})
+
+/** A connection that dies without a close event: it stays open, says nothing and ignores close(). */
+class HalfOpenConnection implements GatewaySocketConnection {
+  readyState = GATEWAY_SOCKET_OPEN
+  binaryType: BinaryType = "blob"
+  onopen: ((e: Event) => void) | null = null
+  onmessage: ((e: MessageEvent) => void) | null = null
+  onclose: ((e: CloseEvent) => void) | null = null
+  onerror: ((e: Event) => void) | null = null
+  closeCalls = 0
+  addEventListener() {}
+  send() {}
+  close() { this.closeCalls++ }
+  receive(data: unknown) { this.onmessage?.(new MessageEvent("message", { data })) }
+}
+
+describe("a connection that dies silently (keepalive)", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  /** A session whose socket is the real `VoiceSocket` over a half-open connection. */
+  async function silent(keepaliveMs?: number) {
+    vi.useFakeTimers()
+    const r = rig()
+    const connections: HalfOpenConnection[] = []
+    const deps = (r.session as unknown as { deps: BrowserVoiceDeps }).deps
+    deps.openSocket = (id, handlers, mode) => {
+      const connection = new HalfOpenConnection()
+      connections.push(connection)
+      return VoiceSocket.open(id, handlers, { mode, open: () => connection })
+    }
+    await r.session.start()
+    connections[0].receive(JSON.stringify({ ...READY, ...(keepaliveMs === undefined ? {} : { keepaliveMs }) }))
+    return { ...r, connection: connections[0] }
+  }
+
+  it("ends voice with 'Voice connection lost.' after the timeout and releases the microphone and audio", async () => {
+    const r = await silent(10_000)
+    expect(r.session.getSnapshot().status).toBe("on")
+    vi.advanceTimersByTime(20_000)
+    expect(r.session.getSnapshot().status).toBe("on")
+    expect(r.tracks[0].stopped).toBe(false)
+    vi.advanceTimersByTime(10_000)
+    const state = r.session.getSnapshot()
+    expect(state.status).toBe("off")
+    expect(state.error).toBe("Voice connection lost.")
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.captureStops).toHaveBeenCalledTimes(1)
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    expect(r.connection.closeCalls).toBeGreaterThanOrEqual(1)
+  })
+
+  it("keeps voice on while keepalive frames arrive", async () => {
+    const r = await silent(10_000)
+    for (let i = 0; i < 20; i++) {
+      vi.advanceTimersByTime(10_000)
+      r.connection.receive(JSON.stringify({ type: "keepalive" }))
+    }
+    expect(r.session.getSnapshot().status).toBe("on")
+    expect(r.tracks[0].stopped).toBe(false)
+  })
+
+  it("without keepaliveMs in ready there is no watchdog", async () => {
+    const r = await silent()
+    vi.advanceTimersByTime(60 * 60_000)
+    expect(r.session.getSnapshot().status).toBe("on")
+    expect(r.tracks[0].stopped).toBe(false)
+  })
+
+  it("a late tick after the page was suspended does not end voice by itself", async () => {
+    const r = await silent(10_000)
+    vi.advanceTimersByTime(10_000)
+    vi.setSystemTime(Date.now() + 5 * 60_000)
+    vi.advanceTimersByTime(5_000)
+    expect(r.session.getSnapshot().status).toBe("on")
+    expect(r.tracks[0].stopped).toBe(false)
   })
 })

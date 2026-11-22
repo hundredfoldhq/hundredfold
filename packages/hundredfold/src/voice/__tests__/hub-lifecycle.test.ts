@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VOICE_CLOSE } from "../../shared/gateway-events.js";
+import { VOICE_CLOSE, VOICE_KEEPALIVE_MS } from "../../shared/gateway-events.js";
 import { RESUME_WINDOW_MS } from "../hub.js";
 import { createHarness, OPERATOR, SESSION } from "./hub-harness.js";
 
@@ -14,6 +14,7 @@ describe("attachment lifecycle and limits", () => {
       input: { encoding: "pcm16", sampleRate: 16_000 }, output: { encoding: "pcm16", sampleRate: 24_000 },
       stt: { provider: "fake-stt", partials: true }, tts: { provider: "fake-tts", voice: "af_test" },
       onset: { threshold: 0.02, minSpeechMs: 250 }, backgrounding: "native", limits: { maxUtteranceSeconds: 60 },
+      keepaliveMs: VOICE_KEEPALIVE_MS,
     }]);
   });
 
