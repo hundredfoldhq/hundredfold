@@ -2431,6 +2431,29 @@ export function latestAssistantMessageId(sessionId: string, sinceMs: number): st
   return row?.id;
 }
 
+/** Stamped on assistant text the transcript sync stored for a reply the engine wrote on its own (no gateway turn streamed it). */
+export const EXTERNAL_TURN_META_KEY = "externalTurn";
+
+/** What a voice attachment reads of such a reply. */
+export interface ExternalReplyRow {
+  id: string;
+  content: string;
+}
+
+/**
+ * Assistant text the transcript sync stored for the engine's own replies since `sinceMs`, in insertion order. Only
+ * rows the sync stamped: a gateway turn's rows (streamed, settled, error notices) are never among them, and a
+ * timestamp bound needs no cursor that deleted rows could invalidate.
+ */
+export function externalRepliesSince(sessionId: string, sinceMs: number): ExternalReplyRow[] {
+  return initDb().prepare(
+    `SELECT id, content FROM messages
+     WHERE session_id = ? AND role = 'assistant' AND timestamp > ? AND COALESCE(partial, 0) = 0 AND tool_call IS NULL
+       AND json_extract(meta, '$.${EXTERNAL_TURN_META_KEY}') = 1
+     ORDER BY rowid ASC`,
+  ).all(sessionId, sinceMs) as ExternalReplyRow[];
+}
+
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   const rows = db

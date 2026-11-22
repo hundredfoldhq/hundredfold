@@ -22,6 +22,8 @@ export const RESUME_WINDOW_MS = 10 * 60 * 1000;
 const SESSION_EVENTS = new Set([
   "session:started", "session:delta", "session:completed", "session:interrupted", "session:compacted",
   "session:background", "session:deleted", "session:stopped",
+  // A reply the engine wrote on its own (the CLI re-invoked after background work), stored by the transcript sync.
+  "session:external-turn",
 ]);
 
 export interface AttachRequest {

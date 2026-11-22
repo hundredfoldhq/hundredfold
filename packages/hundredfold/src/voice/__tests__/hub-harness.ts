@@ -45,6 +45,8 @@ export function createHarness(options: HarnessOptions = {}) {
   const merges: Array<{ id: string; patch: unknown }> = [];
   const warnings: string[] = [];
   let ids = 0;
+  /** The stored transcript as the hub reads it back; `external` rows are the ones the transcript sync stamped. */
+  const stored: Array<{ id: string; role: string; content: string; toolCall: boolean; external: boolean; timestamp: number }> = [];
   const state = {
     config: baseConfig(options.config) as ResolvedVoiceConfig | null,
     turnRunning: false,
@@ -66,11 +68,19 @@ export function createHarness(options: HarnessOptions = {}) {
     },
     mergeMessageMeta: (id, patch) => { merges.push({ id, patch }); },
     findReplyMessageId: () => state.replyMessage,
+    externalRepliesSince: (_session, sinceMs) => stored.filter((row) => row.external && row.role === "assistant" && !row.toolCall && row.timestamp > sinceMs),
     clock,
     log: { info: () => undefined, warn: (message) => { warnings.push(message); } },
     newId: () => `id${++ids}`,
   };
   const hub = new VoiceHub(deps);
+
+  /** Store a message as the gateway would (a turn's own row, not the sync's), returning its id. */
+  function store(role: string, content: string, toolCall = false, external = false, at = clock.now()): string {
+    const id = `stored-${stored.length + 1}`;
+    stored.push({ id, role, content, toolCall, external, timestamp: at });
+    return id;
+  }
 
   /** Open a socket on the session and say hello. */
   function connect(opts: { principal?: VoicePrincipal; sessionId?: string; mode?: "hands-free" | "push-to-talk"; hello?: boolean } = {}) {
@@ -84,7 +94,7 @@ export function createHarness(options: HarnessOptions = {}) {
 
   const h = {
     clock, stt, tts, engine, vads, delivered, merges, warnings, state, hub, deps,
-    connect,
+    connect, store,
     /** Frames of one type the client has been sent. */
     vad: () => vads[vads.length - 1],
     audio(attachment: VoiceAttachment, frames: number): void {
@@ -112,6 +122,12 @@ export function createHarness(options: HarnessOptions = {}) {
       h.delta("text", text);
       h.event("session:completed", { result: text, error: null });
       await settle();
+    },
+    /** What the transcript sync does for a reply the CLI wrote on its own: the rows are stored, then the event is emitted. */
+    externalTurn(...texts: string[]): string[] {
+      const ids = texts.map((text) => store("assistant", text, false, true, clock.now() + 1));
+      h.event("session:external-turn");
+      return ids;
     },
     json: (frame: Record<string, unknown>) => JSON.stringify(frame),
   };

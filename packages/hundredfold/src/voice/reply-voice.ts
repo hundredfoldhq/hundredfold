@@ -7,7 +7,7 @@
  */
 import type { JsonObject } from "../shared/types.js";
 import type { VoiceServerFrame, VoiceTurnState } from "../shared/gateway-events.js";
-import type { VoiceClock, VoiceHubDeps } from "./hub-types.js";
+import type { StoredReply, VoiceClock, VoiceHubDeps } from "./hub-types.js";
 import { SpeechPipeline, type CutResult, type PipelineOptions, type Segment } from "./speech-pipeline.js";
 
 /** One assistant reply as the hub follows it. */
@@ -20,7 +20,12 @@ interface Reply {
   ttfaMs: number | undefined;
   /** What the user heard before cutting this reply off, once known. */
   heard: string | undefined;
+  /** For replies the engine wrote on its own: the stored messages this one speaks, in order. */
+  rows?: StoredReply[];
 }
+
+/** How many recent spoken passes of such replies are remembered, for the barge-in that cuts one. */
+const RETAINED_PASSES = 8;
 
 /** The exchange whose time to first audio is being measured. */
 interface Exchange {
@@ -38,7 +43,7 @@ export interface ReplyVoiceOptions {
   /** Sends a frame to the client; frames while suspended are dropped by the caller. */
   send(frame: VoiceServerFrame): void;
   sendAudio(frame: Buffer): void;
-  deps: Pick<VoiceHubDeps, "mergeMessageMeta" | "findReplyMessageId" | "log"> & { clock: VoiceClock };
+  deps: Pick<VoiceHubDeps, "mergeMessageMeta" | "findReplyMessageId" | "externalRepliesSince" | "log"> & { clock: VoiceClock };
 }
 
 /** A reply that finished while the client was away. */
@@ -62,8 +67,15 @@ export class ReplyVoice {
   private nextReplyId = 1;
   /** A reply the user cut off, whose stored message is told what was heard once it exists. */
   private pendingMeta: Reply | null = null;
+  /** Replies the engine wrote on its own count from when the attachment began; those it has dealt with are remembered. */
+  private readonly attachedAt: number;
+  private readonly dealtWith = new Set<string>();
+  private readonly passes: Reply[] = [];
+  /** The last barge-in cut, for the words or silence that follow it. */
+  private lastCut: CutResult | null = null;
 
   constructor(private readonly options: ReplyVoiceOptions) {
+    this.attachedAt = options.deps.clock.now();
     this.pipeline = new SpeechPipeline({
       ...options.pipeline,
       sink: { json: (frame) => options.send(frame), audio: (frame) => options.sendAudio(frame) },
@@ -102,6 +114,7 @@ export class ReplyVoice {
   /** Stop speaking and keep what was not heard; returns what was. */
   cutPlayback(segmentId: number | null, playedMs: number): CutResult {
     const result = this.pipeline.cut(segmentId, playedMs);
+    this.lastCut = result;
     this.pipeline.hold();
     this.emitTurn();
     return result;
@@ -109,7 +122,18 @@ export class ReplyVoice {
 
   /** Nothing was said: carry on from the first sentence not heard. */
   resumePlayback(unheard: readonly string[]): void {
-    this.pipeline.resumeWith(unheard);
+    const cut = this.lastCut;
+    this.lastCut = null;
+    const pass = cut?.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
+    if (cut && pass) {
+      // The sentences go on as the stored messages they came from, whatever reply is streaming now.
+      this.pipeline.markReply(pass.id);
+      this.pipeline.resumeWith(unheard, cut.unheardIds);
+      if (this.reply) this.pipeline.markReply(this.reply.id);
+      void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
+    } else {
+      this.pipeline.resumeWith(unheard);
+    }
     this.pipeline.release();
   }
 
@@ -117,6 +141,10 @@ export class ReplyVoice {
   abandonHeld(heard: string): void {
     this.pipeline.discardQueued();
     this.pipeline.release();
+    const cut = this.lastCut;
+    this.lastCut = null;
+    const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
+    if (cut && pass) return this.recordPassHeard(cut);
     const reply = this.reply ?? this.last;
     if (!reply) return;
     reply.heard = heard;
@@ -193,6 +221,21 @@ export class ReplyVoice {
     void this.pipeline.whenIdle().then(() => this.closeExchange(exchange));
   }
 
+  /**
+   * The transcript sync stored something. Replies the engine wrote on its own (the CLI reporting finished
+   * background work is not a gateway turn, so no delta ever streamed it) are spoken here, from the store. Only the
+   * sync's own rows count, so a gateway turn's replies are never spoken twice, and a sync that only upgrades rows
+   * (or stored nothing new) says nothing.
+   */
+  onExternalTurn(): void {
+    const { deps, sessionId } = this.options;
+    try {
+      this.speakExternal(deps.externalRepliesSince(sessionId, this.attachedAt));
+    } catch (error) {
+      deps.log.warn(`voice: could not read the engine's own reply for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   // ── suspension ─────────────────────────────────────────────────────────────
 
   /** The client is gone: collect replies instead of speaking them. */
@@ -239,8 +282,51 @@ export class ReplyVoice {
   }
 
   private resolveMessage(reply: Reply): string | undefined {
-    reply.messageId ??= this.options.deps.findReplyMessageId(this.options.sessionId, reply.startedAt);
+    if (reply.messageId === undefined) reply.messageId = this.options.deps.findReplyMessageId(this.options.sessionId, reply.startedAt);
     return reply.messageId;
+  }
+
+  /**
+   * Speak replies the engine wrote on its own, as one reply of their own: cut, resumed and recorded like the rest,
+   * whatever gateway reply is streaming meanwhile. While the client is away they are collected as missed.
+   */
+  private speakExternal(rows: StoredReply[]): void {
+    const fresh = rows.filter((row) => !this.dealtWith.has(row.id));
+    for (const row of fresh) this.dealtWith.add(row.id);
+    const speakable = fresh.filter((row) => row.content.trim());
+    if (speakable.length === 0) return;
+    if (this.suspended) {
+      for (const row of speakable) this.missed.push({ messageId: row.id, text: row.content });
+      return;
+    }
+    const pass = this.newReply();
+    pass.rows = speakable;
+    for (const row of speakable) this.pipeline.speakText(row.content, row.id);
+    this.passes.push(pass);
+    if (this.passes.length > RETAINED_PASSES) this.passes.shift();
+    // A gateway reply still streaming keeps its own sentences.
+    if (this.reply) this.pipeline.markReply(this.reply.id);
+    void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
+  }
+
+  /** Each stored message of a spoken pass learns what of it went out. */
+  private applyPassMeta(pass: Reply): void {
+    for (const row of pass.rows ?? []) {
+      const spoken = this.pipeline.spokenFor(pass.id, row.id);
+      if (spoken) this.options.deps.mergeMessageMeta(row.id, { voice: { spokenText: spoken } });
+    }
+  }
+
+  /** A cut pass: the message the cut fell in keeps what was heard, the ones before it were heard whole, the ones after not at all. */
+  private recordPassHeard(cut: CutResult): void {
+    try {
+      for (const part of cut.heardBy) {
+        if (!part.messageId) continue;
+        this.options.deps.mergeMessageMeta(part.messageId, { voice: { spokenText: part.text || null, interrupted: part.complete ? null : true } });
+      }
+    } catch (error) {
+      this.logMetaFailure(error);
+    }
   }
 
   private safeApplyMeta(reply: Reply): void {
@@ -273,7 +359,8 @@ export class ReplyVoice {
 
   private onAudio(segment: Segment): void {
     const exchange = this.exchange;
-    if (!exchange || exchange.metricsSent || segment.holding || !exchange.turnStarted) {
+    // A stored message read aloud (the engine's own report, a missed reply) is not what the exchange was waiting for.
+    if (!exchange || exchange.metricsSent || segment.holding || segment.messageId !== undefined || !exchange.turnStarted) {
       this.emitTurn();
       return;
     }

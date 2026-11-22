@@ -241,4 +241,24 @@ describe("long work moved to the background (FR-015, FR-016)", () => {
     expect(socket.ofType("segment_start").map((f) => f.text)).toEqual([h.state.config!.holdingLine, "Two plus two is four.", "The command finished with done-marker."]);
     expect(h.engine.kills).toEqual([]);
   });
+
+  it("the real engine reports finished background work as its own CLI-native turn, which only the transcript sync stores (FR-016)", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true } } });
+    h.state.turnRunning = true;
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 90", backgroundable: true };
+    h.engine.softOutcome = { ended: true, backgrounded: [{ taskId: "bg-1", description: "sleep 90" }] };
+    const { socket, attachment } = h.connect();
+    await h.say(attachment, "two plus two");
+    h.state.replyMessage = h.store("assistant", "Two plus two is four.");
+    h.event("session:started");
+    h.delta("text", "Two plus two is four. ");
+    h.event("session:completed", { result: "", error: null });
+    await settle();
+    // No gateway turn follows: the CLI re-invokes the model itself, and the sync stores its report.
+    const [late] = h.externalTurn("The command finished with done-marker.");
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual([h.state.config!.holdingLine, "Two plus two is four.", "The command finished with done-marker."]);
+    expect(socket.audio().length).toBeGreaterThan(0);
+    expect(h.merges.find((m) => m.id === late)?.patch).toEqual({ voice: { spokenText: "The command finished with done-marker." } });
+  });
 });

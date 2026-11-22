@@ -73,6 +73,12 @@ export interface VoiceDeliveryResult {
   messageId: string;
 }
 
+/** An assistant reply the engine wrote on its own, as the hub reads it back from the store. */
+export interface StoredReply {
+  id: string;
+  content: string;
+}
+
 export interface VoiceLog {
   info(message: string): void;
   warn(message: string): void;
@@ -92,6 +98,8 @@ export interface VoiceHubDeps {
   mergeMessageMeta(messageId: string, patch: JsonObject): void;
   /** The stored assistant message a reply written since `sinceMs` became. */
   findReplyMessageId(sessionId: string, sinceMs: number): string | undefined;
+  /** Replies the engine wrote on its own (no gateway turn streamed them) stored after `sinceMs`, oldest first. */
+  externalRepliesSince(sessionId: string, sinceMs: number): StoredReply[];
   clock: VoiceClock;
   log: VoiceLog;
   newId(): string;
