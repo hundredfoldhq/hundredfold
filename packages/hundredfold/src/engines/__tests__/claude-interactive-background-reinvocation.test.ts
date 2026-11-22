@@ -294,6 +294,25 @@ describe("InteractiveClaudeEngine — background re-invocations never claim a ga
       expect((await t.p).result).toBe("HUNDREDFOLDREPLY");
     });
 
+    it("a tool call of the re-run that failed counts as ended: the quiet check still sees quiet", async () => {
+      const sid = "s-failed-tool";
+      const pty = await warmUp(sid);
+      registry.deliver(sid, bgPrompt());
+      const before = pastes(pty);
+      const t = send(sid, "Reply with exactly HUNDREDFOLDREPLY.");
+      // A call that fails fires PostToolUseFailure and no PostToolUse.
+      registry.deliver(sid, { hook_event_name: "PreToolUse", tool_name: "Bash" });
+      registry.deliver(sid, { hook_event_name: "PostToolUseFailure", tool_name: "Bash", error: "Exit code 1" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(pastes(pty)).toBe(before);
+      await vi.advanceTimersByTimeAsync(6000);
+      // Counted as running, the failed call would hold the prompt for the rest of the re-run.
+      expect(pastes(pty)).toBe(before + 1);
+      registry.deliver(sid, prompt("Reply with exactly HUNDREDFOLDREPLY."));
+      registry.deliver(sid, stop("HUNDREDFOLDREPLY"));
+      expect((await t.p).result).toBe("HUNDREDFOLDREPLY");
+    });
+
     it("keeps holding while the re-run is visibly working, even past the quiet window", async () => {
       const sid = "s-busy";
       const pty = await warmUp(sid);
