@@ -1,7 +1,7 @@
 import type { VoiceMode } from "@hundredfold/gateway-events"
 import type { HundredfoldNativeBridge, NativeStateEvent } from "@/platform/native-bridge"
 import { parseServerFrame } from "./socket"
-import { VoiceStore, type VoiceController, type VoiceSessionStarter } from "./controller"
+import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import type { VoiceUiState } from "./state"
 
 export interface NativeVoiceOptions {
@@ -131,6 +131,7 @@ export class NativeVoiceSession implements VoiceController {
     if (this.store.snapshot.status === "off") return
     this.stopping = true
     this.talking = false
+    dropHandoff(this)
     void this.bridge.voiceStop().catch(() => undefined)
     this.store.dispatch({ type: "stopped" })
   }

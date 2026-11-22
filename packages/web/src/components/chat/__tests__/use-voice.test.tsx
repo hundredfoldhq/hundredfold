@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getVoiceConfig = vi.hoisted(() => vi.fn())
@@ -385,6 +385,71 @@ describe('useVoice on a new chat', () => {
     rerender({ id: 'other', s: null })
     expect(first.dispose).toHaveBeenCalled()
     expect(controllers).toHaveLength(2)
+  })
+  it('a pane that remounts onto the chat the controller created takes the controller over; the old pane leaves it running', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { offerHandoff } = await import('@/lib/voice/controller')
+    const seen: { latest: ReturnType<typeof useVoice> | null } = { latest: null }
+    function Pane({ id }: { id: string | null }) {
+      seen.latest = useVoice(id, null, undefined, id ? null : starter)
+      return null
+    }
+    // The keyed pane: a new key unmounts the old pane and mounts a new one in one commit, rendering the new one first.
+    const view = render(<Pane key="tab" id={null} />)
+    await waitFor(() => expect(seen.latest?.enabled).toBe(true))
+    const first = controllers[0] as unknown as { dispose: ReturnType<typeof vi.fn> }
+    offerHandoff('new-1', first as never)
+    view.rerender(<Pane key="new-1" id="new-1" />)
+    expect(first.dispose).not.toHaveBeenCalled()
+    expect(controllers).toHaveLength(1)
+    expect(seen.latest?.controller).toBe(first)
+    view.unmount()
+    expect(first.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('a pane that is torn down first and replaced a moment later still hands the controller over', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { offerHandoff } = await import('@/lib/voice/controller')
+    const old = renderHook(() => useVoice(null, null, undefined, starter))
+    await waitFor(() => expect(old.result.current.enabled).toBe(true))
+    const first = controllers[0] as unknown as { dispose: ReturnType<typeof vi.fn> }
+    offerHandoff('new-3', first as never)
+    old.unmount()
+    expect(first.dispose).not.toHaveBeenCalled()
+    const next = renderHook(() => useVoice('new-3', null))
+    expect(next.result.current.controller).toBe(first)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(first.dispose).not.toHaveBeenCalled()
+    next.unmount()
+    expect(first.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('an offered controller nobody claims is disposed once the grace runs out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      getVoiceConfig.mockResolvedValue(ENABLED)
+      const { offerHandoff, HANDOFF_GRACE_MS } = await import('@/lib/voice/controller')
+      const old = renderHook(() => useVoice(null, null, undefined, starter))
+      await waitFor(() => expect(old.result.current.enabled).toBe(true))
+      const first = controllers[0] as unknown as { dispose: ReturnType<typeof vi.fn> }
+      offerHandoff('new-4', first as never)
+      old.unmount()
+      expect(first.dispose).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(HANDOFF_GRACE_MS + 10)
+      expect(first.dispose).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a controller that was stopped is not handed over', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { offerHandoff, dropHandoff } = await import('@/lib/voice/controller')
+    const old = renderHook(() => useVoice(null, null, undefined, starter))
+    await waitFor(() => expect(old.result.current.enabled).toBe(true))
+    const first = controllers[0]
+    offerHandoff('new-2', first as never)
+    dropHandoff(first as never)
+    renderHook(() => useVoice('new-2', null))
+    await waitFor(() => expect(controllers).toHaveLength(2))
   })
 })
 

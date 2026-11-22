@@ -5,7 +5,7 @@ import { gatewayTransport } from '@/lib/gateway-transport'
 import { nativeBridge } from '@/platform/native-bridge'
 import { BACKGROUND_FIRST_READ_GRACE_MS, deriveBackgroundChip, FRESH_CHIP_MEMORY, type BackgroundChip, type ChipMemory } from '@/lib/voice/background-chip'
 import type { VoiceClientConfig } from '@/lib/voice/config'
-import type { VoiceController, VoiceSessionStarter } from '@/lib/voice/controller'
+import { awaitsClaim, claimHandoff, dropHandoff, HANDOFF_GRACE_MS, wasAdopted, isClaimed, releaseClaim, type VoiceController, type VoiceSessionStarter } from '@/lib/voice/controller'
 import { NativeVoiceSession, nativeVoiceBridge } from '@/lib/voice/native'
 import { BrowserVoiceSession } from '@/lib/voice/session'
 import { INITIAL_VOICE_STATE, voicePhase, type VoicePhase, type VoiceUiState } from '@/lib/voice/state'
@@ -114,13 +114,28 @@ function useController(
   const held = useRef<VoiceController | null>(null)
   const controller = useMemo(() => {
     if (!config || !config.available) return null
-    if (sessionId && held.current?.boundSessionId?.() === sessionId) return held.current
+    if (sessionId && held.current?.boundSessionId?.() === sessionId) { dropHandoff(held.current); return held.current }
+    const handedOver = sessionId ? claimHandoff(sessionId) : undefined
+    if (handedOver) return handedOver
     const target = sessionId || newChat
     return target ? createController(config, target) : null
     // The starter is read at tap time through its own ref; only the chat and the config decide the controller.
   }, [config, sessionId, Boolean(newChat)])
   held.current = controller
-  useEffect(() => () => controller?.dispose(), [controller])
+  useEffect(() => {
+    if (controller) releaseClaim(controller)
+    // A pane that remounts onto the chat its controller created has claimed it: it carries on in the new pane.
+    return () => {
+      if (!controller || isClaimed(controller)) return
+      if (!awaitsClaim(controller)) { controller.dispose(); return }
+      // Offered but not yet claimed: the pane that replaces this one may mount a moment after this one goes.
+      setTimeout(() => {
+        if (wasAdopted(controller)) return
+        dropHandoff(controller)
+        controller.dispose()
+      }, HANDOFF_GRACE_MS)
+    }
+  }, [controller])
   return controller
 }
 

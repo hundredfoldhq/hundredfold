@@ -13,7 +13,7 @@ import { ScrollingEmptyState } from '@/components/chat/chat-transcript-empty'
 import { ChatHydrationOverlay, useHydrationSpinner } from '@/components/chat/chat-hydration'
 import { SessionQueueContext, useSessionQueue } from '@/components/chat/use-session-queue'
 import { useVoice } from '@/components/chat/use-voice'
-import type { VoiceSessionStarter } from '@/lib/voice/controller'
+import { offerHandoff, type VoiceSessionStarter } from '@/lib/voice/controller'
 import { usePrincipal } from '@/hooks/use-principal'
 import { VoiceCaption } from '@/components/chat/voice-caption'
 import { VoiceControl } from '@/components/chat/voice-control'
@@ -469,6 +469,8 @@ export function ChatPane({
           writeNewSessionSelector(selector)
         }
         const sid = String(session.id)
+        // Before the pane binds: the tabbed layout remounts the pane to bind it, and the new pane must find the controller.
+        if (voice.controller) offerHandoff(sid, voice.controller)
         onSessionCreated?.(sid)
         keepPaneTab(sid)
         onRefresh?.()

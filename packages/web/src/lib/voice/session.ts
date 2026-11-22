@@ -1,6 +1,6 @@
 import type { VoiceClientFrame, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { startCapture, requestMicrophone } from "./capture-worklet"
-import { VoiceStore, type VoiceController, type VoiceSessionStarter } from "./controller"
+import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
 import { VoicePlayer, type PlayerAudioContext } from "./player"
@@ -161,6 +161,7 @@ export class BrowserVoiceSession implements VoiceController {
   stop(): void {
     if (this.store.snapshot.status === "off" && !this.ctx) return
     this.closing = true
+    dropHandoff(this)
     this.socket?.send({ type: "bye" })
     this.socket?.close(1000, "bye")
     this.teardown()
@@ -296,7 +297,10 @@ export class BrowserVoiceSession implements VoiceController {
     const ctx = this.ctx
     if (!ctx) return
     this.player ??= this.deps.createPlayer(ctx, (segmentId) => this.socket?.send({ type: "played", segmentId }))
-    this.capture = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
+    const capture = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
+    // A stop that landed while the capture was starting found nothing to stop: release it here.
+    if (this.closing) { capture.stop(); return }
+    this.capture = capture
     this.watchForSuspension(ctx)
   }
 
@@ -356,6 +360,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   private failStart(message: string): void {
     this.closing = true
+    dropHandoff(this)
     this.socket?.close(1000, "bye")
     this.teardown()
     this.store.dispatch({ type: "failed", message })

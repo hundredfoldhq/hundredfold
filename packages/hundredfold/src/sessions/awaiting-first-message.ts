@@ -44,3 +44,9 @@ export function nameFromFirstMessage(session: Session, text: string): void {
     ...(session.promptExcerpt ? {} : { promptExcerpt: promptExcerptOf(text) ?? null }),
   });
 }
+
+/** The shared message-accept path's hook: names the session when it is a spoken start still waiting for its first message. */
+export function nameSpokenStartFromMessage(sessionId: string, text: string): void {
+  const session = getSession(sessionId);
+  if (session && isAwaitingFirstMessage(session)) nameFromFirstMessage(session, text);
+}

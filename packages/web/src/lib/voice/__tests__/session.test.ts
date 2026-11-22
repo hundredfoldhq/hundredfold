@@ -537,6 +537,21 @@ describe("starting on a chat that does not exist yet", () => {
     await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
   })
 
+  it("a stop that lands while the capture is starting releases the capture and the microphone", async () => {
+    const r = rig()
+    let release!: () => void
+    const original = (r as unknown as { session: { deps: BrowserVoiceDeps } }).session.deps
+    const startCapture = original.startCapture
+    original.startCapture = (ctx, stream, onFrame) => new Promise((resolve) => { release = () => resolve(startCapture(ctx, stream, onFrame)) })
+    const run = r.session.start()
+    await vi.waitFor(() => expect(release).toBeDefined())
+    r.session.stop()
+    release()
+    await run
+    await vi.waitFor(() => expect(r.captureStops).toHaveBeenCalled())
+    expect(r.tracks[0].stopped).toBe(true)
+  })
+
   it("a chat that is already there never calls the starter", async () => {
     const s = starter()
     const r = rig({ sessionId: "s1" })

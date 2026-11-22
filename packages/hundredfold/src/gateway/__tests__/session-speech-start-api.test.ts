@@ -157,4 +157,18 @@ describe("the first message names a spoken start", () => {
     registry.insertMessage(created.body.id, "user", "hi");
     expect(awaiting.isEmptySpokenStart(created.body.id)).toBe(false);
   });
+
+  it("a first message typed into a spoken start names it too, through the shared accept path", async () => {
+    const created = await post({ speech: true });
+    const { claimIncomingTurn } = await import("../../sessions/incoming-turn.js");
+    const session = registry.getSession(created.body.id)!;
+    claimIncomingTurn({
+      sessionId: session.id, sessionKey: session.sessionKey || session.id, prompt: "typed with no voice attached",
+      isNotification: false, role: "user", content: "typed with no voice attached",
+    });
+    const named = registry.getSession(session.id)!;
+    expect(named.title).toMatch(/^#\d+ - typed with no voice attached$/);
+    expect(named.promptExcerpt).toBe("typed with no voice attached");
+    expect(awaiting.isAwaitingFirstMessage(named)).toBe(false);
+  });
 });

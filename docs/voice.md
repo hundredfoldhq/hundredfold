@@ -137,7 +137,7 @@ The gateway does not ship the models; it downloads them on first use.
 
 ## Starting voice on a new chat
 
-The voice control is on a new chat too, before anything is typed. Tapping it asks for the microphone, creates the chat with the composer's current employee, engine, model and effort, opens it, and attaches voice to it. The first thing you say becomes the chat's first message, and names it the way a typed first message would; nothing is sent to the engine until you speak.
+The voice control is on a new chat too, before anything is typed. Tapping it asks for the microphone, creates the chat with the composer's current employee, engine, model and effort, opens it, and attaches voice to it. The first thing you say becomes the chat's first message, and names it the way a typed first message would (a first message typed instead names it the same way); nothing is sent to the engine until you speak.
 
 The web does this with `POST /api/sessions` and `{ "speech": true }` and no `prompt`. The gateway accepts that form only from the operator: it creates the chat idle (same employee, engine, model, effort and fallback resolution and the same permission checks as a prompted create, but no message and no turn) and answers `201` with the usual session body. Any other caller, and any request without `speech: true`, still gets `400 prompt or message is required`.
 

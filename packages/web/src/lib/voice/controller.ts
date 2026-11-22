@@ -50,3 +50,55 @@ export class VoiceStore {
     return () => { this.listeners.delete(listener) }
   }
 }
+
+/**
+ * A controller that created its chat is handed to the pane that binds to it, even when the pane remounts to do so (the
+ * tabbed layout keys a pane by its chat). The remount renders before the old pane's cleanup runs, so the new pane claims
+ * the controller while rendering and the old pane's cleanup then leaves it running. Claiming is idempotent (strict
+ * mode renders twice); the new pane releases the claim once mounted, and from then on disposes it like any controller.
+ */
+const handoffs = new Map<string, { controller: VoiceController; claimed: boolean }>()
+
+export function offerHandoff(sessionId: string, controller: VoiceController): void {
+  handoffs.set(sessionId, { controller, claimed: false })
+}
+
+const adopted = new WeakSet<VoiceController>()
+
+/** How long a pane that is going away waits for the pane that replaces it to claim the controller. */
+export const HANDOFF_GRACE_MS = 3_000
+
+export function claimHandoff(sessionId: string): VoiceController | undefined {
+  const entry = handoffs.get(sessionId)
+  if (!entry) return undefined
+  entry.claimed = true
+  adopted.add(entry.controller)
+  return entry.controller
+}
+
+/** Whether the controller has been offered and nobody has claimed it yet. */
+export function awaitsClaim(controller: VoiceController): boolean {
+  for (const entry of handoffs.values()) if (entry.controller === controller) return !entry.claimed
+  return false
+}
+
+/** Whether a pane claimed the controller at some point since it was offered. */
+export function wasAdopted(controller: VoiceController): boolean {
+  return adopted.has(controller)
+}
+
+export function isClaimed(controller: VoiceController): boolean {
+  for (const entry of handoffs.values()) if (entry.controller === controller) return entry.claimed
+  return false
+}
+
+/** The claim is over: the claiming pane has mounted and owns the controller. */
+export function releaseClaim(controller: VoiceController): void {
+  for (const [id, entry] of handoffs) if (entry.controller === controller && entry.claimed) handoffs.delete(id)
+}
+
+/** The run ended: nothing is left to hand over. */
+export function dropHandoff(controller: VoiceController): void {
+  for (const [id, entry] of handoffs) if (entry.controller === controller) handoffs.delete(id)
+  adopted.delete(controller)
+}
