@@ -20,9 +20,20 @@ export class SpeechHttpError extends Error {
 export async function postSpeech(request: SpeechRequest): Promise<Response> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (request.key) headers.Authorization = `Bearer ${request.key}`;
-  const response = await fetch(request.url, { method: "POST", headers, body: JSON.stringify(request.body), signal: request.signal });
+  const response = await fetch(request.url, { method: "POST", headers, body: JSON.stringify(request.body), signal: request.signal }).catch((error: unknown) => {
+    if (request.signal.aborted) throw error;
+    throw new Error(`${request.who} could not be reached: ${redact(unreachableReason(error), [request.key])}`);
+  });
   if (response.ok) return response;
   throw new SpeechHttpError(await failureMessage(request, response), response.status);
+}
+
+/** Node's fetch failures carry the cause (refused, not found, bad certificate) in `cause`; the URL is left out of what is reported. */
+export function unreachableReason(error: unknown): string {
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  const source = cause instanceof Error ? cause : error;
+  const code = (source as { code?: string }).code;
+  return code ?? (source instanceof Error ? source.message.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>") : "network error");
 }
 
 async function failureMessage(request: SpeechRequest, response: Response): Promise<string> {

@@ -76,6 +76,14 @@ describe("voiceConfigProblems", () => {
     expect(problems({ stt: { provider: "openai-compatible", baseUrl: "http://localhost:8000" } })).toEqual([]);
   });
 
+  it("refuses a baseUrl that carries a user name or password, which would end up in errors", () => {
+    const [problem] = problems({ tts: { provider: "openai-compatible", baseUrl: "http://user:hunter2secret@host:8880" } });
+    expect(problem).toContain("voice.tts.baseUrl must not carry a user name or password");
+    expect(problem).toContain("apiKey");
+    expect(problem).not.toContain("hunter2secret");
+    expect(problems({ stt: { provider: "openai-compatible", baseUrl: "http://user@host" } })[0]).toContain("voice.stt.baseUrl must not carry");
+  });
+
   it("refuses a baseUrl on the local provider, where it would be silently ignored", () => {
     expect(problems({ stt: { baseUrl: "http://localhost:8000" } })[0]).toContain("voice.stt.baseUrl is not used by the local provider");
   });

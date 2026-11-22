@@ -8,11 +8,12 @@
 import { resolveEnvVar } from "../../shared/env-ref.js";
 import type { ResolvedVoiceSide } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
-import { looksLikeMp3, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
+import { iso6391, looksLikeMp3, looksLikeOggOrFlac, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
 import { pcmChunks, postSpeech, SpeechHttpError, type SpeechRequest } from "./speech-http.js";
 
 const TTS_RATE = 24_000;
 const MP3_ONLY = "the server only returns MP3, which voice mode cannot play; configure it to return PCM or WAV";
+const COMPRESSED = "the server returns compressed audio (Ogg or FLAC), which voice mode cannot play; configure it to return PCM or WAV";
 
 function endpoint(side: ResolvedVoiceSide, tail: string): string {
   return `${side.baseUrl ?? ""}/v1/audio/${tail}`;
@@ -53,6 +54,7 @@ class BatchSttStream implements SttStream {
   constructor(private readonly side: ResolvedVoiceSide, key: string | undefined, private readonly options: SttStreamOptions, status: VoiceProviderStatus) {
     this.#key = key;
     options.signal.addEventListener("abort", () => this.abort(), { once: true });
+    if (options.signal.aborted) this.abort();
     if (!status.available) queueMicrotask(() => this.settle({ type: "error", message: status.reason ?? "not available" }));
   }
 
@@ -86,7 +88,8 @@ class BatchSttStream implements SttStream {
     form.append("file", new Blob([new Uint8Array(toWav(pcm, this.options.sampleRate))], { type: "audio/wav" }), "audio.wav");
     form.append("model", this.side.model);
     form.append("response_format", "json");
-    if (this.options.language) form.append("language", this.options.language.slice(0, 2).toLowerCase());
+    const language = iso6391(this.options.language);
+    if (language) form.append("language", language);
     const headers: Record<string, string> = this.#key ? { Authorization: `Bearer ${this.#key}` } : {};
     const response = await fetch(endpoint(this.side, "transcriptions"), { method: "POST", headers, body: form, signal: this.controller.signal });
     if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
@@ -145,22 +148,36 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
     }
   }
 
-  /** Raw PCM streams through; a WAV (asked for, or sent anyway) is read whole and unwrapped; MP3 is refused. */
+  /** Raw PCM streams through; a WAV (asked for, or sent anyway) is read whole and unwrapped; MP3, Ogg and FLAC are refused. */
   private async *audioFrom(response: Response): AsyncGenerator<Buffer> {
     if (/mpeg|mp3/i.test(response.headers.get("content-type") ?? "")) throw new Error(MP3_ONLY);
     const chunks = pcmChunks(response);
-    const first = await chunks.next();
-    if (first.done) return;
-    if (looksLikeMp3(first.value)) throw new Error(MP3_ONLY);
-    if (first.value.toString("ascii", 0, 4) !== "RIFF") {
-      yield first.value;
+    const head = await readHead(chunks, 12); // enough bytes to tell what this is, however the network split them
+    if (head.length === 0) return;
+    if (looksLikeMp3(head)) throw new Error(MP3_ONLY);
+    if (looksLikeOggOrFlac(head)) throw new Error(COMPRESSED);
+    if (head.toString("ascii", 0, 4) !== "RIFF") {
+      yield head;
       yield* chunks;
       return;
     }
-    const parts = [first.value];
+    const parts = [head];
     for await (const part of chunks) parts.push(part);
     const wav = parseWav(Buffer.concat(parts));
     if ("error" in wav) throw new Error(`the speech server's audio is unusable: ${wav.error}`);
     yield resamplePcm16(wav.pcm, wav.sampleRate, TTS_RATE);
   }
+}
+
+/** The first `bytes` bytes (or all there are) from a chunk stream, joined, so the rest can still be read from it. */
+async function readHead(chunks: AsyncGenerator<Buffer>, bytes: number): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  let size = 0;
+  while (size < bytes) {
+    const next = await chunks.next();
+    if (next.done) break;
+    parts.push(next.value);
+    size += next.value.length;
+  }
+  return Buffer.concat(parts);
 }

@@ -281,6 +281,33 @@ class ServerTests(unittest.TestCase):
         h.wait_for(lambda f: f["op"] == "error" and f["ref"] == "s1")
         h.finish()
 
+    def test_audio_for_an_unknown_vad_stream_is_reported_once_not_per_frame(self):
+        h = Harness()
+        h.send(HELLO)
+        for _ in range(50):
+            h.send({"op": "vad.audio", "stream": "lost"}, bytes(640))
+        h.send({"op": "ping", "n": 1})
+        h.wait_for(lambda f: f["op"] == "pong")
+        errors = [f for f, _ in h.outbound.frames() if f["op"] == "error" and f["ref"] == "lost"]
+        self.assertEqual(len(errors), 1)
+        h.finish()
+
+    def test_a_stt_error_says_which_kind_of_decode_failed(self):
+        h = Harness()
+        h.send(HELLO)
+
+        def broken(pcm):
+            raise RuntimeError("decode exploded")
+
+        h.stt.recognize = broken
+        h.send({"op": "stt.partial", "stream": "s", "utterance": "u1"}, bytes(10))
+        (err, _), = h.wait_for(lambda f: f["op"] == "error" and f["ref"] == "u1")
+        self.assertIs(err["final"], False)
+        h.send({"op": "stt.final", "stream": "s", "utterance": "u2"}, bytes(10))
+        (err2, _), = h.wait_for(lambda f: f["op"] == "error" and f["ref"] == "u2")
+        self.assertIs(err2["final"], True)
+        h.finish()
+
     def test_stt_partial_and_final_reply_with_their_utterance(self):
         h = Harness()
         h.send(HELLO)

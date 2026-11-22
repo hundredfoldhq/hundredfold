@@ -1,5 +1,5 @@
 // A stand-in for speech_sidecar.py that speaks the same stdio framing. Behaviour is chosen
-// with FAKE (nopong, nostt, die-on-tts, badframe, nohello, error-hello); FAKE_LOG names a file that
+// with FAKE (nopong, nostt, partial-error, die-on-tts, badframe, nohello, error-hello); FAKE_LOG names a file that
 // receives one line per request, so a test can see what the sidecar was sent.
 import fs from "node:fs";
 
@@ -22,7 +22,7 @@ function handle(header, body) {
     case "hello":
       if (mode === "nohello") return;
       if (mode === "error-hello") return send({ op: "error", ref: "hello", message: "could not load the speech models: no model files" });
-      return send({ op: "ready", device: "cpu", voices: ["af_heart", "bf_emma"], sttPartials: true });
+      return setTimeout(() => send({ op: "ready", device: "cpu", voices: ["af_heart", "bf_emma"], sttPartials: true }), Number(process.env.FAKE_HELLO_DELAY_MS ?? 0));
     case "ping":
       if (mode === "badframe") return process.stdout.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]));
       if (mode !== "nopong") send({ op: "pong", n: header.n });
@@ -32,9 +32,10 @@ function handle(header, body) {
     case "stt.partial":
     case "stt.final":
       if (mode === "nostt") return;
+      if (mode === "partial-error" && header.op === "stt.partial") return send({ op: "error", ref: header.utterance, message: "partial decode failed", final: false });
       return setTimeout(
         () => send({ op: "stt.text", stream: header.stream, utterance: header.utterance, text: `${header.op}:${body.length}`, final: header.op === "stt.final" }),
-        header.op === "stt.partial" ? Number(process.env.FAKE_PARTIAL_DELAY_MS ?? 0) : 0,
+        header.op === "stt.partial" ? Number(process.env.FAKE_PARTIAL_DELAY_MS ?? 0) : mode === "partial-error" ? 200 : 0,
       );
     case "cancel":
       cancelled.add(header.id);

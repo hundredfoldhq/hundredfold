@@ -49,7 +49,10 @@ export function sharedLocalSpeech(resolved: ResolvedVoiceConfig, home?: string):
 
 /** Kill the shared sidecars (gateway shutdown, config reload). */
 export function closeSharedLocalSpeech(): void {
-  for (const local of shared.values()) local.client.close();
+  for (const local of shared.values()) {
+    local.client.close();
+    local.installer.cancel();
+  }
   shared.clear();
 }
 

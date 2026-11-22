@@ -16,7 +16,7 @@ import WebSocket from "ws";
 import { resolveEnvVar } from "../../shared/env-ref.js";
 import type { ResolvedVoiceSide } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
-import { envNameOf, redact, resamplePcm16 } from "./audio.js";
+import { envNameOf, iso6391, redact, resamplePcm16 } from "./audio.js";
 import { streamSpeech } from "./speech-http.js";
 
 export interface OpenAiEndpoints { http: string; ws: string }
@@ -98,7 +98,8 @@ class OpenAiSttStream implements SttStream {
 
   private sessionUpdate(): Record<string, unknown> {
     const transcription: Record<string, unknown> = { model: this.model };
-    if (this.options.language) transcription.languages = [this.options.language.slice(0, 2).toLowerCase()];
+    const language = iso6391(this.options.language);
+    if (language) transcription.languages = [language];
     return { type: "session.update", session: { type: "transcription", audio: { input: { format: { type: "audio/pcm", rate: REALTIME_RATE }, transcription, turn_detection: null } } } };
   }
 

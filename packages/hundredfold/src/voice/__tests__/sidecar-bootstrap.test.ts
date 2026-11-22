@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SpeechInstaller, findPython, helloModels, resolveDevice, sidecarEnv, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
+import { SpeechInstaller, findPython, installReason, helloModels, resolveDevice, sidecarEnv, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
 
 let home: string;
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), "voice-bootstrap-")); });
@@ -112,5 +112,30 @@ describe("SpeechInstaller", () => {
     const [a, b] = await Promise.all([installer.ensureInstalled(), installer.ensureInstalled()]);
     expect(looked).toBe(1);
     expect(a).toEqual(b);
+  });
+});
+
+describe("install failures", () => {
+  it("are reported without the host's paths, on one line, and bounded", () => {
+    const root = path.join(home, "models", "voice");
+    const reason = installReason(`installing the speech packages failed (exit 1): ERROR: could not write ${home}/models/voice/venv/lib\nand more\n${"x".repeat(900)}`, root);
+    expect(reason).not.toContain(home);
+    expect(reason).toContain("<home>/models/voice/venv/lib");
+    expect(reason).not.toContain("\n");
+    expect(reason.length).toBeLessThanOrEqual(300);
+  });
+
+  it("end when the install is cancelled: the running child is stopped and the run reports failed", async () => {
+    const python = path.join(home, "slow-python.sh");
+    fs.writeFileSync(python, "#!/bin/sh\nsleep 30\n", { mode: 0o755 });
+    const installer = new SpeechInstaller({ home, device: () => "cpu", freeBytes: () => 50e9, findPython: () => ({ command: python, version: "3.13.0" }) });
+    const run = installer.ensureInstalled();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(installer.status().state).toBe("installing");
+    const started = Date.now();
+    installer.cancel();
+    const result = await run;
+    expect(result.state).toBe("failed");
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 });

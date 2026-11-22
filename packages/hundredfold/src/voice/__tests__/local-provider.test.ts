@@ -41,61 +41,68 @@ async function until(condition: () => boolean, ms = 3000): Promise<void> {
 const opts = (signal = new AbortController().signal) => ({ language: "en", sampleRate: 16_000, signal });
 const logged = (): string[] => (fs.existsSync(path.join(dir, "log")) ? fs.readFileSync(path.join(dir, "log"), "utf8").split("\n").filter(Boolean) : []);
 
-async function eventsOf(run: (emit: (event: SttEvent) => void) => void, until: (events: SttEvent[]) => boolean, ms = 4000): Promise<SttEvent[]> {
+function collect(stream: { on(handler: (event: SttEvent) => void): void }): SttEvent[] {
   const events: SttEvent[] = [];
-  run((event) => events.push(event));
-  const deadline = Date.now() + ms;
-  while (!until(events) && Date.now() < deadline) await sleep(10);
+  stream.on((event) => events.push(event));
   return events;
 }
 
 describe("local STT", () => {
   it("emits partials while speech continues and one final at end()", async () => {
-    const provider = new LocalSttProvider(local());
+    const speech = local();
+    await speech.client.ensureReady(); // a cold process start under load would eat the partial ticks
+    const provider = new LocalSttProvider(speech);
     expect(provider.partials).toBe(true);
     const stream = provider.open(opts());
-    const events = await eventsOf((emit) => {
-      stream.on(emit);
-      stream.write(Buffer.alloc(3200));
-      setTimeout(() => stream.write(Buffer.alloc(3200)), 450);
-      setTimeout(() => stream.end(), 1000);
-    }, (seen) => seen.some((event) => event.type === "final"));
+    const events = collect(stream);
+    stream.write(Buffer.alloc(3200));
+    await until(() => events.some((event) => event.type === "partial"));
+    stream.write(Buffer.alloc(3200));
+    await until(() => events.filter((event) => event.type === "partial").length >= 2);
+    stream.end();
+    await until(() => events.some((event) => event.type === "final"));
     const partials = events.filter((event) => event.type === "partial");
-    expect(partials.length).toBeGreaterThanOrEqual(2);
     expect(partials[0]).toEqual({ type: "partial", text: "stt.partial:3200" });
+    expect(partials[1]).toEqual({ type: "partial", text: "stt.partial:6400" });
     expect(events.at(-1)).toEqual({ type: "final", text: "stt.final:6400" });
     expect(events.filter((event) => event.type === "final")).toHaveLength(1);
   });
 
-  it("skips a partial tick while the previous decode is still running", async () => {
-    const provider = new LocalSttProvider(local({ FAKE_PARTIAL_DELAY_MS: "1300" }));
-    const stream = provider.open(opts());
+  it("skips a partial tick while the previous decode is still running, even when new audio has arrived", async () => {
+    const speech = local({ FAKE_PARTIAL_DELAY_MS: "1800" });
+    await speech.client.ensureReady();
+    const stream = new LocalSttProvider(speech).open(opts());
     stream.on(() => undefined);
     stream.write(Buffer.alloc(3200));
-    await sleep(1250); // three ticks at 400 ms, the first decode still running
+    await until(() => logged().filter((line) => line === "stt.partial").length === 1);
+    stream.write(Buffer.alloc(3200)); // new audio: only the busy guard stops a second decode
+    await sleep(1100); // two more ticks, the first decode still running
     expect(logged().filter((line) => line === "stt.partial")).toHaveLength(1);
     stream.abort();
   });
 
   it("sends no partial when nothing new arrived since the last one", async () => {
-    const provider = new LocalSttProvider(local());
-    const stream = provider.open(opts());
+    const speech = local();
+    await speech.client.ensureReady();
+    const stream = new LocalSttProvider(speech).open(opts());
     stream.on(() => undefined);
     stream.write(Buffer.alloc(3200));
-    await sleep(1300);
+    await until(() => logged().filter((line) => line === "stt.partial").length === 1);
+    await sleep(1000); // two ticks with no new audio
     expect(logged().filter((line) => line === "stt.partial")).toHaveLength(1);
     stream.abort();
   });
 
   it("emits nothing after end(): a late partial is dropped before the final", async () => {
-    const provider = new LocalSttProvider(local({ FAKE_PARTIAL_DELAY_MS: "300" }));
-    const stream = provider.open(opts());
-    const events = await eventsOf((emit) => {
-      stream.on(emit);
-      stream.write(Buffer.alloc(3200));
-      setTimeout(() => stream.end(), 450);
-    }, (seen) => seen.some((event) => event.type === "final"));
-    await sleep(400);
+    const speech = local({ FAKE_PARTIAL_DELAY_MS: "400" });
+    await speech.client.ensureReady();
+    const stream = new LocalSttProvider(speech).open(opts());
+    const events = collect(stream);
+    stream.write(Buffer.alloc(3200));
+    await until(() => logged().includes("stt.partial"));
+    stream.end(); // the partial's reply is still 400 ms away
+    await until(() => events.some((event) => event.type === "final"));
+    await sleep(500);
     expect(events.map((event) => event.type)).toEqual(["final"]);
   });
 

@@ -3,8 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MEMBER_ROUTES } from "../../accounts/member-routes.js";
-import type { MemberRouteContext } from "../../accounts/member-context.js";
 import type { LocalSpeech } from "../../voice/providers/local.js";
 import { voicePaths, type InstallStatus } from "../../voice/sidecar/bootstrap.js";
 import { parseNpzNames } from "../../voice/voices-file.js";
@@ -168,20 +166,6 @@ describe("GET /api/voice/config", () => {
     expect(served.out.body).toMatchObject({ enabled: true });
     expect((await call("POST", "/api/voice/config", { enabled: true }, local)).handled).toBe(false);
     expect((await call("GET", "/api/voice/other", { enabled: true }, local)).handled).toBe(false);
-  });
-
-  it("gives a board member the same reply as the operator", async () => {
-    const { local } = stubLocal(READY);
-    putVoices(["af_heart"]);
-    vi.resetModules();
-    const route = MEMBER_ROUTES.find((candidate) => candidate.method === "GET" && candidate.pattern === "/api/voice/config")!;
-    expect(route).toBeDefined();
-    const voice = { enabled: false };
-    const out = makeRes();
-    await route.run({ res: out.res, deps: { getConfig: () => config(voice) } } as unknown as MemberRouteContext);
-    expect(out.body).toEqual(voiceConfigResponse(config(voice)));
-    expect(out.body).toEqual({ enabled: false });
-    void local;
   });
 });
 

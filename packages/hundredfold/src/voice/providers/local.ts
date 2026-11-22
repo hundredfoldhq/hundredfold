@@ -9,7 +9,7 @@ import { MAX_BODY_BYTES } from "../sidecar/framing.js";
 import type { SpeechInstaller } from "../sidecar/bootstrap.js";
 import type { SpeechSidecarClient } from "../sidecar/client.js";
 
-/** What the local providers share: the sidecar process and its install. */
+/** What the local providers share: the sidecar process and its install. They are owned by the registry, which closes them at shutdown; a provider's own `close` is not one, or closing one would shut the other's sidecar. */
 export interface LocalSpeech {
   client: SpeechSidecarClient;
   installer: SpeechInstaller;
@@ -43,10 +43,6 @@ export class LocalSttProvider implements SttProvider {
 
   open(options: SttStreamOptions): SttStream {
     return new LocalSttStream(this.local, options, this.status());
-  }
-
-  close(): void {
-    this.local.client.close();
   }
 }
 
@@ -165,10 +161,6 @@ export class LocalTtsProvider implements TtsProvider {
     if (!status.available) throw new Error(status.reason ?? "local speech is not available");
     const request = { text, voice: options.voice ?? this.defaultVoice, speed: options.speed ?? this.resolved.speed, lang: options.language };
     for await (const chunk of this.local.client.synthesize(randomUUID(), request, options.signal)) yield chunk.pcm;
-  }
-
-  close(): void {
-    this.local.client.close();
   }
 }
 

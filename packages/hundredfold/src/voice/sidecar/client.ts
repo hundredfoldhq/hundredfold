@@ -64,6 +64,28 @@ interface TtsWaiter extends Waiter {
 
 export class SidecarUnavailableError extends Error {}
 
+/** Audio held for a VAD stream while the sidecar is not ready: about five seconds of 20 ms frames. */
+const MAX_VAD_QUEUE = 256;
+
+interface VadStreamState {
+  params: VadParams;
+  handlers: VadEventHandler[];
+  /** The `generation` this stream was last opened under; -1 when never. */
+  openedGeneration: number;
+  queue: Buffer[];
+  closed: boolean;
+  warned: boolean;
+}
+
+/** `promise`, or a rejection as soon as `signal` aborts (the promise is still handled, so its later failure is not unhandled). */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) reject(new Error("aborted"));
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    promise.then(resolve, reject);
+  });
+}
+
 type Phase =
   | { kind: "stopped" }
   | { kind: "starting"; ready: Promise<SidecarReady> }
@@ -83,7 +105,9 @@ export class SpeechSidecarClient {
   private pingSeq = 0;
   private pingsOutstanding = 0;
   private closed = false;
-  private readonly vadHandlers = new Map<string, VadEventHandler[]>();
+  private readonly vadStreams = new Map<string, VadStreamState>();
+  /** Counts spawns that reached `ready`; a VAD stream opened under an older one must be opened again. */
+  private generation = 0;
   private readonly stt = new Map<string, SttWaiter>();
   /** Utterances cancelled before their decode went out (the sidecar was still starting): never sent. */
   private readonly cancelledUtterances = new Set<string>();
@@ -96,6 +120,7 @@ export class SpeechSidecarClient {
 
   /** Readiness for `GET /api/voice/config`: no secret, a reason a person can act on. */
   status(): { available: boolean; reason?: string } {
+    if (this.closed) return { available: false, reason: "the speech sidecar is shut down" };
     // Once the respawn hold has passed, the next use starts it again, so it is not unavailable any more.
     if (this.phase.kind === "unavailable" && this.respawnHoldMs() > 0) return { available: false, reason: this.phase.reason };
     return { available: true };
@@ -224,37 +249,52 @@ export class SpeechSidecarClient {
 
   // ── requests ───────────────────────────────────────────────────────────────
 
-  /** A VAD stream; audio written before the sidecar is ready is held, then sent. */
+  /**
+   * A VAD stream. Audio written while the sidecar is not ready is held (bounded), and a stream that
+   * outlives a crash is opened again on the respawn, with its handlers, so it does not go quiet.
+   */
   vad(stream: string, params: VadParams): SidecarVad {
     const release = this.lease();
-    const queue: Buffer[] = [];
-    let opened = false;
-    let closed = false;
-    this.vadHandlers.set(stream, []);
-    void this.ensureReady().then(
-      () => {
-        if (closed) return;
-        this.write({ op: "vad.open", stream, ...params });
-        opened = true;
-        for (const pcm of queue.splice(0)) this.write({ op: "vad.audio", stream }, pcm);
-      },
-      (error: unknown) => logger.warn(`[voice-sidecar] VAD stream ${stream} not started: ${errorText(error)}`),
-    );
+    const state: VadStreamState = { params, handlers: [], openedGeneration: -1, queue: [], closed: false, warned: false };
+    this.vadStreams.set(stream, state);
+    const start = (): void => {
+      void this.ensureReady().then(
+        () => this.sendVad(stream, state),
+        (error: unknown) => {
+          if (state.warned) return;
+          state.warned = true;
+          logger.warn(`[voice-sidecar] VAD stream ${stream} is waiting for the sidecar: ${errorText(error)}`);
+        },
+      );
+    };
+    start();
     return {
       write: (pcm) => {
-        if (closed) return;
-        if (opened) this.write({ op: "vad.audio", stream }, pcm);
-        else queue.push(pcm);
+        if (state.closed) return;
+        state.queue.push(pcm);
+        if (state.queue.length > MAX_VAD_QUEUE) state.queue.shift();
+        if (this.phase.kind === "ready") this.sendVad(stream, state);
+        else if (this.phase.kind !== "starting") start();
       },
-      on: (handler) => { this.vadHandlers.get(stream)?.push(handler); },
+      on: (handler) => { state.handlers.push(handler); },
       close: () => {
-        if (closed) return;
-        closed = true;
-        this.vadHandlers.delete(stream);
-        if (opened) this.write({ op: "vad.close", stream });
+        if (state.closed) return;
+        state.closed = true;
+        this.vadStreams.delete(stream);
+        if (this.phase.kind === "ready" && state.openedGeneration === this.generation) this.write({ op: "vad.close", stream });
         release();
       },
     };
+  }
+
+  private sendVad(stream: string, state: VadStreamState): void {
+    if (state.closed || this.phase.kind !== "ready") return;
+    if (state.openedGeneration !== this.generation) {
+      this.write({ op: "vad.open", stream, ...state.params });
+      state.openedGeneration = this.generation;
+      state.warned = false;
+    }
+    for (const pcm of state.queue.splice(0)) this.write({ op: "vad.audio", stream }, pcm);
   }
 
   /** A transcript of the utterance so far (or the whole of it), or a rejection. */
@@ -286,8 +326,12 @@ export class SpeechSidecarClient {
     const inbox = new TtsInbox();
     const onAbort = (): void => { this.cancel(id); inbox.finish(); };
     try {
-      await this.ensureReady();
-      if (signal.aborted) return;
+      try {
+        await raceAbort(this.ensureReady(), signal); // an abort while the sidecar is still starting ends it now
+      } catch (error) {
+        if (signal.aborted) return;
+        throw error;
+      }
       this.tts.set(id, inbox);
       signal.addEventListener("abort", onAbort, { once: true });
       this.write({ op: "tts", id, ...request });
@@ -325,6 +369,7 @@ export class SpeechSidecarClient {
       voices: Array.isArray(header.voices) ? header.voices.map(String) : [],
       sttPartials: header.sttPartials !== false,
     };
+    this.generation += 1;
     this.phase = { kind: "ready", info };
     this.helloWaiter?.resolve(info);
     this.helloWaiter = null;
@@ -333,7 +378,7 @@ export class SpeechSidecarClient {
 
   private onVadEvent(header: SidecarFrame["header"]): void {
     const event = { kind: header.kind === "end" ? ("end" as const) : ("start" as const), atMs: Number(header.atMs) };
-    for (const handler of this.vadHandlers.get(String(header.stream)) ?? []) handler(event);
+    for (const handler of this.vadStreams.get(String(header.stream))?.handlers ?? []) handler(event);
   }
 
   private onSttText(header: SidecarFrame["header"]): void {
@@ -346,7 +391,9 @@ export class SpeechSidecarClient {
     if (ref === "hello") return this.crash(message);
     const error = new Error(message);
     this.tts.get(ref)?.fail(error);
-    for (const kind of [false, true]) this.stt.get(`${ref}:${kind}`)?.fail(error);
+    // An STT error names the kind of decode that failed when the sidecar says so: a failed partial leaves the final alone.
+    const kinds = typeof header.final === "boolean" ? [header.final] : [false, true];
+    for (const kind of kinds) this.stt.get(`${ref}:${kind}`)?.fail(error);
     logger.warn(`[voice-sidecar] ${ref}: ${message}`);
   }
 
@@ -367,7 +414,6 @@ export class SpeechSidecarClient {
     for (const waiter of [...this.stt.values(), ...this.tts.values()]) waiter.fail(error);
     this.stt.clear();
     this.tts.clear();
-    this.vadHandlers.clear();
   }
 
   private write(header: Record<string, unknown>, body?: Buffer): void {

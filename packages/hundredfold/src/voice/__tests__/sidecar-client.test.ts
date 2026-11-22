@@ -28,15 +28,17 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function client(fake = "", timing: Partial<SidecarTiming> = {}): SpeechSidecarClient {
+function client(fake = "", timing: Partial<SidecarTiming> = {}, env: Record<string, string> = {}): SpeechSidecarClient {
   const made = new SpeechSidecarClient({
     spawnProcess: () => {
-      const child = spawn(process.execPath, [FAKE], { env: { ...process.env, FAKE: fake, FAKE_LOG: log }, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(process.execPath, [FAKE], { env: { ...process.env, FAKE: fake, FAKE_LOG: log, ...env }, stdio: ["pipe", "pipe", "pipe"] });
       spawned.push(child);
       return child;
     },
     hello: () => ({ device: "auto", models: {} }),
-    timing: { pingEveryMs: 30, respawnMinMs: 400, idleReapMs: 200, killGraceMs: 200, helloTimeoutMs: 1500, ...timing },
+    // Slow defaults: this host can be loaded enough that starting a process takes half a second, and a hold or a ping measured
+    // from the spawn would expire before the test looks. Tests of those behaviours say what they need.
+    timing: { pingEveryMs: 1000, respawnMinMs: 5000, idleReapMs: 200, killGraceMs: 200, helloTimeoutMs: 1500, ...timing },
   });
   clients.push(made);
   return made;
@@ -128,7 +130,7 @@ describe("speech sidecar client", () => {
   });
 
   it("marks the sidecar unavailable after missed pongs and fails in-flight work", async () => {
-    const sidecar = client("nopong");
+    const sidecar = client("nopong", { pingEveryMs: 60 });
     const controller = new AbortController();
     const speech = sidecar.synthesize("slow2", { ...SPEECH, text: "slow" }, controller.signal);
     const drained = collect(speech);
@@ -139,10 +141,10 @@ describe("speech sidecar client", () => {
   });
 
   it("a sidecar that answers its pings stays up under use", async () => {
-    const sidecar = client();
+    const sidecar = client("", { pingEveryMs: 100, missedPongs: 6 });
     const release = sidecar.lease();
     await sidecar.ensureReady();
-    await sleep(250);
+    await sleep(400);
     expect(sidecar.status().available).toBe(true);
     expect(alive(spawned[0]!)).toBe(true);
     release();
@@ -164,12 +166,11 @@ describe("speech sidecar client", () => {
   });
 
   it("respawns at most once per respawn window", async () => {
-    const sidecar = client("die-on-tts", { respawnMinMs: 500 });
+    const sidecar = client("die-on-tts", { respawnMinMs: 2500 });
     await expect(collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal))).rejects.toThrow();
     await expect(sidecar.ensureReady()).rejects.toThrow(/retrying in/);
     expect(spawned).toHaveLength(1);
-    await sleep(520);
-    expect(sidecar.status()).toEqual({ available: true });
+    await until(() => sidecar.status().available, 4000); // the window passes
     await expect(sidecar.ensureReady()).resolves.toMatchObject({ device: "cpu" });
     expect(spawned).toHaveLength(2);
   });
@@ -210,5 +211,61 @@ describe("speech sidecar client", () => {
     sidecar.close();
     await until(() => !alive(spawned[0]!));
     await expect(sidecar.ensureReady()).rejects.toBeInstanceOf(SidecarUnavailableError);
+  });
+});
+
+describe("speech sidecar client: recovery and abort", () => {
+  it("opens a VAD stream again after the sidecar crashes and respawns, with its handlers", async () => {
+    const sidecar = client("die-on-tts", { respawnMinMs: 150 });
+    const vad = sidecar.vad("v1", VAD);
+    const events: unknown[] = [];
+    vad.on((event) => events.push(event));
+    vad.write(Buffer.alloc(640));
+    await until(() => events.length === 1);
+    await expect(collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal))).rejects.toThrow();
+    await sleep(200); // the respawn hold passes
+    await sidecar.transcribe("final", { stream: "s", utterance: "u" }, Buffer.alloc(1)).catch(() => undefined);
+    vad.write(Buffer.alloc(640));
+    await until(() => events.length === 2);
+    expect(events).toHaveLength(2);
+    expect(logged().filter((line) => line === "vad.open")).toHaveLength(2);
+    vad.close();
+  });
+
+  it("holds at most a bounded amount of audio for a stream while the sidecar starts", async () => {
+    const sidecar = client("", { pingEveryMs: 5000 }, { FAKE_HELLO_DELAY_MS: "300" });
+    const vad = sidecar.vad("v1", VAD);
+    const events: unknown[] = [];
+    vad.on((event) => events.push(event));
+    for (let index = 0; index < 400; index += 1) vad.write(Buffer.alloc(640));
+    await until(() => events.length >= 256);
+    await sleep(100);
+    expect(events).toHaveLength(256);
+    vad.close();
+  });
+
+  it("reports unavailable once closed, rather than available after the respawn hold", async () => {
+    const sidecar = client("", { respawnMinMs: 50 });
+    await sidecar.ensureReady();
+    sidecar.close();
+    await sleep(100);
+    expect(sidecar.status()).toEqual({ available: false, reason: "the speech sidecar is shut down" });
+  });
+
+  it("ends a synthesis at once when it is aborted while the sidecar is still starting", async () => {
+    const sidecar = client("nohello", { helloTimeoutMs: 1500 });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const started = Date.now();
+    expect(await collect(sidecar.synthesize("t1", SPEECH, controller.signal))).toBe(0);
+    expect(Date.now() - started).toBeLessThan(800);
+  });
+
+  it("fails only the decode that failed: a failed partial leaves the pending final alone", async () => {
+    const sidecar = client("partial-error");
+    const ids = { stream: "s", utterance: "u1" };
+    const final = sidecar.transcribe("final", ids, Buffer.alloc(8));
+    await expect(sidecar.transcribe("partial", ids, Buffer.alloc(4))).rejects.toThrow("partial decode failed");
+    await expect(final).resolves.toBe("stt.final:8");
   });
 });

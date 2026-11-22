@@ -83,6 +83,17 @@ export function looksLikeMp3(head: Buffer): boolean {
   return head.length >= 3 && (head.toString("ascii", 0, 3) === "ID3" || (head[0] === 0xff && (head[1]! & 0xe0) === 0xe0));
 }
 
+/** Whether `head` starts like Ogg or FLAC, which the pipeline cannot play either. */
+export function looksLikeOggOrFlac(head: Buffer): boolean {
+  return head.length >= 4 && ["OggS", "fLaC"].includes(head.toString("ascii", 0, 4));
+}
+
+/** The first subtag of a language code when it is a two-letter ISO 639-1 code, else undefined (a three-letter code is not guessed at). */
+export function iso6391(language: string): string | undefined {
+  const first = language.split("-")[0]!.toLowerCase();
+  return /^[a-z]{2}$/.test(first) ? first : undefined;
+}
+
 /** `text` with every secret removed, for an error message that may echo upstream text. */
 export function redact(text: string, secrets: ReadonlyArray<string | undefined>): string {
   let out = text;

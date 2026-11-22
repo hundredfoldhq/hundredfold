@@ -1,10 +1,10 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { resolveVoiceConfig, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider } from "../provider.js";
-import { toWav } from "../providers/audio.js";
+import { iso6391, parseWav, toWav } from "../providers/audio.js";
 import { EnergyVad } from "../providers/energy-vad.js";
 import { LocalSttProvider, LocalTtsProvider } from "../providers/local.js";
 import { OpenAiSttProvider, OpenAiTtsProvider } from "../providers/openai.js";
@@ -408,7 +408,7 @@ describe("OpenAI-compatible TTS", () => {
   });
 
   it("refuses a server that can only return MP3, by content type and by content", async () => {
-    const byType = await httpServer((_request, res) => { res.writeHead(200, { "Content-Type": "audio/mpeg" }); res.end(Buffer.from("ID3....")); });
+    const byType = await httpServer((_request, res) => { res.writeHead(200, { "Content-Type": "audio/mpeg" }); res.end(Buffer.alloc(200)); }); // zeros: only the header says MP3
     await expect(drain(synth(compatible(byType.url)))).rejects.toThrow(/only returns MP3/);
     const byContent = await httpServer((_request, res) => { res.writeHead(200, { "Content-Type": "application/octet-stream" }); res.end(Buffer.concat([Buffer.from("ID3"), Buffer.alloc(200)])); });
     await expect(drain(synth(compatible(byContent.url)))).rejects.toThrow(/only returns MP3/);
@@ -425,6 +425,88 @@ describe("OpenAI-compatible TTS", () => {
 });
 
 // ── VAD and the registry ─────────────────────────────────────────────────────
+
+describe("hosted provider edge cases", () => {
+  const compatTts = (url: string) => new OpenAiCompatibleTtsProvider({ ...side({ provider: "openai-compatible", model: "tts-1", baseUrl: url, apiKeyRef: "${LOCAL_KEY}" }), voice: "alloy", speed: 1 }, ENV);
+  const compatStt = (url: string, apiKeyRef: string | null = null) => new OpenAiCompatibleSttProvider({ provider: "openai-compatible", model: "whisper-1", baseUrl: url, apiKeyRef }, ENV);
+
+  it("does not put a URL's credentials or the key in a connection error", async () => {
+    const closed = await httpServer(() => undefined);
+    const dead = closed.url.replace("http://", "http://user:urlsecret99@");
+    const refused = await drain(synth(compatTts(dead))).catch((error: Error) => error);
+    expect((refused as Error).message).toMatch(/could not be reached/);
+    expect((refused as Error).message).not.toMatch(/urlsecret99|local-secret-key/);
+    const gone = http.createServer();
+    await new Promise<void>((resolve) => gone.listen(0, "127.0.0.1", resolve));
+    const goneUrl = `http://127.0.0.1:${(gone.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => gone.close(() => resolve()));
+    const nobody = await drain(synth(compatTts(goneUrl))).catch((error: Error) => error);
+    expect((nobody as Error).message).toMatch(/could not be reached: ECONNREFUSED/);
+  });
+
+  it("redacts the key from a transcription failure that echoes it", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("upstream said bad key local-secret-key"));
+    try {
+      const stream = compatStt("http://127.0.0.1:1", "${LOCAL_KEY}").open(opts());
+      const events = collect(stream);
+      stream.write(pcm(40));
+      stream.end();
+      await until(() => events.length > 0);
+      expect(events[0]).toMatchObject({ type: "error" });
+      expect(JSON.stringify(events)).not.toContain("local-secret-key");
+      expect(JSON.stringify(events)).toContain("***");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("makes no request and emits nothing when the signal is already aborted", async () => {
+    const server = await httpServer((_request, res) => res.end(JSON.stringify({ text: "x" })));
+    const controller = new AbortController();
+    controller.abort();
+    const stream = compatStt(server.url).open(opts(controller.signal));
+    const events = collect(stream);
+    stream.write(pcm(40));
+    stream.end();
+    await sleep(100);
+    expect(events).toEqual([]);
+    expect(server.seen).toHaveLength(0);
+  });
+
+  it("unwraps a WAV whose first network chunk is only a few bytes", async () => {
+    const audio = pcm(30, 800);
+    const wav = toWav(audio, 24_000);
+    const server = await httpServer((_request, res) => { res.write(wav.subarray(0, 2)); setTimeout(() => res.end(wav.subarray(2)), 30); });
+    expect((await drain(synth(compatTts(server.url)))).equals(audio)).toBe(true);
+  });
+
+  it("refuses Ogg and FLAC as it refuses MP3", async () => {
+    for (const magic of ["OggS", "fLaC"]) {
+      const server = await httpServer((_request, res) => res.end(Buffer.concat([Buffer.from(magic), Buffer.alloc(200)])));
+      await expect(drain(synth(compatTts(server.url)))).rejects.toThrow(/compressed audio/);
+    }
+  });
+
+  it("trims a WAV's odd trailing byte, and sends only a two-letter language code", () => {
+    const file = Buffer.concat([toWav(pcm(10), 24_000), Buffer.from([7])]);
+    file.writeUInt32LE(0, 40 + 0); // a streamed WAV: unsized data
+    const parsed = parseWav(file);
+    expect("pcm" in parsed && parsed.pcm.length % 2).toBe(0);
+    expect(iso6391("en-GB")).toBe("en");
+    expect(iso6391("fil")).toBeUndefined();
+    expect(iso6391("pt-BR")).toBe("pt");
+  });
+
+  it("omits the language from the transcription request when it has no two-letter code", async () => {
+    const server = await httpServer((_request, res) => res.end(JSON.stringify({ text: "ok" })));
+    const stream = compatStt(server.url).open({ language: "fil", sampleRate: 16_000, signal: new AbortController().signal });
+    const events = collect(stream);
+    stream.write(pcm(40));
+    stream.end();
+    await until(() => events.length > 0);
+    expect(server.seen[0]!.body.toString("latin1")).not.toContain('name="language"');
+  });
+});
 
 describe("energy VAD", () => {
   const params = { threshold: 0.5, minSpeechMs: 100, silenceMs: 200, prerollMs: 60 };

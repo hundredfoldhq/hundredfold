@@ -110,11 +110,15 @@ try {
 // 5b. The voice speech sidecar is Python beside its TypeScript, too.
 const voiceSource = path.join(packageRoot, "src", "voice");
 const voiceTarget = path.join(dist, "src", "voice");
-fs.mkdirSync(voiceTarget, { recursive: true });
-for (const entry of fs.readdirSync(voiceSource)) {
-  if (!entry.endsWith(".py")) continue;
-  fs.copyFileSync(path.join(voiceSource, entry), path.join(voiceTarget, entry));
-  copied += 1;
+try {
+  fs.mkdirSync(voiceTarget, { recursive: true });
+  for (const entry of fs.readdirSync(voiceSource)) {
+    if (!entry.endsWith(".py")) continue;
+    fs.copyFileSync(path.join(voiceSource, entry), path.join(voiceTarget, entry));
+    copied += 1;
+  }
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
 }
 // 6. A build that exits 0 has produced a complete dist/: everything tsc wrote
 //    is still on disk, and nothing under it imports a module that is not.

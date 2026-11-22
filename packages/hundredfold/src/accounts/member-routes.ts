@@ -72,8 +72,8 @@ const ownerOnBoard = (run: (ctx: MemberRouteContext, department: string) => void
 
 export const MEMBER_ROUTES: readonly MemberRoute[] = [
   { method: "GET", pattern: "/api/member/me", run: me },
-  // Voice mode's availability: the same reply the operator gets, which says nothing about any session.
-  { method: "GET", pattern: "/api/voice/config", run: (ctx) => json(ctx.res, voiceConfigResponse(ctx.deps.getConfig())) },
+  // Voice mode's availability: the same reply the operator gets at /api/voice/config, which says nothing about any session. The member router serves /api/member/* only.
+  { method: "GET", pattern: "/api/member/voice/config", run: (ctx) => json(ctx.res, voiceConfigResponse(ctx.deps.getConfig())) },
   { method: "POST", pattern: "/api/member/password", run: changePassword },
   { method: "GET", pattern: "/api/member/sessions", run: listSessions },
   { method: "DELETE", pattern: "/api/member/sessions/:id", run: revokeSession },

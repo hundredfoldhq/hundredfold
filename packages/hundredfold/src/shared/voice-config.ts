@@ -175,7 +175,8 @@ function baseUrlProblems(key: string, value: unknown, required: boolean): string
   if (typeof value !== "string") return [`${key} must be a URL string (got ${typeName(value)})`];
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? [] : [`${key} must be an http or https URL (got ${url.protocol.replace(":", "")})`];
+    if (url.protocol !== "http:" && url.protocol !== "https:") return [`${key} must be an http or https URL (got ${url.protocol.replace(":", "")})`];
+    return url.username || url.password ? [`${key} must not carry a user name or password; put the key in apiKey as a \${VAR} reference`] : [];
   } catch {
     return [`${key} must be a valid http or https URL`];
   }

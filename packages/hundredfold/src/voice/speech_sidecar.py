@@ -363,6 +363,7 @@ class Server:
         self._cancelled: dict[str, None] = {}  # ids are unique; an ordered set, capped
         self._models: Models | None = None
         self._vads: dict[str, VadStream] = {}
+        self._unknown_vad: dict[str, None] = {}  # streams already reported, so a flood of audio gets one error
         self._stt_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
         self._tts_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tts")
         self._ops: dict[str, Callable[[dict[str, Any], bytes], None]] = {
@@ -384,8 +385,8 @@ class Server:
             self._writer.flush()
         return True
 
-    def error(self, ref: Any, message: str) -> None:
-        self.send({"op": "error", "ref": ref, "message": message})
+    def error(self, ref: Any, message: str, **extra: Any) -> None:
+        self.send({"op": "error", "ref": ref, "message": message, **extra})
 
     # loop
 
@@ -440,13 +441,21 @@ class Server:
         endpointer = Endpointer(
             float(header.get("threshold", 0.5)), int(header.get("minSpeechMs", 250)), int(header.get("silenceMs", 700)), int(header.get("prerollMs", 300))
         )
-        self._vads[str(header["stream"])] = VadStream(models.vad, endpointer)
+        stream = str(header["stream"])
+        self._unknown_vad.pop(stream, None)
+        self._vads[stream] = VadStream(models.vad, endpointer)
 
     def _vad_audio(self, header: dict[str, Any], body: bytes) -> None:
         stream = str(header.get("stream"))
         vad = self._vads.get(stream)
         if vad is None:
-            return self.error(stream, "no such vad stream")
+            # Audio keeps arriving for a stream the sidecar never opened or has lost (it restarted): say so once.
+            if stream not in self._unknown_vad:
+                self._unknown_vad[stream] = None
+                while len(self._unknown_vad) > MAX_REMEMBERED_CANCELS:
+                    del self._unknown_vad[next(iter(self._unknown_vad))]
+                self.error(stream, "no such vad stream")
+            return
         for event in vad.write(body):
             self.send({"op": "vad.event", "stream": stream, **event})
 
@@ -468,12 +477,12 @@ class Server:
             text = models.stt.recognize(pcm)
         except Exception as error:
             sys.stderr.write(traceback.format_exc())
-            return self._reply_error(utterance, f"stt failed: {error}")
+            return self._reply_error(utterance, f"stt failed: {error}", final=final)
         self.send({"op": "stt.text", "stream": stream, "utterance": utterance, "text": text, "final": final}, key=utterance)
 
-    def _reply_error(self, key: str, message: str) -> None:
+    def _reply_error(self, key: str, message: str, **extra: Any) -> None:
         if key not in self._cancelled:
-            self.error(key, message)
+            self.error(key, message, **extra)
 
     def _tts(self, header: dict[str, Any], _body: bytes) -> None:
         models = self._need_models(header)

@@ -7,7 +7,7 @@
  * `status()` reads the install state `GET /api/voice/config` reports; `ensureInstalled()`
  * is what `POST /api/voice/install` and the first use run, and is idempotent.
  */
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,7 +82,7 @@ export function helloModels(paths: VoicePaths, device: VoiceDevice): Record<stri
 const PASS_THROUGH_ENV = [
   "PATH", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "LD_LIBRARY_PATH",
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
-  "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "HF_ENDPOINT",
+  "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "HF_ENDPOINT",
 ];
 
 /** The environment of every process the voice runtime starts: the few names it needs, never the gateway's keys. */
@@ -106,7 +106,7 @@ let probed: { at: number; gpu: boolean } | null = null;
 /** True when `nvidia-smi` lists a GPU. Remembered for 30 s: it is asked on every status read. */
 export const nvidiaSmiProbe: GpuProbe = () => {
   if (probed && Date.now() - probed.at < PROBE_TTL_MS) return probed.gpu;
-  const result = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+  const result = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"] });
   probed = { at: Date.now(), gpu: result.status === 0 && result.stdout.trim().length > 0 };
   return probed.gpu;
 };
@@ -123,7 +123,7 @@ export interface PythonInfo {
 }
 
 function pythonVersion(command: string): string | null {
-  const probe = spawnSync(command, ["-c", "import sys, venv, ensurepip; print('%d.%d.%d' % sys.version_info[:3])"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] });
+  const probe = spawnSync(command, ["-c", "import sys, venv, ensurepip; print('%d.%d.%d' % sys.version_info[:3])"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
   return probe.status === 0 ? probe.stdout.trim() : null;
 }
 
@@ -190,6 +190,11 @@ export class SpeechInstaller {
     return this.running;
   }
 
+  /** Stop a running install (gateway shutdown): its children end, and the run reports itself failed. */
+  cancel(): void {
+    killLiveChildren();
+  }
+
   private markerMatches(): boolean {
     try {
       const marker = JSON.parse(fs.readFileSync(this.paths.marker, "utf8")) as { version?: number; device?: string };
@@ -218,9 +223,9 @@ export class SpeechInstaller {
       fs.writeFileSync(this.paths.marker, JSON.stringify({ version: INSTALL_VERSION, device, python: python.version, installedAt: new Date().toISOString() }));
       return this.set({ state: "ready", progress: 1 });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      logger.warn(`[voice] install failed: ${reason}`);
-      return this.set({ state: "failed", progress: this.current?.progress ?? 0, reason });
+      const detail = error instanceof Error ? error.message : String(error);
+      logger.warn(`[voice] install failed: ${detail}`);
+      return this.set({ state: "failed", progress: this.current?.progress ?? 0, reason: installReason(detail, this.paths.root) });
     }
   }
 
@@ -263,6 +268,13 @@ export class SpeechInstaller {
   }
 }
 
+/** A failure's reason as a person (and a board member) may read it: no host path, one line, bounded. */
+export function installReason(detail: string, root: string): string {
+  const home = path.resolve(root, "..", "..");
+  const oneLine = detail.split(home).join("<home>").replace(/\s+/g, " ").trim();
+  return oneLine.length > 300 ? `${oneLine.slice(0, 297)}...` : oneLine;
+}
+
 function freeBytesOf(dir: string): number {
   const stats = fs.statfsSync(dir);
   return Number(stats.bavail) * Number(stats.bsize);
@@ -271,7 +283,13 @@ function freeBytesOf(dir: string): number {
 /** Total size of the files under `dir`, skipping one subdirectory (the venv). */
 function dirBytes(dir: string, skip: string): number {
   let total = 0;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0; // the download renamed or removed it mid-scan; the next tick counts again
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (full === skip) continue;
     if (entry.isDirectory()) total += dirBytes(full, skip);
@@ -280,10 +298,28 @@ function dirBytes(dir: string, skip: string): number {
   return total;
 }
 
+/** The install's running children: killed when the gateway exits, so pip is not left running under init. */
+const liveChildren = new Set<ChildProcess>();
+let exitHookInstalled = false;
+
+function killLiveChildren(): void {
+  for (const child of liveChildren) child.kill("SIGTERM");
+  liveChildren.clear();
+}
+
+function trackChild(child: ChildProcess): void {
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once("exit", killLiveChildren);
+}
+
 /** Run a command to completion; its last stderr lines are the failure's reason. */
 function run(command: string, args: string[], options: { label: string }): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { env: sidecarEnv(), stdio: ["ignore", "ignore", "pipe"] });
+    trackChild(child);
     let tail = "";
     child.stderr.on("data", (chunk: Buffer) => { tail = (tail + chunk.toString("utf8")).slice(-2000); });
     child.on("error", (error) => reject(new Error(`${options.label} failed: ${error.message}`)));
