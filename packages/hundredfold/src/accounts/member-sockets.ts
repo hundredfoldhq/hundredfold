@@ -16,6 +16,11 @@ export interface MemberSocketLike {
 
 export interface MemberSocketRegistry {
   add(socket: MemberSocketLike, sessionId: string): void;
+  /**
+   * A socket tied to a member's session AND to a standing permission (a voice socket on a session they may message):
+   * swept and closed (4401) when either is gone. It hears nothing of the broadcast, so `publish` never touches it.
+   */
+  addGuarded(socket: MemberSocketLike, sessionId: string, stillAllowed: () => boolean): void;
   remove(socket: MemberSocketLike): void;
   /** Close every socket whose session is gone, expired, revoked or whose user is disabled; returns how many. */
   sweep(): number;
@@ -49,6 +54,15 @@ function validUser(deps: RegistryDeps, sessionId: string): string | undefined {
   }
 }
 
+/** A standing permission, read fresh each time; one that cannot be read is gone. */
+function allowed(stillAllowed: () => boolean): boolean {
+  try {
+    return stillAllowed();
+  } catch {
+    return false; // fail closed
+  }
+}
+
 /** What one broadcast event is to every socket: read once, with each member's boards read once however many sockets they hold. */
 interface Offer {
   change: TodoChange;
@@ -79,8 +93,10 @@ function frameFor(deps: RegistryDeps, userId: string, offer: Offer): string | un
  */
 export function createMemberSocketRegistry(deps: RegistryDeps): MemberSocketRegistry {
   const sockets = new Map<MemberSocketLike, string>();
+  const guarded = new Map<MemberSocketLike, { sessionId: string; stillAllowed: () => boolean }>();
   const closeSocket = (socket: MemberSocketLike): void => {
     sockets.delete(socket);
+    guarded.delete(socket);
     try { socket.close(MEMBER_SOCKET_CLOSE_UNAUTHORIZED, "unauthorized"); } catch { /* already closing */ }
   };
   /** Re-check one socket's session, then send it what it may hear of this event; a socket that cannot be checked or filtered is closed. */
@@ -97,12 +113,16 @@ export function createMemberSocketRegistry(deps: RegistryDeps): MemberSocketRegi
   };
   return {
     add: (socket, sessionId) => { sockets.set(socket, sessionId); },
-    remove: (socket) => { sockets.delete(socket); },
-    size: () => sockets.size,
+    addGuarded: (socket, sessionId, stillAllowed) => { guarded.set(socket, { sessionId, stillAllowed }); },
+    remove: (socket) => { sockets.delete(socket); guarded.delete(socket); },
+    size: () => sockets.size + guarded.size,
     sweep() {
       let closed = 0;
       for (const [socket, sessionId] of [...sockets]) {
         if (validUser(deps, sessionId) === undefined) { closeSocket(socket); closed += 1; }
+      }
+      for (const [socket, held] of [...guarded]) {
+        if (validUser(deps, held.sessionId) === undefined || !allowed(held.stillAllowed)) { closeSocket(socket); closed += 1; }
       }
       return closed;
     },
@@ -114,7 +134,7 @@ export function createMemberSocketRegistry(deps: RegistryDeps): MemberSocketRegi
       for (const [socket, sessionId] of [...sockets]) deliver(socket, sessionId, offer);
     },
     closeAll() {
-      const all = [...sockets.keys()];
+      const all = [...sockets.keys(), ...guarded.keys()];
       for (const socket of all) closeSocket(socket);
       return all.length;
     },

@@ -4,6 +4,7 @@
  * the same process and the same install state.
  */
 import type { ResolvedVoiceConfig } from "../../shared/voice-config.js";
+import type { VoiceProviderSet } from "../hub-types.js";
 import type { SttProvider, TtsProvider, VadStream } from "../provider.js";
 import { SpeechInstaller, helloModels, resolveDevice, spawnSidecar, voicePaths, type InstallStatus } from "../sidecar/bootstrap.js";
 import { SpeechSidecarClient } from "../sidecar/client.js";
@@ -83,4 +84,19 @@ export function createVad(resolved: ResolvedVoiceConfig, deps: ProviderDeps = {}
   const local = deps.local ?? sharedLocalSpeech(resolved, deps.home);
   if (usesLocal(resolved) || local.installer.status().state === "ready") return openLocalVad(local, resolved.vad);
   return new EnergyVad(resolved.vad);
+}
+
+type VoiceProviderFactory = (resolved: ResolvedVoiceConfig) => VoiceProviderSet;
+
+let providerOverride: VoiceProviderFactory | null = null;
+
+/** Run voice on other providers (fakes in tests and in a functional run), or on the configured ones again with null. */
+export function setVoiceProvidersForTest(factory: VoiceProviderFactory | null): void {
+  providerOverride = factory;
+}
+
+/** The providers the hub gives one attachment: STT, TTS and a VAD per stream, as the resolved config names them. */
+export function createVoiceProviders(resolved: ResolvedVoiceConfig, deps: ProviderDeps = {}): VoiceProviderSet {
+  if (providerOverride) return providerOverride(resolved);
+  return { stt: createSttProvider(resolved, deps), tts: createTtsProvider(resolved, deps), createVad: () => createVad(resolved, deps) };
 }

@@ -56,6 +56,15 @@ feature.
 | Lock-screen control | Now Playing info ("Voice mode on"), remote `pause`/`stop` → `voice_stop` | notification action "Stop" → `voice_stop` |
 | Permissions | `NSMicrophoneUsageDescription` | `RECORD_AUDIO`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS` |
 
-Interruptions (a phone call, Siri, another app taking audio) pause capture and playback,
-and resume when the system ends the interruption. A route change (headphones) keeps the
-session going.
+A transient interruption (a phone call, Siri, a short focus loss) pauses capture and
+playback, reported as `native_state {state: "paused", reason: "interruption"}`, and resumes
+when the system ends it. If the system ends it without allowing a resume (iOS without
+`.shouldResume`, or a failed reactivation), or another app takes audio focus permanently
+(Android `AUDIOFOCUS_LOSS`), the session ends cleanly (`bye`, close 1000) and reports
+`native_state {state: "stopped", reason: "interruption"}`, not `error`. A route change
+(headphones, Bluetooth) keeps the session going; when it changes the input format, the
+client rebuilds its capture path for the new format.
+
+While voice runs, the session outlives the UI: on Android, BACK at the app root moves the
+task to the background instead of finishing the activity. Removing the task from recents
+ends the session cleanly (`bye`, close 1000).

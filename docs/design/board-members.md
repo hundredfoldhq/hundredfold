@@ -144,13 +144,22 @@ upgrade handler:
 In the HTTP handler the member branch runs after CORS and `OPTIONS`, and before the
 unauthenticated 401 gate, the remote-connector status read and the `/api/` dispatch. The
 **member allowlist is exactly**: `/api/member/*`, `GET /api/auth/state`,
-`POST /api/auth/logout`, and the `/ws` upgrade. Every other path, `/api/*` or upgrade, answers
+`POST /api/auth/logout`, the `/ws` upgrade, and the `/ws/voice/:id` upgrade on a session the member may
+send messages to (see below: none today). Every other path, `/api/*` or upgrade, answers
 `403 {"error":"Not available to board members"}` for a member (`/ws/pty/*` and the plugin
 events stream included; static web files are served as to anyone). A member request never
 reaches the general API dispatch, so members are **default-deny by construction**: none of the
 general API's routes needs auditing, and a route added later is closed to members until it is
 deliberately added to the member router. Tests prove a member cookie is refused on
 `/api/remote-mcp`, the plugin-events upgrade, `/ws/pty/x`, and a sample of general routes.
+
+**Voice mode and chat.** Members have no chat today (see Roles: chat and anything that wakes an agent are the
+operator's), so a member has no session to speak into. Voice mode authorises through one predicate, "may this
+member send messages to this session" (`accounts/member-chat-access.ts`), which answers no for every member. The
+member router admits `/ws/voice/:id` only when it answers yes, and a member's voice socket is then tied to the
+member sweep with that predicate beside the sign-in: it is closed (4401) within one sweep once either is gone. When
+member chat exists it answers here and voice follows; deciding which sessions and roles that covers is a change
+to this security model and is the operator's call, not made here.
 
 **Accounts require gateway auth.** Where `shouldRequireGatewayAuth` is false (loopback-only,
 no auth), every same-origin browser is the operator, so a member identity would be

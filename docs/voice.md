@@ -57,7 +57,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | Turns voice mode on. |
+| `enabled` | `false` | Turns voice mode on. Restart the gateway after turning it on or off: the gateway sets voice mode up when it starts. Turned off without a restart, new voice conversations are refused at once. |
 | `mode` | `hands-free` | `hands-free` ends an utterance on your pause; `push-to-talk` ends it when you release the control. |
 | `language` | `en` | Language code. The local providers speak English only (`en`, `en-GB`, …). |
 | `stt.provider` | `local` | `local`, `openai` or `openai-compatible`. |
@@ -79,7 +79,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `autoBackground.enabled` | `true` | Move long work to the background when you speak, where the engine can (see below). |
 | `autoBackground.afterSeconds` | `5` | A tool call older than this when you speak is long work, 1 to 600. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
-| `promptFile` | — | A path inside the instance home holding the instructions. `prompt` wins if both are set. |
+| `promptFile` | — | A path inside the instance home holding the instructions, read when the gateway starts and whenever the `voice:` block changes. `prompt` wins if both are set. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
 | `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). |
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |

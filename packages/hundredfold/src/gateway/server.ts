@@ -88,6 +88,7 @@ import { attachPtyWebSocket } from "./pty-ws.js";
 import { createShellTerminalEngine } from "../terminals/shell-engine.js";
 import { isTerminalSession } from "../terminals/session.js";
 import { createTalkProactiveGatewayEmit } from "./talk-proactive-events.js";
+import { createVoiceRuntime } from "../voice/runtime.js";
 
 import { startWsHeartbeat, trackHeartbeat } from "./ws-heartbeat.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
@@ -831,7 +832,15 @@ export async function startGateway(
       }
     }
   };
-  const emit = createTalkProactiveGatewayEmit(initDb(), broadcast);
+  // Voice mode (specs/009-voice-mode): null, and nothing below changes, unless `voice.enabled` at boot.
+  const voice = createVoiceRuntime({
+    getConfig: () => currentConfig,
+    getContext: () => apiContext,
+    operatorAuthenticated: (req) =>
+      verifyGatewayAuth(req.headers, gatewayAuthToken, HUNDREDFOLD_HOME) || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig)),
+  });
+  const talkEmit = createTalkProactiveGatewayEmit(initDb(), broadcast);
+  const emit = voice ? voice.wrapEmit(talkEmit) : talkEmit;
   sessionManager.setGatewayEmitter(emit);
   // In-process Todo writes (cron mints, session-lifecycle reconciles)
   // reach the dashboard through the same company:changed lane the routes use.
@@ -1068,7 +1077,7 @@ export async function startGateway(
   // Protocol-level ping/pong sweep across both WS servers. Terminates half-open
   // (dead but readyState===OPEN) sockets; terminating a PTY socket fires its
   // close handler -> onDisconnect -> viewerCount decrement, fixing the leak.
-  const stopWsHeartbeat = startWsHeartbeat([wss, ptyWss, pluginEvents.wss, memberWss], {
+  const stopWsHeartbeat = startWsHeartbeat([wss, ptyWss, pluginEvents.wss, memberWss, ...(voice ? [voice.wss] : [])], {
     onSweep: (r) => { if (r.terminated > 0) logger.info(`WS heartbeat reaped ${r.terminated} dead socket(s)`); },
   });
 
@@ -1106,8 +1115,8 @@ export async function startGateway(
     const reqUrl = req.url || "";
     const pathname = reqUrl.split("?")[0];
     if (rejectUnverifiedIdentifiedUpgradeCaller(req, socket)) return;
-    // A member is default-deny here as in the request handler: `/ws` only, resolved before the operator gate.
-    if (routeMemberUpgrade(req, socket, head, { accounts, memberWss })) return;
+    // A member is default-deny here as in the request handler: `/ws`, and `/ws/voice/:id` on a session they may message (none today), resolved before the operator gate.
+    if (routeMemberUpgrade(req, socket, head, { accounts, memberWss, ...(voice ? { voice } : {}) })) return;
     if (authRequiredNow() && authRequiredForRequest("GET", pathname)) {
       const auth = authenticateGatewayRequest(req, gatewayAuthToken, HUNDREDFOLD_HOME);
       if (!auth.ok) {
@@ -1133,6 +1142,8 @@ export async function startGateway(
       pluginEvents.handleUpgrade(req, socket, head, pluginEventsId);
       return;
     }
+    // A spoken conversation with one session (voice mode); not reached when voice is off.
+    if (voice?.handleUpgrade(req, socket, head)) return;
     // Dedicated per-session PTY channel for the live xterm CLI view.
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
@@ -1421,6 +1432,7 @@ export async function startGateway(
     // Stop the WS heartbeat sweep before tearing down the WS servers.
     stopWsHeartbeat();
     stopMemberSocketSweep();
+    voice?.shutdown();
     accounts.dispose();
     for (const client of memberWss.clients) client.terminate();
 

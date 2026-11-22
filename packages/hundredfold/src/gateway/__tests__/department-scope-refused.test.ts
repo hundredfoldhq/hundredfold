@@ -36,6 +36,16 @@ describe("refused routes", () => {
     expect(refused.body.error).toContain(`${reason} is outside department "side-project"`);
   });
 
+  it.each([
+    ["GET", "/api/voice/config"],
+    ["POST", "/api/voice/install"],
+  ])("refuses %s %s as voice control", async (method, url) => {
+    expect(matchScopedRoute(method, url)).toBeUndefined();
+    const refused = await as(self.id)(method, url, {});
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toContain('voice control is outside department "side-project"');
+  });
+
   it("refuses a route nobody classified, by default", async () => {
     const refused = await as(self.id)("GET", "/api/brand-new-route");
     expect(refused.status).toBe(403);
