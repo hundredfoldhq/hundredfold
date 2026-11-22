@@ -24,7 +24,8 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `tts.baseUrl`, `tts.apiKey` | | | as for `stt` |
 | `vad.threshold` | number | `0.5` | 0 to 1 |
 | `vad.minSpeechMs` | integer | `250` | 50 to 2000 |
-| `vad.silenceMs` | integer | `700` | 200 to 5000 |
+| `vad.silenceMs` | integer | `1000` | 200 to 5000 |
+| `vad.unfinishedHoldMs` | integer | `800` | 0 to 5000 |
 | `vad.prerollMs` | integer | `300` | 0 to 1000 |
 | `bargeIn.enabled` | boolean | `true` | |
 | `bargeIn.minSpeechMs` | integer | `250` | 50 to 2000 |

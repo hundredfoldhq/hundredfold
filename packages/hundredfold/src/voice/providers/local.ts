@@ -165,8 +165,9 @@ export class LocalTtsProvider implements TtsProvider {
 }
 
 /** The sidecar's Silero VAD as a `VadStream`. */
-export function openLocalVad(local: LocalSpeech, vad: ResolvedVoiceConfig["vad"]): VadStream {
-  return local.client.vad(randomUUID(), vad);
+export function openLocalVad(local: LocalSpeech, vad: Omit<ResolvedVoiceConfig["vad"], "unfinishedHoldMs">): VadStream {
+  const { threshold, minSpeechMs, silenceMs, prerollMs } = vad;
+  return local.client.vad(randomUUID(), { threshold, minSpeechMs, silenceMs, prerollMs });
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
