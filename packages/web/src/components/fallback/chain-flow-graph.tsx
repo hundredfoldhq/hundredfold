@@ -1,7 +1,7 @@
 import "@xyflow/react/dist/style.css"
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react"
 import { Handle, MarkerType, Position, ReactFlow, type NodeProps } from "@xyflow/react"
-import { buildChainFlow, FLOW_NODE_H, type ChainFlowInput, type FlowOrientation, type FlowTargetData } from "./chain-flow-model"
+import { buildChainFlow, collapseGroups, type ChainFlowInput, type FlowMember, type FlowOrientation, type FlowTargetData } from "./chain-flow-model"
 
 /** A horizontal chain needs about this much room per target to stay readable. */
 const ROOM_PER_TARGET_PX = 150
@@ -58,7 +58,7 @@ function Badges({ data }: { data: FlowTargetData }) {
 function nodeStyle(target: FlowTargetData): CSSProperties {
   return {
     width: "100%",
-    height: FLOW_NODE_H,
+    height: target.height,
     opacity: target.skip ? 0.5 : 1,
     border: `1px ${target.skip ? "dashed" : "solid"} ${target.current ? "var(--accent)" : "var(--separator)"}`,
     boxShadow: target.current ? "0 0 0 1px var(--accent)" : undefined,
@@ -66,13 +66,65 @@ function nodeStyle(target: FlowTargetData): CSSProperties {
 }
 
 function nodeName(target: FlowTargetData): string {
-  return [target.label, HEALTH_WORD[target.health], target.skipText].filter(Boolean).join(". ")
+  if (target.members) return [target.label, ...target.members.map(memberName)].join(". ")
+  return [target.label, HEALTH_WORD[target.health], target.skipText, target.startNote].filter(Boolean).join(". ")
+}
+
+function memberName(member: FlowMember): string {
+  return [member.label, member.detail, member.skipText].filter(Boolean).join(", ")
+}
+
+/** One account of a balanced group: its name, a health dot, then its headroom and share of new sessions. */
+function MemberRow({ member }: { member: FlowMember }) {
+  const marks = [member.current ? "now" : null, member.servedLast ? "served last" : null].filter((m): m is string => m !== null)
+  return (
+    <li
+      data-chain-flow-member={member.label}
+      data-current={member.current || undefined}
+      data-skipped={member.skip ?? undefined}
+      title={member.skipText ?? undefined}
+      className="flex min-w-0 flex-col"
+      style={{ opacity: member.skip ? 0.5 : 1 }}
+    >
+      <span className="flex min-w-0 items-center gap-[6px]">
+        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: DOT_COLOR[member.health] }} />
+        <span title={member.label} className="min-w-0 flex-1 truncate text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-primary)]">{member.label}</span>
+        {marks.map((mark) => (
+          <span key={mark} data-chain-flow-badge={mark} className="shrink-0 rounded-[5px] bg-[var(--fill-secondary)] px-1 text-[length:var(--text-caption2)] text-[var(--text-secondary)]">{mark}</span>
+        ))}
+      </span>
+      {member.detail && <span data-chain-flow-member-detail className="truncate pl-[12px] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">{member.detail}</span>}
+    </li>
+  )
+}
+
+/** A balanced group as one node: its accounts in the order a limit walks them, each with its headroom and share. */
+function GroupNode({ target }: { target: FlowTargetData }) {
+  const vertical = target.orientation === "vertical"
+  return (
+    <div
+      data-chain-flow-node={target.label}
+      data-chain-flow-group
+      data-current={target.current || undefined}
+      aria-label={nodeName(target)}
+      className="flex flex-col justify-center gap-[2px] rounded-[var(--radius-md)] bg-[var(--fill-secondary)] px-[var(--space-3)]"
+      style={nodeStyle(target)}
+    >
+      <Handle type="target" position={vertical ? Position.Top : Position.Left} isConnectable={false} className="!opacity-0" />
+      <div className="text-[length:var(--text-caption2)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-quaternary)]">{target.label}</div>
+      <ul className="m-0 flex list-none flex-col gap-[2px] p-0">
+        {(target.members ?? []).map((member) => <MemberRow key={member.label} member={member} />)}
+      </ul>
+      <Handle type="source" position={vertical ? Position.Bottom : Position.Right} isConnectable={false} className="!opacity-0" />
+    </div>
+  )
 }
 
 /** One target: its label, a health dot, and what the limits reading says. A link
  *  that would be passed over is dimmed, with the reason on hover and to a screen reader. */
 export function ChainTargetNode({ data }: NodeProps) {
   const target = data as FlowTargetData
+  if (target.members) return <GroupNode target={target} />
   const vertical = target.orientation === "vertical"
   const detail = [target.used, target.resets].filter(Boolean).join(" · ")
   return (
@@ -96,6 +148,7 @@ export function ChainTargetNode({ data }: NodeProps) {
         <Badges data={target} />
         {detail && <span className="truncate text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">{detail}</span>}
       </div>
+      {target.startNote && <div data-chain-flow-start-note title={target.startNote} className="truncate text-[length:var(--text-caption2)] text-[var(--text-secondary)]">{target.startNote}</div>}
       <Handle type="source" position={vertical ? Position.Bottom : Position.Right} isConnectable={false} className="!opacity-0" />
     </div>
   )
@@ -105,8 +158,8 @@ const nodeTypes = { chainTarget: ChainTargetNode }
 
 /** The chain as a flow: the own target, then each link, joined by "on limit" edges. */
 export default function ChainFlowGraph(input: ChainFlowInput) {
-  const [ref, orientation] = useOrientation(input.links.length)
-  const graph = useMemo(() => buildChainFlow(input, orientation), [input.links, input.position, input.servedBy, input.now, orientation])
+  const [ref, orientation] = useOrientation(collapseGroups(input.links).length)
+  const graph = useMemo(() => buildChainFlow(input, orientation), [input.links, input.position, input.servedBy, input.startPick, input.now, orientation])
   const edges = useMemo(() => graph.edges.map((edge) => ({
     ...edge,
     markerEnd: { type: MarkerType.ArrowClosed },
