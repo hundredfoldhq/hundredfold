@@ -86,20 +86,26 @@ adb shell am force-stop run.hundredfold.shell
 adb shell settings put system screen_off_timeout 600000
 adb shell input keyevent 224 # wake
 
-say "starting the fake gateway on :$PORT (stands in for the voice hub)"
-: > "$SERVER_LOG"
-node "$here/fake-voice-server.mjs" --port "$PORT" --log "$SERVER_LOG" ${REPLY:+--reply "$REPLY"} >"$OUT/server.err" 2>&1 &
-SERVER_PID=$!
-sleep 1
-kill -0 "$SERVER_PID" 2>/dev/null || { cat "$OUT/server.err"; exit 1; }
-adb reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
+start_gateway() {
+  say "starting the fake gateway on :$PORT (stands in for the voice hub)"
+  : > "$SERVER_LOG"
+  node "$here/fake-voice-server.mjs" --port "$PORT" --log "$SERVER_LOG" ${REPLY:+--reply "$REPLY"} >"$OUT/server.err" 2>&1 &
+  SERVER_PID=$!
+  sleep 1
+  kill -0 "$SERVER_PID" 2>/dev/null || { cat "$OUT/server.err"; exit 1; }
+  adb reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
+}
+start_voice() {
+  say "launching the app, pairing, starting voice mode (hands-free)"
+  adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
+  for _ in $(seq 1 30); do drive 'document.readyState' >/dev/null 2>&1 && break; sleep 1; done
+  drive "(async()=>{const n=window.__HUNDREDFOLD_NATIVE__;const t={origin:'http://127.0.0.1:$PORT'};await n.pair({target:t,code:'123456'});window.__ev=[];await n.voiceStart({target:t,sessionId:'demo-session',mode:'hands-free'},(m)=>window.__ev.push(m));await new Promise(r=>setTimeout(r,1500));return n.voiceStatus()})()" | tee -a "$TIMELINE"
+  wait_count hello 1 10
+  say "voice mode is up: hello received from a '$(grep -o '"client":"[a-z]*"' "$SERVER_LOG" | head -1)' client"
+}
 
-say "launching the app, pairing, starting voice mode (hands-free)"
-adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
-for _ in $(seq 1 30); do drive 'document.readyState' >/dev/null 2>&1 && break; sleep 1; done
-drive "(async()=>{const n=window.__HUNDREDFOLD_NATIVE__;const t={origin:'http://127.0.0.1:$PORT'};await n.pair({target:t,code:'123456'});window.__ev=[];await n.voiceStart({target:t,sessionId:'demo-session',mode:'hands-free'},(m)=>window.__ev.push(m));await new Promise(r=>setTimeout(r,1500));return n.voiceStatus()})()" | tee -a "$TIMELINE"
-wait_count hello 1 10
-say "voice mode is up: hello received from a '$(grep -o '"client":"[a-z]*"' "$SERVER_LOG" | head -1)' client"
+start_gateway
+start_voice
 
 say "pressing BACK at the app root: the session must outlive the UI and the app must not crash"
 F_BEFORE=$(curl -s "localhost:$PORT/stats" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upFrames"])')
@@ -111,6 +117,20 @@ say "after BACK: pid '${APP_PID}', +$((F_AFTER - F_BEFORE)) frames in 3s, socket
 [ -n "$APP_PID" ] && [ "$((F_AFTER - F_BEFORE))" -gt 100 ] && [ "$(count socket_close)" -eq 0 ] || { say "FAIL: BACK ended the app or the session"; exit 1; }
 adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
 sleep 1
+
+say "removing the task from recents: the session must end cleanly (bye, close 1000)"
+adb shell input keyevent 187
+sleep 2
+adb shell input swipe 540 1100 540 100 60
+wait_count bye 1 10
+sleep 1
+say "after recents removal: $(grep -E '"event":"(bye|socket_close)"' "$SERVER_LOG" | tr '\n' ' ')"
+[ "$(grep -c '"event":"socket_close","code":1000' "$SERVER_LOG" || true)" -ge 1 ] || { say "FAIL: removing the task did not end the session with close 1000"; exit 1; }
+adb shell am force-stop run.hundredfold.shell
+kill "$SERVER_PID" 2>/dev/null || true
+sleep 1
+start_gateway
+start_voice
 
 say "setting a PIN, starting the screen recording and the speaker capture"
 adb shell locksettings set-pin "$PIN" >/dev/null
