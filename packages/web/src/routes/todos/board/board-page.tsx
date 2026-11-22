@@ -34,7 +34,7 @@ import { FilteredEmptyCard } from "./board-empty"
 import { BoardColumn, DragSlot } from "./column"
 import { ClosedColumnGroup, ClosedColumnHeader, ClosedRail } from "./closed-rail"
 import { departmentTitle } from "./board-switcher"
-import { boardDetailIds, useBoardData, useBoardRank, useBoardTransition, useBoardTrees, useCreateSubTask, useKeepWorkItem } from "./use-board"
+import { boardDetailIds, useBoardData, useBoardRank, useBoardTransition, useBoardTrees, useCreateSubTask, useDispatchWorkItem, useKeepWorkItem } from "./use-board"
 import {
   BOARD_STATUS_ORDER, CLOSED_STATUSES, EXCEPTION_STATUSES, isClosedStatus, isColumnInStatusFilter, OPEN_COLUMN_ORDER, PIPELINE_STATUSES, visibleItemCount,
 } from "./status-scope"
@@ -518,6 +518,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     return columns
   }, [data.columns, itemsByStatus, filters.due])
   const keep = useKeepWorkItem(announce)
+  const dispatchTodo = useDispatchWorkItem(announce)
   // "View as board" opens the card's sub-Todos in the pop-up the Todo page opens, over this board; closing it puts focus back on the card. On a phone (and at
   // the board's own route) Back closes it, as it does the Todo page's; a desktop tab holds it in memory, as the page does there.
   const cardSubBoard = useCardSubBoard(routed === true || (mobile && !subtree))
@@ -541,6 +542,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
     onOpen,
     onMove: moveCard,
     onKeep: keep.mutate,
+    dispatch: { run: dispatchTodo.dispatch, pending: dispatchTodo.pending },
     sprints: sprintTools.cardSprints,
   })
   // Clearing goes through the same setter as any other change, so the cleared
