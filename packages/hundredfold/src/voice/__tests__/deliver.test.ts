@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { buildVoiceEnvelope, VOICE_PROMPT_OPEN, VOICE_REMINDER } from "../envelope.js";
 import { transcriptEntryText } from "../../gateway/external-turns.js";
+import { VoiceHub } from "../hub.js";
+import { baseConfig } from "./hub-harness.js";
+import { FakeClock, FakeSocket, FakeStt, FakeTts, FakeVad, settle } from "./fakes.js";
 
 // A throwaway home before anything that reads it is imported.
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-voice-deliver-"));
@@ -231,5 +234,71 @@ describe("a send-now folds parked messages without dropping the voice envelope",
     queueItems.enqueueQueueItem(session.id, key, "plain b", { dispatch: { attachments: [], speechDerived: false } });
     merge.mergePendingQueueItems(key, a);
     expect(queueItems.getQueueItem(a)?.dispatch?.voiceEnvelope).toBeUndefined();
+  });
+});
+
+describe("what the hub stores on the chat, through the real registry (what the web re-reads)", () => {
+  it("the user message carries utteranceId, sttProvider and audioMs; the reply carries spokenText and ttfaMs, and interrupted when cut off", async () => {
+    const session = newSession();
+    const clock = new FakeClock();
+    const stt = new FakeStt();
+    const tts = new FakeTts();
+    const vads: FakeVad[] = [];
+    let ids = 0;
+    const hub = new VoiceHub({
+      config: () => baseConfig(),
+      providers: () => ({ stt, tts, createVad: () => { const vad = new FakeVad(); vads.push(vad); return vad; } }),
+      getSession: (id) => registry.getSession(id),
+      getEngine: () => engine as unknown as import("../../shared/types.js").Engine,
+      turnRunning: () => false,
+      deliver: (delivery) => deliver.deliverVoiceMessage(context, delivery),
+      mergeMessageMeta: (id, patch) => { registry.mergeMessageMeta(id, patch); },
+      findReplyMessageId: registry.latestAssistantMessageId,
+      clock,
+      log: { info: () => undefined, warn: () => undefined },
+      newId: () => `id${++ids}`,
+    });
+    const socket = new FakeSocket();
+    const attachment = hub.attach(socket, { sessionId: session.id, principal: { kind: "operator" } })!;
+    attachment.onText(JSON.stringify({ type: "hello", protocol: 1, mode: "hands-free", client: "web" }));
+
+    // 1. A spoken question; the session answers.
+    vads[0].start(0);
+    for (let i = 0; i < 10; i += 1) attachment.onBinary(Buffer.alloc(640, 1));
+    vads[0].end();
+    clock.advance(40);
+    stt.last().final("what is two plus two");
+    await settle();
+    await engineRan();
+    const user = registry.getMessages(session.id).filter((m) => m.role === "user")[0];
+    expect(user.content).toBe("what is two plus two");
+    expect(user.meta).toEqual({ voice: { utteranceId: "id2", sttProvider: "fake-stt", audioMs: expect.any(Number) } });
+
+    clock.advance(300);
+    hub.onEvent("session:started", { sessionId: session.id });
+    hub.onEvent("session:delta", { sessionId: session.id, type: "text", content: "It is four. Anything else? " });
+    await settle();
+    hub.onEvent("session:completed", { sessionId: session.id, result: "It is four. Anything else?", error: null });
+    await settle();
+    const reply = registry.getMessages(session.id).filter((m) => m.role === "assistant").slice(-1)[0];
+    // The engine's own settle wrote its keys on the row (assistantPhase, turnOutcome); the voice facts merge in beside them.
+    expect(reply.meta).toMatchObject({ assistantPhase: "final", voice: { spokenText: "It is four. Anything else?", ttfaMs: 300 } });
+    expect((reply.meta as { voice: Record<string, unknown> }).voice).toEqual({ spokenText: "It is four. Anything else?", ttfaMs: 300 });
+
+    // 2. The person talks over the next reply: it is marked interrupted, with what was heard.
+    hub.onEvent("session:started", { sessionId: session.id });
+    hub.onEvent("session:delta", { sessionId: session.id, type: "text", content: "A long second reply here. And more after it. " });
+    await settle();
+    const second = registry.insertMessage(session.id, "assistant", "A long second reply here. And more after it.");
+    hub.onEvent("session:completed", { sessionId: session.id, result: "A long second reply here. And more after it.", error: null });
+    await settle();
+    attachment.onText(JSON.stringify({ type: "barge_in", segmentId: 4, playedMs: 0 }));
+    vads[0].start();
+    for (let i = 0; i < 5; i += 1) attachment.onBinary(Buffer.alloc(640, 1));
+    vads[0].end();
+    stt.last().final("stop");
+    await settle();
+    expect(registry.getMessages(session.id).find((m) => m.id === second)?.meta).toMatchObject({ voice: { interrupted: true, spokenText: expect.any(String) } });
+    hub.shutdown();
   });
 });

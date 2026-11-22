@@ -106,6 +106,8 @@ describe("barge-in (US2)", () => {
     h.audio(attachment, 5);
     await settle();
     expect(socket.audio()).toHaveLength(0);
+    // No new segment of the interrupted reply starts after the stop.
+    expect(socket.ofType("segment_start")).toHaveLength(0);
     h.vad().end();
     h.stt.last().final("hold on a second");
     await settle();
