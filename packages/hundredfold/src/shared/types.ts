@@ -192,6 +192,12 @@ export interface ForegroundWork {
   /** Epoch ms the call started. */
   startedAt: number;
   description: string | null;
+  /**
+   * Whether a soft interrupt now would move this call to the background rather
+   * than abort it. Claude Code can background a running Bash (Ctrl+B) but not an
+   * MCP call or a sub-agent, so this is per call, not per engine.
+   */
+  backgroundable: boolean;
 }
 
 /** Work an engine moved to the background while ending a turn softly. */
@@ -213,8 +219,10 @@ export type SoftInterruptOutcome =
  */
 export interface SoftInterruptibleEngine extends Engine {
   /**
-   * Whether a soft interrupt keeps a running foreground tool call alive by
-   * moving it to the background (Claude Code), rather than aborting it.
+   * Whether this engine can ever move a running foreground call to the
+   * background on a soft interrupt (Claude Code: a Bash, via Ctrl+B). Reported
+   * to clients as `ready.backgrounding`; whether a particular call can be is
+   * {@link ForegroundWork.backgroundable}.
    */
   readonly softInterruptPreservesForegroundWork: boolean;
   /** The tool call running in the foreground of this session's turn, if any. */
