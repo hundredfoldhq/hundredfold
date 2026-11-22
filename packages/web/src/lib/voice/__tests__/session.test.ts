@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
 import type { VoiceCuePlayerLike } from "../cues"
 import { floatToInt16 } from "../pcm"
+import { MUTED_RETURN_WAIT_MS } from "../suspend"
 import { VoicePlayer } from "../player"
 import type { VoiceSessionStarter } from "../controller"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
@@ -20,6 +21,7 @@ class Emitter {
 
 class FakeTrack extends Emitter {
   readyState = "live"
+  muted = false
   stopped = false
   stop() { this.stopped = true; this.readyState = "ended" }
 }
@@ -769,6 +771,62 @@ describe("paused state and resume without a reload", () => {
     r.doc.set("visible")
     await vi.waitFor(() => expect(voicePhase(r.session.getSnapshot())).toBe("listening"))
     expect(r.session.getSnapshot().syncTick).toBeGreaterThan(before)
+  })
+
+  it("a microphone that stays muted after the page is back is taken back without a tap", async () => {
+    vi.useFakeTimers()
+    const r = await started({ deferMic: false })
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    r.doc.set("visible")
+    expect(voicePhase(r.session.getSnapshot())).toBe("suspended") // no unmute has come
+    await vi.advanceTimersByTimeAsync(MUTED_RETURN_WAIT_MS + 50)
+    expect(r.tracks).toHaveLength(2)
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(r.session.getSnapshot().needsTap).toBe(false)
+    expect(r.sockets[0].frames.map((f) => f.type)).toContain("resume")
+  })
+
+  it("a tap on a microphone that is still muted asks for a new one", async () => {
+    vi.useFakeTimers()
+    const r = await started({ deferMic: false })
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    r.micError.value = new DOMException("needs a gesture", "NotAllowedError")
+    r.doc.set("visible")
+    await vi.advanceTimersByTimeAsync(MUTED_RETURN_WAIT_MS + 50)
+    expect(r.session.getSnapshot().needsTap).toBe(true)
+    r.micError.value = null
+    await r.session.resumeFromTap()
+    expect(r.tracks).toHaveLength(2)
+    expect(r.tracks[1].readyState).toBe("live")
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+  })
+
+  it("two returns that each ask for a microphone leave exactly one live, whichever answers first", async () => {
+    for (const order of [[1, 2], [2, 1]] as const) {
+      const r = rig({ deferMic: true })
+      const starting = r.session.start()
+      r.micGates[0].open({} as MediaStream)
+      await starting
+      r.sockets[0].serverFrame(READY)
+      r.doc.set("hidden")
+      r.tracks[0].readyState = "ended"
+      r.tracks[0].emit("ended")
+      r.doc.set("visible") // first return: its request is pending
+      await vi.waitFor(() => expect(r.micGates).toHaveLength(2))
+      r.doc.set("hidden")
+      r.doc.set("visible") // second return before the first request answered
+      await vi.waitFor(() => expect(r.micGates).toHaveLength(3))
+      for (const n of order) { r.micGates[n].open({} as MediaStream); await new Promise((resolve) => setTimeout(resolve, 0)) }
+      await vi.waitFor(() => expect(voicePhase(r.session.getSnapshot())).toBe("listening"))
+      expect(r.tracks.filter((t) => !t.stopped)).toHaveLength(1)
+      r.session.stop()
+      expectNothingLive(r)
+    }
   })
 
   it("a stop while the microphone is being taken back leaves no live track", async () => {

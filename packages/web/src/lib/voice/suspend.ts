@@ -38,6 +38,8 @@ export interface SuspendCallbacks {
 
 /** A socket close this soon after the page became visible again is the suspension's, not a fresh failure. */
 export const RETURN_GRACE_MS = 3_000
+/** How long a track that is still muted on return gets to unmute by itself before it is treated as lost. */
+export const MUTED_RETURN_WAIT_MS = 2_000
 
 export class SuspendWatcher {
   private suspended: { at: number; reason: SuspendReason } | null = null
@@ -47,6 +49,7 @@ export class SuspendWatcher {
   private readonly cleanups: Array<() => void> = []
   private track: SuspendTrack | null = null
   private ctx: SuspendContext | null = null
+  private mutedTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private readonly doc: SuspendDocument,
@@ -90,6 +93,7 @@ export class SuspendWatcher {
   }
 
   stop(): void {
+    this.clearMutedTimer()
     for (const cleanup of this.cleanups.splice(0)) cleanup()
   }
 
@@ -120,14 +124,28 @@ export class SuspendWatcher {
   private visibilityChanged(): void {
     if (this.doc.visibilityState === "hidden") {
       this.hiddenAt = this.lastHiddenAt = this.now()
+      this.clearMutedTimer()
       return
     }
     this.hiddenAt = null
     this.lastVisibleAt = this.now()
-    // A track that is still muted hands back through its own `unmute`, not now.
     this.checkLiveness()
-    if (this.suspended?.reason === "track-muted" && this.track?.muted === true) return
+    if (this.suspended?.reason === "track-muted" && this.track?.muted === true) {
+      // It may unmute by itself, which hands back via its own `unmute`. Browsers do not always say, so give it a moment, then treat it as lost.
+      this.clearMutedTimer()
+      this.mutedTimer = setTimeout(() => {
+        this.mutedTimer = null
+        this.handBack()
+      }, MUTED_RETURN_WAIT_MS)
+      return
+    }
     this.handBack()
+  }
+
+  private clearMutedTimer(): void {
+    if (this.mutedTimer === null) return
+    clearTimeout(this.mutedTimer)
+    this.mutedTimer = null
   }
 
   /**
@@ -144,6 +162,7 @@ export class SuspendWatcher {
 
   private handBack(): void {
     if (!this.suspended || this.doc.visibilityState === "hidden") return
+    this.clearMutedTimer()
     const { at, reason } = this.suspended
     this.suspended = null
     this.callbacks.onReturn({ suspendedMs: Math.max(0, this.now() - at), reason })

@@ -220,8 +220,7 @@ export class BrowserVoiceSession implements VoiceController {
     const ctx = this.ctx
     if (!ctx || this.session === null) return this.start()
     void ctx.resume().catch(() => undefined)
-    const trackLive = this.capture?.track?.readyState === "live"
-    const microphone = trackLive ? null : this.deps.requestMicrophone()
+    const microphone = this.microphoneLive() ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
     if (this.socket?.isOpen) {
       this.apply({ type: "resumed" })
@@ -430,7 +429,7 @@ export class BrowserVoiceSession implements VoiceController {
     if (ctx.state !== "running") await this.tryResumeContext(ctx)
     if (generation !== this.generation) return false
     // A lost socket is only reopened inside a tap (spec 009, T026), and that tap asks for the microphone too, so don't ask twice.
-    if (this.socket?.isOpen && this.capture?.track?.readyState !== "live") await this.reacquireMicrophone(generation)
+    if (this.socket?.isOpen && !this.microphoneLive()) await this.reacquireMicrophone(generation)
     return generation === this.generation
   }
 
@@ -456,9 +455,15 @@ export class BrowserVoiceSession implements VoiceController {
     }
   }
 
+  /** A microphone that is neither ended nor muted by the device. */
+  private microphoneLive(): boolean {
+    const track = this.capture?.track
+    return track?.readyState === "live" && track.muted !== true
+  }
+
   /** Socket open, microphone live and audio running: nothing needs a gesture. */
   private recovered(ctx: VoiceAudioContext): boolean {
-    return this.socket?.isOpen === true && this.capture?.track?.readyState === "live" && ctx.state === "running"
+    return this.socket?.isOpen === true && this.microphoneLive() && ctx.state === "running"
   }
 
   private async tryResumeContext(ctx: VoiceAudioContext): Promise<void> {
