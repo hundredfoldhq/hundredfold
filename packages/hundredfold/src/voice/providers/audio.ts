@@ -42,27 +42,35 @@ export function toWav(pcm: Buffer, sampleRate: number): Buffer {
 
 export interface ParsedWav { sampleRate: number; pcm: Buffer }
 
+interface WavFormat { channels: number; rate: number; bits: number; code: number }
+
+function readFormat(file: Buffer, body: number): WavFormat | null {
+  if (body + 16 > file.length) return null;
+  return { code: file.readUInt16LE(body), channels: file.readUInt16LE(body + 2), rate: file.readUInt32LE(body + 4), bits: file.readUInt16LE(body + 14) };
+}
+
+/** One RIFF chunk at `at`: its id, where its data starts and ends (a streamed WAV may give 0 or 0xFFFFFFFF as the size: take what is there), and where the next begins. */
+function readChunk(file: Buffer, at: number): { id: string; body: number; end: number; next: number } {
+  const size = file.readUInt32LE(at + 4);
+  const body = at + 8;
+  const unsized = size === 0 || size === 0xffffffff || body + size > file.length;
+  return { id: file.toString("ascii", at, at + 4), body, end: unsized ? file.length : body + size, next: body + size + (size % 2) };
+}
+
 /** The PCM16 mono samples of a WAV file, or a reason it is not one the voice pipeline can play. */
 export function parseWav(file: Buffer): ParsedWav | { error: string } {
   if (file.length < 12 || file.toString("ascii", 0, 4) !== "RIFF" || file.toString("ascii", 8, 12) !== "WAVE") return { error: "not a WAV file" };
-  let format: { channels: number; rate: number; bits: number; code: number } | null = null;
+  let format: WavFormat | null = null;
   for (let at = 12; at + 8 <= file.length; ) {
-    const id = file.toString("ascii", at, at + 4);
-    const size = file.readUInt32LE(at + 4);
-    const body = at + 8;
-    if (id === "fmt " && body + 16 <= file.length) {
-      format = { code: file.readUInt16LE(body), channels: file.readUInt16LE(body + 2), rate: file.readUInt32LE(body + 4), bits: file.readUInt16LE(body + 14) };
-    } else if (id === "data") {
-      // A streamed WAV may carry 0 or 0xFFFFFFFF as the data size: take what is there.
-      const end = size === 0 || size === 0xffffffff || body + size > file.length ? file.length : body + size;
-      return wavSamples(format, file.subarray(body, end));
-    }
-    at = body + size + (size % 2);
+    const chunk = readChunk(file, at);
+    if (chunk.id === "fmt ") format = readFormat(file, chunk.body);
+    else if (chunk.id === "data") return wavSamples(format, file.subarray(chunk.body, chunk.end));
+    at = chunk.next;
   }
   return { error: "the WAV file has no audio data" };
 }
 
-function wavSamples(format: { channels: number; rate: number; bits: number; code: number } | null, data: Buffer): ParsedWav | { error: string } {
+function wavSamples(format: WavFormat | null, data: Buffer): ParsedWav | { error: string } {
   if (!format) return { error: "the WAV file has no format chunk" };
   if (format.code !== 1 || format.bits !== 16 || format.channels !== 1) {
     return { error: `the WAV audio is ${format.channels} channel(s) of ${format.bits}-bit format ${format.code}; voice mode needs 16-bit PCM mono` };

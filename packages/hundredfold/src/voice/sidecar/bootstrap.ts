@@ -106,7 +106,7 @@ let probed: { at: number; gpu: boolean } | null = null;
 /** True when `nvidia-smi` lists a GPU. Remembered for 30 s: it is asked on every status read. */
 export const nvidiaSmiProbe: GpuProbe = () => {
   if (probed && Date.now() - probed.at < PROBE_TTL_MS) return probed.gpu;
-  const result = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { encoding: "utf8", timeout: 10_000 });
+  const result = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
   probed = { at: Date.now(), gpu: result.status === 0 && result.stdout.trim().length > 0 };
   return probed.gpu;
 };
@@ -123,7 +123,7 @@ export interface PythonInfo {
 }
 
 function pythonVersion(command: string): string | null {
-  const probe = spawnSync(command, ["-c", "import sys, venv, ensurepip; print('%d.%d.%d' % sys.version_info[:3])"], { encoding: "utf8", timeout: 15_000 });
+  const probe = spawnSync(command, ["-c", "import sys, venv, ensurepip; print('%d.%d.%d' % sys.version_info[:3])"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] });
   return probe.status === 0 ? probe.stdout.trim() : null;
 }
 

@@ -102,6 +102,12 @@ class BatchSttStream implements SttStream {
   }
 }
 
+/** A 4xx that is not about credentials or rate: the server did not like `response_format`. */
+function formatNotSupported(error: unknown): boolean {
+  if (!(error instanceof SpeechHttpError)) return false;
+  return error.status >= 400 && error.status < 500 && ![401, 403, 429].includes(error.status);
+}
+
 export class OpenAiCompatibleTtsProvider implements TtsProvider {
   readonly id = "openai-compatible";
   readonly sampleRate = TTS_RATE;
@@ -122,19 +128,21 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
   async *synthesize(text: string, options: TtsSynthesisOptions): AsyncGenerator<Buffer> {
     const status = this.status();
     if (!status.available) throw new Error(status.reason);
+    yield* this.audioFrom(await this.openSpeech(text, options));
+  }
+
+  /** Ask for raw `pcm`; a server that does not know it says so with a client error, so ask for `wav` instead. */
+  private async openSpeech(text: string, options: TtsSynthesisOptions): Promise<Response> {
     const base = { model: this.side.model, input: text, voice: options.voice ?? this.side.voice, speed: options.speed ?? this.side.speed };
     const request = (format: string): SpeechRequest => ({
       url: endpoint(this.side, "speech"), key: this.#key, body: { ...base, response_format: format }, signal: options.signal, who: "the speech server",
     });
-    let response: Response;
     try {
-      response = await postSpeech(request("pcm"));
+      return await postSpeech(request("pcm"));
     } catch (error) {
-      // A server that does not know `pcm` says so with a client error; ask for `wav` instead.
-      if (!(error instanceof SpeechHttpError) || error.status < 400 || error.status >= 500 || error.status === 401 || error.status === 403 || error.status === 429) throw error;
-      response = await postSpeech(request("wav"));
+      if (!formatNotSupported(error)) throw error;
+      return postSpeech(request("wav"));
     }
-    yield* this.audioFrom(response);
   }
 
   /** Raw PCM streams through; a WAV (asked for, or sent anyway) is read whole and unwrapped; MP3 is refused. */

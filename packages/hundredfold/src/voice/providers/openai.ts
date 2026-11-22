@@ -31,6 +31,8 @@ export interface OpenAiDeps {
 const REALTIME_RATE = 24_000;
 const FINAL_TIMEOUT_MS = 20_000;
 
+interface RealtimeEvent { type?: string; item_id?: string; delta?: string; transcript?: string; error?: { message?: string } }
+
 function keyStatus(side: ResolvedVoiceSide, key: string | undefined): VoiceProviderStatus {
   if (key) return { available: true };
   const name = envNameOf(side.apiKeyRef);
@@ -135,22 +137,27 @@ class OpenAiSttStream implements SttStream {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event));
   }
 
+  private readonly events: Record<string, (event: RealtimeEvent) => void> = {
+    "session.updated": () => this.onReady(),
+    "input_audio_buffer.committed": (event) => { this.itemId = event.item_id ?? null; },
+    "conversation.item.input_audio_transcription.delta": (event) => this.onDelta(event.delta ?? ""),
+    "conversation.item.input_audio_transcription.completed": (event) => this.onCompleted(event.item_id, event.transcript ?? this.text),
+    "conversation.item.input_audio_transcription.failed": (event) => this.onFailure(event),
+    error: (event) => this.onFailure(event),
+  };
+
   private onMessage(raw: string): void {
-    let event: { type?: string; item_id?: string; delta?: string; transcript?: string; error?: { message?: string } };
+    let event: RealtimeEvent;
     try {
-      event = JSON.parse(raw) as typeof event;
+      event = JSON.parse(raw) as RealtimeEvent;
     } catch {
       return;
     }
-    switch (event.type) {
-      case "session.updated": return this.onReady();
-      case "input_audio_buffer.committed": this.itemId = event.item_id ?? null; return;
-      case "conversation.item.input_audio_transcription.delta": return this.onDelta(event.delta ?? "");
-      case "conversation.item.input_audio_transcription.completed": return this.onCompleted(event.item_id, event.transcript ?? this.text);
-      case "conversation.item.input_audio_transcription.failed":
-      case "error": return this.fail(`OpenAI transcription failed: ${redact(event.error?.message ?? "unknown error", [this.#key]).slice(0, 300)}`);
-      default:
-    }
+    this.events[event.type ?? ""]?.(event);
+  }
+
+  private onFailure(event: RealtimeEvent): void {
+    this.fail(`OpenAI transcription failed: ${redact(event.error?.message ?? "unknown error", [this.#key]).slice(0, 300)}`);
   }
 
   private onReady(): void {

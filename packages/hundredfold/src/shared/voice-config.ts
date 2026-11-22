@@ -292,46 +292,48 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   ];
 }
 
-function resolveSide(raw: Obj | undefined, kind: "stt" | "tts"): ResolvedVoiceSide {
-  const provider = (raw?.provider as VoiceProviderId | undefined) ?? "local";
-  const defaults = VOICE_PROVIDER_DEFAULTS[provider];
-  return {
-    provider,
-    model: (raw?.model as string | undefined) ?? (kind === "stt" ? defaults.sttModel : defaults.ttsModel),
-    baseUrl: provider === "openai-compatible" ? ((raw?.baseUrl as string | undefined)?.replace(/\/+$/, "") ?? null) : null,
-    apiKeyRef: (raw?.apiKey as string | undefined) ?? null,
-  };
+const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
+
+/** `source[key]`, or `fallback` when the key is absent: the one place a default is applied. */
+function setting<T>(source: Obj, key: string, fallback: T): T {
+  return source[key] === undefined ? fallback : (source[key] as T);
 }
 
-const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
+function resolveSide(raw: Obj, kind: "stt" | "tts"): ResolvedVoiceSide {
+  const provider = setting<VoiceProviderId>(raw, "provider", "local");
+  const defaults = VOICE_PROVIDER_DEFAULTS[provider];
+  const baseUrl = typeof raw.baseUrl === "string" && provider === "openai-compatible" ? raw.baseUrl.replace(/\/+$/, "") : null;
+  return {
+    provider,
+    model: setting(raw, "model", kind === "stt" ? defaults.sttModel : defaults.ttsModel),
+    baseUrl,
+    apiKeyRef: setting<string | null>(raw, "apiKey", null),
+  };
+}
 
 function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
   const tts = sub(voice, "tts");
   const side = resolveSide(tts, "tts");
-  return { ...side, voice: (tts.voice as string | undefined) ?? VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice, speed: (tts.speed as number | undefined) ?? 1 };
+  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", 1) };
+}
+
+function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {
+  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 700), prerollMs: setting(vad, "prerollMs", 300) };
+}
+
+function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {
+  return { enabled: setting(bargeIn, "enabled", true), minSpeechMs: setting(bargeIn, "minSpeechMs", 250), onsetThreshold: setting(bargeIn, "onsetThreshold", 0.02) };
 }
 
 function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "limits" | "local"> {
-  const vad = sub(voice, "vad");
-  const bargeIn = sub(voice, "bargeIn");
   const autoBackground = sub(voice, "autoBackground");
   const limits = sub(voice, "limits");
-  const local = sub(voice, "local");
   return {
-    vad: {
-      threshold: (vad.threshold as number | undefined) ?? 0.5, minSpeechMs: (vad.minSpeechMs as number | undefined) ?? 250,
-      silenceMs: (vad.silenceMs as number | undefined) ?? 700, prerollMs: (vad.prerollMs as number | undefined) ?? 300,
-    },
-    bargeIn: {
-      enabled: (bargeIn.enabled as boolean | undefined) ?? true, minSpeechMs: (bargeIn.minSpeechMs as number | undefined) ?? 250,
-      onsetThreshold: (bargeIn.onsetThreshold as number | undefined) ?? 0.02,
-    },
-    autoBackground: { enabled: (autoBackground.enabled as boolean | undefined) ?? true, afterSeconds: (autoBackground.afterSeconds as number | undefined) ?? 5 },
-    limits: {
-      maxUtteranceSeconds: (limits.maxUtteranceSeconds as number | undefined) ?? 60,
-      maxConcurrentAttachments: (limits.maxConcurrentAttachments as number | undefined) ?? 4,
-    },
-    local: { device: (local.device as ResolvedVoiceConfig["local"]["device"] | undefined) ?? "auto" },
+    vad: resolveVad(sub(voice, "vad")),
+    bargeIn: resolveBargeIn(sub(voice, "bargeIn")),
+    autoBackground: { enabled: setting(autoBackground, "enabled", true), afterSeconds: setting(autoBackground, "afterSeconds", 5) },
+    limits: { maxUtteranceSeconds: setting(limits, "maxUtteranceSeconds", 60), maxConcurrentAttachments: setting(limits, "maxConcurrentAttachments", 4) },
+    local: { device: setting(sub(voice, "local"), "device", "auto") },
   };
 }
 
@@ -343,14 +345,15 @@ export function resolveVoiceConfig(config: { voice?: unknown }, home: string = H
   const voice = config.voice;
   if (!isObject(voice) || voice.enabled !== true || voiceConfigProblems(voice, home).length > 0) return null;
   const inlinePrompt = typeof voice.prompt === "string" && voice.prompt !== "" ? voice.prompt : null;
+  const promptFile = inlinePrompt === null && typeof voice.promptFile === "string" ? resolvePromptFile(voice.promptFile, home) : null;
   return {
-    mode: (voice.mode as ResolvedVoiceConfig["mode"] | undefined) ?? "hands-free",
-    language: (voice.language as string | undefined) ?? "en",
+    mode: setting(voice, "mode", "hands-free"),
+    language: setting(voice, "language", "en"),
     stt: resolveSide(sub(voice, "stt"), "stt"),
     tts: resolveTts(voice),
     ...resolveTuning(voice),
     prompt: inlinePrompt ?? DEFAULT_VOICE_PROMPT,
-    promptFile: inlinePrompt === null && typeof voice.promptFile === "string" ? resolvePromptFile(voice.promptFile, home) : null,
-    holdingLine: (voice.holdingLine as string | undefined) ?? DEFAULT_HOLDING_LINE,
+    promptFile,
+    holdingLine: setting(voice, "holdingLine", DEFAULT_HOLDING_LINE),
   };
 }
