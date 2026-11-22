@@ -84,3 +84,22 @@ describe("the resolved configuration (a stand-in for the config work)", () => {
     expect(resolveVoiceConfig(config({ enabled: false }))).toBeNull();
   });
 });
+
+describe("the provider stand-in", () => {
+  it("every built-in provider says it is unavailable until the providers are merged, so an enabled voice answers honestly", async () => {
+    const { createVoiceProviders, setVoiceProvidersForTest } = await import("../provider-factory.js");
+    const resolved = resolveVoiceConfig(config({ enabled: true }))!;
+    const set = createVoiceProviders(resolved);
+    expect(set.stt.status().available).toBe(false);
+    expect(set.tts.status().available).toBe(false);
+    expect(() => set.createVad()).toThrow(/not installed/);
+    await expect((async () => { for await (const _chunk of set.tts.synthesize("x", { language: "en", signal: new AbortController().signal })) { /* none */ } })()).rejects.toThrow(/not installed/);
+    expect(() => set.stt.open({ language: "en", sampleRate: 16_000, signal: new AbortController().signal })).toThrow(/not installed/);
+    // The seam replaces them, and null puts them back.
+    const fake = { stt: set.stt, tts: set.tts, createVad: set.createVad };
+    setVoiceProvidersForTest(() => ({ ...fake, tts: { ...set.tts, id: "swapped" } }));
+    expect(createVoiceProviders(resolved).tts.id).toBe("swapped");
+    setVoiceProvidersForTest(null);
+    expect(createVoiceProviders(resolved).tts.id).toBe("unavailable");
+  });
+});

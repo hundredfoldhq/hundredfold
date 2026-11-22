@@ -96,6 +96,11 @@ describe("no provider key on the wire", () => {
     expect(payload).not.toContain(SENTINEL);
   });
 
+  it("a key written into the configuration by mistake is redacted too", () => {
+    const cfg = { voice: { enabled: true, stt: { apiKey: "sk-written-in-by-mistake-1234" } } } as unknown as HundredfoldConfig;
+    expect(redactorFor(() => cfg)("it said sk-written-in-by-mistake-1234 here")).toBe("it said [redacted] here");
+  });
+
   it("redaction ignores a variable that is unset or too short to be a key", () => {
     delete process.env.VOICE_UNSET_KEY;
     process.env.VOICE_SHORT_KEY = "abc";

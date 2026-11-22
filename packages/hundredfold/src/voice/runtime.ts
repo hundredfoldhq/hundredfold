@@ -15,6 +15,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { MemberPrincipal } from "../accounts/runtime.js";
 import type { ApiContext } from "../gateway/api.js";
 import { getSession, latestAssistantMessageId, mergeMessageMeta } from "../sessions/registry.js";
+import { resolveEnvVar } from "../shared/env-ref.js";
 import { logger } from "../shared/logger.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { HundredfoldConfig } from "../shared/types.js";
@@ -68,11 +69,11 @@ function memoisedConfig(getConfig: () => HundredfoldConfig): () => ResolvedVoice
   };
 }
 
-/** `${NAME}` references in the voice block's `apiKey` settings, and what those variables hold now. */
+/** What the voice block's `apiKey` settings hold now: the variables they name, or (a mistake) the key written in. */
 function configuredKeys(config: HundredfoldConfig): string[] {
-  const refs = [config.voice?.stt?.apiKey, config.voice?.tts?.apiKey];
-  const names = refs.flatMap((ref) => (typeof ref === "string" ? [...ref.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]) : []));
-  return names.map((name) => process.env[name] ?? "").filter((value) => value.length >= 6);
+  return [config.voice?.stt?.apiKey, config.voice?.tts?.apiKey]
+    .map((ref) => resolveEnvVar(ref))
+    .filter((value): value is string => typeof value === "string" && value.length >= 6);
 }
 
 /** Replaces every configured provider key in `text`: the last line of defence for text a client will read. */

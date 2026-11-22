@@ -24,9 +24,9 @@ After T001 lands, A to E run in parallel against the committed contracts.
 
 - [ ] T002 [A] `voiceConfigProblems` and `resolveVoiceConfig` in `G/shared/voice-config.ts` per contracts/voice-config.md (every key, range and default; literal `apiKey` refused; `promptFile` confined to the instance home; `local` accepts only English). Wire into the loader at `G/shared/config.ts:53`.
 - [ ] T003 [P] [A] Tests `G/shared/__tests__/voice-config.test.ts`: each key's bad shapes and ranges name the key; absent or disabled → `null` and no problems; defaults filled; `promptFile` escaping the home refused; a literal key refused with the move-to-env message.
-- [ ] T004 [B] `mergeMessageMeta(messageId, patch)` in `G/sessions/registry.ts`: merges into `messages.meta` JSON without dropping other keys, one statement.
-- [ ] T005 [P] [B] Tests for `mergeMessageMeta`: merges, keeps other keys, creates meta when null, unknown id is a no-op.
-- [ ] T006 [B] `/api/voice*` row in `G/gateway/department-scope/rules.ts` beside `/api/talk*`; test that a scoped caller is refused.
+- [x] T004 [B] `mergeMessageMeta(messageId, patch)` in `G/sessions/registry.ts`: merges into `messages.meta` JSON without dropping other keys, one statement.
+- [x] T005 [P] [B] Tests for `mergeMessageMeta`: merges, keeps other keys, creates meta when null, unknown id is a no-op.
+- [x] T006 [B] `/api/voice*` row in `G/gateway/department-scope/rules.ts` beside `/api/talk*`; test that a scoped caller is refused.
 
 ## Phase 3: US1 spoken round trip (P1)
 
@@ -44,16 +44,16 @@ Speech sidecar and local providers (Part A):
 
 Gateway hub (Part B):
 
-- [ ] T016 [B] [US1] `G/voice/upgrade.ts` + a `/ws/voice/:id` branch in `server.on("upgrade")` (`G/gateway/server.ts:1105`) mirroring `/ws/pty` (`:1137`): operator gate, origin check, reach guard, session/terminal checks, `voiceWss` in `startWsHeartbeat` (`:1071`). Disabled voice → no branch taken (socket destroyed). Only a few lines in server.ts.
-- [ ] T017 [B] [US1] `G/voice/hub.ts`: attachment lifecycle and limits per data-model.md (`hello` → `ready`, take-over by the same principal, `4409` for another, `4429` at the cap, cleanup on close, session delete or stop, config disable, shutdown).
-- [ ] T018 [B] [US1] Utterances in the hub: continuous upstream into `VadStream`; on VAD start open an `SttStream` with pre-roll; partials and the final as `transcript`; `maxUtteranceSeconds` → cut plus `utterance_too_long`; push-to-talk path uses `ptt_down`/`ptt_up` and skips VAD endpointing; `metrics.sttMs`.
-- [ ] T019 [B] [US1] Dispatch: a final with words goes through `dispatchWebSessionRun` (`G/gateway/web-session-dispatch.ts:149`), sharing the body of `POST /api/sessions/:id/message` (`G/gateway/api.ts:3875`) rather than calling it over HTTP, with `meta.voice` and the envelope.
-- [ ] T020 [B] [US1] `G/voice/envelope.ts`: full prompt on the first voice turn after attach, compaction or engine switch; one-line reminder after; nothing on a `/`-led prompt; the interrupted line (US2). Strip in `transcriptEntryText` (`G/gateway/external-turns.ts:110`); carried through every prompt-recompose site that `withLeftBackgroundNote` (`G/sessions/left-background-tasks.ts:143`) goes through.
-- [ ] T021 [B] [US1] `G/voice/emit-tee.ts` wrapping `emit` at `G/gateway/server.ts:834`, installed only when voice is enabled; feeds an attached session's assistant `text` / `text_snapshot` deltas (snapshots never re-spoken), `tool_use` (→ `turn working`) and `session:completed` (→ `idle`) into the hub.
-- [ ] T022 [B] [US1] `G/voice/speech-pipeline.ts`: sentence chunking (`splitTtsSentences`), `toSpeakable`, TTS, resample to 24 kHz, binary frames with the header, `segment_start` / `segment_end`; synthesis of N+1 overlaps sending N; `ttfaMs` from the final to the first audio byte, stored via `mergeMessageMeta`; `spokenText` at the reply's end.
-- [ ] T023 [P] [B] [US1] Tests with real `ws` clients against the route: disabled → refused; operator accepted; cross-origin 403; scoped out of reach 403; terminal/missing 404; `4409`; `4429`; take-over sends `detached{taken_over}`.
-- [ ] T024 [P] [B] [US1] Hub tests with fakes (provider, VAD, engine, clock): round trip; partials; one message per final; no message for an empty final; utterance limit; envelope first/reminder/none for `/`; strip test proves transcript sync writes no duplicate user row; snapshot deltas not re-spoken; TTFA recorded; the tee is not installed when voice is disabled.
-- [ ] T025 [B] [US1] Key-leak test: a sentinel key via env, drive a full attachment and `GET /api/voice/config` and `GET /api/config`, and assert no frame, body, error or close reason contains it (SC-007).
+- [x] T016 [B] [US1] `G/voice/upgrade.ts` + a `/ws/voice/:id` branch in `server.on("upgrade")` (`G/gateway/server.ts:1105`) mirroring `/ws/pty` (`:1137`): operator gate, origin check, reach guard, session/terminal checks, `voiceWss` in `startWsHeartbeat` (`:1071`). Disabled voice → no branch taken (socket destroyed). Only a few lines in server.ts.
+- [x] T017 [B] [US1] `G/voice/hub.ts`: attachment lifecycle and limits per data-model.md (`hello` → `ready`, take-over by the same principal, `4409` for another, `4429` at the cap, cleanup on close, session delete or stop, config disable, shutdown).
+- [x] T018 [B] [US1] Utterances in the hub: continuous upstream into `VadStream`; on VAD start open an `SttStream` with pre-roll; partials and the final as `transcript`; `maxUtteranceSeconds` → cut plus `utterance_too_long`; push-to-talk path uses `ptt_down`/`ptt_up` and skips VAD endpointing; `metrics.sttMs`.
+- [x] T019 [B] [US1] Dispatch: a final with words goes through `dispatchWebSessionRun` (`G/gateway/web-session-dispatch.ts:149`), sharing the body of `POST /api/sessions/:id/message` (`G/gateway/api.ts:3875`) rather than calling it over HTTP, with `meta.voice` and the envelope.
+- [x] T020 [B] [US1] `G/voice/envelope.ts`: full prompt on the first voice turn after attach, compaction or engine switch; one-line reminder after; nothing on a `/`-led prompt; the interrupted line (US2). Strip in `transcriptEntryText` (`G/gateway/external-turns.ts:110`); carried through every prompt-recompose site that `withLeftBackgroundNote` (`G/sessions/left-background-tasks.ts:143`) goes through.
+- [x] T021 [B] [US1] `G/voice/emit-tee.ts` wrapping `emit` at `G/gateway/server.ts:834`, installed only when voice is enabled; feeds an attached session's assistant `text` / `text_snapshot` deltas (snapshots never re-spoken), `tool_use` (→ `turn working`) and `session:completed` (→ `idle`) into the hub.
+- [x] T022 [B] [US1] `G/voice/speech-pipeline.ts`: sentence chunking (`splitTtsSentences`), `toSpeakable`, TTS, resample to 24 kHz, binary frames with the header, `segment_start` / `segment_end`; synthesis of N+1 overlaps sending N; `ttfaMs` from the final to the first audio byte, stored via `mergeMessageMeta`; `spokenText` at the reply's end.
+- [x] T023 [P] [B] [US1] Tests with real `ws` clients against the route: disabled → refused; operator accepted; cross-origin 403; scoped out of reach 403; terminal/missing 404; `4409`; `4429`; take-over sends `detached{taken_over}`.
+- [x] T024 [P] [B] [US1] Hub tests with fakes (provider, VAD, engine, clock): round trip; partials; one message per final; no message for an empty final; utterance limit; envelope first/reminder/none for `/`; strip test proves transcript sync writes no duplicate user row; snapshot deltas not re-spoken; TTFA recorded; the tee is not installed when voice is disabled.
+- [x] T025 [B] [US1] Key-leak test: a sentinel key via env, drive a full attachment and `GET /api/voice/config` and `GET /api/config`, and assert no frame, body, error or close reason contains it (SC-007).
 
 Web (Part D):
 
@@ -67,9 +67,9 @@ Web (Part D):
 ## Phase 4: US2 barge-in (P1)
 
 - [ ] T032 [P] [D] [US2] `W/lib/voice/onset.ts`: RMS onset held for `onset.minSpeechMs` over playback → flush player, send `barge_in`; also flush on `stop_playback`. Tests with synthetic frames (onset, sub-threshold noise, echo-level playback does not fire).
-- [ ] T033 [B] [US2] Hub barge-in: on `barge_in` or VAD start during playback, abort synthesis and drop queued segments, record heard text; on the final, empty → resume from the first unheard sentence, words → `mergeMessageMeta` `{spokenText, interrupted: true}`, interrupted line in the envelope, then deliver per the policy (T034).
-- [ ] T034 [B] [US2] `G/voice/barge-in-policy.ts`: the pure decision table in contracts/providers.md, the clock injected; the hub executes `soft_then_turn`, `steer`, `steer_with_holding`, `queue_with_holding`, `interrupt_now` (existing `delivery: "now"` via `G/gateway/message-interrupt.ts`) and `wait_then_decide`.
-- [ ] T035 [P] [B] [US2] Tests: every row of the policy table; `wait_then_decide` with a young call finishing in time and one that does not; empty final resumes from the right segment; no audio for the interrupted reply after `barge_in`; a spy proves `kill` is never called while long work runs, on every branch.
+- [x] T033 [B] [US2] Hub barge-in: on `barge_in` or VAD start during playback, abort synthesis and drop queued segments, record heard text; on the final, empty → resume from the first unheard sentence, words → `mergeMessageMeta` `{spokenText, interrupted: true}`, interrupted line in the envelope, then deliver per the policy (T034).
+- [x] T034 [B] [US2] `G/voice/barge-in-policy.ts`: the pure decision table in contracts/providers.md, the clock injected; the hub executes `soft_then_turn`, `steer`, `steer_with_holding`, `queue_with_holding`, `interrupt_now` (existing `delivery: "now"` via `G/gateway/message-interrupt.ts`) and `wait_then_decide`.
+- [x] T035 [P] [B] [US2] Tests: every row of the policy table; `wait_then_decide` with a young call finishing in time and one that does not; empty final resumes from the right segment; no audio for the interrupted reply after `barge_in`; a spy proves `kill` is never called while long work runs, on every branch.
 - [ ] T036 [D] [US2] Unheard tail: dim and label "not spoken" the part of an interrupted reply after `meta.voice.spokenText`. Test.
 
 ## Phase 5: US3 long work (P2)
@@ -78,7 +78,7 @@ Web (Part D):
 - [ ] T038 [C] [US3] `InteractiveClaudeEngine` (`G/engines/claude-interactive.ts:1704`) implements `SoftInterruptibleEngine`: `foregroundWork` from the hook stream (PreToolUse without PostToolUse, with start time); `softInterrupt` writes Esc (or steers, per T037), waits for the TUI to settle without releasing the PTY, settles the running turn as softly interrupted, and returns the background task ids the hook stream reports.
 - [ ] T039 [P] [C] [US3] Tests: unit tests with the fake PTY for `foregroundWork` and the soft-interrupt settle (no `releaseSession`, no kill, the turn settles once); a live test gated like the existing steer live tests, proving a `sleep` survives the soft interrupt and its notification arrives.
 - [ ] T040 [C] [US3] OpenCode 2.x engine: `foregroundWork` from its event stream (running tool step and its start), so the hub can pick `steer_with_holding`. Tests with the fake opencode-v2 server's TOOL/SLOW directives.
-- [ ] T041 [B] [US3] Hub: `background` frames from the soft interrupt's result and from the background-tasks source while attached; the holding line spoken as a segment without a model turn; `ready.backgrounding` from capabilities. Tests.
+- [x] T041 [B] [US3] Hub: `background` frames from the soft interrupt's result and from the background-tasks source while attached; the holding line spoken as a segment without a model turn; `ready.backgrounding` from capabilities. Tests.
 - [ ] T042 [D] [US3] Web chip for backgrounded work (running / finished) from `background` frames and the session's existing background activity. Test.
 
 ## Phase 6: US4 configuration and other providers (P2)
@@ -91,14 +91,14 @@ Web (Part D):
 ## Phase 7: US5 phone and locked screen (P2)
 
 - [ ] T047 [D] [US5] `W/lib/voice/suspend.ts`: detect suspension (`visibilitychange`, track `mute`/`ended`, socket close while hidden); on return send `resume`, show "voice mode was suspended by the device", play what `missed` announces, ask for a tap only if the AudioContext needs a gesture. Media Session handler with a stop action. Tests with a fake document and tracks.
-- [ ] T048 [B] [US5] Hub: keep an attachment's replies during a client suspension (socket closed with a `resume` window of 10 minutes keyed by principal and session); on `resume` send `missed` and speak the finished replies. Tests.
+- [x] T048 [B] [US5] Hub: keep an attachment's replies during a client suspension (socket closed with a `resume` window of 10 minutes keyed by principal and session); on `resume` send `missed` and speak the finished replies. Tests.
 - [ ] T049 [E] [US5] Install the Android toolchain on the build machine in the work area (JDK 17, Android SDK and NDK, Rust stable, `cargo-tauri`, Android targets) and the Docker emulator image; record the exact steps in `packages/shell/README.md`.
 - [ ] T050 [E] [US5] `S/src/voice.rs`: the native voice session per contracts/native-voice.md (commands, confinement, socket through the `stream` machinery, PCM bridge to the platform audio, frames forwarded to the web channel). Rust unit tests for the frame bridge and confinement.
 - [ ] T051 [E] [US5] Android: Kotlin foreground service (type `microphone`), `AudioRecord` `VOICE_COMMUNICATION` + `AcousticEchoCanceler`, flushable `AudioTrack`, onset detector, notification with Stop; manifest permissions in `S/gen/android`. Build an APK.
 - [ ] T052 [E] [US5] iOS: Swift `AVAudioSession` `.playAndRecord`/`.voiceChat`, `AVAudioEngine` capture and flushable playback, onset detector, Now Playing stop command, interruption handling; `UIBackgroundModes: audio` and `NSMicrophoneUsageDescription` in `S/gen/apple`. Written to the contract; built and run only on a Mac (pending access).
 - [ ] T053 [D] [US5] Web: when running in the shell, `voice-control.tsx` uses `voice_start`/`voice_stop`/`voice_ptt` and renders from forwarded frames; the browser path otherwise.
 - [ ] T054 [E] [US5] Android emulator run under Docker per quickstart §8: lock, wait, spoken exchange with a barge-in while locked, Stop from the notification. Screen recording attached to the child PR.
-- [ ] T055 [B] [US5] Member path: `memberMayUpgrade` (`G/accounts/member-router.ts:21`) admits `/ws/voice/:id` when the "may send messages to this session" predicate holds (false for members today); voice member sockets join `startMemberSocketSweep` (`G/accounts/member-upgrade.ts:63`) and close `4401` on access loss. Update the "exactly `/ws`" doc comments and `docs/design/board-members.md`. Tests: member refused today; with the predicate stubbed true, accepted and closed on grant removal within one sweep.
+- [x] T055 [B] [US5] Member path: `memberMayUpgrade` (`G/accounts/member-router.ts:21`) admits `/ws/voice/:id` when the "may send messages to this session" predicate holds (false for members today); voice member sockets join `startMemberSocketSweep` (`G/accounts/member-upgrade.ts:63`) and close `4401` on access loss. Update the "exactly `/ws`" doc comments and `docs/design/board-members.md`. Tests: member refused today; with the predicate stubbed true, accepted and closed on grant removal within one sweep.
 
 ## Phase 8: Integration and polish (Part F)
 

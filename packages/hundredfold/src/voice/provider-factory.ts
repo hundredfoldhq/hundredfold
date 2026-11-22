@@ -30,7 +30,17 @@ const unavailableTts: TtsProvider = {
   status: () => ({ available: false, reason: REASON }),
 };
 
-export function createVoiceProviders(_config: ResolvedVoiceConfig): VoiceProviderSet {
+type ProviderFactory = (config: ResolvedVoiceConfig) => VoiceProviderSet;
+
+let override: ProviderFactory | null = null;
+
+/** Run voice on other providers (fakes in tests and in a functional run), or on the built-in ones again with null. */
+export function setVoiceProvidersForTest(factory: ProviderFactory | null): void {
+  override = factory;
+}
+
+export function createVoiceProviders(config: ResolvedVoiceConfig): VoiceProviderSet {
+  if (override) return override(config);
   return {
     stt: unavailableStt,
     tts: unavailableTts,
