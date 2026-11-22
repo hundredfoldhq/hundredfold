@@ -180,7 +180,7 @@ function ChatPage() {
   const copyFromHeader = useCallback((text: string, field: string) => {
     copyToClipboard(text, field); setShowMoreMenu(false)
   }, [copyToClipboard])
-  const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
+  const { connectionSeq, skillsVersion, subscribe } = useGateway()
   const { data: engineRegistry } = useModelRegistry() // PTY capability per engine — drives the CLI view toggle
   const chatTabs = useChatTabs()
   const removeWorkingSetPane = workingSet.remove
@@ -1123,7 +1123,7 @@ function ChatPage() {
                 onFocus={handlePaneFocus}
                 onRemove={handleRemovePane}
                 metaById={paneState.metaById} sessionTitleFor={(id) => sessionsQuery.data?.find((session) => String(session.id ?? '') === id)?.title}
-                runtime={{ portalName, subscribe, engineRegistry, connectionSeq, skillsVersion, events }}
+                runtime={{ portalName, subscribe, engineRegistry, connectionSeq, skillsVersion }}
                 sessionActions={paneSessionActions}
                 backToFor={backToFor}
                 copiedSessionId={desktopMultiPane ? copiedPaneId : null}

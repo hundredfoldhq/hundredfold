@@ -62,7 +62,7 @@ beforeEach(() => {
 })
 
 async function renderChatPane() {
-  render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />)
+  render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} />)
   await screen.findByTestId('chat-input')
 }
 

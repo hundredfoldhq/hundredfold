@@ -36,26 +36,6 @@ vi.mock("@/hooks/use-skills", () => ({
   useSkills: () => ({ data: mocks.skillsData, refetch: mocks.refetchSkills }),
 }))
 
-vi.mock("@/hooks/use-stt", () => ({
-  useStt: () => ({
-    state: "idle",
-    available: true,
-    error: null,
-    analyser: null,
-    languages: ["en"],
-    selectedLanguage: "en",
-    downloadProgress: null,
-    cycleLanguage: vi.fn(),
-    handleMicClick: vi.fn(),
-    startRecording: vi.fn(),
-    stopRecording: vi.fn(async () => null),
-    cancelRecording: vi.fn(),
-    startDownload: vi.fn(),
-    dismissDownload: vi.fn(),
-    dismissError: vi.fn(),
-  }),
-}))
-
 const CURRENT_CHAT_TOOLS = [
   "talk_draft_reply",
   "talk_replace_draft",
@@ -118,7 +98,6 @@ function renderComposer(sendResult: boolean = true) {
       onSend={onSend}
       onNewSession={vi.fn()}
       onStatusRequest={vi.fn()}
-      events={[]}
     />,
   )
   return {

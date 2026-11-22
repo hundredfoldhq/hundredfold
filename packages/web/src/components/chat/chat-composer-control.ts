@@ -42,11 +42,9 @@ interface ComposerControlOptions {
   disabledRef: RefObject<boolean>
   submittingRef: RefObject<boolean>
   valueRef: RefObject<string>
-  speechRef: RefObject<boolean>
   pendingAttachmentsRef: RefObject<MediaAttachment[]>
   sendTextRef: RefObject<(text: string, media: MediaAttachment[]) => Promise<boolean>>
   setValue: Dispatch<SetStateAction<string>>
-  setSendArmed: Dispatch<SetStateAction<boolean>>
   setShowMentions: Dispatch<SetStateAction<boolean>>
   setShowCommands: Dispatch<SetStateAction<boolean>>
 }
@@ -60,9 +58,7 @@ function visible(state: ComposerControlOptions): boolean {
 
 function replace(state: ComposerControlOptions, message: string): ComposerCommandResult {
   state.valueRef.current = message
-  state.speechRef.current = false
   state.setValue(message)
-  state.setSendArmed(false)
   state.setShowMentions(false)
   state.setShowCommands(false)
   state.textareaRef.current?.focus()

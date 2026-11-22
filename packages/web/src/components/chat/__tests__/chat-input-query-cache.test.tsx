@@ -13,27 +13,6 @@ vi.mock("@/lib/api", () => ({
   },
 }))
 
-vi.mock("@/hooks/use-stt", () => ({
-  useStt: () => ({
-    state: "idle",
-    error: null,
-    analyser: null,
-    languages: ["en"],
-    selectedLanguage: "en",
-    downloadProgress: null,
-    cycleLanguage: vi.fn(),
-    handleMicClick: vi.fn(),
-    stopRecording: vi.fn(),
-    dismissError: vi.fn(),
-    startDownload: vi.fn(),
-    dismissDownload: vi.fn(),
-  }),
-}))
-
-vi.mock("@/components/stt/whisper-download-modal", () => ({
-  WhisperDownloadModal: () => null,
-}))
-
 import { ChatInput } from "../chat-input"
 
 function renderWithCachedQueries(inputProps: { isActive?: boolean; focusTrigger?: number; selectorSlot?: React.ReactNode; statusSlot?: React.ReactNode; terminalActionsSlot?: React.ReactNode } = {}) {
@@ -70,7 +49,6 @@ function renderWithCachedQueries(inputProps: { isActive?: boolean; focusTrigger?
         onSend={vi.fn()}
         onNewSession={vi.fn()}
         onStatusRequest={vi.fn()}
-        events={[]}
         {...inputProps}
       />
     </QueryClientProvider>,
@@ -98,7 +76,7 @@ describe("ChatInput query-backed menus", () => {
     expect(classes).toEqual(expect.arrayContaining(["min-w-0", "shrink", "overflow-hidden"]))
     expect(classes).not.toContain("shrink-0")
     // Its icon floor is sized from the composer, not the viewport, and stops at a narrow composer.
-    expect(classes).toContain("@min-[240px]/composer:min-w-12")
+    expect(classes).toContain("@min-[192px]/composer:min-w-12")
   })
 
   it("drops the toolbar floors when the row also holds the CLI keys", () => {
@@ -138,7 +116,6 @@ describe("ChatInput query-backed menus", () => {
           onSend={vi.fn()}
           onNewSession={vi.fn()}
           onStatusRequest={vi.fn()}
-          events={[]}
           isActive={false}
           focusTrigger={1}
         />
@@ -152,7 +129,6 @@ describe("ChatInput query-backed menus", () => {
           onSend={vi.fn()}
           onNewSession={vi.fn()}
           onStatusRequest={vi.fn()}
-          events={[]}
           isActive
           focusTrigger={1}
         />
@@ -168,7 +144,7 @@ describe("ChatInput query-backed menus", () => {
     const view = renderWithCachedQueries({ isActive: false, focusTrigger: 1 })
     const active = (props: { isActive: boolean; focusTrigger: number }) => (
       <QueryClientProvider client={new QueryClient()}>
-        <ChatInput disabled={false} loading={false} onSend={vi.fn()} onNewSession={vi.fn()} onStatusRequest={vi.fn()} events={[]} {...props} />
+        <ChatInput disabled={false} loading={false} onSend={vi.fn()} onNewSession={vi.fn()} onStatusRequest={vi.fn()} {...props} />
       </QueryClientProvider>
     )
     view.rerender(active({ isActive: true, focusTrigger: 1 }))

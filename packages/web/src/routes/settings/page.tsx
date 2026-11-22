@@ -1374,7 +1374,7 @@ export default function SettingsPage() {
                 talkOrbOn={settings.talkOrb}
               />
 
-              {/* -- Section 9: Voice Input (STT) -- */}
+              {/* -- Section 9: Dictation (STT) -- */}
               <SttSettingsSection />
 
               {/* Edits save themselves; reloading is how the operator throws one

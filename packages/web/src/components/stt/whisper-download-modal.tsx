@@ -1,5 +1,5 @@
 /**
- * Whisper STT model-download modal — shared by /chat (ChatInput) and /talk.
+ * Whisper STT model-download modal — shared by the Notes and Todo quick-capture mics.
  *
  * Both surfaces drive the same useStt flow: when the mic is tapped and no local
  * model is installed, stt.state becomes "no-model" and this modal asks to
@@ -38,7 +38,7 @@ export function WhisperDownloadModal({ open, progress, onDownload, onCancel }: W
         </div>
 
         <h3 className="text-[length:var(--text-headline)] font-[var(--weight-bold)] text-[var(--text-primary)] mb-[var(--space-2)]">
-          Enable voice input?
+          Enable dictation?
         </h3>
 
         <p className="text-[length:var(--text-body)] text-[var(--text-secondary)] mb-[var(--space-5)] leading-[var(--leading-relaxed)]">

@@ -4,8 +4,6 @@ import { ChatInput } from '../chat-input'
 
 vi.mock('@/hooks/use-employees', () => { const data = { employees: [] }; return { useOrg: () => ({ data }) } })
 vi.mock('@/hooks/use-skills', () => { const data: never[] = []; const refetch = vi.fn(); return { useSkills: () => ({ data, refetch }) } })
-vi.mock('@/hooks/use-stt', () => ({ useStt: () => ({ state: 'idle', languages: ['en'], selectedLanguage: 'en' }) }))
-vi.mock('@/components/stt/whisper-download-modal', () => ({ WhisperDownloadModal: () => null }))
 
 const props = { disabled: false, loading: false, onNewSession: vi.fn(), onStatusRequest: vi.fn() }
 

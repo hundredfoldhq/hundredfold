@@ -107,7 +107,7 @@ function renderExisting(session: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+      <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} />
     </QueryClientProvider>,
   )
 }
@@ -122,7 +122,7 @@ function renderPane() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+      <ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} />
     </QueryClientProvider>,
   )
 }
@@ -267,7 +267,7 @@ describe('an existing chat and the Claude profile', () => {
     liveSessionState = { ...liveSessionState, session: { ...(liveSessionState.session as object), lastContextTokens: 5 } }
     view.rerender(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} />
       </QueryClientProvider>,
     )
     expect(chipLabel()).toContain('Claude · work')
@@ -294,7 +294,7 @@ describe('an existing chat and the Claude profile', () => {
     liveSessionState = { ...liveSessionState, session: { ...(liveSessionState.session as object), claudeProfile: { name: 'work', key: 'k' } } }
     view.rerender(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} />
       </QueryClientProvider>,
     )
     await waitFor(() => expect(chipLabel()).toContain('Claude · work'))

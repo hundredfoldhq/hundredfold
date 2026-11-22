@@ -79,7 +79,7 @@ Prefer `:ro` wherever the agents only need to read — that list is the blast ra
 
 ## Enabling speech-to-text
 
-`/talk`, voice notes and the dashboard microphone shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
+`/talk`, voice notes and the dictation microphones (Notes and Todo quick capture) shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
 
 Installing them inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which `docker compose up -d --build` throws away. They have to be baked into an image.
 

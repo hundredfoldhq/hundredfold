@@ -52,7 +52,7 @@ function StatusRow({ status }: { status: SttStatus }) {
         <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
           {status.available
             ? "Offline speech recognition ready"
-            : "Download a model to enable voice input"}
+            : "Download a model to enable dictation"}
         </div>
       </div>
     </div>
@@ -168,7 +168,7 @@ function LanguageEditor({ stt }: { stt: SttSection }) {
         Transcription Languages
       </div>
       <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
-        First language is the default. Add multiple to show a language picker in chat.
+        First language is the default. Add multiple to show a language picker beside the Notes microphone.
       </div>
       <LanguageChips languages={stt.status!.languages} saving={stt.saving} onRemove={stt.removeLanguage} />
       <AddLanguageRow
@@ -249,7 +249,7 @@ function useSttSection(): SttSection {
 }
 
 // ---------------------------------------------------------------------------
-// Voice Input (STT) settings section — self-contained state
+// Dictation (STT) settings section — self-contained state
 // ---------------------------------------------------------------------------
 
 export function SttSettingsSection() {
@@ -257,7 +257,7 @@ export function SttSettingsSection() {
   if (!stt.status) return null
 
   return (
-    <Section title="Voice Input">
+    <Section title="Dictation">
       <StatusRow status={stt.status} />
       <DownloadRow status={stt.status} onDownload={stt.download} />
       {stt.status.available && <LanguageEditor stt={stt} />}

@@ -4,7 +4,7 @@ import { useGateway } from "@/hooks/use-gateway"
 import { useStt, type UseSttReturn } from "@/hooks/use-stt"
 import { MicWaveform } from "@/components/chat/mic-waveform"
 import { WhisperDownloadModal } from "@/components/stt/whisper-download-modal"
-import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS } from "@/components/chat/chat-input"
+import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS } from "@/lib/mic-gesture"
 import { cn } from "@/lib/utils"
 
 /**

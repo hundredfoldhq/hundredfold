@@ -65,7 +65,7 @@ function Phone({ ignoreSelect = false, lateTitleFor }: PhoneProps) {
         viewport={{ width: 390, height: 844, mobile: true }}
         metaById={{}}
         sessionTitleFor={() => undefined}
-        runtime={{ portalName: 'Gateway', subscribe, events: [] }}
+        runtime={{ portalName: 'Gateway', subscribe }}
         scrollTopFor={() => undefined}
         viewModeFor={() => 'chat'}
         focusTriggerFor={() => 0}

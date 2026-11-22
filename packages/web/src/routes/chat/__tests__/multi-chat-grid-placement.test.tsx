@@ -49,7 +49,7 @@ describe('chat grid placement', () => {
         viewport={{ width: 1440, height: 900 }}
         metaById={{}}
         sessionTitleFor={() => undefined}
-        runtime={{ portalName: 'Gateway', subscribe: () => noop, events: [] }}
+        runtime={{ portalName: 'Gateway', subscribe: () => noop }}
         scrollTopFor={() => undefined}
         viewModeFor={() => 'chat'}
         focusTriggerFor={() => 0}

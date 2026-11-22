@@ -38,7 +38,7 @@ vi.mock('@/components/chat/session-status/session-status-cluster', () => ({
 
 function renderPane(sessionId: string | null) {
   return render(
-    <ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />,
+    <ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={() => () => {}} />,
   )
 }
 
@@ -84,7 +84,7 @@ describe('ChatPane session status cluster', () => {
   it('starts a fresh meter when the pane switches to another session', () => {
     mounts.length = 0
     const pane = (id: string) => (
-      <ChatPane sessionId={id} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+      <ChatPane sessionId={id} isActive onFocus={() => {}} subscribe={() => () => {}} />
     )
     const { rerender } = render(pane('s1'))
     rerender(pane('s2'))

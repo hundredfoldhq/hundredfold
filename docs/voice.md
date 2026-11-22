@@ -2,6 +2,8 @@
 
 Voice mode is a spoken conversation with a chat. You talk, the gateway turns your speech into text and sends it to the session as an ordinary message, and the session's reply is turned back into speech, sentence by sentence, while it is still being written. Every spoken turn is stored and shown in the chat like a typed one, marked as spoken.
 
+Voice mode replaces the old hold-to-talk microphone that sat in the chat composer: the composer has no dictation mic any more, and speaking to a chat is voice mode. The dictation microphones in Notes and Todo quick capture are separate and unchanged (they use the Whisper model under Settings, Dictation).
+
 Voice mode is **off by default**. With no `voice:` block, or `enabled: false`, the chat shows no voice control, the gateway accepts no voice connection and contacts no speech provider.
 
 The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.

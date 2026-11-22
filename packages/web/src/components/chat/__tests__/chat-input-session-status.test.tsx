@@ -14,26 +14,6 @@ vi.mock("@/hooks/use-skills", () => ({
   useSkills: () => ({ data: skillsData, refetch: refetchSkills }),
 }))
 
-vi.mock("@/hooks/use-stt", () => ({
-  useStt: () => ({
-    state: "idle",
-    available: true,
-    error: null,
-    analyser: null,
-    languages: ["en"],
-    selectedLanguage: "en",
-    downloadProgress: null,
-    cycleLanguage: vi.fn(),
-    handleMicClick: vi.fn(),
-    startRecording: vi.fn(),
-    stopRecording: vi.fn(async () => null),
-    cancelRecording: vi.fn(),
-    startDownload: vi.fn(),
-    dismissDownload: vi.fn(),
-    dismissError: vi.fn(),
-  }),
-}))
-
 import { ChatInput } from "../chat-input"
 
 function renderInput(extra: { sessionStatusSlot?: React.ReactNode; onCardPointerDown?: () => void } = {}) {
@@ -44,7 +24,6 @@ function renderInput(extra: { sessionStatusSlot?: React.ReactNode; onCardPointer
       onSend={vi.fn()}
       onNewSession={vi.fn()}
       onStatusRequest={vi.fn()}
-      events={[]}
       selectorSlot={<button type="button">model chip</button>}
       sessionStatusSlot={extra.sessionStatusSlot}
     />,

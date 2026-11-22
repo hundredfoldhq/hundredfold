@@ -27,7 +27,7 @@ vi.mock('@/components/chat/session-status/session-status-cluster', () => ({ Sess
 const reload = vi.fn()
 
 function renderPane(sessionId: string | null) {
-  return render(<ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />)
+  return render(<ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={() => () => {}} />)
 }
 
 describe('ChatPane when the conversation could not be loaded', () => {

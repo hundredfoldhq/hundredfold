@@ -41,7 +41,7 @@ test('mobile targets stay reachable without overlap at narrow and enlarged text 
       await page.goto(`/?session=${session}`)
       await expect(page.locator('#chat-textarea')).toBeEditable()
       await page.evaluate(({ theme }) => { document.documentElement.dataset.theme = theme; document.documentElement.style.fontSize = '160%' }, { theme })
-      const targets = page.locator('[data-mobile-working-set-chip], button[aria-label="Attach file"], button[aria-label="Voice input"], button[aria-label="Send message"], button[aria-label^="Model and effort"]')
+      const targets = page.locator('[data-mobile-working-set-chip], button[aria-label="Attach file"], button[aria-label="Send message"], button[aria-label^="Model and effort"]')
       for (const target of await targets.all()) {
         const box = await target.boundingBox()
         expect(box).not.toBeNull()

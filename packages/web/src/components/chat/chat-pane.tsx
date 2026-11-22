@@ -45,7 +45,7 @@ import { Slot } from '@/contrib/slot'
 import { AREAS } from '@/contrib/types'
 import type { EnginesResponse } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
-import type { GatewayEvent, GatewayEventListener } from '@hundredfold/gateway-events'
+import type { GatewayEventListener } from '@hundredfold/gateway-events'
 import { PRODUCT_NAME } from "@/lib/brand"
 
 // The live read pipeline (load/WS/reconnect/watchdog) now lives in
@@ -78,8 +78,6 @@ interface ChatPaneProps {
   connectionSeq?: number
   /** Gateway skills version */
   skillsVersion?: number
-  /** Gateway events array */
-  events: GatewayEvent[]
   /** View mode: chat or cli transcript */
   viewMode?: 'chat' | 'cli'
   /** Incrementing counter that triggers input focus */
@@ -119,7 +117,6 @@ export function ChatPane({
   engineRegistry,
   connectionSeq,
   skillsVersion,
-  events,
   viewMode = 'chat',
   focusTrigger,
   pendingUserMessage,
@@ -375,7 +372,7 @@ export function ChatPane({
   }, [sessionId])
 
   const handleSend = useCallback(
-    async (message: string, media?: MediaAttachment[], interrupt?: boolean, speech?: boolean) => {
+    async (message: string, media?: MediaAttachment[], interrupt?: boolean) => {
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
@@ -411,7 +408,6 @@ export function ChatPane({
             profile: effectiveProfile,
             model: selector.model,
             effortLevel: selector.effortLevel,
-            speech,
           })
           Object.assign(params, newChatFallbackParams(newChatFallbackRef.current))
           if (viewMode === 'cli' && (!selector.engine || engineRegistry?.engines?.[selector.engine]?.supportsPty)) (params as Record<string, unknown>).mode = 'interactive'
@@ -426,7 +422,7 @@ export function ChatPane({
           // CLI view → route to the interactive PTY engine so the user sees the prompt
           // get injected into the live xterm + claude's streaming response.
           const mode = viewMode === 'cli' && engineRegistry?.engines?.[String(currentSession?.engine ?? '')]?.supportsPty ? 'interactive' : undefined
-          sessionQueue.adopt(userMsg.id, await api.sendMessage(sid, { message, delivery: interrupt === undefined ? undefined : interrupt ? 'now' : 'queue', attachments: attachmentIds, mode, speech: speech || undefined }))
+          sessionQueue.adopt(userMsg.id, await api.sendMessage(sid, { message, delivery: interrupt === undefined ? undefined : interrupt ? 'now' : 'queue', attachments: attachmentIds, mode }))
           onRefresh?.()
         }
         keepPaneTab(sid)
@@ -617,7 +613,6 @@ export function ChatPane({
         onNewSession={handleNewSession}
         onStatusRequest={handleStatusRequest}
         skillsVersion={skillsVersion}
-        events={events}
         droppedFiles={fileDrop.droppedFiles}
         onDroppedFilesConsumed={fileDrop.clearDroppedFiles}
         focusTrigger={focusTrigger}

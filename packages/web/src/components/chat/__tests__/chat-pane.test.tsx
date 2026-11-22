@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import type React from 'react'
 import { ChatPane } from '../chat-pane'
-import type { GatewayEvent } from '@hundredfold/gateway-events'
 import { CHAT_SESSION_DND_MIME } from '@/routes/chat/chat-session-dnd'
 
 let featuresState = {
@@ -128,7 +127,6 @@ function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) 
       isActive
       onFocus={() => {}}
       subscribe={() => () => {}}
-      events={[]}
       {...props}
     />,
   )
@@ -237,7 +235,6 @@ describe('ChatPane', () => {
         isActive
         onFocus={() => {}}
         subscribe={() => () => {}}
-        events={[]}
         multiPane={false}
         paneTitle="Warm title"
         paneEmployee="fallback-employee"
@@ -251,7 +248,7 @@ describe('ChatPane', () => {
     const outerDrop = vi.fn()
     const { container } = render(
       <div onDrop={outerDrop}>
-        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} />
+        <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} />
       </div>,
     )
     const pane = container.querySelector<HTMLElement>('[data-chat-pane-session="s1"]')!
@@ -327,7 +324,6 @@ describe('ChatPane', () => {
       isActive: true,
       onFocus: () => {},
       subscribe: () => () => {},
-      events: [] as GatewayEvent[],
       onContentReady,
     }
     const { rerender } = render(<ChatPane {...props} />)

@@ -72,12 +72,11 @@ vi.mock('@/components/chat/cli-keybar', () => ({ CliKeybar: () => null }))
 vi.mock('@/components/chat/background-activity-status', () => ({ BackgroundActivityStatus: () => null }))
 
 const subscribe = () => () => {}
-const events: [] = []
 const spinner = () => screen.queryByRole('status', { name: 'Loading chat' })
 
 function renderPane(sessionId: string | null) {
   return render(
-    <ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={subscribe} events={events} />,
+    <ChatPane sessionId={sessionId} isActive onFocus={() => {}} subscribe={subscribe} />,
   )
 }
 
@@ -94,7 +93,7 @@ describe('ChatPane while the session id lands', () => {
     // The id arrives on a pane that was never re-keyed, so props move alone.
     liveSessionState = liveSession({ messages: [userMessage], loading: true })
     rerender(
-      <ChatPane sessionId="s-new" isActive onFocus={() => {}} subscribe={subscribe} events={events} />,
+      <ChatPane sessionId="s-new" isActive onFocus={() => {}} subscribe={subscribe} />,
     )
 
     expect(screen.getByTestId('messages')).toBe(messagesBefore)

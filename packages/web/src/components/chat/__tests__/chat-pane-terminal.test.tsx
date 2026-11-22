@@ -29,7 +29,7 @@ vi.mock('@/components/chat/terminal-pane-body', () => ({
 }))
 
 function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
-  return render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} {...props} />)
+  return render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} {...props} />)
 }
 
 describe('ChatPane for a terminal session', () => {
