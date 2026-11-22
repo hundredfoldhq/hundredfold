@@ -403,6 +403,8 @@ export interface ApiContext {
   gatewayBootId?: string;
   getConfig: () => HundredfoldConfig;
   emit: GatewayEmit;
+  /** Whether voice mode was set up at boot (the voice runtime exists); absent where voice is not wired. */
+  voiceRunning?: () => boolean;
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   /** Re-read config.yaml into memory immediately (same as the file-watcher does,
@@ -1311,7 +1313,7 @@ export async function handleApiRequest(
       return;
     }
 
-    if (await handleVoiceApi(req, res, { method, pathname, url }, { getConfig: context.getConfig, emit: context.emit })) return;
+    if (await handleVoiceApi(req, res, { method, pathname, url }, { getConfig: context.getConfig, emit: context.emit, ...(context.voiceRunning ? { voiceRunning: context.voiceRunning } : {}) })) return;
 
     if (method === "GET" && pathname === "/api/callback-deliveries/dead-letter") {
       if (!requireCallbackRecoveryAuthority(req, res, context)) return;

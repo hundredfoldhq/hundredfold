@@ -59,6 +59,25 @@ describe("the /ws/voice/:id upgrade", () => {
     expect((await open(r.url(session.id))).kind).toBe("destroyed");
   });
 
+  it("voice running, then disabled in config without a restart: the config answer, a new upgrade and a live attachment all follow", async () => {
+    const { voiceConfigResponse } = await import("../../gateway/voice-api.js");
+    const r = await start();
+    const session = newSession();
+    const live = keep(await open(r.url(session.id)));
+    const got = collect(live);
+    live.send(hello());
+    await waitFor(() => got.text.some((f) => f.type === "ready"));
+    expect(voiceConfigResponse(r.config.current, { voiceRunning: () => true })).toMatchObject({ enabled: true });
+    r.config.current = { ...r.config.current, voice: { enabled: false } };
+    // The gateway tells voice about a reload through its emit tee.
+    r.runtime.wrapEmit((() => undefined) as never)("config:reloaded" as never, {} as never);
+    expect(await got.closed).toMatchObject({ reason: "disabled" });
+    expect(got.text.filter((f) => f.type === "detached")).toEqual([{ type: "detached", reason: "disabled" }]);
+    expect(r.runtime.hub.size()).toBe(0);
+    expect(voiceConfigResponse(r.config.current, { voiceRunning: () => true })).toEqual({ enabled: false });
+    expect((await open(r.url(newSession().id))).kind).toBe("destroyed");
+  });
+
   it("an unrelated path is not taken", async () => {
     const r = await start();
     expect((await open(`ws://127.0.0.1:${r.port}/ws/voice`)).kind).toBe("destroyed");

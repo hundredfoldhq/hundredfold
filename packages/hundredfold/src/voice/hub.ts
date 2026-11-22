@@ -88,9 +88,10 @@ export class VoiceHub {
     this.closeProviders();
   }
 
-  /** Access to a session was lost: that attachment ends. */
-  revoke(sessionId: string): void {
-    this.attachments.get(sessionId)?.detach("access_lost");
+  /** A principal lost access to a session: their attachment there ends, with `access_lost`. Another principal's is left alone. */
+  revoke(sessionId: string, principal: VoicePrincipal): void {
+    const attachment = this.attachments.get(sessionId);
+    if (attachment && samePrincipal(attachment.principal, principal)) attachment.detach("access_lost");
   }
 
   shutdown(): void {

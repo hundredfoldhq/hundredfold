@@ -935,6 +935,7 @@ export async function startGateway(
     runtimePort: config.gateway.port || 7777,
     getConfig: () => currentConfig,
     emit,
+    voiceRunning: () => voice !== null,
     connectors: connectorMap,
     reloadConnectorInstances,
     hookRegistry,

@@ -147,13 +147,28 @@ describe("attachment lifecycle and limits", () => {
   it("losing access ends it with 4401; shutdown ends it with 1001", () => {
     const h = createHarness();
     const a = h.connect({ sessionId: "a" });
-    h.hub.revoke("a");
+    h.hub.revoke("a", OPERATOR);
     expect(a.socket.ofType("detached")).toEqual([{ type: "detached", reason: "access_lost" }]);
     expect(a.socket.closed?.code).toBe(VOICE_CLOSE.accessLost);
     const b = h.connect({ sessionId: "b" });
     h.hub.shutdown();
     expect(b.socket.ofType("detached")).toEqual([{ type: "detached", reason: "shutdown" }]);
     expect(b.socket.closed?.code).toBe(1001);
+  });
+
+  it("revoke ends only the attachment whose principal lost access", () => {
+    const h = createHarness();
+    const pat = h.connect({ sessionId: "m", principal: member("pat") });
+    h.hub.revoke("m", member("sam")); // another member
+    h.hub.revoke("m", OPERATOR);
+    h.hub.revoke("other-session", member("pat"));
+    expect(pat.socket.ofType("detached")).toEqual([]);
+    expect(pat.socket.closed).toBeNull();
+    expect(h.hub.size()).toBe(1);
+    h.hub.revoke("m", member("pat"));
+    expect(pat.socket.ofType("detached")).toEqual([{ type: "detached", reason: "access_lost" }]);
+    expect(pat.socket.closed?.code).toBe(VOICE_CLOSE.accessLost);
+    expect(h.hub.size()).toBe(0);
   });
 
   it("a provider that is down is reported as speech_unavailable with a reason that carries no address, and the socket closes", () => {

@@ -14,6 +14,7 @@ type Api = typeof import("../api.js");
 let api: Api;
 let registry: typeof import("../../sessions/registry.js");
 let voice: unknown;
+let voiceRunning: (() => boolean) | undefined;
 
 function makeRes() {
   const chunks: Buffer[] = [];
@@ -31,6 +32,7 @@ const apiCtx = {
   startTime: Date.now(),
   gatewayAuthToken: "test-token",
   emit: () => undefined,
+  get voiceRunning() { return voiceRunning; },
   sessionManager: { getEngines: () => new Map(), getEngine: () => undefined, getQueue: () => ({}) },
 } as unknown as import("../api.js").ApiContext;
 
@@ -59,6 +61,15 @@ describe("voice routes", () => {
   it("answers {enabled:false} to the operator while voice is off", async () => {
     voice = undefined;
     expect(await request("GET", "/api/voice/config", operator)).toEqual({ status: 200, body: { enabled: false } });
+  });
+
+  it("with voice on in the config but no voice runtime at boot, says to restart (available false, with a reason)", async () => {
+    voice = { enabled: true };
+    voiceRunning = () => false;
+    const answered = await request("GET", "/api/voice/config", operator);
+    voiceRunning = undefined;
+    expect(answered.status).toBe(200);
+    expect(answered.body).toMatchObject({ enabled: true, available: false, reason: "Restart the gateway to turn voice on" });
   });
 
   it("answers a session's read of the config too: it says nothing about any session", async () => {

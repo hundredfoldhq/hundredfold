@@ -21,7 +21,15 @@ export const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable"
 export interface VoiceApiDeps extends ProviderDeps {
   /** Broadcast a gateway event (`voice:install`). */
   emit?: GatewayEmit;
+  /**
+   * Whether the gateway built its voice runtime at boot. Voice is set up only then, so a config that turned it on
+   * since is not running. Absent (a bare context) means no claim is made either way.
+   */
+  voiceRunning?: () => boolean;
 }
+
+/** What `GET /api/voice/config` says while the config has voice on and the gateway has no voice runtime. */
+export const VOICE_RESTART_REASON = "Restart the gateway to turn voice on";
 
 export interface VoiceConfigResponse {
   enabled: boolean;
@@ -69,10 +77,11 @@ export function voiceConfigResponse(config: { voice?: unknown }, deps: VoiceApiD
   const sttState = withPythonHint(stt.status(), resolved, local);
   const ttsState = ttsStatus(resolved, withPythonHint(tts.status(), resolved, local), voices);
   const reason = [sttState, ttsState].find((state) => !state.available)?.reason ?? null;
+  const needsRestart = deps.voiceRunning?.() === false;
   return {
     enabled: true,
-    available: reason === null,
-    reason,
+    available: !needsRestart && reason === null,
+    reason: needsRestart ? VOICE_RESTART_REASON : reason,
     mode: resolved.mode,
     language: resolved.language,
     stt: { provider: stt.id, partials: stt.partials, status: sttState },

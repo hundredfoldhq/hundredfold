@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BARGE_IN_GRACE_MS } from "../barge-in.js";
 import { interruptedNote } from "../envelope.js";
-import { createHarness, SESSION, type Harness } from "./hub-harness.js";
+import { createHarness, OPERATOR, SESSION, type Harness } from "./hub-harness.js";
 import { settle, type FakeEngineOptions } from "./fakes.js";
 import type { VoiceAttachment } from "../attachment.js";
 
@@ -439,7 +439,7 @@ describe("a message is not delivered to a session that voice has left", () => {
     });
     const { attachment } = h.connect();
     await h.say(attachment, "what is two plus two");
-    h.hub.revoke(SESSION);
+    h.hub.revoke(SESSION, OPERATOR);
     finish();
     await settle();
     expect(h.delivered).toEqual([]);

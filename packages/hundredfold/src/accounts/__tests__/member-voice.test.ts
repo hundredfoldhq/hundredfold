@@ -162,6 +162,34 @@ describe("a member's voice upgrade", () => {
     expect(h.rt.memberSockets.size()).toBe(0);
   });
 
+  it("the sweep tells the client `detached access_lost` first, then closes 4401, and only that member's attachment goes", async () => {
+    const { ws } = (await connect(`/ws/voice/${sessionId}`, pat.cookie)) as { ws: WebSocket };
+    const events: string[] = [];
+    ws.on("message", (raw: Buffer, isBinary: boolean) => {
+      if (isBinary) return;
+      const frame = JSON.parse(raw.toString()) as { type: string; reason?: string };
+      if (frame.type === "detached") events.push(`detached:${frame.reason}`);
+    });
+    ws.on("close", (code) => events.push(`close:${code}`));
+    const closed = new Promise<void>((resolve) => ws.on("close", () => resolve()));
+    ws.send(JSON.stringify({ type: "hello", protocol: 1, mode: "hands-free", client: "web" }));
+    for (let i = 0; i < 300 && runtime.hub.get(sessionId)?.principal === undefined; i += 1) await new Promise((r) => setTimeout(r, 10));
+    // Another session of the same member is unaffected: only this attachment's principal is revoked.
+    const registry = await import("../../sessions/registry.js");
+    const otherId = registry.createSession({ engine: "codex", source: "web", sourceRef: `web:member-voice-other-${Date.now()}` }).id;
+    const operatorSide = { sent: [] as string[], closed: null as number | null };
+    runtime.hub.attach(
+      { readyState: 1, send: (data: string | Buffer) => { operatorSide.sent.push(String(data)); }, close: (code?: number) => { operatorSide.closed = code ?? null; } } as never,
+      { sessionId: otherId, principal: { kind: "operator" } },
+    );
+    allowed = false;
+    expect(h.rt.memberSockets.sweep()).toBe(1);
+    await closed;
+    expect(events).toEqual(["detached:access_lost", `close:${MEMBER_SOCKET_CLOSE_UNAUTHORIZED}`]);
+    expect(runtime.hub.get(otherId)).toBeDefined();
+    expect(operatorSide.closed).toBeNull();
+  });
+
   it("a revoked sign-in closes the socket even while the permission still holds", async () => {
     const first = (await connect(`/ws/voice/${sessionId}`, pat.cookie)) as { ws: WebSocket };
     const closed = new Promise<number>((resolve) => first.ws.on("close", (code) => resolve(code)));
