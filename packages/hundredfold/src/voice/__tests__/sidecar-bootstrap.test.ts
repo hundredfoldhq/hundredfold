@@ -55,6 +55,14 @@ describe("paths and environment", () => {
     expect(helloModels(paths, "cpu", "parakeet-unified-en-0.6b").tts).toEqual(helloModels(paths, "cpu").tts);
   });
 
+  it("gives the streaming model its own directory and tells the sidecar to keep per-utterance state, for it alone", () => {
+    const paths = voicePaths(home);
+    const streaming = helloModels(paths, "gpu", "parakeet-unified-en-0.6b-streaming").stt;
+    expect(streaming).toEqual({ name: "nemo-conformer-rnnt", path: path.join(paths.root, "parakeet-unified-en-0.6b-streaming-fp32"), quantization: null, streaming: true });
+    expect(helloModels(paths, "cpu", "parakeet-unified-en-0.6b-streaming").stt).toEqual({ name: "nemo-conformer-rnnt", path: path.join(paths.root, "parakeet-unified-en-0.6b-streaming-int8"), quantization: "int8", streaming: true });
+    for (const model of ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b"] as const) expect(helloModels(paths, "gpu", model).stt).not.toHaveProperty("streaming");
+  });
+
   it("gives the sidecar a few names, never the gateway's keys", () => {
     const env = sidecarEnv({ PATH: "/bin", HTTPS_PROXY: "http://proxy:3128", OPENAI_API_KEY: "sk-secret", HUNDREDFOLD_TOKEN: "t", HOME: "/home/x" });
     expect(env.PATH).toBe("/bin");
@@ -83,12 +91,37 @@ describe("sttDownload", () => {
 
   it("pins every file to a commit and a SHA-256, never a branch", () => {
     for (const device of ["gpu", "cpu"] as const) {
-      for (const file of sttDownload("parakeet-unified-en-0.6b", device)!.files) {
+      for (const file of [...sttDownload("parakeet-unified-en-0.6b", device)!.files, ...sttDownload("parakeet-unified-en-0.6b-streaming", device)!.files]) {
         expect(file.revision, file.remote).toMatch(/^[0-9a-f]{40}$/);
         expect(file.sha256, file.remote).toMatch(/^[0-9a-f]{64}$/);
         expect(file.repo, file.remote).toMatch(/^[\w.-]+\/[\w.-]+$/);
       }
     }
+  });
+
+  it.each<[VoiceDevice, string[]]>([
+    ["gpu", ["encoder-model.onnx", "encoder.weights", "decoder_joint-model.onnx", "decoder_joint.onnx.data", "vocab.txt"]],
+    ["cpu", ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"]],
+  ])("names the files for the streaming model on the %s: its own encoder graph over the offline model's decoder, joint and vocabulary", (device, locals) => {
+    const streaming = sttDownload("parakeet-unified-en-0.6b-streaming", device)!;
+    const offline = sttDownload("parakeet-unified-en-0.6b", device)!;
+    expect(streaming.files.map((file) => file.local)).toEqual(locals);
+    expect(streaming.config).toEqual(offline.config);
+    const shared = (file: { local: string }) => file.local.startsWith("decoder_joint") || file.local === "vocab.txt";
+    expect(streaming.files.filter(shared)).toEqual(offline.files.filter(shared));
+    const encoder = streaming.files[0]!;
+    expect(encoder.sha256).not.toBe(offline.files[0]!.sha256);
+    expect(encoder.repo).toContain("streaming");
+  });
+
+  it("lets the streaming model share the offline model's weights on the GPU, where the bytes are identical", () => {
+    const streaming = sttDownload("parakeet-unified-en-0.6b-streaming", "gpu")!.files;
+    const offline = sttDownload("parakeet-unified-en-0.6b", "gpu")!.files;
+    const weights = streaming.find((file) => file.local === "encoder.weights")!;
+    const offlineWeights = offline.find((file) => file.local === "encoder.onnx.data")!;
+    expect(weights.sha256).toBe(offlineWeights.sha256);
+    expect(weights.reuse).toBe(`../parakeet-unified-en-0.6b-fp32/${offlineWeights.local}`);
+    expect(sttDownload("parakeet-unified-en-0.6b-streaming", "cpu")!.files.some((file) => file.reuse)).toBe(false);
   });
 
   it("does not share files between the two devices' variants except the vocabulary", () => {
