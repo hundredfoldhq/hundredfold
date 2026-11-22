@@ -99,4 +99,52 @@ describe("a turn that ends after a mid-turn re-read", () => {
     await act(async () => { emit("session:completed", { sessionId: "s1", result: "All good, nothing to fix." }); await Promise.resolve() })
     expect(result.current.messages.map((m) => m.content)).toEqual(["do it", "Checking first.", "Used Bash", "All good, nothing to fix."])
   })
+
+  it("drops the streamed prefix when only a sub-agent's tool call was stored after it", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await settle()
+    act(() => { emit("session:started", { sessionId: "s1" }) })
+    getSession.mockResolvedValue({
+      status: "running",
+      messages: [
+        { id: "u1", role: "user", content: "q?", timestamp: 1 },
+        { id: "p1", role: "assistant", content: "Hello world, this is", timestamp: 2, partial: true },
+        { id: "p2", role: "assistant", content: "Using Task", timestamp: 3, partial: true, toolCall: "Task", meta: { sidechain: true } },
+      ],
+    })
+    await act(async () => { await result.current.reload("s1") })
+    await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world, this is the full answer." }); await Promise.resolve() })
+    expect(result.current.messages.map((m) => m.content)).toEqual(["q?", "Used Task", "Hello world, this is the full answer."])
+  })
+
+  it("keeps the final reply when a mid-turn re-read answers after the turn completed", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await settle()
+    act(() => { emit("session:started", { sessionId: "s1" }) })
+    act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "Hello world, this is" }) })
+
+    // The re-read is sent mid-turn but its answer is slow.
+    let answer: (value: unknown) => void = () => {}
+    getSession.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    let pending: Promise<void> = Promise.resolve()
+    act(() => { pending = result.current.reload("s1") })
+
+    await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world, this is the full answer." }); await Promise.resolve() })
+    await act(async () => {
+      answer({
+        status: "running",
+        messages: [
+          { id: "u1", role: "user", content: "q?", timestamp: 1 },
+          { id: "p1", role: "assistant", content: "Hello world, this is", timestamp: 2, partial: true },
+        ],
+      })
+      await pending
+    })
+    expect(result.current.messages.map((m) => m.content)).toContain("Hello world, this is the full answer.")
+    expect(result.current.messages.map((m) => m.content)).not.toEqual(["q?", "Hello world, this is"])
+  })
 })

@@ -38,15 +38,23 @@ export function reconcileCompletedTurnMessages(args: {
 
 /**
  * The stored copy of the answer still being streamed, when a re-read of the chat landed mid-turn.
- * It is the last partial prose row with nothing after it (no tool call, block or later prose), and
- * the final reply is that text grown to its end, so it was only ever a prefix of the reply: the
- * gateway drops it when the turn settles, and so must the live view. Prose that a tool call
- * followed is interim evidence and is kept.
+ * It is the last partial prose row with nothing after it (no main-thread tool call, block or later
+ * prose), and the final reply is that text grown to its end, so it was only ever a prefix of the
+ * reply: the gateway drops it when the turn settles, and so must the live view. A sub-agent's tool
+ * call does not end the main text block, so rows after the prose that are sidechain tool calls do
+ * not count. Prose that a main-thread tool call followed is interim evidence and is kept.
  */
 function streamedTailIndex(rows: Message[], exactResult: string): number {
-  const last = rows.length - 1
+  if (!exactResult) return -1
+  let last = rows.length - 1
+  while (last >= 0 && isSidechainToolRow(rows[last])) last -= 1
   const row = rows[last]
-  return exactResult && row && isPlainPartialProse(row) && exactResult.startsWith(row.content.trim()) && row.content.trim() ? last : -1
+  const text = row?.content.trim()
+  return row && text && isPlainPartialProse(row) && exactResult.startsWith(text) ? last : -1
+}
+
+function isSidechainToolRow(row: Message): boolean {
+  return Boolean(row.toolCall) && row.meta?.sidechain === true
 }
 
 function isPlainPartialProse(row: Message): boolean {

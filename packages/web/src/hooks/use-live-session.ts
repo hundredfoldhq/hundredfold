@@ -561,6 +561,8 @@ export function useLiveSession(
   useEffect(() => { loadErrorRef.current = loadError }, [loadError])
   const sessionIdRef = useRef(sessionId)
   const justCompletedAtRef = useRef<number>(0)
+  // Counts turn completions, so a read that started before one can tell that its answer is older.
+  const completionCountRef = useRef(0)
   const loadTokenRef = useRef(0)
   const messagesRef = useRef<Message[]>(messages)
   const hasOlderMessagesRef = useRef(hasOlderMessages)
@@ -967,6 +969,7 @@ export function useLiveSession(
         setLiveContextTokens(null)
         intermediateStartRef.current = -1
         justCompletedAtRef.current = Date.now()
+        completionCountRef.current += 1
 
         const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
         if (completedSessionId && !readOnlyRef.current) {
@@ -1077,6 +1080,7 @@ export function useLiveSession(
   // Load session data
   const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean }) => {
     const myToken = ++loadTokenRef.current
+    const completionsAtStart = completionCountRef.current
     if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     // Whether the failure came from the fetch (transient, retried) or from
     // processing what it returned (deterministic, so not retried).
@@ -1090,6 +1094,11 @@ export function useLiveSession(
       setHydrating(false)
       setLoadError(null)
       loadRetryAttemptRef.current = 0
+      // A read that began mid-turn can answer after the turn completed. Its mid-turn rows (partial
+      // prose, tool calls) are older than the final reply the completion already put on screen,
+      // and applying them would replace that reply with the truncated copy. The stream and the
+      // next read carry the rest.
+      if (turnInFlight(session) && completionCountRef.current !== completionsAtStart) return
       setCurrentSession(session)
       setHasOlderMessages(readHasOlderMessages(session))
       setOlderMessagesError(null)
