@@ -64,7 +64,9 @@ export class VoiceHub {
   attach(socket: VoiceSocket, request: AttachRequest): VoiceAttachment | null {
     const config = this.deps.config();
     if (!config) {
-      socket.close(VOICE_CLOSE.sessionGone, "disabled");
+      // Voice was switched off between the upgrade and here: say so as an attached client would hear it, not as a missing chat.
+      if (socket.readyState === 1) socket.send(JSON.stringify({ type: "detached", reason: "disabled" }));
+      socket.close(1000, "disabled");
       return null;
     }
     const existing = this.attachments.get(request.sessionId);

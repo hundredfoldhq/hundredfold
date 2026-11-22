@@ -83,6 +83,10 @@ export function defaultBrowserDeps(): BrowserVoiceDeps {
   }
 }
 
+function stopTracks(stream: MediaStream): void {
+  for (const track of stream.getTracks()) track.stop()
+}
+
 function microphoneMessage(error: unknown): string {
   const name = error instanceof DOMException ? error.name : ""
   if (name === "NotAllowedError" || name === "SecurityError") return "Microphone permission was denied."
@@ -105,6 +109,8 @@ export class BrowserVoiceSession implements VoiceController {
   private detector: OnsetDetector | null = null
   private removeMediaSession: (() => void) | null = null
   private closing = false
+  /** Bumped on every start and every teardown; an await that resumes under a different value belongs to a run that is over. */
+  private generation = 0
   private talking = false
   private pendingResumeMs: number | null = null
   private session: string | null
@@ -125,6 +131,7 @@ export class BrowserVoiceSession implements VoiceController {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
     this.store.dispatch({ type: "connecting", mode: this.options.mode })
     this.closing = false
+    const generation = ++this.generation
     // The three calls iOS requires inside the tap, before any await.
     const ctx = this.deps.createContext()
     void ctx.resume().catch(() => undefined)
@@ -132,30 +139,30 @@ export class BrowserVoiceSession implements VoiceController {
     this.ctx = ctx
     if (this.session !== null) {
       this.openSocket(this.session)
-      return this.attachMicrophone(microphone)
+      return this.attachMicrophone(microphone, generation)
     }
-    return this.createThenAttach(microphone)
+    return this.createThenAttach(microphone, generation)
   }
 
   /** A new chat: the session is created once, now that the microphone request is in flight, and the socket opens on it. */
-  private async createThenAttach(microphone: Promise<MediaStream>): Promise<void> {
+  private async createThenAttach(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     const starter = this.options.sessionId as VoiceSessionStarter
     let id: string
     try {
       id = await starter.create()
     } catch (error) {
       this.releaseMicrophone(microphone)
-      this.failStart(error instanceof Error && error.message ? error.message : "Couldn't start a chat for voice mode.")
+      if (generation === this.generation) this.failStart(error instanceof Error && error.message ? error.message : "Couldn't start a chat for voice mode.")
       return
     }
-    if (this.closing || !this.ctx) {
+    if (generation !== this.generation || !this.ctx) {
       this.releaseMicrophone(microphone)
       starter.discard(id)
       return
     }
     this.session = id
     this.openSocket(id)
-    return this.attachMicrophone(microphone)
+    return this.attachMicrophone(microphone, generation)
   }
 
   stop(): void {
@@ -207,7 +214,7 @@ export class BrowserVoiceSession implements VoiceController {
       this.store.dispatch({ type: "connecting", mode: this.options.mode })
       this.openSocket(this.session as string)
     }
-    return microphone ? this.replaceMicrophone(microphone) : Promise.resolve()
+    return microphone ? this.replaceMicrophone(microphone, this.generation) : Promise.resolve()
   }
 
   // ── socket ────────────────────────────────────────────────────────────────
@@ -262,7 +269,8 @@ export class BrowserVoiceSession implements VoiceController {
   private onClose(close: VoiceSocketClose): void {
     this.socket = null
     if (this.closing) return
-    const suspended = this.watcher?.socketClosed() ?? false
+    // Only an established socket can be suspended. One that never reached `ready` (a failed reconnect) failed on its own.
+    const suspended = this.store.snapshot.status !== "connecting" && (this.watcher?.socketClosed() ?? false)
     this.store.dispatch({ type: "closed", code: close.code, reason: close.reason, requested: false })
     if (!suspended && this.store.snapshot.status === "off") this.teardown()
   }
@@ -271,36 +279,46 @@ export class BrowserVoiceSession implements VoiceController {
 
   /** A microphone request nobody will use: the stream, once granted, is stopped. */
   private releaseMicrophone(microphone: Promise<MediaStream>): void {
-    void microphone.then((stream) => { for (const track of stream.getTracks()) track.stop() }, () => undefined)
+    void microphone.then(stopTracks, () => undefined)
   }
 
-  private async attachMicrophone(microphone: Promise<MediaStream>): Promise<void> {
+  private async attachMicrophone(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     try {
       const stream = await microphone
-      if (this.closing || !this.ctx) { for (const track of stream.getTracks()) track.stop(); return }
-      await this.beginCapture(stream)
+      await this.beginCapture(stream, generation)
     } catch (error) {
-      this.failStart(microphoneMessage(error))
+      // A run that was stopped (or replaced by a new start) has nobody left to tell.
+      if (generation === this.generation) this.failStart(microphoneMessage(error))
     }
   }
 
-  private async replaceMicrophone(microphone: Promise<MediaStream>): Promise<void> {
+  private async replaceMicrophone(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     try {
       this.capture?.stop()
-      await this.beginCapture(await microphone)
+      const stream = await microphone
+      await this.beginCapture(stream, generation)
     } catch (error) {
-      this.failStart(microphoneMessage(error))
+      if (generation === this.generation) this.failStart(microphoneMessage(error))
     }
   }
 
-  private async beginCapture(stream: MediaStream): Promise<void> {
+  /**
+   * Every await that can outlive the run re-checks the generation: a stop or a
+   * newer start while the prompt or the worklet was pending must leave no live track.
+   */
+  private async beginCapture(stream: MediaStream, generation: number): Promise<void> {
     const ctx = this.ctx
-    if (!ctx) return
+    if (generation !== this.generation || !ctx) { stopTracks(stream); return }
     this.player ??= this.deps.createPlayer(ctx, (segmentId) => this.socket?.send({ type: "played", segmentId }))
-    const capture = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
-    // A stop that landed while the capture was starting found nothing to stop: release it here.
-    if (this.closing) { capture.stop(); return }
-    this.capture = capture
+    let handle: VoiceCaptureHandle
+    try {
+      handle = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
+    } catch (error) {
+      stopTracks(stream)
+      throw error
+    }
+    if (generation !== this.generation) { handle.stop(); stopTracks(stream); return }
+    this.capture = handle
     this.watchForSuspension(ctx)
   }
 
@@ -367,6 +385,7 @@ export class BrowserVoiceSession implements VoiceController {
   }
 
   private teardown(): void {
+    this.generation++
     this.talking = false
     this.pendingResumeMs = null
     this.capture?.stop()

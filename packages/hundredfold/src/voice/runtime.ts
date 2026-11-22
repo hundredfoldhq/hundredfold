@@ -18,6 +18,7 @@ import type { ApiContext } from "../gateway/api.js";
 import { cleanUpDeletedSession } from "../gateway/session-cleanup.js";
 import { isEmptySpokenStart } from "../sessions/awaiting-first-message.js";
 import { deleteSession, getSession, externalRepliesSince, latestAssistantMessageId, mergeMessageMeta } from "../sessions/registry.js";
+import { voiceKeyEnvironment } from "../shared/child-env.js";
 import { resolveEnvVar } from "../shared/env-ref.js";
 import { logger } from "../shared/logger.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
@@ -97,7 +98,7 @@ export function memoisedConfig(getConfig: () => HundredfoldConfig): () => Resolv
 /** What the voice block's `apiKey` settings hold now: the variables they name, or (a mistake) the key written in. */
 function configuredKeys(config: HundredfoldConfig): string[] {
   return [config.voice?.stt?.apiKey, config.voice?.tts?.apiKey]
-    .map((ref) => resolveEnvVar(ref))
+    .map((ref) => resolveEnvVar(ref, voiceKeyEnvironment()))
     .filter((value): value is string => typeof value === "string" && value.length >= 6);
 }
 

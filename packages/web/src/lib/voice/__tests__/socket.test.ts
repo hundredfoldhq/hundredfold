@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { VoiceServerFrame } from "@hundredfold/gateway-events"
 import { GATEWAY_SOCKET_CLOSED, GATEWAY_SOCKET_OPEN, installGatewayTransport, type GatewaySocketConnection, type GatewayTransport } from "@/lib/gateway-transport"
 import { parseAudioFrame, parseServerFrame, VoiceSocket } from "../socket"
@@ -128,5 +128,111 @@ describe("VoiceSocket", () => {
     socket.close(1000, "bye")
     expect(handlers.onClose).toHaveBeenCalledWith({ code: 1000, reason: "bye" })
     expect(socket.isOpen).toBe(false)
+  })
+
+  it("accepts keepalive frames without passing them on", () => {
+    expect(parseServerFrame('{"type":"keepalive"}')?.type).toBe("keepalive")
+    const { connection, handlers } = setup()
+    connection.open()
+    connection.receive(JSON.stringify({ type: "keepalive" }))
+    expect(handlers.onFrame).not.toHaveBeenCalled()
+  })
+})
+
+const READY_WITH = (keepaliveMs: unknown) => JSON.stringify({ type: "ready", protocol: 1, sessionId: "s", ...(keepaliveMs === null ? {} : { keepaliveMs }) })
+
+/** A connection that dies silently: it stays "open", never closes by itself and ignores close(). */
+class HalfOpenConnection extends FakeConnection {
+  closeCalls: Array<[number | undefined, string | undefined]> = []
+  override close(code?: number, reason?: string) { this.closeCalls.push([code, reason]) }
+}
+
+function watched(keepaliveMs: number | null | string = 10_000) {
+  vi.useFakeTimers()
+  const connection = new HalfOpenConnection()
+  const handlers = { onFrame: vi.fn(), onAudio: vi.fn(), onClose: vi.fn() }
+  const socket = VoiceSocket.open("s", handlers, { mode: "hands-free", open: () => connection })
+  connection.open()
+  connection.receive(READY_WITH(keepaliveMs))
+  return { connection, handlers, socket }
+}
+
+describe("VoiceSocket keepalive watchdog", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it("declares the connection lost after 2.5 intervals of silence, with no close event from the peer", () => {
+    const { connection, handlers, socket } = watched()
+    vi.advanceTimersByTime(24_000)
+    expect(handlers.onClose).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(6_000)
+    expect(handlers.onClose).toHaveBeenCalledTimes(1)
+    expect(handlers.onClose).toHaveBeenCalledWith({ code: 1006, reason: "keepalive timeout" })
+    expect(connection.closeCalls).toHaveLength(1)
+    expect(socket.isOpen).toBe(false)
+    expect(socket.send({ type: "bye" })).toBe(false)
+    vi.advanceTimersByTime(10 * 60_000)
+    expect(handlers.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("is kept alive by frames of any kind: keepalive, text and audio", () => {
+    const { connection, handlers } = watched()
+    for (let i = 0; i < 12; i++) {
+      vi.advanceTimersByTime(10_000)
+      connection.receive(i % 3 === 0 ? JSON.stringify({ type: "keepalive" }) : i % 3 === 1 ? JSON.stringify({ type: "vad", speaking: false }) : audioFrame(1, i, [1, 2]))
+    }
+    expect(handlers.onClose).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(30_000)
+    expect(handlers.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("arms no watchdog when ready carries no keepaliveMs (an older gateway)", () => {
+    const { handlers } = watched(null)
+    vi.advanceTimersByTime(60 * 60_000)
+    expect(handlers.onClose).not.toHaveBeenCalled()
+  })
+
+  it("ignores an advertised interval too small to trust, or not a number", () => {
+    for (const bad of [0, -5, 10, "10000"]) {
+      const { handlers } = watched(bad)
+      vi.advanceTimersByTime(60_000)
+      expect(handlers.onClose).not.toHaveBeenCalled()
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not judge on a stale clock: a tick that fires far too late restarts the window", () => {
+    const { handlers } = watched()
+    vi.advanceTimersByTime(10_000)
+    // The page is suspended for a minute: the next tick fires once, long after it was due.
+    vi.setSystemTime(Date.now() + 60_000)
+    vi.advanceTimersByTime(5_000)
+    expect(handlers.onClose).not.toHaveBeenCalled()
+    // Still silent after a whole fresh window: now it is lost.
+    vi.advanceTimersByTime(30_000)
+    expect(handlers.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("counts frames queued behind a late tick before declaring loss", () => {
+    const { connection, handlers } = watched()
+    vi.advanceTimersByTime(10_000)
+    vi.setSystemTime(Date.now() + 60_000)
+    connection.receive(JSON.stringify({ type: "keepalive" }))
+    vi.advanceTimersByTime(20_000)
+    expect(handlers.onClose).not.toHaveBeenCalled()
+  })
+
+  it("stops watching once closed on request or by the peer", () => {
+    const first = watched()
+    first.socket.close(1000, "bye")
+    vi.advanceTimersByTime(5 * 60_000)
+    expect(first.handlers.onClose).toHaveBeenCalledTimes(1)
+    expect(first.handlers.onClose).toHaveBeenCalledWith({ code: 1000, reason: "bye" })
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+    const second = watched()
+    second.connection.drop(1006)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(5 * 60_000)
+    expect(second.handlers.onClose).toHaveBeenCalledTimes(1)
   })
 })
