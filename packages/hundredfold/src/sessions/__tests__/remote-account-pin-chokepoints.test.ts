@@ -175,6 +175,21 @@ describe("the walk off a pinned session", () => {
     expect(chain!.links.filter((link) => link.account === SPARE_KEY)).toHaveLength(1);
   });
 
+  it("keeps a swap onto the employee's login on the host's default profile through a model change, though it has no directory", () => {
+    const plain = employee({ remoteClaudeConfigDir: undefined });
+    const defaultKey = remoteClaudeAccountKey(HOST, undefined);
+    const standing = pinned(PIN, {
+      engine: "claude",
+      fallbackTarget: { engine: "claude", model: "sonnet" } as never,
+      transportMeta: { remoteAccountPin: PIN, engineOverride: { substituteAccount: defaultKey, substituteConfigDir: null, originalAccount: SPARE_KEY } } as never,
+    });
+    const remote = { ...HOST, remoteCwd: "/srv/work/dev" };
+    const choice = chooseSubstituteOrReason({
+      config, engines: new Set(["claude", "opencode"]), session: standing, employee: plain, account: SPARE_KEY, remote, remoteTarget: remote,
+    } as unknown as ChooseSubstituteInput);
+    expect(choice).toMatchObject({ choice: { engine: "claude", model: "sonnet", accounts: { original: SPARE_KEY, substitute: defaultKey, substituteConfigDir: null } } });
+  });
+
   it("returns a swap onto the pinned account to the pinned directory when the pinned account is the target", () => {
     // A session standing on its employee's login (an override) whose own account is the pinned one: the way back is the pin's directory.
     const standing = pinned(PIN, { transportMeta: { remoteAccountPin: PIN, engineOverride: { substituteAccount: OWN_KEY, substituteConfigDir: HOME_DIR, originalAccount: SPARE_KEY } } as never });

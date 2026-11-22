@@ -50,6 +50,8 @@ export interface SwitchTargetView {
   effortLevel: string | null;
   /** The account balancer chose the profile (an engine-only switch onto Claude): applying the switch picks again, then. */
   balanced?: boolean;
+  /** A remote session pinned to another account than its employee's login, which this target keeps: the apply names no profile, so the pin is not read as a request for the own login. */
+  keepsRemotePin?: boolean;
 }
 
 /** What a caller asks for. `profile` null or "" is the session's own login; every field is optional. */
@@ -331,6 +333,13 @@ export function resolveSwitchTarget(config: HundredfoldConfig, session: Session,
   return finishSwitch(config, { session, own, engine: named.engine, dir: profile.dir }, { request, balanced, caller: opts });
 }
 
+/** The target, marked when applying it picks again (a balanced target) or keeps the remote pin the session holds (it names no profile then). */
+function markedTarget(target: SwitchTargetView, session: Session, how: { balanced: boolean; remoteAccountPin: RemoteAccountPin | null | undefined }): SwitchTargetView {
+  if (how.balanced) return { ...target, balanced: true };
+  const keepsPin = how.remoteAccountPin === undefined && target.engine === "claude" && readRemoteAccountPin(session.transportMeta) !== undefined;
+  return keepsPin ? { ...target, keepsRemotePin: true } : target;
+}
+
 /** The target built and judged for the caller: what the balancer's picks write, the refusals a session asking meets, and whether it is where the session already runs. */
 function finishSwitch(
   config: HundredfoldConfig,
@@ -343,7 +352,7 @@ function finishSwitch(
   const after = sessionAfterPin(session, remoteAccountPin);
   const built = buildTarget(config, session, own, { engine, dir, after }, request);
   if (!built.ok) return built;
-  const target = balanced ? { ...built.target, balanced: true } : built.target;
+  const target = markedTarget(built.target, session, { balanced: Boolean(balanced), remoteAccountPin });
   const refused = asked.caller.caller === "session" ? selfRefusal(config, { session, after }, own, target, asked.caller.now ?? new Date()) : undefined;
   if (refused) return refused;
   return {

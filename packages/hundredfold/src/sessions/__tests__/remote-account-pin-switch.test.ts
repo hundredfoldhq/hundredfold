@@ -186,6 +186,24 @@ describe("the operator's engine-only switch (patchSessionTarget), remote", () =>
     expect(sessionRemoteTarget(orgRegistry.orgRegistry(config).get("remote-dev"), remoteScopeFor(config.remote, row), row)).toMatchObject({ remoteClaudeConfigDir: HOME_DIR });
   });
 
+  it("leaves the profile column as the row has it, a stale directory included, whichever account it picks", () => {
+    for (const [ref, used] of [["web:s1", { [OWN_KEY]: 90, [SPARE_KEY]: 10 }], ["web:s2", { [OWN_KEY]: 5, [SPARE_KEY]: 95 }]] as const) {
+      writeUsage(used);
+      const stale = codexSession(ref, { claudeConfigDir: "/srv/operator/.claude-local" });
+      expect(patch(stale, { engine: "claude" })).toMatchObject({ kind: "switched" });
+      expect(registry.getSession(stale.id)!.claudeConfigDir).toBe("/srv/operator/.claude-local");
+    }
+  });
+
+  it("moves a pinned session's slot to its employee's when the operator names the own login", () => {
+    const first = codexSession("web:p4");
+    patch(first, { engine: "claude" });
+    expect(patch(registry.getSession(first.id)!, { profile: "" })).toMatchObject({ kind: "switched" });
+    const row = registry.getSession(first.id)!;
+    expect(readRemoteAccountPin(row.transportMeta)).toBeUndefined();
+    expect(threadSlot(row, "claude")).toBe(OWN_KEY);
+  });
+
   it("does not charge a refused switch", () => {
     const session = codexSession("web:p3");
     expect(patchSessionTarget({ session, config, emit: emit as never, body: { engine: "claude" }, busy: true })).toMatchObject({ kind: "refused" });
@@ -215,6 +233,29 @@ describe("a remote session's own switch (compact_session), remote", () => {
     expect(row.claudeConfigDir).toBeNull();
   });
 
+  it("keeps the pin through a model-only switch: the session stays on the account it was balanced onto, in its slot and its directory", () => {
+    const first = codexSession("web:c3");
+    patchSessionTarget({ session: first, config, emit: emit as never, body: { engine: "claude" }, busy: false });
+    const session = registry.getSession(first.id)!;
+    expect(readRemoteAccountPin(session.transportMeta)).toEqual(PIN);
+    expect(applied(session, { model: "sonnet" })).toMatchObject({ applied: true });
+    const row = registry.getSession(session.id)!;
+    expect(row.model).toBe("sonnet");
+    expect(readRemoteAccountPin(row.transportMeta)).toEqual(PIN);
+    expect(threadSlot(row, "claude")).toBe(SPARE_KEY);
+    expect(sessionRemoteTarget(orgRegistry.orgRegistry(config).get("remote-dev"), remoteScopeFor(config.remote, row), row)).toMatchObject({ remoteClaudeConfigDir: SPARE_DIR });
+  });
+
+  it("still removes the pin when the switch names the employee's own login", () => {
+    const first = codexSession("web:c4");
+    patchSessionTarget({ session: first, config, emit: emit as never, body: { engine: "claude" }, busy: false });
+    const session = registry.getSession(first.id)!;
+    expect(applied(session, { profile: "" })).toMatchObject({ applied: true });
+    const row = registry.getSession(session.id)!;
+    expect(readRemoteAccountPin(row.transportMeta)).toBeUndefined();
+    expect(threadSlot(row, "claude")).toBe(OWN_KEY);
+  });
+
   it("pins the account it picks", () => {
     const session = codexSession("web:c2");
     expect(applied(session, { engine: "claude" })).toMatchObject({ applied: true });
@@ -238,6 +279,14 @@ describe("a new session of a remote employee through the API's selection", () =>
     // Both spent: it is pinned where it reopens first, and the reroute moves it to the next link with the pin as the account it returns to.
     const spent = validateNewSessionSelection(config, {}, { employee: "remote-dev" });
     expect(spent).toMatchObject({ ok: true, accountPick: { picked: SPARE_KEY, reason: "all-exhausted" }, remoteAccountPin: PIN, engine: "opencode" });
+    expect(spent.reroute).toMatchObject({ from: "claude" });
+  });
+
+  it("reroutes the same way when both accounts are spent and its employee's own login reopens first", () => {
+    recordEngineUnavailable(OWN_KEY, "usage limit", Math.floor(Date.now() / 1000) + 7200, new Date(), { host: "build-host" });
+    recordEngineUnavailable(SPARE_KEY, "usage limit", Math.floor(Date.now() / 1000) + 10800, new Date(), { host: "build-host" });
+    const spent = validateNewSessionSelection(config, {}, { employee: "remote-dev" });
+    expect(spent).toMatchObject({ ok: true, accountPick: { picked: OWN_KEY, reason: "all-exhausted" }, engine: "opencode" });
     expect(spent.reroute).toMatchObject({ from: "claude" });
   });
 });

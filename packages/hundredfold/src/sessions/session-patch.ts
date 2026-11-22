@@ -63,7 +63,7 @@ export interface SessionPatchContext {
  * pinned to a remote account, whose own account and chain are the host's and cannot be read as a gateway session's.
  */
 function rerouteScope(employee: Employee | undefined, pin: AccountPin): { scoped: boolean; remote: boolean; host?: string } {
-  return pin.remoteAccountPin && isRemoteTarget(employee) ? { scoped: false, remote: true, host: sshDestination(employee) } : { scoped: false, remote: false };
+  return (pin.remoteAccountPin || pin.accountPick) && isRemoteTarget(employee) ? { scoped: false, remote: true, host: sshDestination(employee) } : { scoped: false, remote: false };
 }
 
 export function validateNewSessionSelection(

@@ -43,7 +43,7 @@ function stillOn(own: SwitchTargetView, from: SwitchTargetView): boolean {
 /** The request to re-resolve for the target the session asked for: the same engine, profile and model, as the request spelt them. */
 function requestFor(to: SwitchTargetView): SwitchRequest {
   // A balanced target names no profile: the balancer picks again when the switch is applied.
-  const profile = to.engine !== "claude" || to.balanced ? undefined : (to.claudeConfigDir === null ? "" : (to.profile ?? undefined));
+  const profile = to.engine !== "claude" || to.balanced || to.keepsRemotePin ? undefined : (to.claudeConfigDir === null ? "" : (to.profile ?? undefined));
   return { engine: to.engine, profile, model: to.model ?? undefined, effortLevel: to.effortLevel ?? undefined };
 }
 

@@ -52,10 +52,10 @@ export function accountOverride(session: SessionView): AccountOverride | undefin
   };
 }
 
-/** The standing override when it moves a session onto a remote account: the one account swap a remote session can hold. */
+/** The standing override when it moves a session onto a remote account (its directory may be null: the employee's own login on the host's default profile): the one account swap a remote session can hold. */
 export function remoteAccountOverride(session: SessionView): AccountOverride | undefined {
   const override = accountOverride(session);
-  return override && isRemoteClaudeAccount(override.substituteAccount) && override.substituteConfigDir ? override : undefined;
+  return override && isRemoteClaudeAccount(override.substituteAccount) ? override : undefined;
 }
 
 /**
