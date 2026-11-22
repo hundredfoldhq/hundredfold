@@ -3,7 +3,7 @@ import type { AccountPick, ResolvedFallbackLink } from "../../shared/fallback-ch
 import type { SessionFallbackView } from "../../shared/session-fallback-config.js";
 import { withoutUsage } from "../session-fallback-api.js";
 
-/** What a department-scoped caller is shown of a balanced session: the pick and the group's state, never the usage numbers behind them. */
+/** What a department-scoped caller is shown of a balanced session: the pick and the group's state, never the usage numbers (headroom, weight, share) behind them. */
 
 const headroom = { account: "claude:a", label: "claude · a", state: "fresh" as const, headroomPercent: 40, tightest: { window: "5h", usedPercent: 60, resetsAt: "2026-11-20T15:00:00.000Z" }, readingAt: "2026-11-20T11:59:00.000Z", weight: 40, sharePercent: 60 };
 const pick: AccountPick = { at: "2026-11-20T12:00:00.000Z", trigger: "start", source: "engine", groupIndex: 0, picked: "claude:a", reason: "weighted", candidates: [headroom, { ...headroom, account: "claude" }] };
@@ -21,19 +21,21 @@ function view(links: ResolvedFallbackLink[], withPick = true): SessionFallbackVi
 }
 
 describe("withoutUsage", () => {
-  it("strips the headroom numbers from the pick's candidates and keeps its reason, choice, weights and shares", () => {
+  it("strips the headroom numbers, weight and share from the pick's candidates and keeps its reason, choice, account, label and state", () => {
     const { pick: shown } = withoutUsage(view([link({})])).chain;
     expect(shown).toMatchObject({ picked: "claude:a", reason: "weighted", trigger: "start", source: "engine", groupIndex: 0 });
     for (const candidate of shown!.candidates) {
-      expect(Object.keys(candidate).sort()).toEqual(["account", "label", "sharePercent", "state", "weight"]);
+      // A fresh account's weight is its headroom and its share is that over the group's: neither is shown.
+      expect(Object.keys(candidate).sort()).toEqual(["account", "label", "state"]);
     }
-    expect(shown!.candidates[0]).toMatchObject({ state: "fresh", weight: 40, sharePercent: 60 });
+    expect(shown!.candidates[0]).toEqual({ account: "claude:a", label: "claude · a", state: "fresh" });
+    expect(JSON.stringify(shown)).not.toMatch(/"(weight|sharePercent|headroomPercent|usedPercent|readingAt|tightest)"/);
   });
 
   it("strips the group member's ranking numbers and the link's usedPercent and window, keeping state, reset and the group", () => {
     const [shown] = withoutUsage(view([link({ health: { state: "ok", until: "2026-11-20T15:00:00.000Z", usedPercent: 60, window: "5h" }, group: { index: 0, written, headroom } })])).chain.links;
     expect(shown!.health).toEqual({ state: "ok", until: "2026-11-20T15:00:00.000Z" });
-    expect(shown!.group).toEqual({ index: 0, written, headroom: { account: "claude:a", label: "claude · a", state: "fresh", weight: 40, sharePercent: 60 } });
+    expect(shown!.group).toEqual({ index: 0, written, headroom: { account: "claude:a", label: "claude · a", state: "fresh" } });
   });
 
   it("leaves a view with no pick and links with no group or health as they are", () => {

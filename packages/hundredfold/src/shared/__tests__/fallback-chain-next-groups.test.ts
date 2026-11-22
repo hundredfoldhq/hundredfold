@@ -103,3 +103,25 @@ describe("effectivePosition with a group", () => {
     expect(effectivePosition(moved, { position: 2, tried: [own.key, "claude|b|"] })).toBe(3);
   });
 });
+
+describe("a run that recorded the key of the link it is on", () => {
+  // The session stands on b (index 1 when the hop was made). A limit then marks b exhausted and the next resolution ranks it last.
+  const reordered = [own, member("a"), member("c"), member("b"), plain("codex")];
+
+  it("is found by that key, not by the index that names another member by now", () => {
+    expect(effectivePosition(reordered, { position: 1, at: "claude|b|", tried: [own.key] })).toBe(3);
+  });
+
+  it("walks on to the group's untried members before the rest of the chain", () => {
+    const position = effectivePosition(reordered, { position: 1, at: "claude|b|", tried: [own.key] });
+    expect(nextKey(reordered, position, ["claude|b|"])).toBe("claude|a|");
+  });
+
+  it("without the key the stale index is taken for the link now standing there (a run written before the key)", () => {
+    expect(effectivePosition(reordered, { position: 1, tried: [own.key] })).toBe(1);
+  });
+
+  it("falls back to the index when the recorded link is gone from the chain", () => {
+    expect(effectivePosition(reordered, { position: 3, at: "claude|gone|", tried: [own.key, "claude|b|"] })).toBe(3);
+  });
+});

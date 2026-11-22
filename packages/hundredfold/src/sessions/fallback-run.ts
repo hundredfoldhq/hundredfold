@@ -20,8 +20,10 @@ export const MAX_FALLBACK_HOPS = 20;
 
 export interface FallbackRunState {
   source: FallbackChainSource;
-  /** Index into the resolved chain of the target the session is on. */
+  /** Index into the resolved chain of the target the session is on, as of the resolution that wrote it. */
   position: number;
+  /** Key of that target. A group's members are ordered by headroom each time the chain is resolved, so the index can name another member by the next hop; the key says which one the session is on. Absent on a run written before groups. */
+  at?: string;
   /** Keys of the targets tried in this run, the session's own target first. */
   tried: string[];
   startedAt: string;
@@ -50,6 +52,7 @@ export function readFallbackRun(meta: Meta | null | undefined): FallbackRunState
   return {
     source: run.source as FallbackChainSource,
     position: Math.max(0, Math.trunc(run.position)),
+    ...(typeof run.at === "string" ? { at: run.at } : {}),
     tried: run.tried.filter((key): key is string => typeof key === "string"),
     startedAt: typeof run.startedAt === "string" ? run.startedAt : new Date(0).toISOString(),
   };

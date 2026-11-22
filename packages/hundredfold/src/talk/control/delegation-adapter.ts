@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation } from "../../sessions/account-pin.js";
 import type { ApiContext } from "../../gateway/api.js";
 import { dispatchWebSessionRun } from "../../gateway/web-session-dispatch.js";
 import { claimIncomingTurn } from "../../sessions/incoming-turn.js";
@@ -19,6 +20,7 @@ import { getWorkItem, linkSession } from "../../work-items/store.js";
 import { resolveDelegationLinkRole } from "../../work-items/link-role.js";
 import { liveEmployeeSession } from "../../work-items/employee-sessions.js";
 import { recordLandedBrief, recordNewDelegateSession } from "../../work-items/employee-session-delegation.js";
+import { orgRegistry } from "../../gateway/org-registry.js";
 import { delegationLoopError, relinkRole } from "../../gateway/delegation-handoff.js";
 import type { TalkControlAdapterContext, TalkControlExecution } from "./types.js";
 
@@ -67,11 +69,27 @@ function validateReplay(session: Session, input: TalkDelegationInput): void {
  */
 function delegateSession(input: TalkDelegationInput, key: string, existing: Session | undefined, todoStatus: string): Session {
   const reused = existing ? undefined : liveEmployeeSession(input.todoId, input.employee.name);
+  const session = existing ?? reused ?? startDelegateSession(input, key);
+  if (reused) {
+    const loop = delegationLoopError(input.todoId, reused, input.sourceSessionId);
+    if (loop) throw new Error(loop);
+  }
+  // Handing an `in_review` Todo to someone is handing it to a reviewer.
+  linkSession(input.todoId, session.id, null, relinkRole(session, resolveDelegationLinkRole(undefined, todoStatus)), { via: "delegation" });
+  if (!existing && !reused) recordNewDelegateSession(input.todoId, input.employee.name, session.id, input.sourceSessionId);
+  return session;
+}
+
+/** A new session for the delegate, on the account the balancer picked for it, charged once the row exists. Only a session that is really created is picked for: a replay or a live session is not a start. */
+function startDelegateSession(input: TalkDelegationInput, key: string): Session {
   const config = input.context.getConfig();
   const parent = getSession(input.sourceSessionId);
   const fallbackMode = childFallbackMode(config, parent);
-  const session = existing ?? reused ?? createSession({
+  const pin = pinAccountAtCreation({ config, employee: orgRegistry(config).get(input.employee.name), engine: input.employee.engine, model: input.employee.model });
+  const session = createSession({
     engine: input.employee.engine,
+    ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.accountPick ? { transportMeta: metaWithAccountPick(undefined, pin) } : {}),
     source: "web",
     sourceRef: key,
     connector: "web",
@@ -86,13 +104,7 @@ function delegateSession(input: TalkDelegationInput, key: string, existing: Sess
     prompt: input.prompt,
     title: `Delegate ${input.todoId}`,
   });
-  if (reused) {
-    const loop = delegationLoopError(input.todoId, reused, input.sourceSessionId);
-    if (loop) throw new Error(loop);
-  }
-  // Handing an `in_review` Todo to someone is handing it to a reviewer.
-  linkSession(input.todoId, session.id, null, relinkRole(session, resolveDelegationLinkRole(undefined, todoStatus)), { via: "delegation" });
-  if (!existing && !reused) recordNewDelegateSession(input.todoId, input.employee.name, session.id, input.sourceSessionId);
+  chargeAccountStart(pin);
   return session;
 }
 

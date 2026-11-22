@@ -30,9 +30,9 @@ export function parseFallbackModePatch(value: unknown): { ok: true; mode?: Sessi
   return value === null ? { ok: true, mode: null } : parseFallbackModeParam(value);
 }
 
-/** The usage numbers of a ranking entry: what a scoped caller is not shown. */
+/** The usage numbers of a ranking entry: what a scoped caller is not shown. A fresh account's weight is its headroom and its share is that over the group's, so both go with it. */
 function withoutHeadroomNumbers<T extends Partial<AccountHeadroom>>(headroom: T): T {
-  const { headroomPercent: _percent, tightest: _tightest, readingAt: _at, ...rest } = headroom;
+  const { headroomPercent: _percent, tightest: _tightest, readingAt: _at, weight: _weight, sharePercent: _share, ...rest } = headroom;
   return rest as T;
 }
 
