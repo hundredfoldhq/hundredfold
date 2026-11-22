@@ -9,6 +9,7 @@
  */
 import path from "node:path";
 import { HUNDREDFOLD_HOME } from "./paths.js";
+import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
 
 export interface VoiceSttConfig {
@@ -269,7 +270,8 @@ function languageProblems(language: unknown, providers: unknown[]): string[] {
 
 /**
  * Problems with the `voice` block, each naming its key. Voice stays off while any
- * exists. `home` is the instance home `promptFile` must stay inside.
+ * exists; they are not part of `validateConfigShape`, so a bad block never stops the
+ * gateway starting or a reload (see `voiceOffReason`). `home` is the instance home `promptFile` must stay inside.
  */
 export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_HOME): string[] {
   if (voice === undefined || voice === null) return [];
@@ -291,6 +293,49 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...limitsProblems(parts.limits.value), ...oneOf("voice.local.device", parts.local.value?.device, DEVICES),
     ...Object.values(parts).flatMap((part) => part.problems),
   ];
+}
+
+/** Whether the config asks for voice: anything but an object whose `enabled` is absent or `false`. A block that asks for it may still be invalid. */
+export function asksForVoice(voice: unknown): boolean {
+  return !(isObject(voice) && (voice.enabled === undefined || voice.enabled === false));
+}
+
+/**
+ * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
+ * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
+ * key or a URL's user name: the validator's messages do not echo them.
+ */
+export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
+  const problems = voiceConfigProblems(voice, home);
+  if (problems.length === 0) return null;
+  if (!asksForVoice(voice)) return null;
+  return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
+}
+
+/**
+ * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while the config does not
+ * ask for voice, so a variable a disabled block names stays where it is. A block that asks for voice but is invalid
+ * (`enabled: "yes"`) still withholds them: voice is off for that reason, not because nobody wanted it.
+ */
+export function voiceKeyEnvNames(voice: unknown): string[] {
+  if (!isObject(voice) || !asksForVoice(voice)) return [];
+  const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
+  return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
+}
+
+let lastWarned = "";
+
+/**
+ * Log the voice block's problems when they change. They do not fail the config (FR-025): voice stays off
+ * and the rest of the gateway carries on. `loadConfig` is polled, so one bad key must not flood the log.
+ */
+export function warnAboutVoiceProblems(voice: unknown): void {
+  const reason = voiceOffReason(voice);
+  const key = reason ?? "";
+  if (key === lastWarned) return;
+  lastWarned = key;
+  if (reason) logger.warn(`config voice: ${reason}`);
 }
 
 const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
