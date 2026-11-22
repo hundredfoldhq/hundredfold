@@ -181,6 +181,26 @@ describe("NativeVoiceSession native_state events", () => {
     expect(rig.value.voicePtt).toHaveBeenCalledTimes(2)
   })
 
+  it.each([
+    ["a shell stop", { type: "native_state", state: "stopped", reason: "notification" }],
+    ["a gateway detach", { type: "detached", reason: "taken_over" }],
+  ])("%s while the button is held does not swallow the next run's first press", async (_name, ending) => {
+    const rig = bridge()
+    const session = new NativeVoiceSession(rig.value, { sessionId: "s", mode: "push-to-talk", origin: ORIGIN })
+    await session.start()
+    rig.send(READY)
+    session.pttDown()
+    rig.send(ending)
+    expect(voicePhase(session.getSnapshot())).toBe("off")
+    ;(rig.value.voicePtt as ReturnType<typeof vi.fn>).mockClear()
+    await session.start()
+    rig.send(READY)
+    session.pttDown()
+    expect(rig.value.voicePtt).toHaveBeenCalledWith({ down: true })
+    session.pttUp()
+    expect(rig.value.voicePtt).toHaveBeenLastCalledWith({ down: false })
+  })
+
   it("is not a gateway frame: an unknown native_state value is ignored", async () => {
     const { session, send } = await running()
     send({ type: "native_state", state: "exploded" })

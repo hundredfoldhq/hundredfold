@@ -1,4 +1,4 @@
-import type { VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
+import type { VoiceMode } from "@hundredfold/gateway-events"
 import type { HundredfoldNativeBridge, NativeStateEvent } from "@/platform/native-bridge"
 import { parseServerFrame } from "./socket"
 import { VoiceStore, type VoiceController } from "./controller"
@@ -76,6 +76,7 @@ export class NativeVoiceSession implements VoiceController {
   start(): Promise<void> {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
     this.stopping = false
+    this.talking = false
     this.store.dispatch({ type: "connecting", mode: this.options.mode })
     // The shell command is invoked inside the tap; its result is awaited afterwards.
     const started = this.bridge.voiceStart(
@@ -128,11 +129,10 @@ export class NativeVoiceSession implements VoiceController {
   private onForwarded(raw: unknown): void {
     if (this.stopping) return
     const native = asNativeState(raw)
-    if (native) {
-      this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason })
-      return
-    }
-    const frame: VoiceServerFrame | null = typeof raw === "string" ? parseServerFrame(raw) : parseServerFrame(JSON.stringify(raw))
-    if (frame) this.store.dispatch({ type: "frame", frame, now: this.now() })
+    const frame = native ? null : parseServerFrame(typeof raw === "string" ? raw : JSON.stringify(raw))
+    if (native) this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason })
+    else if (frame) this.store.dispatch({ type: "frame", frame, now: this.now() })
+    // A run the shell or gateway ended while the button was held leaves nothing held.
+    if (this.store.snapshot.status === "off") this.talking = false
   }
 }
