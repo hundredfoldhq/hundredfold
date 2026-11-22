@@ -2721,9 +2721,13 @@ export async function handleApiRequest(
       } catch (err) {
         if (err instanceof TransitionError) {
           if (err.code === "not-found") return notFound(res);
-          const human = err.code === "self-review-banned"
-            ? `${err.message} — use the human review surface / a reviewer session to mark done`
-            : `${err.message} — use the human surface for this transition if it is intentional`;
+          // An undeclared edge is no one's to override, so it names its rule and nothing more; the
+          // other refusals say what the human surface can do about them.
+          const human = err.code === "illegal-edge"
+            ? err.message
+            : err.code === "self-review-banned"
+              ? `${err.message} — use the human review surface / a reviewer session to mark done`
+              : `${err.message} — use the human surface for this transition if it is intentional`;
           const statusCode = err.code === "illegal-edge" ? 400 : 403;
           return json(res, { error: human }, statusCode);
         }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { legalTargets, canDropOn, closeGateCounts } from "../legal-targets"
+import { legalTargets, canDropOn, closeGateCounts, unreachableRule } from "../legal-targets"
 import type { WorkItemStatusWire, WorkItemTreeNodeWire } from "../api"
 
 /* Slice 6 — the client legality map. The full matrix is pinned here; the
@@ -18,9 +18,11 @@ describe("legalTargets — manual operator moves, ungated", () => {
     in_review: ["executing", "done", "blocked", "cancelled"],
     // Unblock resumes through backlog, or straight back to executing.
     blocked: ["backlog", "executing", "in_review", "done", "cancelled"],
-    // Sticky terminals exit on the human surface only — which this is.
-    done: ["backlog"],
-    cancelled: ["backlog"],
+    // Sticky terminals exit on the human surface only — which this is. A
+    // closed Todo reopens to to-do or straight back to review; sending it back
+    // to work (executing) goes through review.
+    done: ["backlog", "in_review"],
+    cancelled: ["backlog", "in_review"],
   }
 
   for (const [from, expected] of Object.entries(MATRIX) as [WorkItemStatusWire, WorkItemStatusWire[]][]) {
@@ -38,6 +40,36 @@ describe("legalTargets — manual operator moves, ungated", () => {
     }
     expect(statuses(legalTargets("in_review"))).not.toContain("backlog")
     expect(statuses(legalTargets("done"))).not.toContain("executing")
+    expect(statuses(legalTargets("cancelled"))).not.toContain("executing")
+    expect(statuses(legalTargets("done"))).not.toContain("blocked")
+  })
+
+  it("lets a closed Todo drop straight back onto review, and nowhere else but to-do", () => {
+    for (const from of ["done", "cancelled"] as const) {
+      expect(canDropOn(from, "in_review")).toBe(true)
+      expect(canDropOn(from, "backlog")).toBe(true)
+      for (const to of ["executing", "blocked", "done", "cancelled"] as const) {
+        expect(canDropOn(from, to)).toBe(false)
+      }
+    }
+  })
+})
+
+describe("unreachableRule — the named rule behind an omitted move", () => {
+  it("names the reopen rule for a closed Todo", () => {
+    for (const from of ["done", "cancelled"] as const) {
+      const rule = unreachableRule(from)
+      expect(rule).toContain("A closed Todo only reopens to backlog, in_review")
+      expect(rule).toContain("send it back from there")
+    }
+  })
+
+  it("names the declared exits for in_review", () => {
+    expect(unreachableRule("in_review")).toBe("A Todo in in_review only moves to executing, done, blocked, cancelled.")
+  })
+
+  it("has nothing to say when every other status is reachable", () => {
+    for (const from of ["backlog", "executing", "blocked"] as const) expect(unreachableRule(from)).toBeUndefined()
   })
 })
 

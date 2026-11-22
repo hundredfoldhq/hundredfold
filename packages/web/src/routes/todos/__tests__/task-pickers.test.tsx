@@ -118,6 +118,22 @@ describe("the status picker", () => {
     expect(screen.queryByTestId("status-option-backlog")).toBeNull()
     expect(picker.textContent).toContain("Only legal moves are listed")
     expect(picker.textContent).toContain("To do isn't reachable from In review")
+    expect(picker.textContent).toContain("A Todo in in_review only moves to executing, done, blocked, cancelled")
+  })
+
+  it("offers a closed Todo a straight move back to review, and names the reopen rule for the rest", async () => {
+    getWorkItem.mockResolvedValue(detailOf(full("TSK-12", { status: "done" })))
+    renderTask()
+    fireEvent.click(await screen.findByTestId("rail-status"))
+
+    const picker = await screen.findByTestId("picker-status")
+    const rows = [...picker.querySelectorAll<HTMLElement>('[data-testid^="status-option-"]')]
+    expect(rows.map((row) => row.dataset.testid)).toEqual([
+      "status-option-done",
+      "status-option-backlog",
+      "status-option-in_review",
+    ])
+    expect(picker.textContent).toContain("A closed Todo only reopens to backlog, in_review")
   })
 
   it("renders a gated Cancelled disabled with the inline reason while a sub-task is open, and refuses the click", async () => {

@@ -5,8 +5,8 @@
     "executing": ["backlog", "in_review", "blocked", "done", "cancelled"],
     "in_review": ["executing", "done", "blocked", "cancelled"],
     "blocked": ["backlog", "executing", "in_review", "done", "cancelled"],
-    "done": ["backlog"],
-    "cancelled": ["backlog"]
+    "done": ["backlog", "in_review"],
+    "cancelled": ["backlog", "in_review"]
   },
   "manualExecutingFrom": ["backlog", "in_review", "blocked"],
   "sticky": ["done", "cancelled"],
