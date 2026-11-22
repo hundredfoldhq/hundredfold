@@ -1,26 +1,28 @@
 import { declaredAccountByKey, declaredClaudeAccounts, declaredRemoteAccountByKey } from "../shared/claude-accounts-config.js";
 import { accountForEmployee } from "../shared/engine-account.js";
 import { engineHealthForTarget, readEngineHealth, type EngineHealthReading } from "../shared/engine-health.js";
-import { startPickOf, homeGroupOf, type HomeGroup } from "../shared/fallback-chain-group.js";
+import { startPickOf, homeGroupOf, opencodeHomeGroupOf, type HomeGroup } from "../shared/fallback-chain-group.js";
 import type { FallbackLimitReadings } from "../shared/fallback-chain-health.js";
 import { ownTargetLink } from "../shared/fallback-chain-links.js";
-import { inheritedChain, resolveFallbackLinks, type FallbackChainSpec } from "../shared/fallback-chain.js";
+import { inheritedChain, resolveFallbackLinks, type FallbackChainEnv, type FallbackChainSpec } from "../shared/fallback-chain.js";
+import { opencodeAccountKeyProvider, opencodeModelKeyOf, opencodeOwnModel, opencodeProviderOf } from "../shared/fallback-chain-opencode-group.js";
 import { fallbackGroupOf, type AccountPick, type FallbackChainEntry, type FallbackChainSource } from "../shared/fallback-chain-wire.js";
 import { recordAccountStart, resetAccountCredits } from "../shared/fallback-account-pick.js";
 import { getModelRegistry } from "../shared/models.js";
 import { isRemoteTarget, sshDestination } from "../shared/remote-target.js";
 import type { Employee, HundredfoldConfig, JsonObject } from "../shared/types.js";
-import { availabilityRegistry } from "./availability-registry.js";
+import { availabilityRegistry, engineInstalledWhereRun } from "./availability-registry.js";
 import { metaWithRemoteAccountPin, type RemoteAccountPin } from "./remote-account-pin.js";
 import { runsOnlyOnClaude } from "./scoped-engine.js";
 
 /**
- * Where a new Claude session's account is chosen: the one function every start
+ * Where a new session's account is chosen: the one function every start
  * path asks (docs/design/fallback-account-groups.md, "Every way a session
- * starts"). When the session's chain opens with a group holding its own login,
- * the balancer picks a member, the session is pinned to it (the profile column
- * a chosen profile already uses; for a remote employee's session, whose profile
- * is a directory on its host, `transportMeta.remoteAccountPin`) and the pick is
+ * starts"). When the session's chain opens with a group holding its own account,
+ * the balancer picks a member, the session is pinned to it (a Claude session in the profile column
+ * a chosen profile already uses, or for a remote employee's session, whose profile
+ * is a directory on its host, in `transportMeta.remoteAccountPin`; an opencode session in its
+ * `model` column, the only account setting opencode has) and the pick is
  * recorded in `transportMeta.accountPick`. Anywhere else this answers nothing, and the
  * session starts exactly as it did before groups.
  *
@@ -34,9 +36,12 @@ export interface AccountPinArgs {
   config: HundredfoldConfig;
   /** The employee the session is for; none for a session of the instance default. */
   employee?: Employee;
-  /** The engine the session starts on: only `claude` is balanced. */
+  /** The engine the session starts on: only `claude` and `opencode` are balanced. */
   engine: string;
-  /** The model the session runs, when known: it decides which model-scoped usage windows apply. */
+  /**
+   * The model the session runs, when known: it decides which model-scoped usage windows apply. For opencode it is the
+   * model the caller asked for (or the employee's): one on another account's provider than the subject's own is a chosen account.
+   */
   model?: string | null;
   /** The caller named a profile (`claude:<name>`): that account is the session's, nothing is balanced. */
   namedProfile?: boolean;
@@ -54,6 +59,12 @@ export interface AccountPin {
    * nothing to store (no balancing, or a new session whose pick is the employee's own login).
    */
   claudeConfigDir?: string | null;
+  /**
+   * An opencode session: the model the pick pins it to, `<picked provider>/<model key>`, which goes to the session's `model`
+   * column wherever `claudeConfigDir` is applied. Absent when the pick is the session's own account (the model stays as
+   * requested); for a switch re-picking onto the own account, the own-provider spelling, which puts an earlier pin back.
+   */
+  model?: string;
   accountPick?: AccountPick;
   /**
    * A remote employee's session: the declared remote account it is pinned to (written to `transportMeta.remoteAccountPin`),
@@ -72,17 +83,61 @@ function chainOf(config: HundredfoldConfig, employee: Employee | undefined, ownA
   return inheritedChain(config, "claude", isRemoteTarget(employee) ? "engine" : "account", ownAccount);
 }
 
+/** What the start pick works from: the home group, where its chain came from and the account the session would otherwise run as. */
+interface FoundHome {
+  home: HomeGroup;
+  source: FallbackChainSource;
+  entries: readonly FallbackChainEntry[];
+  ownAccount: string;
+  /** An opencode session's own model, spelled on its own account's provider: what a pick of another member re-spells, and a switch onto the own account puts back. */
+  ownModel?: string;
+}
+
 /**
  * The home group of a Claude session of `employee`: the group at the head of its chain that holds its own login. A remote
  * employee's own login is the member naming no profile, or the declared remote account of its own directory.
  */
-function homeOf(args: AccountPinArgs): { home: HomeGroup; source: FallbackChainSource; entries: readonly FallbackChainEntry[]; ownAccount: string } | undefined {
+function claudeHomeOf(args: AccountPinArgs): FoundHome | undefined {
   const { config, employee } = args;
-  if (args.engine !== "claude" || args.namedProfile) return undefined;
+  if (args.namedProfile) return undefined;
   const ownAccount = accountForEmployee(employee, "claude");
   const { source, entries } = chainOf(config, employee, ownAccount);
   const home = source === "none" ? undefined : homeGroupOf(config, entries, ownAccount, isRemoteTarget(employee) ? ownAccount : undefined);
   return home && { home, source, entries, ownAccount };
+}
+
+/** The chain an opencode session of this employee (else of the instance default) runs under: the employee's own, else the engine's. */
+function opencodeChainOf(config: HundredfoldConfig, employee: Employee | undefined): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } {
+  if (employee?.fallback !== undefined) return { source: "employee", entries: employee.fallback };
+  return inheritedChain(config, "opencode", "engine", "opencode");
+}
+
+/**
+ * The home group of an opencode session: the opencode group at the head of its chain that holds its own account, the declared
+ * account whose provider serves its own model. The own model is the requested one, else the subject's (the employee's, else the
+ * engine's). A requested model on another provider than the subject's own is a chosen account, the counterpart of `claude:<name>`:
+ * nothing is balanced. One on the own provider is balanced across the members that serve its key.
+ */
+function opencodeHomeOf(args: AccountPinArgs): FoundHome | undefined {
+  const { config, employee } = args;
+  const requested = args.model?.trim() || undefined;
+  const subjectModel = opencodeOwnModel(config, employee?.engine === "opencode" ? employee.model : undefined);
+  const ownModel = requested ?? subjectModel;
+  if (ownModel === undefined || namesOtherAccount(requested, subjectModel)) return undefined;
+  const { source, entries } = opencodeChainOf(config, employee);
+  const home = source === "none" ? undefined : opencodeHomeGroupOf(config, entries, ownModel);
+  return home && { home, source, entries, ownAccount: home.ownAccount, ownModel };
+}
+
+/** Whether a requested model is on another provider than the subject's own: a chosen account, never balanced. */
+function namesOtherAccount(requested: string | undefined, subjectModel: string | undefined): boolean {
+  return Boolean(requested && subjectModel && opencodeProviderOf(requested) !== opencodeProviderOf(subjectModel));
+}
+
+/** The home group of a session starting on `engine`, when it is one the balancer serves. */
+function homeOf(args: AccountPinArgs): FoundHome | undefined {
+  if (args.engine === "opencode") return opencodeHomeOf(args);
+  return args.engine === "claude" ? claudeHomeOf(args) : undefined;
 }
 
 /** Where the pick's candidates are judged: on the gateway, or on the employee's host (a profile there only on its own `user@host`). */
@@ -91,32 +146,51 @@ function scopeOf(employee: Employee | undefined): FallbackChainSpec["scope"] {
   return isRemoteTarget(employee) ? { scoped, remote: true, host: sshDestination(employee) } : { scoped, remote: false };
 }
 
-/** What a new session would be balanced onto now: the chain resolved for the session (its own target first), then the start pick over the home group. */
-function startPickFor(args: AccountPinArgs, found: NonNullable<ReturnType<typeof homeOf>>): AccountPick | undefined {
+/** The environment a pick reads: the registry (on a remote employee's host, what is installed there) and the health of the machine the session runs on. */
+function pickEnv(args: AccountPinArgs): FallbackChainEnv {
   const { config, employee } = args;
-  const { home, source, entries, ownAccount } = found;
   const registry = getModelRegistry(config);
   // Health about another host's login says nothing about this one: a remote employee's pick reads its own host's records.
   const health = args.inputs?.health ?? readEngineHealth();
-  const env = {
+  const host = isRemoteTarget(employee) ? sshDestination(employee) : undefined;
+  return {
     config,
-    registry: availabilityRegistry(registry, (candidate) => registry[candidate]?.available === true),
+    registry: availabilityRegistry(registry, (candidate) => registry[candidate]?.available === true && (args.engine !== "opencode" || host === undefined || engineInstalledWhereRun(config, candidate, host))),
     health: isRemoteTarget(employee) ? engineHealthForTarget(health, employee) : health,
     ...(args.inputs?.limits ? { limits: args.inputs.limits } : {}),
     ...(args.now ? { now: args.now } : {}),
   };
-  const model = args.model ?? undefined;
-  const spec: FallbackChainSpec = {
-    own: ownTargetLink(config, { engine: "claude", model, account: ownAccount }),
-    ownAccount, claudeAccount: ownAccount, entries, mode: isRemoteTarget(employee) ? "engine" : "account",
-    scope: scopeOf(employee),
-  };
-  const [, ...effective] = resolveFallbackLinks(env, spec);
-  return startPickOf(env, home, effective, { source, ownAccount, model });
 }
 
-/** Where a pick other than the employee's own login pins the session: a local profile's directory, or a remote employee's declared remote account. */
-function pinnedTo(args: AccountPinArgs, picked: string): Pick<AccountPin, "claudeConfigDir" | "remoteAccountPin"> | undefined {
+/** What a new session would be balanced onto now: the chain resolved for the session (its own target first), then the start pick over the home group. */
+function startPickFor(args: AccountPinArgs, found: FoundHome): AccountPick | undefined {
+  const { config, employee } = args;
+  const { home, source, entries, ownAccount, ownModel } = found;
+  const env = pickEnv(args);
+  // The same resolution `fallback-chain-subjects.ts` makes for an opencode subject: the own target is the model the session runs.
+  const spec: FallbackChainSpec = ownModel === undefined
+    ? {
+      own: ownTargetLink(config, { engine: "claude", model: args.model ?? undefined, account: ownAccount }),
+      ownAccount, claudeAccount: ownAccount, entries, mode: isRemoteTarget(employee) ? "engine" : "account", scope: scopeOf(employee),
+    }
+    : { own: ownTargetLink(config, { engine: "opencode", model: ownModel }), ownAccount: "opencode", entries, mode: "engine", scope: scopeOf(employee) };
+  const [, ...effective] = resolveFallbackLinks(env, spec);
+  return startPickOf(env, home, effective, { source, ownAccount, model: ownModel ?? args.model ?? undefined });
+}
+
+/** The model an opencode pick pins the session to: its own model key on the picked account's provider. */
+function opencodePinnedModel(found: FoundHome, picked: string): string | undefined {
+  const provider = opencodeAccountKeyProvider(picked);
+  const key = opencodeModelKeyOf(found.ownModel);
+  return provider === undefined || key === undefined ? undefined : `${provider}/${key}`;
+}
+
+/** Where a pick other than the session's own account pins it: a local profile's directory, a remote employee's declared remote account, or an opencode session's model. */
+function pinnedTo(args: AccountPinArgs, found: FoundHome, picked: string): Pick<AccountPin, "claudeConfigDir" | "remoteAccountPin" | "model"> | undefined {
+  if (found.ownModel !== undefined) {
+    const model = opencodePinnedModel(found, picked);
+    return model === undefined ? undefined : { model };
+  }
   if (isRemoteTarget(args.employee)) {
     const declared = declaredRemoteAccountByKey(args.config, picked);
     return declared && { remoteAccountPin: { account: declared.key, configDir: declared.configDir } };
@@ -125,20 +199,24 @@ function pinnedTo(args: AccountPinArgs, picked: string): Pick<AccountPin, "claud
   return dir === undefined ? undefined : { claudeConfigDir: dir };
 }
 
-/** What a pick equal to the employee's own login stores: nothing for a new session; for a switch, the removal of an earlier pin. */
-function ownLoginPin(args: AccountPinArgs): Pick<AccountPin, "claudeConfigDir" | "remoteAccountPin"> {
+/**
+ * What a pick equal to the session's own account stores: nothing for a new session; for a switch, the removal of an earlier pin
+ * (an opencode session's model goes back to the own account's spelling).
+ */
+function ownLoginPin(args: AccountPinArgs, found: FoundHome): Pick<AccountPin, "claudeConfigDir" | "remoteAccountPin" | "model"> {
   if (args.trigger !== "switch") return {};
+  if (found.ownModel !== undefined) return { model: found.ownModel };
   return isRemoteTarget(args.employee) ? { remoteAccountPin: null } : { claudeConfigDir: null };
 }
 
-/** The pick for a Claude session of `employee` starting now, and where it pins the session. */
+/** The pick for a session of `employee` starting now on Claude or opencode, and where it pins the session. */
 export function pinAccountAtCreation(args: AccountPinArgs): AccountPin {
   const found = homeOf(args);
   const pick = found && startPickFor(args, found);
   if (!found || !pick) return {};
   const accountPick: AccountPick = { ...pick, trigger: args.trigger ?? "start" };
-  if (pick.picked === found.ownAccount) return { accountPick, ...ownLoginPin(args) };
-  const pinned = pinnedTo(args, pick.picked);
+  if (pick.picked === found.ownAccount) return { accountPick, ...ownLoginPin(args, found) };
+  const pinned = pinnedTo(args, found, pick.picked);
   return pinned ? { accountPick, ...pinned } : {};
 }
 

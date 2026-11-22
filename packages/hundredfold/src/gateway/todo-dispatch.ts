@@ -185,7 +185,7 @@ function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: 
     sessionKey,
     replyContext: { source: "web" },
     employee: plan.dispatcher.name,
-    model: plan.model,
+    model: pin.model ?? plan.model,
     effortLevel: plan.dispatcher.effortLevel,
     prompt: plan.prompt,
     title: `Dispatch ${item.id}`,

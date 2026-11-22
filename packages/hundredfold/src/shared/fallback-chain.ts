@@ -8,7 +8,7 @@ import { resolveSubstituteModel } from "./engine-fallback.js";
 import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type FallbackExpansionMode } from "./fallback-chain-expand.js";
 import { linkHealth } from "./fallback-chain-health.js";
 import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
-import { opencodeMemberTarget, opencodeOwnModel } from "./fallback-chain-opencode-group.js";
+import { isOpencodeAccountKey, opencodeMemberTarget, opencodeOwnModel } from "./fallback-chain-opencode-group.js";
 import {
   fallbackGroupOf, fallbackLinkKey, fallbackLinkLabel,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
@@ -237,8 +237,9 @@ function chainSource(
   const target = session.fallbackTarget;
   if (target) return { source: "session", entries: [{ engine: target.engine, model: target.model }] };
   // A remote employee's session is balanced too: its pick names the chain it came from (the employee's, else the engine's).
-  const picked = mode === "account" || remote ? readAccountPick(session.transportMeta) : undefined;
-  const fromPick = picked && pickedChainSource(config, picked, employee);
+  // So is an opencode session's, which is pinned by its model: it keeps the chain whose group picked it.
+  const picked = mode === "account" || remote || session.engine === "opencode" ? readAccountPick(session.transportMeta) : undefined;
+  const fromPick = picked && pickedChainSource(config, picked, employee, session.engine);
   if (fromPick) return fromPick;
   if (employee?.fallback !== undefined) return { source: "employee", entries: employee.fallback };
   return inheritedChain(config, session.engine, mode, ownAccount);
@@ -253,14 +254,17 @@ function holdingGroup<T extends { entries: readonly FallbackChainEntry[] }>(chai
  * The chain a balanced session keeps: the one its pick came from (`accountPick.source`), not the
  * pinned account's own. The group lives in its employee's chain, in the chain of the employee's own
  * login, or in the engine's, whichever the pick names; undefined when that chain no longer holds the
- * group at the recorded entry (edited since), and the session then resolves as any other.
+ * group at the recorded entry (edited since), and the session then resolves as any other. An opencode
+ * session has no account chains: its pick came from its employee's chain or the engine's, read for the
+ * session's engine. A pick of the other engine's accounts (a record kept across a switch) is not its own.
  */
 function pickedChainSource(
-  config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined,
+  config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined, engine: string,
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } | undefined {
+  if (isOpencodeAccountKey(pick.picked) !== (engine === "opencode")) return undefined;
   if (pick.source === "employee") return holdingGroup(employee?.fallback === undefined ? undefined : { source: "employee" as const, entries: employee.fallback }, pick);
-  if (pick.source === "engine") return holdingGroup({ source: "engine" as const, entries: engineChain(config, "claude") }, pick);
-  if (pick.source !== "account") return undefined;
+  if (pick.source === "engine") return holdingGroup({ source: "engine" as const, entries: engineChain(config, engine === "opencode" ? "opencode" : "claude") }, pick);
+  if (pick.source !== "account" || engine === "opencode") return undefined;
   const inherited = inheritedChain(config, "claude", "account", accountForEmployee(employee, "claude"));
   return holdingGroup(inherited.source === "account" ? inherited : undefined, pick);
 }
