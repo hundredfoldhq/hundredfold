@@ -58,25 +58,61 @@ describe("a long session on an engine with auto-compaction off, through runTurn"
     db.exec("DELETE FROM messages; DELETE FROM queue_items; DELETE FROM sessions;");
   });
 
-  it("says so at info once per session, not on every turn, and still runs the message untouched", async () => {
-    const sessionId = coldSession("claude", "web:ac-off-once", 325_548, 112 * MINUTE);
+  /** Make the session long and cold again, as if it had sat idle since. */
+  function goCold(sessionId: string, idleMs: number): void {
+    reg.recordEngineSessionId(sessionId, "claude", "claude-thread-1", { model: "opus", lastSyncedAt: new Date(Date.now() - idleMs).toISOString() });
+    reg.updateSession(sessionId, { lastContextTokens: 325_548 });
+  }
+
+  it("says so at info on a cold turn, every cold turn, and still runs the message untouched", async () => {
+    const sessionId = coldSession("claude", "web:ac-off-cold", 325_548, 112 * MINUTE);
     const { engine, calls } = recordingEngine("claude", async () => answered("claude-thread-1"));
 
     const first = await infoLines(() => runOne(engine, sessionId, "carry on", recordingSurface().surface, configWith(undefined)));
     expect(first).toHaveLength(1);
     expect(first[0]).toMatch(new RegExp(`^\\[auto-compact\\] session=${sessionId} engine=claude outcome=skipped skip=disabled context=325548 idleSec=67\\d\\d cold=true config=absent `));
 
-    // The turn left the meter at 3,000; make it long again and ask once more.
+    // Straight after, the cache is warm: no line. Then it sits idle again: a second cold resume, a second line.
     reg.updateSession(sessionId, { lastContextTokens: 325_548 });
-    const second = await infoLines(() => runOne(engine, sessionId, "and again", recordingSurface().surface, configWith(undefined)));
-    expect(second).toEqual([]);
-    expect(calls.map((c) => c.prompt)).toEqual(["carry on", "and again"]);
+    expect(await infoLines(() => runOne(engine, sessionId, "again", recordingSurface().surface, configWith(undefined)))).toEqual([]);
+    goCold(sessionId, 90 * MINUTE);
+    const third = await infoLines(() => runOne(engine, sessionId, "and later", recordingSurface().surface, configWith(undefined)));
+    expect(third).toHaveLength(1);
+    expect(third[0]).toContain("cold=true");
+    expect(calls.map((c) => c.prompt)).toEqual(["carry on", "again", "and later"]);
+  });
 
-    // Another long session is told in its own right.
-    const other = coldSession("claude", "web:ac-off-other", 200_000, 30 * MINUTE);
-    const lines = await infoLines(() => runOne(engine, other, "hello", recordingSurface().surface, configWith(undefined)));
+  it("does not spend its say on a warm turn: the cold resume that follows is still logged", async () => {
+    const sessionId = coldSession("claude", "web:ac-off-warm-first", 150_000, 10_000);
+    const { engine } = recordingEngine("claude", async () => answered("claude-thread-1"));
+    expect(await infoLines(() => runOne(engine, sessionId, "warm", recordingSurface().surface, configWith(undefined)))).toEqual([]);
+    goCold(sessionId, 112 * MINUTE);
+    const lines = await infoLines(() => runOne(engine, sessionId, "cold", recordingSurface().surface, configWith(undefined)));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(`session=${other} `);
+    expect(lines[0]).toContain("cold=true");
+  });
+
+  it("is not logged for an operator's own /compact, and the next message is still told", async () => {
+    const sessionId = coldSession("claude", "web:ac-off-manual", 180_000, 30 * MINUTE);
+    const { engine } = recordingEngine("claude", async () => ({ sessionId: "claude-thread-1", result: "", compaction: { preTokens: 180_000, postTokens: 9_000 }, contextTokens: 9_000 }));
+    expect(await infoLines(() => runOne(engine, sessionId, "/compact keep ids", recordingSurface().surface, configWith(undefined)))).toEqual([]);
+
+    goCold(sessionId, 30 * MINUTE);
+    const next = recordingEngine("claude", async () => answered("claude-thread-1"));
+    expect(await infoLines(() => runOne(next.engine, sessionId, "carry on", recordingSurface().surface, configWith(undefined)))).toHaveLength(1);
+  });
+
+  it("tells a session whose idle time is unknown once per engine, not on every turn", async () => {
+    const sessionId = coldSession("claude", "web:ac-off-unknown", 180_000, 30 * MINUTE);
+    // Nothing says when its engine conversation last ran.
+    reg.recordEngineSessionId(sessionId, "claude", "claude-thread-1", { model: "opus", lastSyncedAt: "" });
+    const { engine } = recordingEngine("claude", async () => ({ sessionId: "claude-thread-1", result: "done", contextTokens: 180_000 }));
+    const first = await infoLines(() => runOne(engine, sessionId, "one", recordingSurface().surface, configWith(undefined)));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("idleSec=- cold=unknown");
+    reg.recordEngineSessionId(sessionId, "claude", "claude-thread-1", { model: "opus", lastSyncedAt: "" });
+    reg.updateSession(sessionId, { lastContextTokens: 180_000 });
+    expect(await infoLines(() => runOne(engine, sessionId, "two", recordingSurface().surface, configWith(undefined)))).toEqual([]);
   });
 
   it("says config=off when a block is present but disabled", async () => {

@@ -1,7 +1,8 @@
 import { opencodeMode } from "../../engines/opencode-server.js";
 import { logger } from "../../shared/logger.js";
 import { detectRateLimit } from "../../shared/rateLimit.js";
-import type { EngineResult, Session } from "../../shared/types.js";
+import { isRawEngineCommand } from "../../shared/skill-commands.js";
+import type { EngineResult, HundredfoldConfig, Session } from "../../shared/types.js";
 import { AUTO_COMPACT_BUDGET_HOLD_KEY, resolveAutoCompactPolicy, type AutoCompactPolicy } from "../../shared/auto-compact-config.js";
 import {
   autoCompactDoneNotice,
@@ -290,13 +291,15 @@ export async function compactColdSessionFirst(run: TurnRun): Promise<PreTurnComp
   return { kind: "run", plan: run.plan };
 }
 
-/** Sessions already told that their engine's auto-compaction is off. In-memory
- *  on purpose: a restart says it once more, which is when it is worth hearing. */
-const toldDisabled = new Set<string>();
+/** Sessions already told, for an engine, that their idle time is unknown. A
+ *  cold turn is never deduplicated (see {@link logDisabled}); this only keeps a
+ *  session whose activity is never known from repeating itself on every turn.
+ *  Bounded by a gateway restart. */
+const toldUnknown = new Set<string>();
 
 /** Forget which sessions were told (tests). */
 export function resetDisabledNotices(): void {
-  toldDisabled.clear();
+  toldUnknown.clear();
 }
 
 /**
@@ -331,29 +334,49 @@ export function autoCompactDisabledLogLine(fields: {
 }
 
 /**
- * Say, once per session, that a long session's turn ran on an engine whose
- * auto-compaction is off. Only for engines that can compact at all, and only
- * past the engine's own `minContextTokens`: a short session is not worth a line.
+ * Say that a long session's turn ran on an engine whose auto-compaction is off.
+ *
+ * One line per cold turn: each is a full-price resume the policy would have
+ * compacted, and the cache window (300 s by default) is the rate limit, since
+ * the turn that logs it re-warms the cache. A warm long turn is not worth a line,
+ * and so must not use up a once-only claim before the cold one the line is for.
+ * A session whose idle time is unknown is told once per engine. Not for a
+ * compaction turn or a native command, which are not a message the policy would
+ * have compacted in front of, and not for a short session or an engine that
+ * cannot compact.
  */
 function logDisabled(run: TurnRun): void {
   const { input, plan } = run;
   const sessionId = input.session.id;
   const policy = resolveAutoCompactPolicy(input.config, plan.engineName);
-  if (!policy || toldDisabled.has(sessionId)) return;
+  if (!policy || plan.compaction || isRawEngineCommand(plan.engineName, input.prompt)) return;
   const live = getSession(sessionId) ?? input.session;
-  const context = live.lastContextTokens ?? undefined;
-  if (typeof context !== "number" || context < policy.minContextTokens) return;
-  toldDisabled.add(sessionId);
+  const context = live.lastContextTokens ?? 0;
+  if (context < policy.minContextTokens) return;
   const lastActivity = lastEngineActivityMs(live, plan.engineName);
-  const engineConfig = (input.config.engines as unknown as Record<string, { autoCompact?: unknown } | undefined>)[plan.engineName];
+  const idleMs = lastActivity === undefined ? undefined : Date.now() - lastActivity;
+  if (!worthDisabledLine(`${sessionId}:${plan.engineName}`, idleMs, policy)) return;
   logger.info(autoCompactDisabledLogLine({
     sessionId,
     engine: plan.engineName,
     context,
-    ...(lastActivity === undefined ? {} : { idleMs: Date.now() - lastActivity }),
+    ...(idleMs === undefined ? {} : { idleMs }),
     policy,
-    configured: engineConfig?.autoCompact !== undefined,
+    configured: hasAutoCompactBlock(input.config, plan.engineName),
   }));
+}
+
+function hasAutoCompactBlock(config: Pick<HundredfoldConfig, "engines">, engine: string): boolean {
+  const block = (config.engines as unknown as Record<string, { autoCompact?: unknown } | undefined>)[engine];
+  return block?.autoCompact !== undefined;
+}
+
+/** Cold: always. Warm: never. Unknown: the first time for this session and engine. */
+function worthDisabledLine(key: string, idleMs: number | undefined, policy: AutoCompactPolicy): boolean {
+  if (idleMs !== undefined) return idleMs >= policy.cacheWindowSeconds * 1000;
+  if (toldUnknown.has(key)) return false;
+  toldUnknown.add(key);
+  return true;
 }
 
 /** Skips that are ordinary for a long session: it is warm, held at its budget, or
