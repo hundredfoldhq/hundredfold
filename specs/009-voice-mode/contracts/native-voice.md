@@ -22,6 +22,26 @@ The gateway's JSON frames are forwarded as-is (`ready`, `transcript`, `turn`,
 `segment_start`, `metrics`, `background`, `error`, `detached`...), so the web UI renders
 voice the same way in both modes. Binary audio is not forwarded.
 
+One extra, shell-only object on the same channel reports the native session's own state,
+so the web learns when voice was stopped from the lock screen or notification, or paused
+by a system interruption:
+
+```json
+{ "type": "native_state", "state": "connecting" | "running" | "paused" | "stopped", "reason": "user" | "notification" | "interruption" | "error" | "socket_closed" }
+```
+
+`reason` is optional. A gateway never emits `native_state`, so it lives in the web's
+shell types, not in `voice-protocol.ts`.
+
+## Credentials on Android
+
+The shell's keyring backend is Apple-only, and Android has no OS-backed credential store
+in the shell today. For non-Apple targets the shell keeps the pairing credential in a
+process-lifetime, in-memory store. It is never written to disk, the user pairs again
+after the app restarts, and the README says plainly that this is not secure storage.
+Persistent Android Keystore storage is a separate security change and not part of this
+feature.
+
 ## Native audio (per platform)
 
 | | iOS (Swift) | Android (Kotlin) |
