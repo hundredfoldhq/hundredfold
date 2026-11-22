@@ -1,14 +1,16 @@
+import { readAccountPick } from "../sessions/account-pick-meta.js";
 import { ownClaudeAccountOf, ownClaudeProfile } from "../sessions/session-account.js";
 import { engineAllowedAsSubstitute, sessionSubstituteScope } from "../sessions/substitute-filters.js";
 import { declaredAccountByKey, declaredClaudeAccounts, declaredRemoteAccountByName } from "./claude-accounts-config.js";
 import { linkAccount, ownTargetLink } from "./fallback-chain-links.js";
-import { claudeAccountKey, DEFAULT_CLAUDE_ACCOUNT, isRemoteClaudeAccount } from "./engine-account.js";
+import { accountForEmployee, claudeAccountKey, DEFAULT_CLAUDE_ACCOUNT, isRemoteClaudeAccount } from "./engine-account.js";
 import { resolveSubstituteModel } from "./engine-fallback.js";
-import { engineChain, expandFallbackChain, type FallbackExpansionMode } from "./fallback-chain-expand.js";
-import { linkHealth, type FallbackHealthInputs } from "./fallback-chain-health.js";
+import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type FallbackExpansionMode } from "./fallback-chain-expand.js";
+import { linkHealth } from "./fallback-chain-health.js";
+import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
 import {
   fallbackLinkKey, fallbackLinkLabel,
-  type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
+  type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
 } from "./fallback-chain-wire.js";
 import { engineSupportsRemote, REMOTE_ENGINE_CLI, type EngineName } from "./models.js";
 import { remoteEngineAvailable } from "../engines/remote-stage.js";
@@ -28,7 +30,7 @@ export { linkAccount, ownTargetLink } from "./fallback-chain-links.js";
  * chain written only in strings runs as it always has. See docs/fallback-chains.md.
  */
 
-export interface FallbackChainEnv extends FallbackHealthInputs {
+export interface FallbackChainEnv extends GroupRankInputs {
   config: HundredfoldConfig;
   registry: ModelRegistry;
 }
@@ -143,11 +145,24 @@ function withModel(env: FallbackChainEnv, subject: FallbackChainSpec, link: Fall
   return { engine: link.engine, ...(link.profile === undefined ? {} : { profile: link.profile }), ...(model === undefined ? {} : { model }) };
 }
 
+/** An expanded link with the group it came from, and why the subject cannot use it, when it cannot. */
+function annotated(
+  env: FallbackChainEnv, subject: FallbackChainSpec, expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"] },
+): ResolvedFallbackLink {
+  const { resolved, target, group } = expanded;
+  const skip = skipReason(env, subject, target);
+  const detail = skip ? skipDetail(env.config, subject.scope, target, skip) : undefined;
+  const member = group ? { ...resolved, group: { index: group.index, written: group.written } } : resolved;
+  return skip ? { ...member, skip, ...(detail ? { skipDetail: detail } : {}) } : member;
+}
+
 /**
  * The subject's chain, resolved: index 0 is its own target, then the effective
  * chain (legacy strings expanded in place) with each link's model, account,
  * label, health and skip reason. A link that resolves to a target already listed
- * (the own one included) is dropped: it is the same target.
+ * (the own one included) is dropped: it is the same target. The members of a group
+ * entry are expanded in place and ordered by usage headroom (fallback-chain-group.ts);
+ * the own account, when it is a member, is the own target and drops out of the expansion.
  */
 export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackChainSpec): ResolvedFallbackLink[] {
   // An account chain names its Claude accounts itself; an engine chain's unprofiled Claude link is the subject's own login.
@@ -158,16 +173,14 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   if (subject.scope.remote && own.profile !== undefined) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
-  for (const { link, origin } of expanded) {
+  for (const { link, origin, group } of expanded) {
     const target = withModel(env, subject, link);
     const resolved = resolvedLink(env, target, origin, link, { claudeAccount });
     if (seen.has(resolved.key)) continue;
     seen.add(resolved.key);
-    const skip = skipReason(env, subject, target);
-    const detail = skip ? skipDetail(env.config, subject.scope, target, skip) : undefined;
-    links.push(skip ? { ...resolved, skip, ...(detail ? { skipDetail: detail } : {}) } : resolved);
+    links.push(annotated(env, subject, { resolved, target, group }));
   }
-  return links;
+  return links.some((link) => link.group) ? orderGroupLinks(env, links, own.model) : links;
 }
 
 /**
@@ -177,7 +190,7 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
  */
 export function inheritedChain(
   config: HundredfoldConfig, engine: string, mode: FallbackExpansionMode, ownAccount: string,
-): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } {
+): { source: Exclude<FallbackChainSource, "session">; entries: readonly FallbackChainEntry[] } {
   if (mode === "account" && ownAccount !== DEFAULT_CLAUDE_ACCOUNT) {
     const declared = declaredAccountByKey(config, ownAccount);
     return declared ? { source: "account", entries: declared.fallback ?? [] } : { source: "none", entries: [] };
@@ -191,11 +204,30 @@ function chainSource(
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } {
   const target = session.fallbackTarget;
   if (target) return { source: "session", entries: [{ engine: target.engine, model: target.model }] };
+  const picked = mode === "account" ? readAccountPick(session.transportMeta) : undefined;
+  const fromPick = picked && pickedChainSource(config, picked, employee);
+  if (fromPick) return fromPick;
   if (employee?.fallback !== undefined) return { source: "employee", entries: employee.fallback };
   return inheritedChain(config, session.engine, mode, ownAccount);
 }
 
-export interface SessionFallbackChainOptions extends FallbackHealthInputs {
+/**
+ * The chain a balanced session keeps: the one its pick came from (`accountPick.source`), not the
+ * pinned account's own. The group lives in its employee's chain, in the chain of the employee's own
+ * login, or in the engine's, whichever the pick names; undefined when that chain is gone (edited
+ * since), and the session then resolves as any other.
+ */
+function pickedChainSource(
+  config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined,
+): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } | undefined {
+  if (pick.source === "employee") return employee?.fallback === undefined ? undefined : { source: "employee", entries: employee.fallback };
+  if (pick.source === "engine") return { source: "engine", entries: engineChain(config, "claude") };
+  if (pick.source !== "account") return undefined;
+  const inherited = inheritedChain(config, "claude", "account", accountForEmployee(employee, "claude"));
+  return inherited.source === "account" ? inherited : undefined;
+}
+
+export interface SessionFallbackChainOptions extends GroupRankInputs {
   config: HundredfoldConfig;
   employee?: Employee;
   session: Session;
@@ -208,7 +240,9 @@ export interface SessionFallbackChainOptions extends FallbackHealthInputs {
  * A session's chain, resolved: its own fallback target (one link), else its
  * employee's `fallback`, else its declared account's chain, else its engine's
  * default. A named local profile that is not declared and whose employee writes
- * no `fallback` has none (source `none`: it waits for its own reset).
+ * no `fallback` has none (source `none`: it waits for its own reset). A balanced
+ * session (one the account balancer pinned: `transportMeta.accountPick`) resolves
+ * against the chain its pick came from instead of the pinned account's own.
  */
 export function sessionFallbackChain(options: SessionFallbackChainOptions): { source: FallbackChainSource; links: ResolvedFallbackLink[] } {
   const { config, employee, session, registry, scope: givenScope, ...inputs } = options;

@@ -1,6 +1,6 @@
 import { declaredClaudeAccounts } from "./claude-accounts-config.js";
 import { DEFAULT_CLAUDE_ACCOUNT } from "./engine-account.js";
-import { fallbackLinkKey, fallbackLinkOf, type FallbackChainEntry, type FallbackLink } from "./fallback-chain-wire.js";
+import { fallbackGroupOf, fallbackLinkKey, fallbackLinkOf, type FallbackChainEntry, type FallbackGroupEntry, type FallbackLink } from "./fallback-chain-wire.js";
 import type { HundredfoldConfig } from "./types.js";
 
 /**
@@ -8,7 +8,9 @@ import type { HundredfoldConfig } from "./types.js";
  * by that target followed by its own chain, so that a chain written only in the
  * legacy strings visits targets in exactly the order the engine walker
  * (`resolveFallbackEngine`) and the account walker (`resolveAccountFallback`)
- * did. An object entry is one target and expands to nothing more.
+ * did. An object entry is one target and expands to nothing more. A group entry
+ * expands in place into its members, in the order written, each tagged with the
+ * group it came from; the resolver orders them by headroom.
  *
  * Two walks, as there were two walkers:
  * - `account`: a local Claude session. Targets are told apart by account, so
@@ -29,6 +31,8 @@ export interface ExpandedFallbackLink {
   link: FallbackLink;
   /** "config" for an entry of the chain as written; "legacy" for one pulled in by a string entry's own chain. */
   origin: "config" | "legacy";
+  /** Set on a member of a group entry: the group's index in the chain it was written in, and the group as written (one object shared by every member). */
+  group?: { index: number; written: FallbackGroupEntry };
 }
 
 export interface ExpandFallbackOptions {
@@ -39,7 +43,7 @@ export interface ExpandFallbackOptions {
   selfKey?: string;
 }
 
-type Queued = { entry: FallbackChainEntry; origin: ExpandedFallbackLink["origin"] };
+type Queued = { entry: FallbackChainEntry; origin: ExpandedFallbackLink["origin"]; index: number };
 
 type EngineSection = { fallback?: FallbackChainEntry[] } | undefined;
 
@@ -66,6 +70,23 @@ function ownChainOf(config: HundredfoldConfig, mode: FallbackExpansionMode, link
   return engineChain(config, link.engine).filter((entry) => !(typeof entry === "string" && entry.startsWith(`${DEFAULT_CLAUDE_ACCOUNT}:`)));
 }
 
+/** Whether a legacy string entry is passed over: it names no declared account, or its account or engine was already visited. */
+function legacyVisited(legacy: boolean, identity: string | undefined, visited: ReadonlySet<string>): boolean {
+  return legacy && (identity === undefined || visited.has(identity));
+}
+
+/** A group's members not already listed, in the order written, each tagged with the group (listed as a side effect). */
+function groupMembers(written: FallbackGroupEntry, at: { origin: ExpandedFallbackLink["origin"]; index: number }, listed: Set<string>): ExpandedFallbackLink[] {
+  const members: ExpandedFallbackLink[] = [];
+  for (const link of written.group) {
+    const key = fallbackLinkKey(link);
+    if (listed.has(key)) continue;
+    listed.add(key);
+    members.push({ link, origin: at.origin, group: { index: at.index, written } });
+  }
+  return members;
+}
+
 /**
  * The effective chain: `entries` expanded breadth-first, each target once. A
  * string entry is skipped when its account or engine was already visited (the
@@ -77,23 +98,28 @@ export function expandFallbackChain(config: HundredfoldConfig, entries: readonly
   const { mode } = options;
   const visited = new Set<string>([options.selfAccount]);
   const listed = new Set<string>(options.selfKey === undefined ? [] : [options.selfKey]);
-  const queue: Queued[] = entries.map((entry) => ({ entry, origin: "config" }));
+  const queue: Queued[] = entries.map((entry, index) => ({ entry, origin: "config", index }));
   const out: ExpandedFallbackLink[] = [];
 
   for (let i = 0; i < queue.length; i++) {
-    const { entry, origin } = queue[i];
+    const { entry, origin, index } = queue[i];
+    const written = fallbackGroupOf(entry);
+    if (written) {
+      out.push(...groupMembers(written, { origin, index }, listed));
+      continue;
+    }
     const link = fallbackLinkOf(entry);
     if (!link) continue;
     const legacy = typeof entry === "string";
     const identity = identityOf(config, mode, link);
-    if (legacy && (identity === undefined || visited.has(identity))) continue;
+    if (legacyVisited(legacy, identity, visited)) continue;
     const key = fallbackLinkKey(link);
     if (listed.has(key)) continue;
     listed.add(key);
     out.push({ link, origin });
     if (!legacy || identity === undefined) continue;
     visited.add(identity);
-    queue.push(...ownChainOf(config, mode, link, identity).map((next): Queued => ({ entry: next, origin: "legacy" })));
+    queue.push(...ownChainOf(config, mode, link, identity).map((next, at): Queued => ({ entry: next, origin: "legacy", index: at })));
   }
   return out;
 }

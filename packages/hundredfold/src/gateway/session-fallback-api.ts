@@ -1,5 +1,6 @@
 import { engineHealthForTarget, readEngineHealth } from "../shared/engine-health.js";
 import { employeeLimitAccounts, latestLimitReadings } from "../shared/fallback-chain-limits.js";
+import type { AccountHeadroom, ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import { orgRegistry } from "./org-registry.js";
 import { getModelRegistry } from "../shared/models.js";
@@ -29,14 +30,32 @@ export function parseFallbackModePatch(value: unknown): { ok: true; mode?: Sessi
   return value === null ? { ok: true, mode: null } : parseFallbackModeParam(value);
 }
 
-/** A department-scoped caller keeps each link's state and reset but not the company's usage numbers (the same line /api/engine-limits* draws: refused to scoped callers). */
-function withoutUsage(view: SessionFallbackView): SessionFallbackView {
-  const links = view.chain.links.map((link) => {
-    if (!link.health) return link;
-    const { usedPercent: _used, window: _window, ...health } = link.health;
-    return { ...link, health };
-  });
-  return { ...view, chain: { ...view.chain, links } };
+/** The usage numbers of a ranking entry: what a scoped caller is not shown. */
+function withoutHeadroomNumbers<T extends Partial<AccountHeadroom>>(headroom: T): T {
+  const { headroomPercent: _percent, tightest: _tightest, readingAt: _at, ...rest } = headroom;
+  return rest as T;
+}
+
+/** A link without the usage numbers: its health's `usedPercent` and `window`, and its group ranking's headroom numbers. */
+function linkWithoutUsage(link: ResolvedFallbackLink): ResolvedFallbackLink {
+  const { health, group, ...rest } = link;
+  const { usedPercent: _used, window: _window, ...state } = health ?? { state: "unknown" as const };
+  return {
+    ...rest,
+    ...(health ? { health: state } : {}),
+    ...(group ? { group: { ...group, ...(group.headroom ? { headroom: withoutHeadroomNumbers(group.headroom) } : {}) } } : {}),
+  };
+}
+
+/** A department-scoped caller keeps each link's state and reset but not the company's usage numbers (the same line /api/engine-limits* draws: refused to scoped callers), nor the headroom the balancer ranked accounts by. */
+export function withoutUsage(view: SessionFallbackView): SessionFallbackView {
+  const { pick } = view.chain;
+  const chain = {
+    ...view.chain,
+    links: view.chain.links.map(linkWithoutUsage),
+    ...(pick ? { pick: { ...pick, candidates: pick.candidates.map(withoutHeadroomNumbers) } } : {}),
+  };
+  return { ...view, chain };
 }
 
 /**

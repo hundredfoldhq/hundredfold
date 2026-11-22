@@ -2,7 +2,7 @@ import { accountNames, declaredRemoteAccountByName } from "./claude-accounts-con
 import { resolveEmployeeClaudeProfile } from "./claude-profile.js";
 import { claudeAccountKey, remoteClaudeAccountKey } from "./engine-account.js";
 import { ownTargetLink } from "./fallback-chain-links.js";
-import { fallbackChainProblems, fallbackLinkOf, employeeProfileHostProblem, type FallbackLink } from "./fallback-chain-wire.js";
+import { fallbackChainProblems, fallbackGroupOf, fallbackLinkOf, employeeProfileHostProblem, type FallbackChainEntry, type FallbackLink } from "./fallback-chain-wire.js";
 import type { DuplicateTolerance } from "./fallback-chain-load.js";
 import { logger } from "./logger.js";
 import { ENGINE_NAMES } from "./models.js";
@@ -11,10 +11,11 @@ import type { Employee, HundredfoldConfig } from "./types.js";
 
 /**
  * An employee's own `fallback` (docs/fallback-chains.md): a list of
- * `{engine, profile?, model?}` mappings that replaces the account's and the
- * engine's chain for that employee's sessions. Absent inherits; `[]` is no
- * fallback. Only the object form is written here: the legacy strings stand for
- * "that target and its own chain", which an employee's chain has no use for.
+ * `{engine, profile?, model?}` mappings (and `{group: [...]}` balanced groups of
+ * Claude accounts) that replaces the account's and the engine's chain for that
+ * employee's sessions. Absent inherits; `[]` is no fallback. Only the object
+ * forms are written here: the legacy strings stand for "that target and its own
+ * chain", which an employee's chain has no use for.
  */
 
 /** The parts of an employee its own target is made of. */
@@ -32,12 +33,20 @@ export function employeeOwnLink(config: HundredfoldConfig, employee: EmployeeTar
   return ownTargetLink(config, { engine: employee.engine, model: employee.model, ...(account === undefined ? {} : { account }) });
 }
 
+/** The links an entry stands for: itself, or each member of a group. */
+function entryLinks(entry: unknown): FallbackLink[] {
+  const group = fallbackGroupOf(entry);
+  if (group) return group.group;
+  const link = fallbackLinkOf(entry);
+  return link ? [link] : [];
+}
+
 /** Problems with an employee's chain (empty = valid), in the wire module's words. `config` is what the profile names are checked against; without it only the shapes are. `onDuplicate` may tolerate a repeated target (the loader does; a write does not). */
 export function employeeFallbackProblems(config: HundredfoldConfig | undefined, employee: EmployeeTarget, chain: unknown, onDuplicate?: DuplicateTolerance): string[] {
   if (!Array.isArray(chain)) return ["fallback must be a list of fallback targets"];
   const strings = chain.flatMap((entry, index) => typeof entry === "string"
     ? [`fallback[${index}] must be a mapping with engine, profile and model: the engine-name and claude:<name> strings are for engine and account chains`] : []);
-  const named = chain.map((entry) => fallbackLinkOf(entry)?.profile).filter((profile): profile is string => profile !== undefined);
+  const named = chain.flatMap((entry) => entryLinks(entry)).map((link) => link.profile).filter((profile): profile is string => profile !== undefined);
   const profiles = config ? accountNames(config.engines) : new Set(named);
   const ctx = { engines: ENGINE_NAMES, profiles, onDuplicate };
   if (!config) return [...strings, ...fallbackChainProblems("fallback", chain, ctx)];
@@ -58,21 +67,24 @@ export function employeeFallbackProblems(config: HundredfoldConfig | undefined, 
 function hostProfileProblems(config: HundredfoldConfig, employee: EmployeeTarget, chain: unknown[]): string[] {
   const host = isRemoteTarget(employee) ? { host: employee.remoteHost, destination: sshDestination(employee) } : undefined;
   return chain.flatMap((entry, index) => {
-    const link = fallbackLinkOf(entry);
-    if (link?.engine !== "claude" || link.profile === undefined) return [];
-    const remote = declaredRemoteAccountByName(config, link.profile);
-    if (!remote && !accountNames(config.engines).has(link.profile)) return [];
-    return employeeProfileHostProblem(`fallback[${index}]: profile "${link.profile}"`, remote, host) ?? [];
+    const group = fallbackGroupOf(entry);
+    const links = group ? group.group.map((link, member) => ({ link, at: `fallback[${index}].group[${member}]` })) : entryLinks(entry).map((link) => ({ link, at: `fallback[${index}]` }));
+    return links.flatMap(({ link, at }) => {
+      if (link.engine !== "claude" || link.profile === undefined) return [];
+      const remote = declaredRemoteAccountByName(config, link.profile);
+      if (!remote && !accountNames(config.engines).has(link.profile)) return [];
+      return employeeProfileHostProblem(`${at}: profile "${link.profile}"`, remote, host) ?? [];
+    });
   });
 }
 
-/** A valid chain as the links it holds. */
-function linksOf(chain: unknown[]): FallbackLink[] {
-  return chain.flatMap((entry) => fallbackLinkOf(entry) ?? []);
+/** A valid chain as the entries it holds: links, and groups kept whole. */
+function entriesOf(chain: unknown[]): FallbackChainEntry[] {
+  return chain.flatMap((entry) => fallbackGroupOf(entry) ?? fallbackLinkOf(entry) ?? []);
 }
 
 /** What changing an employee's engine or model does to the chain it already holds: the problems the new own target gives it, none when it holds no chain or the target stays. */
-export function storedFallbackProblems(config: HundredfoldConfig, current: EmployeeTarget & { fallback?: FallbackLink[] }, next: EmployeeTarget): string[] {
+export function storedFallbackProblems(config: HundredfoldConfig, current: EmployeeTarget & { fallback?: FallbackChainEntry[] }, next: EmployeeTarget): string[] {
   if (!current.fallback || (current.engine === next.engine && current.model === next.model)) return [];
   return employeeFallbackProblems(config, next, current.fallback);
 }
@@ -80,10 +92,10 @@ export function storedFallbackProblems(config: HundredfoldConfig, current: Emplo
 /** A PATCH's `fallback`: null removes it (inherit), a valid list is written as links, anything else is refused with the reasons. */
 export function employeeFallbackUpdate(
   config: HundredfoldConfig, employee: EmployeeTarget, value: unknown,
-): { ok: true; value: FallbackLink[] | null } | { ok: false; error: string } {
+): { ok: true; value: FallbackChainEntry[] | null } | { ok: false; error: string } {
   if (value === null) return { ok: true, value: null };
   const problems = employeeFallbackProblems(config, employee, value);
-  return problems.length > 0 ? { ok: false, error: problems.join("; ") } : { ok: true, value: linksOf(value as unknown[]) };
+  return problems.length > 0 ? { ok: false, error: problems.join("; ") } : { ok: true, value: entriesOf(value as unknown[]) };
 }
 
 /**
@@ -97,7 +109,7 @@ export function employeeFallbackUpdate(
  */
 export function loadEmployeeFallback(
   raw: unknown, employee: EmployeeTarget & { name: string }, config: HundredfoldConfig | undefined, source: string,
-): { fallback?: FallbackLink[]; problems?: string[] } {
+): { fallback?: FallbackChainEntry[]; problems?: string[] } {
   if (raw === undefined || raw === null) return {};
   const seen = new Set<string>();
   const problems = employeeFallbackProblems(config, employee, raw, ({ problem }) => { seen.add(problem); return true; });
@@ -107,5 +119,5 @@ export function loadEmployeeFallback(
     return { problems: [...problems, ...repeats] };
   }
   if (repeats.length > 0) logger.warn(`Employee ${employee.name} (${source}): ${repeats.join("; ")}; the repeat is ignored. Remove it from the employee file.`);
-  return { fallback: linksOf(raw as unknown[]), ...(repeats.length > 0 ? { problems: repeats } : {}) };
+  return { fallback: entriesOf(raw as unknown[]), ...(repeats.length > 0 ? { problems: repeats } : {}) };
 }

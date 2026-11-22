@@ -1,6 +1,7 @@
 import { sessionFallbackChain, type SessionFallbackChainOptions } from "../shared/fallback-chain.js";
 import { effectivePosition, nextFallbackLink } from "../shared/fallback-chain-next.js";
 import type { SessionFallbackChainView } from "../shared/fallback-chain-wire.js";
+import { readAccountPick } from "./account-pick-meta.js";
 import { metaOf, readFallbackHops, readFallbackRun, sessionAtOwnTarget } from "./fallback-run.js";
 
 /**
@@ -31,6 +32,7 @@ export function sessionFallbackChainView(options: SessionFallbackChainOptions): 
   const position = effectivePosition(links, run);
   const tried = [...(run?.tried ?? []), links[0]!.key, links[position]!.key];
   const hops = readFallbackHops(meta);
+  const pick = readAccountPick(options.session.transportMeta);
   // A session waiting on its own target after the chain ran out has nothing next: the wait is what comes before any new run.
   const ranOut = hops[0]?.to === null && options.session.status === "waiting";
   return {
@@ -40,5 +42,6 @@ export function sessionFallbackChainView(options: SessionFallbackChainOptions): 
     servedBy: servedKeyOf(meta),
     next: ranOut ? null : nextFallbackLink(links, { position, tried }, options.health, options.now)?.link.key ?? null,
     hops,
+    ...(pick ? { pick } : {}),
   };
 }

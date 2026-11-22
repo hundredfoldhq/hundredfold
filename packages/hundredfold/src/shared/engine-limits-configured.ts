@@ -1,4 +1,4 @@
-import { fallbackLinkOf } from "./fallback-chain-wire.js";
+import { fallbackGroupOf, fallbackLinkOf } from "./fallback-chain-wire.js";
 import type { Employee, EngineLimitsResponse, HundredfoldConfig } from "./types.js";
 
 /**
@@ -66,6 +66,7 @@ function addLinks(names: Set<string>, entries: unknown): void {
   for (const entry of entries) {
     const link = fallbackLinkOf(entry);
     if (link) names.add(link.engine);
+    for (const member of fallbackGroupOf(entry)?.group ?? []) names.add(member.engine);
   }
 }
 

@@ -43,7 +43,7 @@ function writtenChains(config: HundredfoldConfig, employees: ReadonlyArray<{ nam
 
 /** Whether a chain names an opencode model at all, so reading the catalogue is worth it. */
 function namesOpencodeModel(chain: FallbackChainEntry[]): boolean {
-  return chain.some((entry) => typeof entry === "object" && entry !== null && entry.engine === "opencode" && typeof entry.model === "string");
+  return chain.some((entry) => typeof entry === "object" && entry !== null && "engine" in entry && entry.engine === "opencode" && typeof entry.model === "string");
 }
 
 /**
