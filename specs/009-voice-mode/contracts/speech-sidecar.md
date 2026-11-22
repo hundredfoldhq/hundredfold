@@ -27,6 +27,8 @@ Every reply can instead be `error {ref, message}`. A request is answered in the 
 sidecar finishes it, not the order sent: replies carry the request's id, stream or
 utterance.
 
+**VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence.
+
 ## Lifecycle
 
 - Spawned on the first attachment, not at boot. Kept warm for 10 minutes after the last
