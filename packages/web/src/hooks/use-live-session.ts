@@ -546,6 +546,7 @@ export function useLiveSession(
   const loadErrorRef = useRef<Error | null>(null)
   const lastDeltaAtRef = useRef<number>(0)
   const turnStartsRef = useRef(0) // bumped by every turn start, so a late refetch can tell it was overtaken
+  const completionsRef = useRef(0) // bumped by every completion, so a read sent before one can tell it was overtaken
   const streamingTextRef = useRef(initialSnapshot?.streamingText ?? '')
   const [streamingText, setStreamingText] = useState(initialSnapshot?.streamingText ?? '')
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(initialSnapshot?.liveContextTokens ?? null)
@@ -959,6 +960,7 @@ export function useLiveSession(
       }
 
       if (event === 'session:completed') {
+        completionsRef.current += 1
         clearStatusMessage()
         const intermediateStart = intermediateStartRef.current
         streamingTextRef.current = ''
@@ -1075,8 +1077,9 @@ export function useLiveSession(
   }, [subscribe])
 
   // Load session data
-  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean }) => {
+  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean }): Promise<void> => {
     const myToken = ++loadTokenRef.current
+    const completionsAtStart = completionsRef.current
     if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     // Whether the failure came from the fetch (transient, retried) or from
     // processing what it returned (deterministic, so not retried).
@@ -1086,6 +1089,13 @@ export function useLiveSession(
       fetched = true
       if (myToken !== loadTokenRef.current) {
         return
+      }
+      // A turn completed while this read was out and the read still calls a turn running: it
+      // was answered before the completion, so its partial rows and its status would put the
+      // truncated reply back over the final one. Its other rows are real (the history on a first
+      // load, a user row only reads carry), so read again, once, now that the turn is over.
+      if (!options?.reissued && completionsRef.current !== completionsAtStart && turnInFlight(session)) {
+        return loadSession(id, { suppressHydrating: true, reissued: true })
       }
       setHydrating(false)
       setLoadError(null)
