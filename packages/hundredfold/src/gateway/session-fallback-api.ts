@@ -1,6 +1,7 @@
+import { withoutHeadroomNumbers } from "../sessions/account-pick-meta.js";
 import { engineHealthForTarget, readEngineHealth } from "../shared/engine-health.js";
 import { employeeLimitAccounts, latestLimitReadings } from "../shared/fallback-chain-limits.js";
-import type { AccountHeadroom, ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
+import type { ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import { orgRegistry } from "./org-registry.js";
 import { getModelRegistry } from "../shared/models.js";
@@ -28,12 +29,6 @@ export function parseFallbackModeParam(value: unknown): { ok: true; mode?: Sessi
 /** A PUT/PATCH's `fallbackMode`: as above, and null clears the session's own mode so it follows the config default again. */
 export function parseFallbackModePatch(value: unknown): { ok: true; mode?: SessionFallbackMode | null } | { ok: false; error: string } {
   return value === null ? { ok: true, mode: null } : parseFallbackModeParam(value);
-}
-
-/** The usage numbers of a ranking entry: what a scoped caller is not shown. */
-function withoutHeadroomNumbers<T extends Partial<AccountHeadroom>>(headroom: T): T {
-  const { headroomPercent: _percent, tightest: _tightest, readingAt: _at, ...rest } = headroom;
-  return rest as T;
 }
 
 /** A link without the usage numbers: its health's `usedPercent` and `window`, and its group ranking's headroom numbers. */

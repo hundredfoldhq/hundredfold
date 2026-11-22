@@ -268,8 +268,38 @@ profile. A session
 the balancer has pinned records its choice in `transportMeta.accountPick` and
 resolves against the chain the group came from (`source`), ahead of the pinned
 account's own chain, so its chain is the pinned account, the group's other
-members by headroom, then the rest of the chain. Pinning new sessions to the
-picked member is a separate step from the chain and the preview described here.
+members by headroom, then the rest of the chain.
+
+#### Pinning at every start
+
+Every way a session starts on Claude goes through the same pick
+(`pinAccountAtCreation`): a new chat, a spawn, a delegation, a Todo wake or
+dispatch, a Todo capture, a connector-routed session and a Talk hand-off or
+delegation. The session starts on the member it picks, stored where a chosen
+profile already lives (`claudeConfigDir`; a pick equal to the employee's own login
+stores nothing, so that row is as it was before groups), and records the pick in
+`transportMeta.accountPick`. A caller that names a profile (`engine:
+claude:<name>`) is pinned there and not balanced; naming `engine: claude` or a
+model is still balanced. Nothing starts a new pick afterwards: not a turn, a
+resume, a restart, a session reset or a revert. A limit walks the chain and the
+return at the reset goes back to the pinned account, not to the employee's login
+and not to the group's first member.
+
+Members are chosen by a smooth weighted round-robin over their headroom. The
+credit that makes it round-robin is charged only when a session really starts: a
+refused start, a stored Todo override that is only validated, a preview and the
+board walk's view never move it, and neither does a pick that finds every member
+at its limit (that session pins the member that reopens first and is then
+rerouted at creation like any other session whose own account is out). The
+credits live in memory and start at zero after a restart; a config reload that
+changes a group forgets them.
+
+A deliberate switch onto Claude that names no profile (the operator's
+engine-only switch, or a session's own `compact_session` switch) runs the same
+pick with trigger `switch`, and a session's own switch picks again when it is
+applied. A switch that names a profile pins that profile and clears the pick. The
+board walk judges a Todo whose assignee has a home group on the member the
+balancer would pick for it now.
 
 ### Returning to the own target
 
@@ -469,7 +499,7 @@ A session's own target is normally its employee's Claude login. A session create
   department-scoped session reading its own session gets each link's `state`
   and `until`, but not `usedPercent` or `window`, and a balanced session's
   `pick` (its recorded `AccountPick`) and each member's `group.headroom` without
-  `headroomPercent`, `tightest` or `readingAt`.
+  `headroomPercent`, `tightest`, `readingAt`, `weight` or `sharePercent`.
 - `hundredfold doctor` reports a malformed group in `config.yaml` (it does not load).
 
 ## opencode internal fallback is removed

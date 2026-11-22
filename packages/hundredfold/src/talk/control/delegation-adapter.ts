@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation, type AccountPin } from "../../sessions/account-pin.js";
 import type { ApiContext } from "../../gateway/api.js";
 import { dispatchWebSessionRun } from "../../gateway/web-session-dispatch.js";
 import { claimIncomingTurn } from "../../sessions/incoming-turn.js";
@@ -19,6 +20,7 @@ import { getWorkItem, linkSession } from "../../work-items/store.js";
 import { resolveDelegationLinkRole } from "../../work-items/link-role.js";
 import { liveEmployeeSession } from "../../work-items/employee-sessions.js";
 import { recordLandedBrief, recordNewDelegateSession } from "../../work-items/employee-session-delegation.js";
+import { orgRegistry } from "../../gateway/org-registry.js";
 import { delegationLoopError, relinkRole } from "../../gateway/delegation-handoff.js";
 import type { TalkControlAdapterContext, TalkControlExecution } from "./types.js";
 
@@ -65,13 +67,31 @@ function validateReplay(session: Session, input: TalkDelegationInput): void {
  * as for any delegation, reporting to the Talk session from its next turn),
  * else a new one.
  */
-function delegateSession(input: TalkDelegationInput, key: string, existing: Session | undefined, todoStatus: string): Session {
+function delegateSession(input: TalkDelegationInput, key: string, existing: Session | undefined, todoStatus: string): { session: Session; pin?: AccountPin } {
   const reused = existing ? undefined : liveEmployeeSession(input.todoId, input.employee.name);
+  const found = existing ?? reused;
+  const started = found ? undefined : startDelegateSession(input, key);
+  const session = found ?? started!.session;
+  if (reused) {
+    const loop = delegationLoopError(input.todoId, reused, input.sourceSessionId);
+    if (loop) throw new Error(loop);
+  }
+  // Handing an `in_review` Todo to someone is handing it to a reviewer.
+  linkSession(input.todoId, session.id, null, relinkRole(session, resolveDelegationLinkRole(undefined, todoStatus)), { via: "delegation" });
+  if (started) recordNewDelegateSession(input.todoId, input.employee.name, session.id, input.sourceSessionId);
+  return { session, pin: started?.pin };
+}
+
+/** A new session for the delegate, on the account the balancer picked for it; the claim charges the pick once its transaction has committed. Only a session that is really created is picked for: a replay or a live session is not a start. */
+function startDelegateSession(input: TalkDelegationInput, key: string): { session: Session; pin: AccountPin } {
   const config = input.context.getConfig();
   const parent = getSession(input.sourceSessionId);
   const fallbackMode = childFallbackMode(config, parent);
-  const session = existing ?? reused ?? createSession({
+  const pin = pinAccountAtCreation({ config, employee: orgRegistry(config).get(input.employee.name), engine: input.employee.engine, model: input.employee.model });
+  const session = createSession({
     engine: input.employee.engine,
+    ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.accountPick ? { transportMeta: metaWithAccountPick(undefined, pin) } : {}),
     source: "web",
     sourceRef: key,
     connector: "web",
@@ -86,14 +106,7 @@ function delegateSession(input: TalkDelegationInput, key: string, existing: Sess
     prompt: input.prompt,
     title: `Delegate ${input.todoId}`,
   });
-  if (reused) {
-    const loop = delegationLoopError(input.todoId, reused, input.sourceSessionId);
-    if (loop) throw new Error(loop);
-  }
-  // Handing an `in_review` Todo to someone is handing it to a reviewer.
-  linkSession(input.todoId, session.id, null, relinkRole(session, resolveDelegationLinkRole(undefined, todoStatus)), { via: "delegation" });
-  if (!existing && !reused) recordNewDelegateSession(input.todoId, input.employee.name, session.id, input.sourceSessionId);
-  return session;
+  return { session, pin };
 }
 
 /** A brief into a session somebody else started: its delegator takes over
@@ -111,7 +124,8 @@ function recordReusedBrief(input: TalkDelegationInput, key: string, session: Ses
 export function claimTalkDelegation(input: TalkDelegationInput): ClaimedDelegation {
   const key = sessionKey(input.call);
   // The assignment inside announces a board move; held until this transaction commits, dropped if it rolls back.
-  return holdLiveSignalsUntilCommit(() => initDb().transaction((): ClaimedDelegation => {
+  let pin: AccountPin | undefined;
+  const claimed = holdLiveSignalsUntilCommit(() => initDb().transaction((): ClaimedDelegation => {
     const existing = getSessionBySessionKey(key);
     if (existing) validateReplay(existing, input);
     const assigned = assignWorkItem(
@@ -122,7 +136,9 @@ export function claimTalkDelegation(input: TalkDelegationInput): ClaimedDelegati
       { origin: "talk" },
     );
     if (!assigned) throw new Error(`Todo ${input.todoId} not found`);
-    const session = delegateSession(input, key, existing, assigned.status);
+    const delegate = delegateSession(input, key, existing, assigned.status);
+    const { session } = delegate;
+    pin = delegate.pin;
     const turn = claimIncomingTurn({
       sessionId: session.id,
       sessionKey: session.sessionKey ?? key,
@@ -144,6 +160,9 @@ export function claimTalkDelegation(input: TalkDelegationInput): ClaimedDelegati
     if (!existing) recordReusedBrief(input, key, session, turn.queueItemId);
     return { session: current, queueItemId: turn.queueItemId, replayed: turn.deduplicated };
   }).immediate());
+  // Charged once the delegation is committed, never for one that rolled back.
+  chargeAccountStart(pin);
+  return claimed;
 }
 
 export function delegateTodoWithTalk(input: TalkDelegationInput): TalkControlExecution {

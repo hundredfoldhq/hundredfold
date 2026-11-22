@@ -3,7 +3,8 @@ import { logger } from "../shared/logger.js";
 import type { Employee, Session, WorkItemLinkRole } from "../shared/types.js";
 import { deliverClaimedSessionDelivery } from "../sessions/callbacks.js";
 import { claimSessionDelivery, claimSessionDeliveryWithinSourceLimit, createSession, enqueueQueueItem, insertMessage, updateSession } from "../sessions/registry.js";
-import { validateNewSessionSelection } from "../sessions/session-patch.js";
+import { validateNewSessionSelection, type NewSessionSelectionResult } from "../sessions/session-patch.js";
+import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
 import { reroutedSessionMeta, type SessionReroute } from "../sessions/engine-override-window.js";
 import { resolveTodoDispatch } from "../work-items/dispatch-config.js";
 import { liveEmployeeSession, resolveEmployeeSession, ROOT_SESSION_SLOT, rootTodoSessionKey } from "../work-items/employee-sessions.js";
@@ -87,7 +88,7 @@ export type WakeEmployeeResult =
   | { ok: true; session: Session; started: boolean }
   | { ok: false; error: string };
 
-interface Spawn { engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; prompt: string }
+interface Spawn { engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; pin: Pick<NewSessionSelectionResult, "accountPick" | "claudeConfigDir">; prompt: string }
 
 function employeeDefaults(employee: Employee): { engine: string; model?: string; employee: string; effortLevel?: string } {
   return { engine: employee.engine, ...(employee.model ? { model: employee.model } : {}), employee: employee.name, ...(employee.effortLevel ? { effortLevel: employee.effortLevel } : {}) };
@@ -122,6 +123,7 @@ function planSpawn(context: ApiContext, input: WakeOnTodoInput, employee: Employ
       model: selection.model,
       effortLevel: selection.effortLevel,
       reroute: selection.reroute,
+      pin: selection,
       prompt: override.prefix + input.message,
     },
   };
@@ -141,10 +143,11 @@ function createLinkedSession(context: ApiContext, input: WakeOnTodoInput, employ
     employee: employee?.name,
     model: spawn.model,
     effortLevel: spawn.effortLevel,
+    ...(spawn.pin.claudeConfigDir ? { claudeConfigDir: spawn.pin.claudeConfigDir } : {}),
     prompt: spawn.prompt,
     title: input.title.slice(0, 200),
     portalName: context.getConfig().portal?.portalName,
-    transportMeta: reroutedSessionMeta(spawn.reroute),
+    transportMeta: reroutedSessionMeta(spawn.reroute, metaWithAccountPick(undefined, spawn.pin)),
   });
   linkSession(input.workItemId, session.id, input.actor, input.role);
   return session;
@@ -177,7 +180,11 @@ function wakeOnTodo(context: ApiContext, input: WakeOnTodoInput, employee: Emplo
   if (!planned.ok) return planned;
   const { spawn } = planned;
   const resolved = resolveEmployeeSession(input.workItemId, slot, () => createLinkedSession(context, input, employee, spawn));
-  if (resolved.started) startFirstTurn(context, resolved.session, spawn);
+  // Charged once the row is committed to this Todo, never for a start that was refused or lost to a live session.
+  if (resolved.started) {
+    chargeAccountStart(spawn.pin);
+    startFirstTurn(context, resolved.session, spawn);
+  }
   else deliverIntoSession(resolved.session, input);
   return { ok: true, ...resolved };
 }

@@ -9,9 +9,10 @@ import type { FallbackHopSkip, FallbackSkipReason, ResolvedFallbackLink } from "
  * `fallback.chain.next` reports with it, so the two cannot disagree.
  */
 
-/** Where a run stands on its chain: the index of the target the session is on, and every target tried so far (the own target included). */
+/** Where a run stands on its chain: the index of the target the session is on, and every target tried so far (the own target included). `at`: that target's key, which outranks the index when the chain's order changed since. */
 export interface FallbackRunCursor {
   position: number;
+  at?: string;
   tried: readonly string[];
 }
 
@@ -28,10 +29,16 @@ export interface NextFallbackLink {
  * a fallback link the run has tried (the target the session is on, which may lie
  * behind others when the walk went back to a link it had passed over for its
  * health); otherwise past the furthest tried target, as when the chain was
- * edited since. An edit cannot send a run to a target it already tried.
+ * edited since. An edit cannot send a run to a target it already tried. A run that
+ * recorded the key of its target (`at`) is found by it first: a balanced group's
+ * members are ranked by headroom each time the chain is resolved, so the recorded
+ * index may name another member by now, and the session would be taken for being
+ * on a link it never stood on.
  */
 export function effectivePosition(links: readonly ResolvedFallbackLink[], run: FallbackRunCursor | undefined): number {
   if (!run) return 0;
+  const standing = run.at === undefined ? -1 : links.findIndex((link, index) => index > 0 && link.key === run.at);
+  if (standing > 0) return standing;
   const tried = new Set(run.tried);
   const recorded = Number.isFinite(run.position) ? Math.trunc(run.position) : 0;
   if (recorded > 0 && recorded < links.length && tried.has(links[recorded]!.key)) return recorded;

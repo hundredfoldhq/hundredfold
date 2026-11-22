@@ -1,9 +1,10 @@
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
 import { leftTranscriptOf } from "../sessions/left-transcript.js";
-import { getSession, switchSessionTarget } from "../sessions/registry.js";
+import { getSession, switchSessionTarget, type SwitchSessionTargetOptions } from "../sessions/registry.js";
 import { recordSwitchNotice, type LastSwitch } from "../sessions/switch-notice.js";
-import { resolveSwitchTarget, staysInSlot, type SwitchTargetView } from "../sessions/switch-target.js";
+import { chargeAccountStart } from "../sessions/account-pin.js";
+import { resolveSwitchTarget, staysInSlot, type SwitchResolution, type SwitchTargetView } from "../sessions/switch-target.js";
 
 /**
  * The operator's switch of an existing session's engine or Claude profile
@@ -47,6 +48,21 @@ function operatorSwitchRecord(session: Session, config: HundredfoldConfig, own: 
   };
 }
 
+/** What `switchSessionTarget` writes for a resolved target: the profile only when the request named one or the balancer picked one, and the balancer's record as the resolution decided it (set, cleared or left). */
+function switchWrite(body: TargetPatchInput["body"], resolved: Extract<SwitchResolution, { ok: true }>, lastSwitch: LastSwitch): SwitchSessionTargetOptions {
+  const { target, accountPick } = resolved;
+  return {
+    engine: target.engine,
+    ...(body.profile !== undefined || accountPick ? { claudeConfigDir: target.claudeConfigDir } : {}),
+    model: target.model,
+    effortLevel: target.effortLevel,
+    leftConversation: "park",
+    sync: "pointer",
+    lastSwitch: lastSwitch as unknown as JsonObject,
+    ...(accountPick === undefined ? {} : { accountPick }),
+  };
+}
+
 /**
  * The switch a PUT/PATCH asks for, if it asks for one. `none` when the request names no
  * engine or profile that moves the session (the route then handles model/effort as before).
@@ -62,16 +78,9 @@ export function patchSessionTarget(input: TargetPatchInput): TargetPatchResult {
   if (input.busy) return { kind: "refused", error: "Cannot switch engine or profile while a turn is running, waiting, or queued" };
 
   const lastSwitch = operatorSwitchRecord(session, config, own, target);
-  const switched = switchSessionTarget(session.id, {
-    engine: target.engine,
-    ...(body.profile !== undefined ? { claudeConfigDir: target.claudeConfigDir } : {}),
-    model: target.model,
-    effortLevel: target.effortLevel,
-    leftConversation: "park",
-    sync: "pointer",
-    lastSwitch: lastSwitch as unknown as JsonObject,
-  });
+  const switched = switchSessionTarget(session.id, switchWrite(body, resolved, lastSwitch));
   if (!switched) return { kind: "refused", error: "session not found" };
+  chargeAccountStart({ accountPick: resolved.accountPick ?? undefined });
   recordSwitchNotice(session.id, input.emit, config, lastSwitch);
   return { kind: "switched", session: getSession(session.id) ?? switched };
 }

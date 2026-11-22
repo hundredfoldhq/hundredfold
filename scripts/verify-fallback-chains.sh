@@ -21,9 +21,8 @@
 #   --mode        which opencode mode the instance runs in: run, server, or both (default)
 #   --only        scenario ids to run, e.g. a,f (default: all)
 #   --pending     scenarios that wait on runtime work not yet merged: their result is
-#                 reported, never failed (default: p,q,s,t,u,v, the account group scenarios
-#                 that need start-path pinning; --pending "" runs everything for real); a pending scenario that
-#                 passes is reported as such, and --strict fails the run on it
+#                 reported, never failed (default: none, so every scenario runs and counts); a pending
+#                 scenario that passes is reported as such, and --strict fails the run on it
 #   --port        gateway port, 8060 or above (default: HUNDREDFOLD_VERIFY_PORT, else a free one)
 #   --keep        leave the last instance up for screenshots and print how to tear it down
 #   --retain DIR  copy the ledger, logs and results there at the end
@@ -46,9 +45,9 @@ GATEWAY_REPO="$(cd "${HUNDREDFOLD_VERIFY_GATEWAY_REPO:-$REPO}" && pwd -P)"
 HELPER="$REPO/scripts/hundredfold-sandbox.sh"
 DRIVER_DIR="$REPO/scripts/verify-fallback-chains"
 INSTANCE="fallback-chains"
-# Waiting on part B of the account group work (start-path pinning at creation): they assert the pick a
-# session records. Drop each id from this list when that work is merged into the branch under test.
-DEFAULT_PENDING="p,q,s,t,u,v"
+# Scenario ids that wait on runtime work not merged into the branch under test. Empty: every scenario runs
+# and counts. Add an id here for work that has not landed, and drop it when it does.
+DEFAULT_PENDING=""
 MODE="both"; ONLY=""; PENDING="$DEFAULT_PENDING"; PORT="${HUNDREDFOLD_VERIFY_PORT:-}"; KEEP=0; RETAIN=""; SKIP_BUILD=0; STRICT=0; TEARDOWN=""
 
 die() { echo "verify-fallback-chains: $1" >&2; exit "${2:-2}"; }

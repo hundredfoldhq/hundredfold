@@ -7,6 +7,7 @@
  * the lifecycle transitions. The registry is passed in rather than imported so
  * the two modules do not have to reference each other.
  */
+import { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation } from "../sessions/account-pin.js";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HundredfoldConfig, Session } from "../shared/types.js";
@@ -227,8 +228,11 @@ export async function handOff(
     send(res, 400, { error: "prompt must be a non-empty string." });
     return;
   }
+  const pin = pinAccountAtCreation({ config, engine: config.engines.default });
   const spawned = createSession({
     engine: config.engines.default,
+    ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.accountPick ? { transportMeta: metaWithAccountPick(undefined, pin) } : {}),
     source: "web",
     sourceRef: `talk-handoff:${randomUUID()}`,
     connector: "web",
@@ -236,6 +240,7 @@ export async function handOff(
     parentSessionId: session.sessionId,
     prompt,
   });
+  chargeAccountStart(pin);
   insertMessage(spawned.id, "user", prompt);
   runHandoff?.(spawned, prompt);
   send(res, 201, { sessionId: spawned.id, parentSessionId: session.sessionId });

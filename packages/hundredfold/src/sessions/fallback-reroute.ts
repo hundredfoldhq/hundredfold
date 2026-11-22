@@ -4,7 +4,7 @@ import { exhaustedEngineReturnsAt, type EngineHealthReading } from "../shared/en
 import { sessionFallbackChain } from "../shared/fallback-chain.js";
 import { linkModelWritten } from "../shared/fallback-chain-links.js";
 import { isLinkExhausted, linkHealthKey } from "../shared/fallback-chain-health.js";
-import type { FallbackChainSource, ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
+import type { AccountPick, FallbackChainSource, ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
 import type { EngineName } from "../shared/models.js";
 import type { Employee, HundredfoldConfig, ModelRegistry, Session } from "../shared/types.js";
 import type { SessionReroute } from "./engine-override-window.js";
@@ -32,6 +32,8 @@ export interface RerouteArgs {
   health: EngineHealthReading;
   /** `host`: the session's ssh destination, when it runs remotely: a profile link is usable only on its own host. */
   scope: { scoped: boolean; remote: boolean; host?: string };
+  /** The account the balancer pinned the session to (the profile directory; absent: its employee's login) and its pick: the session's own target is that account, and its chain the one the pick came from. */
+  pin?: { claudeConfigDir?: string | null; accountPick?: AccountPick };
   now?: Date;
 }
 
@@ -44,7 +46,12 @@ export interface RerouteChoice {
 
 /** A stand-in for the session that does not exist yet, which is all the resolver reads of it. */
 function prospectiveSession(args: RerouteArgs): Session {
-  return { id: "", engine: args.engine, model: args.model ?? null, employee: args.employee?.name ?? null, transportMeta: null, fallbackTarget: null } as unknown as Session;
+  const { pin } = args;
+  return {
+    id: "", engine: args.engine, model: args.model ?? null, employee: args.employee?.name ?? null, fallbackTarget: null,
+    claudeConfigDir: pin?.claudeConfigDir ?? null,
+    transportMeta: pin?.accountPick ? { accountPick: pin.accountPick } : null,
+  } as unknown as Session;
 }
 
 /** Whether the link is another Claude account than the session would run: from a Claude target, a different account; from any other, a profile the link names (an unprofiled Claude link runs as the employee's own account). */
@@ -53,10 +60,15 @@ function swapsAccount(own: ResolvedFallbackLink, link: ResolvedFallbackLink): bo
   return own.engine === "claude" ? link.account !== own.account : link.profile !== undefined;
 }
 
+/** The account the session returns to at the reset: its own target's, which the balancer may have pinned, else (a session off Claude) its employee's login. */
+function originalAccountOf(args: RerouteArgs, own: ResolvedFallbackLink): string {
+  return own.engine === "claude" ? own.account : accountForEmployee(args.employee, "claude");
+}
+
 /** The account swap a link makes, when it is another Claude account than the session would run. */
 function accountSwapOf(args: RerouteArgs, own: ResolvedFallbackLink, link: ResolvedFallbackLink): SessionReroute["account"] {
   if (!swapsAccount(own, link)) return undefined;
-  const original = accountForEmployee(args.employee, "claude");
+  const original = originalAccountOf(args, own);
   // A remote subject's swap is onto a remote account, whose directory is on its host.
   if (args.scope.remote) return { original, substitute: link.account, configDir: declaredRemoteAccountByKey(args.config, link.account)?.configDir ?? null };
   const profile = link.account === DEFAULT_CLAUDE_ACCOUNT ? null : declaredAccountByKey(args.config, link.account)?.profile ?? null;
@@ -74,7 +86,7 @@ function rerouteRecord(args: RerouteArgs, found: { own: ResolvedFallbackLink; li
     from: engine,
     model: args.model?.trim() || null,
     until: exhaustedEngineReturnsAt(health, health[ownKey] ? ownKey : own.engine, now),
-    run: { source, position: index, tried: [own.key], startedAt: now.toISOString() },
+    run: { source, position: index, at: link.key, tried: [own.key], startedAt: now.toISOString() },
     target: targetOfLink(link),
     ...(account ? { account } : {}),
   };

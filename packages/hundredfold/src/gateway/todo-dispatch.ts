@@ -1,4 +1,5 @@
 import { createSession, insertMessage, listSessionsByWorkItem, updateSession } from "../sessions/registry.js";
+import { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation } from "../sessions/account-pin.js";
 import { todoHoldRefusal } from "../work-items/todo-hold.js";
 import { startDateHold } from "../work-items/start-date.js";
 import { enqueueQueueItem } from "../sessions/queue-item-registry.js";
@@ -172,9 +173,11 @@ function planDispatcher(item: WorkItem, context: ApiContext, suffix: string | un
 
 function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: ApiContext, transportMeta?: Record<string, string>): Session {
   const sessionKey = todoDispatcherSessionKey(item.id);
-  return createSession({
+  const pin = pinAccountAtCreation({ config: context.getConfig(), employee: plan.dispatcher, engine: plan.engineName, model: plan.model });
+  const session = createSession({
     // The assignee as pressed binds the Dispatcher, whatever happens to the Todo while it routes.
-    transportMeta: { ...transportMeta, ...dispatchAssigneeMeta(item) },
+    transportMeta: metaWithAccountPick({ ...transportMeta, ...dispatchAssigneeMeta(item) }, pin),
+    ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
     engine: plan.engineName,
     source: "web",
     sourceRef: sessionKey,
@@ -188,6 +191,8 @@ function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: 
     title: `Dispatch ${item.id}`,
     portalName: context.getConfig().portal?.portalName,
   });
+  chargeAccountStart(pin);
+  return session;
 }
 
 function runDispatcherSession(item: WorkItem, session: Session, plan: DispatcherPlan, context: ApiContext): void {

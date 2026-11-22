@@ -191,7 +191,7 @@ async function returnToPinned(h) {
   expectEqual("position and pick", [after.fallback?.chain?.position, pickOf(after)?.picked], [0, keys.B]);
 }
 
-/** Spawn, delegate and Todo dispatch through the API: each returns the id of the session it started. */
+/** Spawn, delegate, a Todo wake and the Todo Dispatcher through the API: each returns the id of the session it started. */
 const startVia = {
   async spawn(h, { employee, tag, parent }) {
     const spawned = await h.api("POST", "/api/sessions", { prompt: `Reply briefly. ${tag}`, employee, parentSessionId: parent, source: "web" });
@@ -203,6 +203,17 @@ const startVia = {
     expectTrue("delegate: accepted", delegated.status === 201 || delegated.status === 200, `${delegated.status} ${JSON.stringify(delegated.body)}`);
     return delegated.body.sessionId;
   },
+  /** A mention on the assigned Todo starts the employee's own session on it (the Todo wake). */
+  async wake(h, { employee, tag }) {
+    const todoId = await newTodo(h, `Reply briefly ${tag}`, `Reply briefly. ${tag}`, employee);
+    const commented = await h.api("POST", `/api/work-items/${todoId}/comments`, { body: `@${employee} Reply briefly. ${tag}` });
+    expectTrue("Todo wake: comment accepted", commented.status === 200 || commented.status === 201, `${commented.status} ${JSON.stringify(commented.body)}`);
+    const linked = await h.api("GET", `/api/work-items/${todoId}/sessions`);
+    const sessions = linked.body?.sessions ?? linked.body ?? [];
+    expectEqual("Todo wake: one session started on the Todo", sessions.length, 1);
+    return sessions[0].id ?? sessions[0].sessionId;
+  },
+  /** The built-in Todo Dispatcher runs as the default login, which the group [A, B] does not hold: no pick (design 3). */
   async dispatch(h, { employee, tag }) {
     const todoId = await newTodo(h, `Reply briefly ${tag}`, `Reply briefly. ${tag}`, employee);
     const dispatched = await h.api("POST", `/api/work-items/${todoId}/dispatch`, {});
@@ -253,15 +264,16 @@ async function startPaths(h) {
   await record('new chat, engine "claude"', engineNamed.id, engineNamed.tag);
   const [pinned] = await startSessions(h, 1, { engine: "claude:A" });
   await record('new chat, engine "claude:A"', pinned.id, pinned.tag);
-  for (const path of ["spawn", "delegate", "dispatch"]) {
+  for (const path of ["spawn", "delegate", "wake", "dispatch"]) {
     const tag = h.newTag();
     await record(path, await startVia[path](h, { employee, tag, parent: chat[0].id }), tag);
   }
   await boardWalkTick(h, employee);
 
-  for (const path of ["new chat", 'new chat, engine "claude"', "spawn", "delegate", "dispatch"]) {
+  for (const path of ["new chat", 'new chat, engine "claude"', "spawn", "delegate", "wake"]) {
     expectEqual(`${path}: picked B and ran on B`, results[path], { pick: keys.B, profile: "profile-b" });
   }
+  expectEqual("the Todo Dispatcher's own login is not in the group, so it gets no pick", results.dispatch?.pick, undefined);
   expectEqual('engine "claude:A" pins A and gets no pick', results['new chat, engine "claude:A"'], { pick: undefined, profile: "profile-a" });
 }
 
@@ -272,5 +284,5 @@ export const GROUP_SCENARIOS = [
   { id: "s", title: "group hop from a pick: a session picked onto B moves to A on B's limit, then to opencode", run: groupHopFromPick },
   { id: "t", title: "stickiness: a pinned session keeps its account over five turns and a restart while the other account's usage drops below it", run: stickiness },
   { id: "u", title: "return: pinned to B and moved to A by a limit, the next turn after B is cleared goes back to B", run: returnToPinned },
-  { id: "v", title: "start paths: new chat (with and without engine claude), spawn, delegate and Todo dispatch each get a pick; claude:<name> gets none; a board walk tick runs", run: startPaths },
+  { id: "v", title: "start paths: new chat (with and without engine claude), spawn, delegate and a Todo wake each get a pick, the Todo Dispatcher (default login) none; claude:<name> gets none; a board walk tick runs", run: startPaths },
 ];
