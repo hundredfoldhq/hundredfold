@@ -20,8 +20,16 @@ export class Pcm16Resampler {
     this.step = from / to;
   }
 
+  /** Equal rates change nothing but sample alignment: a chunk may end mid-sample, and the byte waits for its pair. */
+  private alignedPassThrough(chunk: Buffer): Buffer {
+    if (this.carry === null && chunk.length % 2 === 0) return chunk;
+    const bytes = this.carry === null ? chunk : Buffer.concat([Buffer.from([this.carry]), chunk]);
+    this.carry = bytes.length & 1 ? bytes[bytes.length - 1] : null;
+    return bytes.subarray(0, bytes.length - (bytes.length & 1));
+  }
+
   push(chunk: Buffer): Buffer {
-    if (this.step === 1) return chunk;
+    if (this.step === 1) return this.alignedPassThrough(chunk);
     const bytes = this.carry === null ? chunk : Buffer.concat([Buffer.from([this.carry]), chunk]);
     const count = bytes.length >> 1;
     this.carry = bytes.length & 1 ? bytes[bytes.length - 1] : null;

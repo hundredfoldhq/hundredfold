@@ -76,7 +76,7 @@ export class VoiceAttachment {
     this.bargeIn = new BargeIn({ voice: this.voice, clock: init.deps.clock, enabled: init.config.bargeIn.enabled });
     this.dispatcher = new Dispatcher({
       sessionId: init.sessionId, config: init.config, deps: init.deps, voice: this.voice,
-      sttProvider: init.providers.stt.id, operator: init.principal.kind === "operator", send: (frame) => this.send(frame),
+      sttProvider: init.providers.stt.id, operator: init.principal.kind === "operator", live: () => !this.ended, send: (frame) => this.send(frame),
       onBackgrounded: (tasks) => this.announce(tasks.map((task) => ({ id: task.taskId, description: task.description }))),
     });
   }
@@ -224,7 +224,12 @@ export class VoiceAttachment {
     this.hello = true;
     this.mode = frame.mode;
     this.capture = this.openCapture();
-    if (this.suspended) this.voice.unsuspend();
+    // A client that has said hello is back whether or not it sends `resume`: it is a live attachment again, so
+    // a take-over, a second drop and the suspend window all treat it as one.
+    if (this.suspended) {
+      this.suspendedAt = null;
+      this.voice.unsuspend();
+    }
     this.send(this.readyFrame());
   }
 
@@ -243,11 +248,10 @@ export class VoiceAttachment {
   }
 
   private onResume(): void {
-    this.suspendedAt = null;
     const missed = this.voice.takeMissed();
     if (missed.length === 0) return;
     this.send({ type: "missed", messageIds: missed.flatMap((reply) => (reply.messageId ? [reply.messageId] : [])) });
-    for (const reply of missed) this.voice.pipeline.speakText(reply.text);
+    for (const reply of missed) this.voice.pipeline.speakText(reply.text, reply.messageId);
   }
 
   private readyFrame(): VoiceServerFrame {

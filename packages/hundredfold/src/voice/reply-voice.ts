@@ -122,7 +122,7 @@ export class ReplyVoice {
     reply.heard = heard;
     // A reply still being written has no stored message of its own yet: it is told when its turn ends.
     if (reply === this.reply) this.pendingMeta = reply;
-    else this.applyMeta(reply);
+    else this.safeApplyMeta(reply);
   }
 
   markPlayed(segmentId: number): void {
@@ -174,7 +174,7 @@ export class ReplyVoice {
     this.onText(result, true);
     const cutOff = this.pendingMeta;
     this.pendingMeta = null;
-    if (cutOff && cutOff !== this.reply) this.applyMeta(cutOff);
+    if (cutOff && cutOff !== this.reply) this.safeApplyMeta(cutOff);
     if (this.suppress) {
       this.suppress = false;
       this.reply = null;
@@ -235,12 +235,24 @@ export class ReplyVoice {
     this.last = reply;
     // Pin the stored message now, while it is the newest: a later reply must not be taken for it.
     this.resolveMessage(reply);
-    void this.pipeline.whenIdle().then(() => this.applyMeta(reply));
+    void this.pipeline.whenIdle().then(() => this.applyMeta(reply)).catch((error: unknown) => this.logMetaFailure(error));
   }
 
   private resolveMessage(reply: Reply): string | undefined {
     reply.messageId ??= this.options.deps.findReplyMessageId(this.options.sessionId, reply.startedAt);
     return reply.messageId;
+  }
+
+  private safeApplyMeta(reply: Reply): void {
+    try {
+      this.applyMeta(reply);
+    } catch (error) {
+      this.logMetaFailure(error);
+    }
+  }
+
+  private logMetaFailure(error: unknown): void {
+    this.options.deps.log.warn(`voice: could not record what was heard for ${this.options.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   /** What the stored message learns: all of it spoken, or what was heard when cut off. */

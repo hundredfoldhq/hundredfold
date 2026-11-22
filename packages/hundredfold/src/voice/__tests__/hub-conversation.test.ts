@@ -295,6 +295,30 @@ describe("the voice envelope on a spoken turn", () => {
   });
 });
 
+describe("a failure to record what was heard", () => {
+  it("is logged, never an unhandled rejection, and the conversation goes on", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    (h.deps as { mergeMessageMeta: unknown }).mergeMessageMeta = () => { throw new Error("database is locked"); };
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      await h.say(attachment, "hello");
+      await h.reply("A reply to record.");
+      await settle(20);
+      attachment.onText(h.json({ type: "barge_in", segmentId: 1, playedMs: 1 }));
+      await h.say(attachment, "again");
+      await settle(20);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    expect(unhandled).toEqual([]);
+    expect(h.warnings.some((w) => w.includes("could not record what was heard"))).toBe(true);
+    expect(h.delivered.map((d) => d.text)).toEqual(["hello", "again"]);
+  });
+});
+
 describe("limits and failures", () => {
   it("an utterance past the limit is cut, the person is told, and what was captured is used once", async () => {
     const h = createHarness({ config: { limits: { maxUtteranceSeconds: 5, maxConcurrentAttachments: 4 } } });

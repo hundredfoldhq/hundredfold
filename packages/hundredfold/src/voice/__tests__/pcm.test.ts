@@ -14,6 +14,17 @@ describe("Pcm16Resampler", () => {
     expect(new Pcm16Resampler(24_000, 24_000).push(chunk)).toBe(chunk);
   });
 
+  it("equal rates still keep samples whole: a chunk that ends mid-sample waits for its other byte", () => {
+    const r = new Pcm16Resampler(24_000, 24_000);
+    const whole = ramp(5);
+    const first = r.push(whole.subarray(0, 5));
+    const second = r.push(whole.subarray(5));
+    expect(first.length % 2).toBe(0);
+    expect(Buffer.concat([first, second]).equals(whole)).toBe(true);
+    const even = ramp(3);
+    expect(r.push(even)).toBe(even);
+  });
+
   it("makes 3 output samples for every 2 input samples going 16 kHz to 24 kHz", () => {
     const out = new Pcm16Resampler(16_000, 24_000).push(ramp(160));
     expect(Math.abs(out.length / 2 - 240)).toBeLessThanOrEqual(2);

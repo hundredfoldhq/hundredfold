@@ -139,6 +139,50 @@ describe("a client the device suspended (FR-033)", () => {
   });
 });
 
+describe("a client that came back and said hello without resume", () => {
+  it("is a live attachment again: another tab taking over is told, and the first one is closed", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    suspend(h, first);
+    const second = h.connect();
+    expect(second.attachment.suspended).toBe(false);
+    const third = h.connect();
+    expect(second.socket.ofType("detached")).toEqual([{ type: "detached", reason: "taken_over" }]);
+    expect(second.socket.closed?.code).toBe(1000);
+    expect(third.socket.ofType("ready")).toHaveLength(1);
+    expect(h.hub.size()).toBe(1);
+  });
+
+  it("dropping again still collects replies, so a later resume announces and speaks them", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    suspend(h, first);
+    const second = h.connect();
+    suspend(h, second);
+    expect(second.attachment.suspended).toBe(true);
+    h.state.replyMessage = "m-away";
+    await h.reply("Finished while away the second time.");
+    const third = h.connect();
+    third.attachment.onText(h.json({ type: "resume", suspendedMs: 5 }));
+    await settle();
+    expect(third.socket.ofType("missed")).toEqual([{ type: "missed", messageIds: ["m-away"] }]);
+    const starts = third.socket.ofType("segment_start");
+    expect(starts.map((f) => f.text)).toEqual(["Finished while away the second time."]);
+    // A missed reply's sentences name the stored message they belong to.
+    expect(starts[0].messageId).toBe("m-away");
+  });
+
+  it("a hello with no earlier suspension changes nothing about the suspend window", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    expect(first.attachment.suspended).toBe(false);
+    suspend(h, first);
+    expect(first.attachment.suspended).toBe(true);
+    h.clock.advance(RESUME_WINDOW_MS + 1);
+    expect(h.hub.size()).toBe(0);
+  });
+});
+
 describe("long work moved to the background (FR-015, FR-016)", () => {
   it("background tasks the engine reports are announced once each, while attached", async () => {
     const tasks = [{ id: "t1", description: "pnpm test", command: "pnpm test" }];

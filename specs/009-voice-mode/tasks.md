@@ -53,7 +53,7 @@ Gateway hub (Part B):
 - [x] T022 [B] [US1] `G/voice/speech-pipeline.ts`: sentence chunking (`splitTtsSentences`), `toSpeakable`, TTS, resample to 24 kHz, binary frames with the header, `segment_start` / `segment_end`; synthesis of N+1 overlaps sending N; `ttfaMs` from the final to the first audio byte, stored via `mergeMessageMeta`; `spokenText` at the reply's end.
 - [x] T023 [P] [B] [US1] Tests with real `ws` clients against the route: disabled → refused; operator accepted; cross-origin 403; scoped out of reach 403; terminal/missing 404; `4409`; `4429`; take-over sends `detached{taken_over}`.
 - [x] T024 [P] [B] [US1] Hub tests with fakes (provider, VAD, engine, clock): round trip; partials; one message per final; no message for an empty final; utterance limit; envelope first/reminder/none for `/`; strip test proves transcript sync writes no duplicate user row; snapshot deltas not re-spoken; TTFA recorded; the tee is not installed when voice is disabled.
-- [x] T025 [B] [US1] Key-leak test: a sentinel key via env, drive a full attachment and `GET /api/voice/config` and `GET /api/config`, and assert no frame, body, error or close reason contains it (SC-007).
+- [x] T025 [B] [US1] (the `GET /api/voice/config` leg lands with Part A) Key-leak test: a sentinel key via env, drive a full attachment and `GET /api/voice/config` and `GET /api/config`, and assert no frame, body, error or close reason contains it (SC-007).
 
 Web (Part D):
 

@@ -27,6 +27,8 @@ export interface Segment {
   state: SegmentState;
   /** A line spoken with no model turn behind it (a holding line). */
   holding?: boolean;
+  /** The stored assistant message the sentence belongs to, when it is known (a reply the client missed). */
+  messageId?: string;
   /** The reply this sentence belongs to, for `spokenFor`. */
   replyKey?: number;
   /** Milliseconds of audio sent to the client for this segment so far. */
@@ -90,10 +92,10 @@ export class SpeechPipeline {
     for (const sentence of this.splitter.flush()) this.enqueue(sentence);
   }
 
-  /** Speak a whole text (a missed reply), not a stream. */
-  speakText(text: string): void {
+  /** Speak a whole text (a missed reply), not a stream; `messageId` names its stored message when known. */
+  speakText(text: string, messageId?: string): void {
     const splitter = new SpeakableSplitter();
-    for (const sentence of [...splitter.push(`${text}\n`), ...splitter.flush()]) this.enqueue(sentence);
+    for (const sentence of [...splitter.push(`${text}\n`), ...splitter.flush()]) this.enqueue(sentence, false, messageId);
   }
 
   /** Speak one self-contained line with no model turn behind it, and tell the client. */
@@ -220,9 +222,11 @@ export class SpeechPipeline {
     return { heard, unheard };
   }
 
-  private enqueue(text: string, holding = false): void {
+  private enqueue(text: string, holding = false, messageId?: string): void {
     if (this.closed) return;
-    this.queue.push(this.newSegment(text, holding));
+    const segment = this.newSegment(text, holding);
+    if (messageId) segment.messageId = messageId;
+    this.queue.push(segment);
     this.kick();
     this.prefetch();
   }
@@ -331,7 +335,7 @@ export class SpeechPipeline {
     const { sink } = this.options;
     if (!started) {
       segment.state = "sent";
-      sink.json({ type: "segment_start", segmentId: segment.id, messageId: null, text: segment.text });
+      sink.json({ type: "segment_start", segmentId: segment.id, messageId: segment.messageId ?? null, text: segment.text });
     }
     for (const piece of pcmPieces(pcm)) {
       sink.audio(Buffer.concat([audioFrameHeader(this.seq++, segment.id), piece]));

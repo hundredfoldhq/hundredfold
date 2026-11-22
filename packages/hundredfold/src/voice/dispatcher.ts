@@ -32,6 +32,8 @@ export interface DispatcherOptions {
   sttProvider: string;
   /** The person speaking is the operator. */
   operator: boolean;
+  /** The attachment is still there: a message for one that has ended, or been stopped, is dropped, not delivered. */
+  live(): boolean;
   send(frame: VoiceServerFrame): void;
   /** Work an engine moved to the background; the attachment announces it. */
   onBackgrounded(tasks: readonly BackgroundedWork[]): void;
@@ -83,7 +85,7 @@ export class Dispatcher {
     if (input.interrupted) voice.abandonHeld(input.interrupted.heard);
     try {
       const plan = await this.plan();
-      await this.carryOut(plan, input);
+      if (this.options.live()) await this.carryOut(plan, input);
     } catch (error) {
       deps.log.warn(`voice: could not deliver a message to ${this.options.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       send({ type: "error", code: "dispatch_failed", message: "That could not be sent to the session.", utteranceId: input.utterance.id });
@@ -102,6 +104,7 @@ export class Dispatcher {
       const decision = decideBargeIn(input);
       if (decision.kind !== "wait_then_decide") return { decision, engine, engineName: session.engine, longWork: input.longWork };
       await new Promise<void>((resolve) => deps.clock.setTimeout(resolve, decision.waitMs));
+      if (!this.options.live()) return { decision: { kind: "new_turn" }, engine, engineName: session.engine, longWork: null };
     }
   }
 
@@ -114,7 +117,9 @@ export class Dispatcher {
       nowMs: deps.clock.now(),
       thresholdMs: treatAsLong ? 0 : config.autoBackground.afterSeconds * 1000,
       soft: isSoftInterruptibleEngine(engine),
-      backgrounding: config.autoBackground.enabled,
+      // A soft interrupt backgrounds work only where it is on and the engine's soft interrupt preserves it (an
+      // engine whose does not would abort the call).
+      backgrounding: config.autoBackground.enabled && isSoftInterruptibleEngine(engine) && engine.softInterruptPreservesForegroundWork,
       steerable: isSteerableEngine(engine) && engine.canSteer(sessionId),
     };
   }
@@ -124,6 +129,8 @@ export class Dispatcher {
   private async carryOut(plan: Plan, input: DispatchInput): Promise<void> {
     const { voice, deps, config, sessionId } = this.options;
     const delivery = await this.prepare(plan, input);
+    // The soft interrupt can take seconds; the person may have left, or the session been stopped, in that time.
+    if (!this.options.live()) return;
     voice.expect({ utteranceId: input.utterance.id, sttMs: input.utterance.sttMs, joinsRunningTurn: delivery.mode === "steer" });
     if (delivery.holding) voice.speakHolding(config.holdingLine);
     if (delivery.suppress) voice.suppressUntilBoundary();

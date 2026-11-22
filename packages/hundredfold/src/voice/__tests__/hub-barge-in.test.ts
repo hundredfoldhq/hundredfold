@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BARGE_IN_GRACE_MS } from "../barge-in.js";
 import { interruptedNote } from "../envelope.js";
-import { createHarness, type Harness } from "./hub-harness.js";
+import { createHarness, SESSION, type Harness } from "./hub-harness.js";
 import { settle, type FakeEngineOptions } from "./fakes.js";
 import type { VoiceAttachment } from "../attachment.js";
 
@@ -382,6 +382,76 @@ describe("the wait for a soft interrupt (it can take several seconds)", () => {
     expect(socket.ofType("error")).toHaveLength(0);
     expect(socket.ofType("segment_start")).toHaveLength(0);
     expect(JSON.stringify(socket.frames())).not.toContain("Interrupted");
+  });
+});
+
+describe("a message is not delivered to a session that voice has left", () => {
+  async function youngBashThenSay(h: Harness, attachment: VoiceAttachment): Promise<void> {
+    h.state.turnRunning = true;
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 1_000, description: "sleep 60", backgroundable: true };
+    await h.say(attachment, "hello there");
+  }
+
+  it("session stopped during the wait for a young call: nothing is soft-interrupted or delivered afterwards", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true }, steerable: true } });
+    const { attachment } = h.connect();
+    await youngBashThenSay(h, attachment);
+    h.event("session:stopped");
+    h.clock.advance(20_000);
+    await settle();
+    expect(h.delivered).toEqual([]);
+    expect(h.engine.softCalls).toEqual([]);
+  });
+
+  it("bye during the wait: dropped too", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true }, steerable: true } });
+    const { attachment } = h.connect();
+    await youngBashThenSay(h, attachment);
+    attachment.onText(JSON.stringify({ type: "bye" }));
+    h.clock.advance(20_000);
+    await settle();
+    expect(h.delivered).toEqual([]);
+  });
+
+  it("access lost during the soft interrupt itself: the message is dropped when the interrupt returns", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true } } });
+    h.state.turnRunning = true;
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 60", backgrounded: undefined, backgroundable: true } as never;
+    let finish!: () => void;
+    (h.engine as unknown as { softInterrupt: unknown }).softInterrupt = () => new Promise((resolve) => {
+      finish = () => resolve({ ended: true, backgrounded: [] });
+    });
+    const { attachment } = h.connect();
+    await h.say(attachment, "what is two plus two");
+    h.hub.revoke(SESSION);
+    finish();
+    await settle();
+    expect(h.delivered).toEqual([]);
+  });
+
+  it("a live attachment still delivers after the same waits (the check is not a blanket drop)", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true }, steerable: true } });
+    const { attachment } = h.connect();
+    await youngBashThenSay(h, attachment);
+    h.clock.advance(20_000);
+    await settle();
+    expect(h.delivered).toHaveLength(1);
+  });
+});
+
+describe("a soft interrupt that would abort the call is never used", () => {
+  it("an engine whose soft interrupt does not preserve foreground work is steered, not soft-interrupted, over a long Bash", async () => {
+    const { h, socket } = await speakDuringWork({ engine: { soft: { preserves: false }, steerable: true } });
+    expect(h.engine.softCalls).toEqual([]);
+    expect(h.engine.kills).toEqual([]);
+    expect(h.delivered.map((d) => d.mode)).toEqual(["steer"]);
+    expect(socket.ofType("holding")).toHaveLength(1);
+  });
+
+  it("with no work running, any soft interrupt is still used to end the turn", async () => {
+    const { h } = await speakDuringWork({ engine: { soft: { preserves: false } }, work: "none" });
+    expect(h.engine.softCalls).toHaveLength(1);
+    expect(h.delivered.map((d) => d.mode)).toEqual(["queue"]);
   });
 });
 
