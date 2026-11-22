@@ -38,7 +38,7 @@ export interface ReplyVoiceOptions {
   /** Sends a frame to the client; frames while suspended are dropped by the caller. */
   send(frame: VoiceServerFrame): void;
   sendAudio(frame: Buffer): void;
-  deps: Pick<VoiceHubDeps, "mergeMessageMeta" | "findReplyMessageId" | "log"> & { clock: VoiceClock };
+  deps: Pick<VoiceHubDeps, "mergeMessageMeta" | "findReplyMessageId" | "newestMessageCursor" | "messageCursor" | "messagesAfterCursor" | "log"> & { clock: VoiceClock };
 }
 
 /** A reply that finished while the client was away. */
@@ -62,8 +62,14 @@ export class ReplyVoice {
   private nextReplyId = 1;
   /** A reply the user cut off, whose stored message is told what was heard once it exists. */
   private pendingMeta: Reply | null = null;
+  /**
+   * Insertion position of the newest stored message this attachment has dealt with: everything up to it was either
+   * there before the attachment began or is a reply it spoke itself. Only messages after it are news to speak.
+   */
+  private watermark: number;
 
   constructor(private readonly options: ReplyVoiceOptions) {
+    this.watermark = options.deps.newestMessageCursor(options.sessionId);
     this.pipeline = new SpeechPipeline({
       ...options.pipeline,
       sink: { json: (frame) => options.send(frame), audio: (frame) => options.sendAudio(frame) },
@@ -193,6 +199,21 @@ export class ReplyVoice {
     void this.pipeline.whenIdle().then(() => this.closeExchange(exchange));
   }
 
+  /**
+   * The transcript sync stored something. Replies the engine wrote on its own (the CLI reporting finished
+   * background work is not a gateway turn, so no delta ever streamed it) are spoken here, from the store. What
+   * a gateway turn already spoke is behind the watermark, and a sync that only upgrades rows stores nothing past it.
+   */
+  onExternalTurn(): void {
+    const { deps, sessionId } = this.options;
+    const rows = deps.messagesAfterCursor(sessionId, this.watermark);
+    if (rows.length === 0) return;
+    this.watermark = rows[rows.length - 1].cursor;
+    for (const row of rows) {
+      if (row.role === "assistant" && !row.toolCall && row.content.trim()) this.speakStored(row.id, row.content);
+    }
+  }
+
   // ── suspension ─────────────────────────────────────────────────────────────
 
   /** The client is gone: collect replies instead of speaking them. */
@@ -239,8 +260,33 @@ export class ReplyVoice {
   }
 
   private resolveMessage(reply: Reply): string | undefined {
-    reply.messageId ??= this.options.deps.findReplyMessageId(this.options.sessionId, reply.startedAt);
+    if (reply.messageId === undefined) {
+      reply.messageId = this.options.deps.findReplyMessageId(this.options.sessionId, reply.startedAt);
+      this.passMessage(reply.messageId);
+    }
     return reply.messageId;
+  }
+
+  /** A stored message this attachment has dealt with: the watermark moves past it, never back. */
+  private passMessage(messageId: string | undefined): void {
+    const cursor = messageId === undefined ? undefined : this.options.deps.messageCursor(messageId);
+    if (cursor !== undefined && cursor > this.watermark) this.watermark = cursor;
+  }
+
+  /** Speak an already stored reply (no gateway turn streamed it) as a reply of its own: heard, cut and recorded like the rest. */
+  private speakStored(messageId: string, text: string): void {
+    const reply = this.newReply();
+    reply.messageId = messageId;
+    reply.text = text;
+    if (this.suspended) {
+      this.missed.push({ messageId, text });
+    } else {
+      this.pipeline.speakText(text, messageId);
+      this.last = reply;
+      void this.pipeline.whenIdle().then(() => this.applyMeta(reply)).catch((error: unknown) => this.logMetaFailure(error));
+    }
+    // A gateway reply still streaming keeps its own sentences.
+    if (this.reply) this.pipeline.markReply(this.reply.id);
   }
 
   private safeApplyMeta(reply: Reply): void {

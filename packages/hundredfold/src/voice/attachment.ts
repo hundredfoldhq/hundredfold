@@ -161,6 +161,7 @@ export class VoiceAttachment {
     if (this.ended) return;
     switch (event) {
       case "session:delta": return this.onDelta(payload);
+      case "session:external-turn": return this.voice.onExternalTurn();
       case "session:deleted": case "session:stopped": return this.detach("session_gone");
       default: return this.onTurnEvent(event, payload);
     }
