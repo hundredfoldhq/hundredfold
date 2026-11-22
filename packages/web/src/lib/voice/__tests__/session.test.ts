@@ -324,6 +324,23 @@ describe("stopping", () => {
     expect(r.contexts[0].close).toHaveBeenCalled()
   })
 
+  it("a plain socket drop on a visible page, no suspension and no resume: it ends with a message, and a tap gets back in", async () => {
+    const r = await started()
+    expect(r.doc.visibilityState).toBe("visible")
+    r.sockets[0].drop(1006)
+    // Not left showing "on": the mode is off, the person is told, and nothing keeps capturing.
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "Voice connection lost." })
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    r.emitCapture(frameAt(0.1))
+    expect(r.sockets[0].audio).toHaveLength(0)
+    // The tap that starts it again is a new run on a new socket, and it needs no `resume`.
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(r.sockets[1].types()).not.toContain("resume")
+  })
+
   it("a detached frame ends voice mode with the gateway's reason and releases everything", async () => {
     const r = await started()
     r.sockets[0].serverFrame({ type: "detached", reason: "disabled" })

@@ -85,6 +85,8 @@ Enabled:
 the local sidecar's first-run bootstrap. `available: false` carries a `reason` a person
 can act on ("Python 3.10+ not found", "OpenAI key not set: OPENAI_API_KEY").
 
+When the config says `enabled: true` but the gateway started with voice off (voice is set up only at boot, so turning it on needs a restart), the body is the same with `available: false` and `reason: "Restart the gateway to turn voice on"`. When voice was running and the config then turns it off, the body is `{ "enabled": false }`, a new `/ws/voice` upgrade is refused as when voice is off, and open attachments get `detached {reason: "disabled"}`.
+
 Never present: any key, any base URL, the prompt text.
 
 `POST /api/voice/install` (operator only) starts the local bootstrap if it has not run;

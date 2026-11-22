@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { resolveVoiceConfig, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider } from "../provider.js";
-import { iso6391, looksLikeMp3, mpegFrameLength, parseWav, toWav } from "../providers/audio.js";
+import { iso6391, looksLikeMp3, mp3SniffBytes, mpegFrameLength, parseWav, toWav } from "../providers/audio.js";
 import { EnergyVad } from "../providers/energy-vad.js";
 import { LocalSttProvider, LocalTtsProvider } from "../providers/local.js";
 import { OpenAiSttProvider, OpenAiTtsProvider } from "../providers/openai.js";
@@ -469,6 +469,22 @@ describe("OpenAI-compatible TTS", () => {
       ["reserved emphasis", [0xff, 0xfb, 0x90, 0x02]], ["short", [0xff, 0xfb, 0x90]],
     ] as const) expect(mpegFrameLength(Buffer.from(bytes)), name).toBeNull();
     expect(looksLikeMp3(Buffer.from([0xff, 0xff, 0xff, 0xff, 0, 0]))).toBe(false); // two -1 samples
+  });
+
+  it("sniffs exactly as far as the next frame's header: the first frame's length plus four bytes", () => {
+    const frame = Buffer.from([0xff, 0xfb, 0x90, 0x00]); // MPEG-1 layer III, 128 kbit/s, 44.1 kHz: 417 bytes
+    expect(mp3SniffBytes(frame)).toBe(417 + 4);
+    expect(mp3SniffBytes(Buffer.from([0xff, 0xfb, 0x92, 0x00]))).toBe(418 + 4); // padded
+    expect(mp3SniffBytes(Buffer.from("ID3\x04"))).toBe(4); // not a frame header: the tag name is all it needs
+    expect(mp3SniffBytes(Buffer.alloc(0))).toBe(4);
+    // Those bytes are enough to decide: a valid header at 417 says MP3, one that is not says it is not, and one byte fewer is not enough to tell.
+    const second = Buffer.alloc(417 + 4);
+    frame.copy(second, 0);
+    Buffer.from([0xff, 0xfb, 0x90, 0x00]).copy(second, 417);
+    expect(looksLikeMp3(second)).toBe(true);
+    second.fill(0, 417);
+    expect(looksLikeMp3(second)).toBe(false);
+    expect(looksLikeMp3(second.subarray(0, 417 + 3))).toBe(true); // short of the second header, it is judged on the first alone
   });
 
   it("believes a raw PCM content type over bytes that look like a container", async () => {

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SpeechSidecarClient, SidecarUnavailableError, type SidecarTiming } from "../sidecar/client.js";
+import { MAX_VAD_QUEUE, SpeechSidecarClient, SidecarUnavailableError, type SidecarTiming } from "../sidecar/client.js";
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fake-sidecar.mjs");
 const VAD = { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 };
@@ -247,15 +247,18 @@ describe("speech sidecar client: recovery and abort", () => {
     vad.close();
   });
 
-  it("holds at most a bounded amount of audio for a stream while the sidecar starts", async () => {
+  it("holds a bounded amount of audio while the sidecar starts, and keeps offsets counting what was dropped", async () => {
     const sidecar = client("", { pingEveryMs: 5000 }, { FAKE_HELLO_DELAY_MS: "300" });
     const vad = sidecar.vad("v1", VAD);
-    const events: unknown[] = [];
+    const events: Array<{ kind: string; atMs: number }> = [];
     vad.on((event) => events.push(event));
-    for (let index = 0; index < 400; index += 1) vad.write(Buffer.alloc(640));
-    await until(() => events.length >= 256);
+    const extra = 100;
+    for (let index = 0; index < MAX_VAD_QUEUE + extra; index += 1) vad.write(Buffer.alloc(640));
+    await until(() => events.filter((event) => event.atMs === 640).length >= MAX_VAD_QUEUE);
     await sleep(100);
-    expect(events).toHaveLength(256);
+    // The fake answers each vad.audio with atMs = its body length: the real frames kept, and the dropped ones as silence.
+    expect(events.filter((event) => event.atMs === 640)).toHaveLength(MAX_VAD_QUEUE);
+    expect(events.reduce((sum, event) => sum + event.atMs, 0)).toBe((MAX_VAD_QUEUE + extra) * 640);
     vad.close();
   });
 

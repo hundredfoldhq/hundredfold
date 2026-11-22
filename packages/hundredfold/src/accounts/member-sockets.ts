@@ -19,8 +19,9 @@ export interface MemberSocketRegistry {
   /**
    * A socket tied to a member's session AND to a standing permission (a voice socket on a session they may message):
    * swept and closed (4401) when either is gone. It hears nothing of the broadcast, so `publish` never touches it.
+   * `onLost` runs just before that close, so the owner of the socket can tell its client why first.
    */
-  addGuarded(socket: MemberSocketLike, sessionId: string, stillAllowed: () => boolean): void;
+  addGuarded(socket: MemberSocketLike, sessionId: string, stillAllowed: () => boolean, onLost?: () => void): void;
   remove(socket: MemberSocketLike): void;
   /** Close every socket whose session is gone, expired, revoked or whose user is disabled; returns how many. */
   sweep(): number;
@@ -93,8 +94,9 @@ function frameFor(deps: RegistryDeps, userId: string, offer: Offer): string | un
  */
 export function createMemberSocketRegistry(deps: RegistryDeps): MemberSocketRegistry {
   const sockets = new Map<MemberSocketLike, string>();
-  const guarded = new Map<MemberSocketLike, { sessionId: string; stillAllowed: () => boolean }>();
+  const guarded = new Map<MemberSocketLike, { sessionId: string; stillAllowed: () => boolean; onLost?: () => void }>();
   const closeSocket = (socket: MemberSocketLike): void => {
+    try { guarded.get(socket)?.onLost?.(); } catch { /* the close below still happens */ }
     sockets.delete(socket);
     guarded.delete(socket);
     try { socket.close(MEMBER_SOCKET_CLOSE_UNAUTHORIZED, "unauthorized"); } catch { /* already closing */ }
@@ -113,7 +115,7 @@ export function createMemberSocketRegistry(deps: RegistryDeps): MemberSocketRegi
   };
   return {
     add: (socket, sessionId) => { sockets.set(socket, sessionId); },
-    addGuarded: (socket, sessionId, stillAllowed) => { guarded.set(socket, { sessionId, stillAllowed }); },
+    addGuarded: (socket, sessionId, stillAllowed, onLost) => { guarded.set(socket, { sessionId, stillAllowed, ...(onLost ? { onLost } : {}) }); },
     remove: (socket) => { sockets.delete(socket); guarded.delete(socket); },
     size: () => sockets.size + guarded.size,
     sweep() {

@@ -38,7 +38,8 @@ export interface AttachmentInit {
 export class VoiceAttachment {
   readonly id: string;
   readonly sessionId: string;
-  readonly principal: VoicePrincipal;
+  /** Who holds it now: the sign-in that opened it, or the one that last picked it up after a suspension. */
+  principal: VoicePrincipal;
   private socket: VoiceSocket | null;
   private readonly config: ResolvedVoiceConfig;
   private readonly providers: VoiceProviderSet;
@@ -117,8 +118,9 @@ export class VoiceAttachment {
   }
 
   /** A later socket from the same principal picks up a suspended attachment. */
-  adopt(socket: VoiceSocket): void {
+  adopt(socket: VoiceSocket, principal: VoicePrincipal): void {
     this.socket = socket;
+    this.principal = principal;
     this.hello = false;
   }
 

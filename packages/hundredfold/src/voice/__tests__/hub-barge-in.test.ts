@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BARGE_IN_GRACE_MS } from "../barge-in.js";
 import { interruptedNote } from "../envelope.js";
-import { createHarness, SESSION, type Harness } from "./hub-harness.js";
+import { createHarness, OPERATOR, SESSION, type Harness } from "./hub-harness.js";
 import { settle, type FakeEngineOptions } from "./fakes.js";
 import type { VoiceAttachment } from "../attachment.js";
 
@@ -112,6 +112,18 @@ describe("barge-in (US2)", () => {
     h.stt.last().final("hold on a second");
     await settle();
     expect(h.delivered[0].envelope).toContain(interruptedNote(""));
+  });
+
+  it("cut off before any sentence was heard: the stored message says nothing was heard, not that all of it was", async () => {
+    const h = createHarness();
+    h.state.turnRunning = true;
+    const { attachment } = h.connect();
+    await midReply(h);
+    bargeIn(attachment, null, 0); // the gateway-first cut: no segment, nothing played
+    await h.say(attachment, "hold on a second");
+    h.event("session:completed", { result: "", error: null });
+    await settle();
+    expect(h.merges).toEqual([{ id: "assistant-1", patch: { voice: { spokenText: "", interrupted: true } } }]);
   });
 
   it("a stop when nothing is playing is not a barge-in", async () => {
@@ -439,7 +451,7 @@ describe("a message is not delivered to a session that voice has left", () => {
     });
     const { attachment } = h.connect();
     await h.say(attachment, "what is two plus two");
-    h.hub.revoke(SESSION);
+    h.hub.revoke(SESSION, OPERATOR);
     finish();
     await settle();
     expect(h.delivered).toEqual([]);

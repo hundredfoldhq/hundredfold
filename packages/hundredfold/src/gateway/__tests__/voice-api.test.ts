@@ -158,6 +158,26 @@ describe("GET /api/voice/config", () => {
     for (const secret of [KEY, PROMPT, BASE_URL, "internal-speech-host", "VOICE_API_TEST_KEY", "still working", "voice/p.md"]) expect(text).not.toContain(secret);
   });
 
+  it("says to restart when the config has voice on but the gateway started without it, and nothing else changes", () => {
+    putVoices(["af_heart"]);
+    const { local } = stubLocal(READY);
+    const running = voiceConfigResponse(config({ enabled: true }), { local, home, voiceRunning: () => true });
+    const stale = voiceConfigResponse(config({ enabled: true }), { local, home, voiceRunning: () => false });
+    expect(running).toMatchObject({ enabled: true, available: true, reason: null });
+    expect(stale).toEqual({ ...running, available: false, reason: "Restart the gateway to turn voice on" });
+    expect(Object.keys(stale)).toEqual(Object.keys(running));
+    // Voice off in the config is off, whether or not a runtime exists.
+    expect(voiceConfigResponse(config({ enabled: false }), { local, home, voiceRunning: () => false })).toEqual({ enabled: false });
+    expect(voiceConfigResponse(config({ enabled: false }), { local, home, voiceRunning: () => true })).toEqual({ enabled: false });
+  });
+
+  it("the handler passes the runtime question through", async () => {
+    const { local } = stubLocal(READY);
+    const out = makeRes();
+    await handleVoiceApi({} as never, out.res, { method: "GET", pathname: "/api/voice/config", url: new URL("http://x/api/voice/config") }, { getConfig: () => config({ enabled: true }) as never, local, home, voiceRunning: () => false });
+    expect(out.body).toMatchObject({ enabled: true, available: false, reason: "Restart the gateway to turn voice on" });
+  });
+
   it("is served as JSON by the handler for GET only, and falls through for other paths", async () => {
     const { local } = stubLocal(READY);
     const served = await call("GET", "/api/voice/config", { enabled: true }, local);

@@ -17,6 +17,8 @@ export interface MemberVoiceUpgrader {
     head: Buffer,
     member: { principal: MemberPrincipal; sessionId: string; onSocket(ws: WebSocket): void },
   ): boolean;
+  /** The member lost access to the session: end their attachment there, telling the client why first. */
+  revoke(sessionId: string, principal: MemberPrincipal): void;
 }
 
 export interface MemberUpgradeDeps {
@@ -77,7 +79,12 @@ function memberVoiceUpgrade(
     principal: member.principal,
     sessionId: member.sessionId,
     onSocket: (ws) => {
-      deps.accounts.memberSockets.addGuarded(ws, member.principal.sessionId, () => member.maySendMessages(member.principal, member.sessionId));
+      deps.accounts.memberSockets.addGuarded(
+        ws,
+        member.principal.sessionId,
+        () => member.maySendMessages(member.principal, member.sessionId),
+        () => deps.voice?.revoke(member.sessionId, member.principal),
+      );
       ws.on("close", () => deps.accounts.memberSockets.remove(ws));
       ws.on("error", () => deps.accounts.memberSockets.remove(ws));
     },

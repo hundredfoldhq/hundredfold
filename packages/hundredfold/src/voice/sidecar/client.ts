@@ -64,8 +64,14 @@ interface TtsWaiter extends Waiter {
 
 export class SidecarUnavailableError extends Error {}
 
-/** Audio held for a VAD stream while the sidecar is not ready: about five seconds of 20 ms frames. */
-const MAX_VAD_QUEUE = 256;
+/**
+ * Audio held for a VAD stream while the sidecar is not ready: 30 seconds of 20 ms frames. The VAD's offsets count every
+ * byte written, so audio dropped from a full queue is replaced by silence of the same length and later cuts stay put.
+ * The held audio is only for the VAD: the transcript is cut from the capture's own, shorter ring.
+ */
+export const MAX_VAD_QUEUE = 1500;
+/** The longest silent stand-in for dropped audio sent in one frame. */
+const MAX_FILLER_BYTES = 64 * 1024;
 
 interface VadStreamState {
   params: VadParams;
@@ -73,6 +79,8 @@ interface VadStreamState {
   /** The `generation` this stream was last opened under; -1 when never. */
   openedGeneration: number;
   queue: Buffer[];
+  /** Bytes of audio dropped from a full queue; sent as silence so offsets keep counting every byte written. */
+  dropped: number;
   closed: boolean;
   warned: boolean;
 }
@@ -252,12 +260,12 @@ export class SpeechSidecarClient {
   /**
    * A VAD stream. Audio written while the sidecar is not ready is held (bounded), and a stream that
    * outlives a crash is opened again on the respawn, with its handlers, so it does not go quiet.
-   * Offsets count from 0 again on each reopen, and audio dropped from a full queue is not counted:
-   * a caller must not compare offsets from before a respawn with offsets after it.
+   * Offsets count from 0 again on each reopen: a caller must not compare offsets from before a respawn with
+   * offsets after it. Audio dropped from a full queue still counts, as silence.
    */
   vad(stream: string, params: VadParams): SidecarVad {
     const release = this.lease();
-    const state: VadStreamState = { params, handlers: [], openedGeneration: -1, queue: [], closed: false, warned: false };
+    const state: VadStreamState = { params, handlers: [], openedGeneration: -1, queue: [], dropped: 0, closed: false, warned: false };
     this.vadStreams.set(stream, state);
     const start = (): void => {
       void this.ensureReady().then(
@@ -274,7 +282,7 @@ export class SpeechSidecarClient {
       write: (pcm) => {
         if (state.closed) return;
         state.queue.push(pcm);
-        if (state.queue.length > MAX_VAD_QUEUE) state.queue.shift();
+        if (state.queue.length > MAX_VAD_QUEUE) state.dropped += state.queue.shift()!.length;
         if (this.phase.kind === "ready") this.sendVad(stream, state);
         else if (this.phase.kind !== "starting") start();
       },
@@ -295,6 +303,11 @@ export class SpeechSidecarClient {
       this.write({ op: "vad.open", stream, ...state.params });
       state.openedGeneration = this.generation;
       state.warned = false;
+    }
+    // Dropped audio goes as silence of the same length: the VAD's offsets are positions in everything written, and the
+    // caller cuts utterances by them, so a gap would shift every later cut.
+    for (; state.dropped > 0; state.dropped -= Math.min(state.dropped, MAX_FILLER_BYTES)) {
+      this.write({ op: "vad.audio", stream }, Buffer.alloc(Math.min(state.dropped, MAX_FILLER_BYTES)));
     }
     for (const pcm of state.queue.splice(0)) this.write({ op: "vad.audio", stream }, pcm);
   }

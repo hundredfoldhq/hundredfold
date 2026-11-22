@@ -16,7 +16,7 @@ The built-in local speech installs its own runtime and models the first time you
    - Debian and Ubuntu: `sudo apt install python3 python3-venv python3-pip`
    - macOS: `brew install python`
    - Windows: the local providers are not supported there yet; use a hosted or OpenAI-compatible provider.
-2. **Disk space under the instance home** (`~/.hundredfold/models/voice/`): about **1.2 GB free for CPU** models, about **3.8 GB free for GPU** models (the fp32 Parakeet model is 2.4 GB, and the CUDA runtime libraries come as Python packages). The install refuses to start with less and says how much it needs.
+2. **Disk space under the instance home** (`~/.hundredfold/models/voice/`): about **1.2 GB free for CPU** models, about **6 GB free for GPU** models (a GPU install takes about 5.2 GB: the fp32 Parakeet model is 2.4 GB, Kokoro 0.3 GB, and the Python environment with the CUDA runtime libraries 2.6 GB). The install refuses to start with less and says how much it needs.
 3. **For the GPU path only: an NVIDIA GPU with a driver that supports CUDA 12.** The CUDA and cuDNN runtimes are installed by `pip`, so no CUDA toolkit is needed. `nvidia-smi` must work. Without a GPU the CPU path is used; it works, but it is much slower (see below).
 4. **Network access during the install** to PyPI, `huggingface.co` and `github.com` (the Kokoro model files). After the install nothing needs the network.
 
@@ -43,7 +43,7 @@ The container image does not include Python, so the local providers do not run i
 
 3. Watch `GET /api/voice/config`: `install.state` goes `not_installed` → `installing` (with `progress` from 0 to 1) → `ready`, or `failed` with a `reason`. A `voice:install` event carries the same state to the browser as it changes. `available: false` always comes with a `reason` a person can act on ("Python 3.10+ with venv and pip not found", "OpenAI key not set: OPENAI_API_KEY").
 
-The speech process starts when voice is first used, stays warm for 10 minutes after the last use, and is stopped when the gateway stops. If it dies it is started again on the next use, at most once every 30 seconds.
+The speech process starts when voice is first used, stays warm for 10 minutes after the last use, and is stopped when the gateway stops. If it dies it is started again on the next use, at most once every 30 seconds. Starting it loads the models and runs one warm-up decode and synthesis, which takes several seconds on a GPU and longer on a cold disk; speech in the first seconds after voice mode opens, while the models load, may not be transcribed.
 
 Changing `local.device` between `cpu` and `gpu` needs a new install (a different runtime package and a different Parakeet model); the config reply says `not_installed` until you run it again.
 
@@ -57,7 +57,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | Turns voice mode on. Restart the gateway after turning it on or off: the gateway sets voice mode up when it starts. Turned off without a restart, new voice conversations are refused at once. |
+| `enabled` | `false` | Turns voice mode on. Restart the gateway after turning it on or off: the gateway sets voice mode up when it starts. Turned off without a restart, new voice conversations are refused at once and open ones end. Turned on without a restart, the voice control shows as unavailable and says to restart the gateway. |
 | `mode` | `hands-free` | `hands-free` ends an utterance on your pause; `push-to-talk` ends it when you release the control. |
 | `language` | `en` | Language code. The local providers speak English only (`en`, `en-GB`, …). |
 | `stt.provider` | `local` | `local`, `openai` or `openai-compatible`. |
@@ -79,7 +79,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `autoBackground.enabled` | `true` | Move long work to the background when you speak, where the engine can (see below). |
 | `autoBackground.afterSeconds` | `5` | A tool call older than this when you speak is long work, 1 to 600. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
-| `promptFile` | — | A path inside the instance home holding the instructions, read when the gateway starts and whenever the `voice:` block changes. `prompt` wins if both are set. |
+| `promptFile` | — | A path inside the instance home holding the instructions, read the first time the voice config is resolved and again whenever the `voice:` block changes (not only when the gateway starts). `prompt` wins if both are set. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
 | `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). |
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |

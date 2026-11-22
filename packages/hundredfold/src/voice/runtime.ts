@@ -53,6 +53,8 @@ export interface VoiceRuntime {
     head: Buffer,
     member: { principal: MemberPrincipal; sessionId: string; onSocket(ws: WebSocket): void },
   ): boolean;
+  /** A member lost access to a session (the member sweep): their attachment there gets `detached {access_lost}`, then the close. */
+  revoke(sessionId: string, principal: MemberPrincipal): void;
   shutdown(): void;
 }
 
@@ -138,6 +140,7 @@ export function createVoiceRuntime(options: VoiceRuntimeOptions): VoiceRuntime |
     wrapEmit: (emit) => createVoiceEmitTee(emit, hub, logger),
     handleUpgrade: (req, socket, head) => handleVoiceUpgrade(req, socket, head, upgradeDeps),
     upgradeMember: (req, socket, head, member) => upgradeMember(req, socket, head, upgradeDeps, member),
+    revoke: (sessionId, principal) => hub.revoke(sessionId, { kind: "member", userId: principal.userId, userSessionId: principal.sessionId }),
     shutdown() {
       hub.shutdown();
       wss.close();
