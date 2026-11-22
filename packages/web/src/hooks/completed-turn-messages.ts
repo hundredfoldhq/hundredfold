@@ -5,15 +5,16 @@ export function reconcileCompletedTurnMessages(args: {
   turnStart: number
   finalMessage: Message
   exactResult?: string
+  /** The id of the stored copy of the text still streaming when a re-read landed mid-turn. */
+  streamedCopyId?: string | null
 }): Message[] {
   const turnStart = args.turnStart >= 0
     ? Math.min(args.turnStart, args.messages.length)
     : args.messages.length
   const exactResult = args.exactResult?.trim() ?? ''
   const turnRows = args.messages.slice(turnStart)
-  const streamedTail = streamedTailIndex(turnRows, exactResult)
   const preserved = turnRows
-    .filter((_, index) => index !== streamedTail)
+    .filter((message) => !isGrownStreamedCopy(message, args.streamedCopyId, exactResult))
     .filter((message) =>
       message.role === 'user'
       || Boolean(message.media?.length)
@@ -37,20 +38,27 @@ export function reconcileCompletedTurnMessages(args: {
 }
 
 /**
- * The stored copy of the answer still being streamed, when a re-read of the chat landed mid-turn.
- * It is the last partial prose row with nothing after it (no main-thread tool call, block or later
- * prose), and the final reply is that text grown to its end, so it was only ever a prefix of the
- * reply: the gateway drops it when the turn settles, and so must the live view. A sub-agent's tool
- * call does not end the main text block, so rows after the prose that are sidechain tool calls do
- * not count. Prose that a main-thread tool call followed is interim evidence and is kept.
+ * The stored copy of the text block still being streamed, in a chat re-read that landed mid-turn:
+ * the last partial prose row, with nothing after it that ends the block (a main-thread tool call,
+ * a block, later prose). A sub-agent's tool call does not end the main text block, so sidechain
+ * tool rows after the prose are skipped. The live stream goes on to extend this row, which the
+ * gateway grows in place, so the live view must not keep it beside the text it became.
  */
-function streamedTailIndex(rows: Message[], exactResult: string): number {
-  if (!exactResult) return -1
+export function findStreamedCopyId(rows: Message[]): string | null {
   let last = rows.length - 1
   while (last >= 0 && isSidechainToolRow(rows[last])) last -= 1
   const row = rows[last]
-  const text = row?.content.trim()
-  return row && text && isPlainPartialProse(row) && exactResult.startsWith(text) ? last : -1
+  return row && row.content.trim() && isPlainPartialProse(row) ? row.id : null
+}
+
+/**
+ * Whether a row is the stored copy that the text now in hand (the flushed stream, or the final
+ * reply) grew from. Text that does not start with it was rewritten, and the gateway keeps it then.
+ */
+export function isGrownStreamedCopy(row: Message, copyId: string | null | undefined, text: string): boolean {
+  if (!copyId || row.id !== copyId || !isPlainPartialProse(row)) return false
+  const stored = row.content.trim()
+  return Boolean(stored) && text.trim().startsWith(stored)
 }
 
 function isSidechainToolRow(row: Message): boolean {

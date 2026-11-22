@@ -118,4 +118,78 @@ describe("a turn that ends after a mid-turn re-read", () => {
     await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world, this is the full answer." }); await Promise.resolve() })
     expect(result.current.messages.map((m) => m.content)).toEqual(["q?", "Used Task", "Hello world, this is the full answer."])
   })
+
+  describe("the stored copy of the text still streaming", () => {
+    const U = { id: "u1", role: "user", content: "q?", timestamp: 1 }
+    const rows = (r: { current: { messages: Array<{ content: string; toolCall?: string }> } }) =>
+      r.current.messages.map((m) => (m.toolCall ? `[tool] ${m.content}` : m.content))
+
+    async function midTurn() {
+      getSession.mockResolvedValue({ status: "idle", messages: [] })
+      const bus = makeBus()
+      const { result } = renderHook(() => useLiveSession("s1", { subscribe: bus.subscribe }))
+      await settle()
+      act(() => { bus.emit("session:started", { sessionId: "s1" }) })
+      return { ...bus, result }
+    }
+
+    it("is replaced by the full text when a main-thread tool call ends the block", async () => {
+      const { emit, result } = await midTurn()
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "Let me check the fi" }) })
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Let me check the fi", timestamp: 2, partial: true }] })
+      await act(async () => { await result.current.reload("s1") })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "le first." }) })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "Bash", toolId: "t1" }) })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "All fine." }) })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "All fine." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Let me check the file first.", "[tool] Used Bash", "All fine."])
+    })
+
+    it("is dropped at completion when a notification landed after it", async () => {
+      const { emit, result } = await midTurn()
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Hello wor", timestamp: 2, partial: true }] })
+      await act(async () => { await result.current.reload("s1") })
+      act(() => { emit("session:notification", { sessionId: "s1", message: "Background work finished", messageId: "n1" }) })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Background work finished", "Hello world."])
+    })
+
+    it("is kept when the final reply does not start with it", async () => {
+      const { emit, result } = await midTurn()
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Draft wording", timestamp: 2, partial: true }] })
+      await act(async () => { await result.current.reload("s1") })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "Reworded answer." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Draft wording", "Reworded answer."])
+    })
+
+    it("is only ever a partial row: settled prose at the end of the snapshot is kept", async () => {
+      const { emit, result } = await midTurn()
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "a1", role: "assistant", content: "Hello wor", timestamp: 2 }] })
+      await act(async () => { await result.current.reload("s1") })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Hello wor", "Hello world."])
+    })
+
+    it("is final once a main-thread tool call ends the block, even with nothing streamed since", async () => {
+      const { emit, result } = await midTurn()
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Checking", timestamp: 2, partial: true }] })
+      await act(async () => { await result.current.reload("s1") })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "Bash", toolId: "t1" }) })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "Checking done." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Checking", "[tool] Used Bash", "Checking done."])
+    })
+
+    it("is only the last text block: earlier prose that a tool call ended is kept", async () => {
+      const { emit, result } = await midTurn()
+      getSession.mockResolvedValue({ status: "running", messages: [U,
+        { id: "p1", role: "assistant", content: "All", timestamp: 2, partial: true },
+        { id: "p2", role: "assistant", content: "Using Bash", timestamp: 3, partial: true, toolCall: "Bash" },
+        { id: "p3", role: "assistant", content: "All good", timestamp: 4, partial: true },
+        { id: "p4", role: "assistant", content: "Using Read", timestamp: 5, partial: true, toolCall: "Read", meta: { sidechain: true } },
+      ] })
+      await act(async () => { await result.current.reload("s1") })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "All good, done." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "All", "[tool] Used Bash", "[tool] Used Read", "All good, done."])
+    })
+  })
 })
