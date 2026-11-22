@@ -118,7 +118,6 @@ function useController(
     const target = sessionId || newChat
     return target ? createController(config, target) : null
     // The starter is read at tap time through its own ref; only the chat and the config decide the controller.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, sessionId, Boolean(newChat)])
   held.current = controller
   useEffect(() => () => controller?.dispose(), [controller])
