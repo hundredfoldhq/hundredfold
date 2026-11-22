@@ -101,6 +101,17 @@ drive "(async()=>{const n=window.__HUNDREDFOLD_NATIVE__;const t={origin:'http://
 wait_count hello 1 10
 say "voice mode is up: hello received from a '$(grep -o '"client":"[a-z]*"' "$SERVER_LOG" | head -1)' client"
 
+say "pressing BACK at the app root: the session must outlive the UI and the app must not crash"
+F_BEFORE=$(curl -s "localhost:$PORT/stats" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upFrames"])')
+adb shell input keyevent 4
+sleep 3
+F_AFTER=$(curl -s "localhost:$PORT/stats" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upFrames"])')
+APP_PID=$(adb shell pidof run.hundredfold.shell | tr -d '\r')
+say "after BACK: pid '${APP_PID}', +$((F_AFTER - F_BEFORE)) frames in 3s, socket_close events: $(count socket_close)"
+[ -n "$APP_PID" ] && [ "$((F_AFTER - F_BEFORE))" -gt 100 ] && [ "$(count socket_close)" -eq 0 ] || { say "FAIL: BACK ended the app or the session"; exit 1; }
+adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
+sleep 1
+
 say "setting a PIN, starting the screen recording and the speaker capture"
 adb shell locksettings set-pin "$PIN" >/dev/null
 SR_START=$(now_ms)

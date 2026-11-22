@@ -97,6 +97,9 @@ class VoiceBridge(private val activity: ComponentActivity) {
         @Volatile private var startError: Throwable? = null
         @Volatile private var pendingOnset: Pair<Float, Int>? = null
 
+        /** True while a voice session's audio engine is up. */
+        val isRunning: Boolean get() = engine != null
+
         /** The service's engine is up. */
         internal fun attach(audio: VoiceAudio) {
             pendingOnset?.let { (threshold, minSpeechMs) -> audio.configureOnset(threshold, minSpeechMs) }

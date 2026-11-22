@@ -17,7 +17,9 @@ import UIKit
 //   playback         AVAudioPlayerNode, 24 kHz, flushable
 //   onset detector   RMS over 20 ms frames, parameters from the gateway's `ready.onset`
 //   lock screen      Now Playing "Voice mode on"; pause / stop commands end the session
-//   interruptions    a call or Siri pauses capture and playback; they resume afterwards
+//   interruptions    a call or Siri pauses capture and playback; they resume afterwards,
+//                    or the session ends when the system does not allow a resume
+//   route changes    a changed input format rebuilds the capture path and keeps going
 final class VoiceController {
     static let shared = VoiceController()
 
@@ -38,6 +40,7 @@ final class VoiceController {
         commonFormat: .pcmFormatFloat32, sampleRate: outputRate, channels: 1, interleaved: false)!
 
     private var running = false
+    private var playerAttached = false
     private var converter: AVAudioConverter?
     private var detector = OnsetDetector()
     private var ledger = PlaybackLedger(sampleRate: Int(outputRate))
@@ -71,7 +74,7 @@ final class VoiceController {
     }
 
     func start(handsFree: Bool) -> Bool {
-        guard !running else { return false }
+        guard !state.sync(execute: { running }) else { return false }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
@@ -82,25 +85,23 @@ final class VoiceController {
             // this app's own playback.
             try engine.inputNode.setVoiceProcessingEnabled(true)
         } catch {
+            // The session may already be active: hand the audio back to other apps.
+            teardown()
             return false
         }
 
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else { return false }
-        self.converter = converter
-
         engine.attach(player)
+        playerAttached = true
         engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
-        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.capture(buffer)
+        guard installCapture() else {
+            teardown()
+            return false
         }
         do {
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
-            engine.detach(player)
+            teardown()
             return false
         }
         player.play()
@@ -120,21 +121,72 @@ final class VoiceController {
     }
 
     func stop() {
-        let wasRunning = state.sync { () -> Bool in
-            let was = running
+        state.sync {
             running = false
             generation += 1
-            return was
         }
-        guard wasRunning else { return }
+        // Tears down whatever exists, whether or not the session got as far as running:
+        // a start that failed part-way must not leave the audio session active.
+        teardown()
+        DispatchQueue.main.async { self.hideLockScreenControl() }
+    }
+
+    /// Releases the engine, the observers and the audio session. Safe to call at any
+    /// point, any number of times.
+    private func teardown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()
-        engine.detach(player)
+        if playerAttached {
+            engine.detach(player)
+            playerAttached = false
+        }
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
+        state.sync {
+            converter = nil
+            pendingCapture.removeAll()
+        }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        DispatchQueue.main.async { self.hideLockScreenControl() }
+    }
+
+    /// (Re)builds the capture path from the input's current hardware format: the tap
+    /// and the converter are both tied to it, and connecting or removing a Bluetooth or
+    /// wired headset changes it. Returns false when no converter exists for the format.
+    private func installCapture() -> Bool {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else { return false }
+        state.sync {
+            self.converter = converter
+            pendingCapture.removeAll()
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            self?.capture(buffer)
+        }
+        return true
+    }
+
+    /// Rebuilds capture for the current input format and restarts the engine and the
+    /// player. Returns false if the session cannot go on.
+    private func restartAudio() -> Bool {
+        guard installCapture() else { return false }
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            return false
+        }
+        player.play()
+        return true
+    }
+
+    /// Ends the session from the native side: the Rust side closes the socket and
+    /// reports the stop with the given reason.
+    private func endSession(_ reason: String) {
+        reason.withCString { hf_voice_on_stop($0) }
     }
 
     // MARK: onset detection and capture
@@ -145,7 +197,7 @@ final class VoiceController {
 
     /// Converts the tap's buffer to 16 kHz PCM16 and hands out exact 20 ms frames.
     private func capture(_ buffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
+        guard let converter = state.sync(execute: { self.converter }) else { return }
         let ratio = Self.inputRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
         guard let out = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: capacity) else { return }
@@ -269,7 +321,7 @@ final class VoiceController {
     }
 
     func pause() { player.pause() }
-    func resume() { if running { player.play() } }
+    func resume() { if state.sync(execute: { running }) { player.play() } }
 
     // MARK: system events: interruptions, route changes, lock-screen control
 
@@ -278,14 +330,19 @@ final class VoiceController {
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification, object: session, queue: nil
         ) { [weak self] note in self?.interruption(note) })
+        // A route change (headphones, AirPods, a car) that changes the input's hardware
+        // format stops the engine and posts this. The session goes on: rebuild the
+        // capture path for the new format and start again.
         observers.append(center.addObserver(
-            forName: AVAudioSession.routeChangeNotification, object: session, queue: nil
-        ) { [weak self] _ in
-            // Headphones coming or going keep the session going.
-            guard let self, self.running, !self.engine.isRunning else { return }
-            try? self.engine.start()
-            self.player.play()
-        })
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in self?.configurationChanged() })
+    }
+
+    private func configurationChanged() {
+        let active = state.sync { running && interruptedAt == nil }
+        // During an interruption the end of the interruption restarts the audio.
+        guard active else { return }
+        if !restartAudio() { endSession("error") }
     }
 
     private func interruption(_ note: Notification) {
@@ -301,8 +358,16 @@ final class VoiceController {
                 interruptedAt = nil
                 return value
             }
-            try? AVAudioSession.sharedInstance().setActive(true)
-            if !engine.isRunning { try? engine.start() }
+            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            // Without `.shouldResume`, or if the audio cannot be brought back, the
+            // session ends the way a permanent loss of audio focus does on Android.
+            guard options.contains(.shouldResume),
+                  (try? AVAudioSession.sharedInstance().setActive(true)) != nil,
+                  restartAudio() else {
+                endSession("interruption")
+                return
+            }
             let suspended = began.map { (DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds) / 1_000_000 } ?? 0
             hf_voice_on_interruption(false, suspended)
         @unknown default:

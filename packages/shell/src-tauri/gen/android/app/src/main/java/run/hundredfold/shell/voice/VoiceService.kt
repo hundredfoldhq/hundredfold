@@ -61,9 +61,15 @@ class VoiceService : Service() {
         ensureChannel()
         val notification = buildNotification()
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
-        if (audio != null) return
+        if (audio != null) {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+            return
+        }
         try {
+            // Inside the try: the system can refuse a microphone foreground service
+            // (permission revoked, started from the background), and that is a failed
+            // start for the caller, not a crash.
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
             acquireLocks()
             requestFocus()
             val engine = VoiceAudio()
@@ -75,6 +81,14 @@ class VoiceService : Service() {
             VoiceBridge.startFailed(error)
             stopSelf()
         }
+    }
+
+    // The task was removed from recents: end the session cleanly (bye, close 1000)
+    // instead of letting the process die with the socket open.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        VoiceNative.nativeStopRequested("task_removed")
+        handler.postDelayed({ stopSelf() }, STOP_FALLBACK_MS)
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

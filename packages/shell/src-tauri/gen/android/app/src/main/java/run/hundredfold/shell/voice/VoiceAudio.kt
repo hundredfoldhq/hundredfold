@@ -250,7 +250,9 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                     Thread.sleep(20)
                     continue
                 }
-                val written = out.write(chunk.pcm, offset, chunk.pcm.size - offset)
+                // Short slices: a flush can land between the generation check and the blocking
+                // write, and then at most one slice of stale audio plays.
+                val written = out.write(chunk.pcm, offset, minOf(chunk.pcm.size - offset, WRITE_SLICE_BYTES))
                 if (written < 0) break
                 offset += written
                 if (synchronized(lock) { chunk.generation != generation }) break
@@ -264,5 +266,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
         const val OUTPUT_RATE = 24_000
         /** 20 ms of PCM16LE mono at 16 kHz. */
         const val FRAME_BYTES = 640
+        /** 30 ms of PCM16LE mono at 24 kHz. */
+        const val WRITE_SLICE_BYTES = 1_440
     }
 }

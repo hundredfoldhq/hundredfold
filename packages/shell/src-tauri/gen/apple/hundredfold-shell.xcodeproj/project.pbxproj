@@ -19,6 +19,10 @@
 		802DE105B7C53CFDCE4C3F7B /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC02623CE36152C9379B09E1 /* Metal.framework */; };
 		9CF605E336A5607EE94A74BA /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 46373D7FD9A18A3C7389D5BC /* UIKit.framework */; };
 		EA8A57388218D87C33CC45A2 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04BE9471A2CBC302C58CCCCB /* MetalKit.framework */; };
+		F3F3BDC82C788884D87A4209 /* VoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C8B0858FFF466ADA780A7A7 /* VoiceController.swift */; };
+		40B864E2C59DD985336C64C7 /* VoiceLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83E687BE1A2B6F6819CF69D /* VoiceLogic.swift */; };
+		4C6B78AFF4547D6A9D22D5D7 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CCB15441C25CAB44BC04AF01 /* AVFoundation.framework */; };
+		3C920DDC54FB5CC8C4A3CE73 /* MediaPlayer.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7A1AF43583F3A5013875B5EF /* MediaPlayer.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +53,14 @@
 		E8240FA00F7D58218A3A9258 /* stream.rs */ = {isa = PBXFileReference; path = stream.rs; sourceTree = "<group>"; };
 		EF617CEDA87FF28EF3EC2D4F /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		F807AF03873FD725F72F75F4 /* hundredfold-shell_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "hundredfold-shell_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CCB15441C25CAB44BC04AF01 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		7A1AF43583F3A5013875B5EF /* MediaPlayer.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MediaPlayer.framework; path = System/Library/Frameworks/MediaPlayer.framework; sourceTree = SDKROOT; };
+		9C8B0858FFF466ADA780A7A7 /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
+		E83E687BE1A2B6F6819CF69D /* VoiceLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceLogic.swift; sourceTree = "<group>"; };
+		67E00808077788E9E6861CF0 /* hundredfold-shell-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "hundredfold-shell-Bridging-Header.h"; sourceTree = "<group>"; };
+		DB19710199069AF693A4C3A0 /* voice.rs */ = {isa = PBXFileReference; path = voice.rs; sourceTree = "<group>"; };
+		52D16248D31D99AFAC7C6A68 /* ios.rs */ = {isa = PBXFileReference; path = ios.rs; sourceTree = "<group>"; };
+		59B7E7CF65BF017DD8DA6BA3 /* android.rs */ = {isa = PBXFileReference; path = android.rs; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -57,7 +69,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				5F88E445F12E1A2A9A329391 /* libapp.a in Frameworks */,
+				4C6B78AFF4547D6A9D22D5D7 /* AVFoundation.framework in Frameworks */,
 				6E5723A860F03CD3A2B79CE3 /* CoreGraphics.framework in Frameworks */,
+				3C920DDC54FB5CC8C4A3CE73 /* MediaPlayer.framework in Frameworks */,
 				802DE105B7C53CFDCE4C3F7B /* Metal.framework in Frameworks */,
 				EA8A57388218D87C33CC45A2 /* MetalKit.framework in Frameworks */,
 				53F085A89A115C7336D20368 /* QuartzCore.framework in Frameworks */,
@@ -88,10 +102,12 @@
 		8C3DF1C1482EEA774B8B5134 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				59B7E7CF65BF017DD8DA6BA3 /* android.rs */,
 				415E13D02D21B59ED1E0C7FC /* commands.rs */,
 				883CE8850D85468BD7E4F8B7 /* credentials.rs */,
 				7F49EA12DFA78BDA63697E22 /* deep_link.rs */,
 				60659CC0B254D3025D4724E5 /* display.rs */,
+				52D16248D31D99AFAC7C6A68 /* ios.rs */,
 				85605F1010D7A5EF595ABC52 /* lib.rs */,
 				11E41EF0C4371D611F3F154B /* main.rs */,
 				E394FD25B22E87230E3FBFEF /* menu.rs */,
@@ -99,6 +115,7 @@
 				44871940E1F928858BCB21FE /* origin.rs */,
 				B18DCDB7E8245CB462E93459 /* probe.rs */,
 				E8240FA00F7D58218A3A9258 /* stream.rs */,
+				DB19710199069AF693A4C3A0 /* voice.rs */,
 			);
 			name = src;
 			path = ../../src;
@@ -127,6 +144,15 @@
 			path = bindings;
 			sourceTree = "<group>";
 		};
+		AA868F61DDD798605DEC905C /* voice */ = {
+			isa = PBXGroup;
+			children = (
+				9C8B0858FFF466ADA780A7A7 /* VoiceController.swift */,
+				E83E687BE1A2B6F6819CF69D /* VoiceLogic.swift */,
+			);
+			path = voice;
+			sourceTree = "<group>";
+		};
 		E2538426FF4C8B25D51B5E72 /* hundredfold-shell_iOS */ = {
 			isa = PBXGroup;
 			children = (
@@ -139,8 +165,10 @@
 		E3D3C4A8AD46E453CAACDD0F /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				CCB15441C25CAB44BC04AF01 /* AVFoundation.framework */,
 				B1E461BF465164D441CEB08F /* CoreGraphics.framework */,
 				46ACD6A2F7C29F0543C0D43C /* libapp.a */,
+				7A1AF43583F3A5013875B5EF /* MediaPlayer.framework */,
 				AC02623CE36152C9379B09E1 /* Metal.framework */,
 				04BE9471A2CBC302C58CCCCB /* MetalKit.framework */,
 				873026D7C9AA2EB24D6948AC /* QuartzCore.framework */,
@@ -162,8 +190,10 @@
 		EA0CB2C90AAA4FDD04082E99 /* hundredfold-shell */ = {
 			isa = PBXGroup;
 			children = (
+				67E00808077788E9E6861CF0 /* hundredfold-shell-Bridging-Header.h */,
 				71C6C4D35D584912593B5BBB /* main.mm */,
 				DDE3730086B5E1F53B89A818 /* bindings */,
+				AA868F61DDD798605DEC905C /* voice */,
 			);
 			path = "hundredfold-shell";
 			sourceTree = "<group>";
@@ -264,6 +294,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				25DF5236EAA913747F04EAB8 /* main.mm in Sources */,
+				F3F3BDC82C788884D87A4209 /* VoiceController.swift in Sources */,
+				40B864E2C59DD985336C64C7 /* VoiceLogic.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -296,6 +328,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = run.hundredfold.shell;
 				PRODUCT_NAME = Hundredfold;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/hundredfold-shell/hundredfold-shell-Bridging-Header.h";
+				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
 			};
@@ -446,6 +480,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = run.hundredfold.shell;
 				PRODUCT_NAME = Hundredfold;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/hundredfold-shell/hundredfold-shell-Bridging-Header.h";
+				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
 			};

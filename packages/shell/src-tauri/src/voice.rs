@@ -34,6 +34,8 @@ use crate::{
 const CAPTURE_QUEUE_FRAMES: usize = 256;
 /// How long `voice_start` waits for the gateway socket to connect.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `voice_stop` waits for the session to finish ending.
+const STOP_WAIT: Duration = Duration::from_secs(3);
 
 /// What the session asks of the platform's audio code.
 #[derive(Clone, Debug, PartialEq)]
@@ -203,6 +205,9 @@ pub async fn voice_start<R: Runtime>(
 
     // Reserve the single session slot before touching the platform.
     let (control_tx, control_rx) = mpsc::unbounded_channel();
+    // This session's own handle, for ending it if the connect fails; the global
+    // slot may already belong to a later session by then.
+    let own_control = control_tx.clone();
     let (capture_tx, capture_rx) = mpsc::channel(CAPTURE_QUEUE_FRAMES);
     let status = Arc::new(Mutex::new(Status {
         running: true,
@@ -290,7 +295,7 @@ pub async fn voice_start<R: Runtime>(
     match tokio::time::timeout(CONNECT_TIMEOUT, started_rx).await {
         Ok(Ok(true)) => Ok(VoiceAck { ok: true }),
         _ => {
-            platform_event(Input::Stop {
+            let _ = own_control.send(Input::Stop {
                 reason: "connect_failed".into(),
             });
             Err(NativeError::transport())
@@ -301,9 +306,21 @@ pub async fn voice_start<R: Runtime>(
 #[tauri::command]
 pub async fn voice_stop<R: Runtime>(window: WebviewWindow<R>) -> Result<VoiceAck, NativeError> {
     confine(&window)?;
+    let status = ACTIVE
+        .lock()
+        .ok()
+        .and_then(|active| active.as_ref().map(|a| a.status.clone()));
     platform_event(Input::Stop {
         reason: "user".into(),
     });
+    // Return once the session has ended, so a start in the same tick is not refused
+    // as busy. Bounded: the stop is already on its way if the session is slow to end.
+    if let Some(status) = status {
+        let deadline = tokio::time::Instant::now() + STOP_WAIT;
+        while lock_status(&status).running && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     Ok(VoiceAck { ok: true })
 }
 

@@ -77,15 +77,20 @@ Everything below is specified in `specs/009-voice-mode/contracts/native-voice.md
 
 They are confined to the local `main` window like the other four, and the bundle
 exposes them to the web app as `window.__HUNDREDFOLD_NATIVE__.{voiceStart, voiceStop,
-voicePtt, voiceStatus}` (`voiceStart(input, onFrame)` passes the channel's messages to
-`onFrame`). Error codes are kebab-case, like the shell's other native errors.
+voicePtt, voiceStatus}` on the mobile shells only (the desktop shell leaves them
+out, so the web app keeps using the browser's audio there); `voiceStart(input, onFrame)`
+passes the channel's messages to `onFrame`. Error codes are kebab-case, like the
+shell's other native errors.
 
 The channel carries the gateway's frames unchanged (`ready`, `transcript`,
 `segment_start`, `turn`, `detached`, ...; binary audio is never forwarded) plus the
 shell-only `native_state` object, which reports the native session's own state (so
 the web UI learns of a Stop from the notification or a pause for a call). Its shape
 and `reason` values are specified in `specs/009-voice-mode/contracts/native-voice.md`.
-A web UI that is suspended or gone does not end the session.
+A web UI that is suspended or gone does not end the session. On Android, BACK at the
+app root moves the task to the background while voice runs instead of finishing the
+activity, and removing the task from recents ends the session cleanly (`bye`, close
+1000). A page reload cannot reattach to a running session yet.
 
 ### Platform status
 
@@ -100,14 +105,22 @@ A web UI that is suspended or gone does not end the session.
 
 Behaviour worth knowing: a call or assistant that takes the audio pauses voice mode
 and it resumes when the system hands the audio back; another app taking the audio
-for good (music, video) ends voice mode (`native_state` stopped, reason `error`)
-rather than leaving a "listening" notification over a paused session; a gateway that
-does not answer `hello` with `ready` within 10 s ends it the same way. In
+for good (music, video) ends voice mode (`native_state` stopped, reason `interruption`)
+rather than leaving a "listening" notification over a paused session; on iOS the same
+happens when an interruption ends without `.shouldResume` or the audio cannot be
+restarted. A gateway that does not answer `hello` with `ready` within 10 s ends it
+with reason `error`. A route change that alters the input format (headphones, AirPods)
+rebuilds the capture path and keeps going. In
 push-to-talk the microphone stays open and only frames between `ptt_down` and
 `ptt_up` are sent.
 
-Android and the Rust core do not depend on the iOS files. Unverified on iOS in
-particular: that `setVoiceProcessingEnabled(true)` leaves an input format
+Android and the Rust core do not depend on the iOS files. The Xcode project
+(`gen/apple/hundredfold-shell.xcodeproj`) references the voice sources, the bridging
+header, `AVFoundation` and `MediaPlayer`; `gen/apple/project.yml` is its source, and
+the committed `project.pbxproj` was edited by hand to match it, not generated or opened
+in Xcode. On a Mac, regenerate it (`xcodegen generate` in `gen/apple`) and build before
+relying on it. Unverified on iOS in particular: route changes and interruption
+recovery on a device, that `setVoiceProcessingEnabled(true)` leaves an input format
 `AVAudioConverter` can convert to 16 kHz mono (`start` returns false if not), and the
 Now Playing stop command on a locked device. The emulator has no
 acoustic echo canceller (`AcousticEchoCanceler.isAvailable()` is false there), so

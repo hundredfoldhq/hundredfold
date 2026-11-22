@@ -99,6 +99,11 @@ pub mod reason {
         match requested {
             "user" => USER,
             "notification" | "lock_screen" => NOTIFICATION,
+            // Another app took the audio for good, or the system ended an interruption
+            // without letting the session resume: not a failure.
+            "focus_lost" | "interruption" => INTERRUPTION,
+            // The task was swiped away from recents: the user ended it.
+            "task_removed" => USER,
             _ => ERROR,
         }
     }
@@ -892,6 +897,23 @@ mod tests {
     }
 
     #[test]
+    fn a_close_code_before_the_socket_opened_is_an_error_without_a_code() {
+        let mut session = Session::new(Mode::HandsFree);
+        let actions = session.handle(
+            Input::SocketClosed {
+                code: Some(1006),
+                reason: String::new(),
+            },
+            0,
+        );
+        assert!(actions.contains(&Action::State(StateEvent {
+            state: NativeState::Stopped,
+            reason: Some("error".into()),
+            code: None,
+        })));
+    }
+
+    #[test]
     fn detached_is_forwarded_and_the_close_that_follows_stops_the_session() {
         let mut session = running(Mode::HandsFree);
         let detached = r#"{"type":"detached","reason":"taken_over"}"#;
@@ -919,6 +941,9 @@ mod tests {
             ("user", "user"),
             ("notification", "notification"),
             ("lock_screen", "notification"),
+            ("focus_lost", "interruption"),
+            ("interruption", "interruption"),
+            ("task_removed", "user"),
             ("connect_failed", "error"),
             ("anything else", "error"),
         ] {
