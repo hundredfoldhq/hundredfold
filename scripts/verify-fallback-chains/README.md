@@ -57,10 +57,40 @@ inside an operator home. It tears everything down on exit.
 | n | a Monitor armed on the own account when a limit moves the session is named in the stand-in's first prompt (the ledger keeps the note as `gatewayNote`), with no separate nudge turn, and is not owed afterwards |
 | o | a Monitor armed on the stand-in is named in the prompt of the turn that goes back to the own account once its target is cleared |
 
+### Account groups
+
+`group-scenarios.mjs` drives a chain whose first entry is a group of the two fake accounts
+(`{ group: [A, B] }`, then an opencode link) on the employee that runs as A. Usage is seeded the way
+the gateway reads it: `h.seedUsage(accountKey, usedPercent)` writes one fresh sample to that account's
+usage history file under the instance's engine-limits directory (`h.useGroup()` puts the chain in place
+and returns the accounts' store keys). No provider is called. Each scenario reads `fallback.chain.pick`
+(with each candidate's `weight` and `sharePercent`) and the ledger's profile per turn, and asserts
+the two agree.
+
+| id | |
+|---|---|
+| p | distribution: headroom 60/40 splits 20 spaced sessions 12/8, 90/10 splits 18/2, a member with no headroom gets none of 10; each count within ±1 of what is stated |
+| q | burst: ten sessions started at once (`Promise.all`) across two equally fresh accounts split 5/5 ±1, never all on one |
+| r | group hop then rest: a limit on the own account moves the turn to the other member, a limit there moves it to opencode; hops in order |
+| s | the same walk from the other side: a session the pick put on B moves to A, then opencode |
+| t | stickiness: a session pinned to A takes five turns and a turn after a gateway restart while B's usage drops below A's; every turn on A, no hop, the pick unchanged |
+| u | return: pinned to B, moved to A by B's limit; once B is cleared the next turn is back on B |
+| v | start paths: new chat (with and without `engine: "claude"`), spawn, delegate and Todo dispatch each get a pick; `engine: "claude:A"` gets none; a board walk tick is driven too |
+
+The board walk starts a Todo through the same dispatcher call the button uses (the Todo dispatch case);
+what it decides is a model turn, and the fake model calls none of the walk's tools, so `v` checks that a
+tick runs its turn and starts nothing by itself. `h.restartGateway()` stops and starts the instance
+through the sandbox helper (`--helper`, `--instance`, which the script passes).
+
+p, q, s, t, u and v assert the pick a session records at creation, which the start paths pin
+(part B of the account group work). They are in the script's default `--pending` until that is
+merged into the branch under test; `--pending ""` runs everything for real. r, and every scenario
+above it with no group in config, run now.
+
 Every scenario runs and counts. `--pending a,b` marks scenarios that wait on runtime work not
-yet merged (none today: the default list is empty): a pending scenario is reported, never
+yet merged (the default list is the group scenarios above that need start-path pinning): a pending scenario is reported, never
 failed; one that passes is reported as "pending but passing", and `--strict` fails the run on
-it. Drop an id from the default list in `verify-fallback-chains.sh` when its work lands.
+it. Drop an id from `DEFAULT_PENDING` in `verify-fallback-chains.sh` when its work lands.
 
 To check the gateway of another checkout against this harness's fakes and scenarios (for
 instance `main`, to confirm scenario e passes there too), set `HUNDREDFOLD_VERIFY_GATEWAY_REPO`.
