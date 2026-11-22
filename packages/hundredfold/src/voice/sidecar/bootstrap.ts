@@ -141,6 +141,15 @@ export function findPython(candidates: readonly string[] = PYTHON_CANDIDATES, ve
   return null;
 }
 
+let pythonProbe: { at: number; python: PythonInfo | null } | null = null;
+
+/** `findPython`, remembered for 30 s: the config reply asks while nothing is installed. */
+export function findPythonCached(): PythonInfo | null {
+  if (pythonProbe && Date.now() - pythonProbe.at < PROBE_TTL_MS) return pythonProbe.python;
+  pythonProbe = { at: Date.now(), python: findPython() };
+  return pythonProbe.python;
+}
+
 // ── the installer ────────────────────────────────────────────────────────────
 
 /** Disk needed under the home: the GPU path adds the CUDA wheels and the 2.4 GB fp32 model. */

@@ -49,6 +49,8 @@ describe("refused routes", () => {
     ["GET", "/api/search/global?q=x"],
     ["GET", "/api/cost/report"],
     ["GET", "/api/connectors"],
+    ["GET", "/api/voice/config"],
+    ["POST", "/api/voice/install"],
     ["GET", "/api/departments/side-project"],
     ["PATCH", "/api/departments/side-project"],
     ["PATCH", "/api/org/employees/side-qa"],
