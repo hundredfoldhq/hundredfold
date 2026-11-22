@@ -9,6 +9,7 @@
  * tee is part of `emit`, which the rest of the gateway holds from boot.
  */
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -23,8 +24,8 @@ import { voiceDeliveryFor, turnRunningFor } from "./deliver.js";
 import { createVoiceEmitTee } from "./emit-tee.js";
 import { VoiceHub } from "./hub.js";
 import { systemClock, type VoiceHubDeps, type VoiceProviderSet } from "./hub-types.js";
-import { createVoiceProviders } from "./provider-factory.js";
-import { resolveVoiceConfig, type ResolvedVoiceConfig } from "./resolved-config.js";
+import { resolveVoiceConfig, type ResolvedVoiceConfig } from "../shared/voice-config.js";
+import { closeSharedLocalSpeech, createVoiceProviders } from "./providers/registry.js";
 import { handleVoiceUpgrade, upgradeMember, VOICE_MAX_PAYLOAD_BYTES, type VoiceUpgradeDeps } from "./upgrade.js";
 
 export interface VoiceRuntimeOptions {
@@ -33,7 +34,7 @@ export interface VoiceRuntimeOptions {
   getContext(): ApiContext;
   /** The operator's own credential, or a same-origin browser where auth is not required. */
   operatorAuthenticated(req: IncomingMessage): boolean;
-  /** Replace the speech providers (tests, and the merge of the provider registry). */
+  /** Replace the speech providers (tests); the default is the provider registry. */
   providers?: (config: ResolvedVoiceConfig) => VoiceProviderSet;
 }
 
@@ -55,15 +56,35 @@ export interface VoiceRuntime {
   shutdown(): void;
 }
 
-/** The resolved config for the config as it stands, resolved again only when the voice block itself changes. */
-function memoisedConfig(getConfig: () => HundredfoldConfig): () => ResolvedVoiceConfig | null {
+/** The longest spoken-conversation prompt the hub sends, the same limit `voice.prompt` has. */
+const MAX_PROMPT_FILE_CHARS = 8000;
+
+/**
+ * `resolved` with `prompt` taken from `promptFile` when one is set (the resolver checks the path stays inside the
+ * instance home but does not read it). A file that cannot be read, or is empty, leaves the built-in prompt, with a warning.
+ */
+export function withPromptFile(resolved: ResolvedVoiceConfig, read: (file: string) => string = (file) => fs.readFileSync(file, "utf8")): ResolvedVoiceConfig {
+  if (!resolved.promptFile) return resolved;
+  try {
+    const text = read(resolved.promptFile).trim();
+    if (text) return { ...resolved, prompt: text.slice(0, MAX_PROMPT_FILE_CHARS) };
+    logger.warn("[voice] voice.promptFile is empty; using the built-in prompt");
+  } catch (error) {
+    logger.warn(`[voice] voice.promptFile could not be read (${(error as NodeJS.ErrnoException).code ?? "error"}); using the built-in prompt`);
+  }
+  return resolved;
+}
+
+/** The resolved config for the config as it stands, resolved (and its prompt file read) again only when the voice block itself changes. */
+export function memoisedConfig(getConfig: () => HundredfoldConfig): () => ResolvedVoiceConfig | null {
   let source: unknown;
   let resolved: ResolvedVoiceConfig | null = null;
   return () => {
     const config = getConfig();
     if (config.voice !== source || resolved === null) {
       source = config.voice;
-      resolved = resolveVoiceConfig(config);
+      const fresh = resolveVoiceConfig(config);
+      resolved = fresh && withPromptFile(fresh);
     }
     return resolved;
   };
@@ -84,7 +105,7 @@ export function redactorFor(getConfig: () => HundredfoldConfig): (text: string) 
 function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
   return {
     config: memoisedConfig(options.getConfig),
-    providers: options.providers ?? createVoiceProviders,
+    providers: options.providers ?? ((config) => createVoiceProviders(config)),
     getSession: (sessionId) => getSession(sessionId),
     getEngine: (name) => options.getContext().sessionManager.getEngine(name),
     turnRunning: (sessionId, engine) => {
@@ -119,6 +140,7 @@ export function createVoiceRuntime(options: VoiceRuntimeOptions): VoiceRuntime |
     shutdown() {
       hub.shutdown();
       wss.close();
+      closeSharedLocalSpeech(); // the speech sidecar and any install in progress
     },
   };
 }

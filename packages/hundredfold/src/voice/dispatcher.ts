@@ -12,7 +12,7 @@ import type { ForegroundWork } from "../shared/types.js";
 import { backgroundedNote, buildVoiceEnvelope, interruptedNote } from "./envelope.js";
 import type { VoiceDeliveryMode, VoiceHubDeps } from "./hub-types.js";
 import type { ReplyVoice } from "./reply-voice.js";
-import type { ResolvedVoiceConfig } from "./resolved-config.js";
+import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
 import type { FinishedUtterance } from "./utterance-capture.js";
 
 /** How many times a young tool call is waited out before it is treated as long work regardless. */

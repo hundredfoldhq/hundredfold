@@ -22,8 +22,8 @@ After T001 lands, A to E run in parallel against the committed contracts.
 
 ## Phase 2: Foundational
 
-- [ ] T002 [A] `voiceConfigProblems` and `resolveVoiceConfig` in `G/shared/voice-config.ts` per contracts/voice-config.md (every key, range and default; literal `apiKey` refused; `promptFile` confined to the instance home; `local` accepts only English). Wire into the loader at `G/shared/config.ts:53`.
-- [ ] T003 [P] [A] Tests `G/shared/__tests__/voice-config.test.ts`: each key's bad shapes and ranges name the key; absent or disabled → `null` and no problems; defaults filled; `promptFile` escaping the home refused; a literal key refused with the move-to-env message.
+- [x] T002 [A] `voiceConfigProblems` and `resolveVoiceConfig` in `G/shared/voice-config.ts` per contracts/voice-config.md (every key, range and default; literal `apiKey` refused; `promptFile` confined to the instance home; `local` accepts only English). Wire into the loader at `G/shared/config.ts:53`.
+- [x] T003 [P] [A] Tests `G/shared/__tests__/voice-config.test.ts`: each key's bad shapes and ranges name the key; absent or disabled → `null` and no problems; defaults filled; `promptFile` escaping the home refused; a literal key refused with the move-to-env message.
 - [x] T004 [B] `mergeMessageMeta(messageId, patch)` in `G/sessions/registry.ts`: merges into `messages.meta` JSON without dropping other keys, one statement.
 - [x] T005 [P] [B] Tests for `mergeMessageMeta`: merges, keeps other keys, creates meta when null, unknown id is a no-op.
 - [x] T006 [B] `/api/voice*` row in `G/gateway/department-scope/rules.ts` beside `/api/talk*`; test that a scoped caller is refused.
@@ -32,15 +32,15 @@ After T001 lands, A to E run in parallel against the committed contracts.
 
 Speech sidecar and local providers (Part A):
 
-- [ ] T007 [A] [US1] `G/voice/speech_sidecar.py`: stdio framing (contracts/speech-sidecar.md), `hello`, `vad.*` (Silero via `onnx-asr`), `stt.partial` / `stt.final` (Parakeet via `onnx-asr`, `path=` local dir), `tts` (Kokoro via `kokoro-onnx` `from_session`, CUDA provider when the device is GPU), `cancel`, `ping`. Standard library plus the pinned packages only.
-- [ ] T008 [P] [A] [US1] Python tests `G/voice/__tests__/test_speech_sidecar.py` (unittest, models stubbed): framing round trip incl. binary bodies and max sizes; unknown op → `error`; `cancel` stops a `tts` mid-stream; replies carry their ids out of order.
-- [ ] T009 [A] [US1] `G/voice/sidecar/bootstrap.ts`: Python discovery, venv build (from scratch if broken), pinned `pip install` choosing `onnxruntime-gpu[cuda,cudnn]==1.32.0` when the device resolves to GPU, model download with `snapshot_download(local_dir=…)` (fp32 Parakeet for GPU, int8 for CPU, Kokoro v1.0, Silero), progress as `install` state plus a `voice:install` event.
-- [ ] T010 [A] [US1] `G/voice/sidecar/client.ts` + `framing.ts`: spawn on first need, multiplexed requests, 15 s ping, respawn at most once per 30 s, warm for 10 min after the last attachment, killed on shutdown.
-- [ ] T011 [P] [A] [US1] Tests with a fake sidecar script on stdio: framing; ping loss marks unavailable and fails in-flight work; respawn throttle; idle reap; shutdown kill.
-- [ ] T012 [A] [US1] `G/voice/providers/local.ts`: `SttProvider` (partials every 400 ms while speech continues, skip when the previous decode is busy; final on `end()`), `TtsProvider` (24 kHz chunks), `VadStream`.
-- [ ] T013 [A] [US1] `G/voice/providers/registry.ts`: `createSttProvider`, `createTtsProvider`, `createVad` from the resolved config.
-- [ ] T014 [A] [US1] `G/gateway/voice-api.ts`: `GET /api/voice/config` and `POST /api/voice/install` per contracts/voice-config.md; wired in `G/gateway/api.ts` beside the talk router.
-- [ ] T015 [P] [A] [US1] Tests: `GET` disabled → `{enabled:false}`; enabled shape; install states; members get the same shape; `POST /install` operator-only and idempotent.
+- [x] T007 [A] [US1] `G/voice/speech_sidecar.py`: stdio framing (contracts/speech-sidecar.md), `hello`, `vad.*` (Silero via `onnx-asr`), `stt.partial` / `stt.final` (Parakeet via `onnx-asr`, `path=` local dir), `tts` (Kokoro via `kokoro-onnx` `from_session`, CUDA provider when the device is GPU), `cancel`, `ping`. Standard library plus the pinned packages only.
+- [x] T008 [P] [A] [US1] Python tests `G/voice/__tests__/test_speech_sidecar.py` (unittest, models stubbed): framing round trip incl. binary bodies and max sizes; unknown op → `error`; `cancel` stops a `tts` mid-stream; replies carry their ids out of order.
+- [x] T009 [A] [US1] `G/voice/sidecar/bootstrap.ts`: Python discovery, venv build (from scratch if broken), pinned `pip install` choosing `onnxruntime-gpu[cuda,cudnn]==1.32.0` when the device resolves to GPU, model download with `snapshot_download(local_dir=…)` (fp32 Parakeet for GPU, int8 for CPU, Kokoro v1.0, Silero), progress as `install` state plus a `voice:install` event.
+- [x] T010 [A] [US1] `G/voice/sidecar/client.ts` + `framing.ts`: spawn on first need, multiplexed requests, 15 s ping, respawn at most once per 30 s, warm for 10 min after the last attachment, killed on shutdown.
+- [x] T011 [P] [A] [US1] Tests with a fake sidecar script on stdio: framing; ping loss marks unavailable and fails in-flight work; respawn throttle; idle reap; shutdown kill.
+- [x] T012 [A] [US1] `G/voice/providers/local.ts`: `SttProvider` (partials every 400 ms while speech continues, skip when the previous decode is busy; final on `end()`), `TtsProvider` (24 kHz chunks), `VadStream`.
+- [x] T013 [A] [US1] `G/voice/providers/registry.ts`: `createSttProvider`, `createTtsProvider`, `createVad` from the resolved config.
+- [x] T014 [A] [US1] `G/gateway/voice-api.ts`: `GET /api/voice/config` and `POST /api/voice/install` per contracts/voice-config.md; wired in `G/gateway/api.ts` beside the talk router.
+- [x] T015 [P] [A] [US1] Tests: `GET` disabled → `{enabled:false}`; enabled shape; install states; members get the same shape; `POST /install` operator-only and idempotent.
 
 Gateway hub (Part B):
 
@@ -83,10 +83,10 @@ Web (Part D):
 
 ## Phase 6: US4 configuration and other providers (P2)
 
-- [ ] T043 [P] [A] [US4] `G/voice/providers/openai.ts`: STT over the Realtime transcription session WebSocket (partials), TTS `POST /v1/audio/speech` `pcm` streamed; key from `resolveEnvVar`; the PR cites the API doc and date used.
-- [ ] T044 [P] [A] [US4] `G/voice/providers/openai-compatible.ts`: batch `transcriptions` (multipart WAV), `speech` asking `pcm` then `wav` (unwrapped), MP3-only refused, optional key.
-- [ ] T045 [P] [A] [US4] Provider tests against local fake HTTP/WS servers: partials and final, abort mid-stream, error status, MP3 refusal, WAV unwrap, VAD fallback when the local sidecar is absent.
-- [ ] T046 [A] [US4] `docs/voice.md`: what it is; **pre-installation steps** (Python 3.10+ with venv and pip, disk, NVIDIA driver for GPU); first-run install; the full `voice:` reference with defaults; each provider's setup (local, OpenAI via `${OPENAI_API_KEY}`, a self-hosted example); voices and how to pick one; model licences; per-engine long-work table (FR-018); per-platform locked-screen table (FR-034); cost notes; off by default. `docs/docker.md` voice line updated.
+- [x] T043 [P] [A] [US4] `G/voice/providers/openai.ts`: STT over the Realtime transcription session WebSocket (partials), TTS `POST /v1/audio/speech` `pcm` streamed; key from `resolveEnvVar`; the PR cites the API doc and date used.
+- [x] T044 [P] [A] [US4] `G/voice/providers/openai-compatible.ts`: batch `transcriptions` (multipart WAV), `speech` asking `pcm` then `wav` (unwrapped), MP3-only refused, optional key.
+- [x] T045 [P] [A] [US4] Provider tests against local fake HTTP/WS servers: partials and final, abort mid-stream, error status, MP3 refusal, WAV unwrap, VAD fallback when the local sidecar is absent.
+- [x] T046 [A] [US4] `docs/voice.md`: what it is; **pre-installation steps** (Python 3.10+ with venv and pip, disk, NVIDIA driver for GPU); first-run install; the full `voice:` reference with defaults; each provider's setup (local, OpenAI via `${OPENAI_API_KEY}`, a self-hosted example); voices and how to pick one; model licences; per-engine long-work table (FR-018); per-platform locked-screen table (FR-034); cost notes; off by default. `docs/docker.md` voice line updated.
 
 ## Phase 7: US5 phone and locked screen (P2)
 

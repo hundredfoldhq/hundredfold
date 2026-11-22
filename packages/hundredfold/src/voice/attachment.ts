@@ -14,7 +14,7 @@ import { BargeIn, type BargeInState } from "./barge-in.js";
 import { Dispatcher } from "./dispatcher.js";
 import type { VoiceHubDeps, VoicePrincipal, VoiceProviderSet, VoiceSocket } from "./hub-types.js";
 import { ReplyVoice } from "./reply-voice.js";
-import type { ResolvedVoiceConfig } from "./resolved-config.js";
+import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
 import { UtteranceCapture, type FinishedUtterance } from "./utterance-capture.js";
 
 const OPEN = 1;

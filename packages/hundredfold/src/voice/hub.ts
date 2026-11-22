@@ -13,7 +13,7 @@ import { VoiceAttachment } from "./attachment.js";
 import {
   samePrincipal, type CancelTimer, type VoiceHubDeps, type VoicePrincipal, type VoiceProviderSet, type VoiceSocket,
 } from "./hub-types.js";
-import type { ResolvedVoiceConfig } from "./resolved-config.js";
+import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
 
 /** How long a suspended attachment waits for its client to come back. */
 export const RESUME_WINDOW_MS = 10 * 60 * 1000;

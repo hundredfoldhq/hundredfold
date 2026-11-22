@@ -22,6 +22,14 @@ describe("decodeGatewayEvent", () => {
     })).toBeNull()
   })
 
+  it("accepts a local speech install frame, with or without a reason, and rejects an unknown state", () => {
+    const failed = { state: "failed", progress: 0.4, reason: "disk full" }
+    expect(decodeGatewayEvent({ event: "voice:install", payload: failed })).toEqual({ event: "voice:install", payload: failed })
+    expect(decodeGatewayEvent({ event: "voice:install", payload: { state: "installing", progress: 0.5 } })).not.toBeNull()
+    expect(decodeGatewayEvent({ event: "voice:install", payload: { state: "halfway", progress: 0.5 } })).toBeNull()
+    expect(decodeGatewayEvent({ event: "voice:install", payload: { state: "ready" } })).toBeNull()
+  })
+
   it("accepts a board hook run frame and rejects one with a missing field", () => {
     const payload = { id: "bhr_1", hook: "review-merge", status: "running" }
     expect(decodeGatewayEvent({ event: "hooks:run", payload })).toEqual({ event: "hooks:run", payload })

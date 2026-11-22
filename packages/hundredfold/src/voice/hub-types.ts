@@ -5,7 +5,7 @@
  */
 import type { Engine, JsonObject } from "../shared/types.js";
 import type { SttProvider, TtsProvider, VadStream } from "./provider.js";
-import type { ResolvedVoiceConfig } from "./resolved-config.js";
+import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
 
 /** A running timer's cancel. */
 export type CancelTimer = () => void;

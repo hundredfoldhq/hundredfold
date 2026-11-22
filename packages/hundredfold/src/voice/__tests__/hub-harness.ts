@@ -1,7 +1,7 @@
 import { VoiceHub } from "../hub.js";
 import type { VoiceAttachment } from "../attachment.js";
 import type { VoiceDelivery, VoiceHubDeps, VoicePrincipal } from "../hub-types.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, type ResolvedVoiceConfig } from "../resolved-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import { FakeClock, FakeEngine, FakeSocket, FakeStt, FakeTts, FakeVad, settle, type FakeEngineOptions } from "./fakes.js";
 
 export const SESSION = "s1";
@@ -13,12 +13,12 @@ export const FRAME = Buffer.alloc(640, 3);
 export function baseConfig(over: Partial<ResolvedVoiceConfig> = {}): ResolvedVoiceConfig {
   return {
     mode: "hands-free", language: "en",
-    stt: { provider: "local", model: null, baseUrl: null, apiKeyRef: null },
-    tts: { provider: "local", model: null, baseUrl: null, apiKeyRef: null, voice: "af_test", speed: 1 },
+    stt: { provider: "local", model: "parakeet-tdt-0.6b-v2", baseUrl: null, apiKeyRef: null },
+    tts: { provider: "local", model: "kokoro-v1.0", baseUrl: null, apiKeyRef: null, voice: "af_test", speed: 1 },
     vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
     bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
     autoBackground: { enabled: true, afterSeconds: 5 },
-    prompt: DEFAULT_VOICE_PROMPT, holdingLine: DEFAULT_HOLDING_LINE,
+    prompt: DEFAULT_VOICE_PROMPT, promptFile: null, holdingLine: DEFAULT_HOLDING_LINE,
     limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 },
     local: { device: "auto" },
     ...over,

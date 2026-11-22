@@ -34,7 +34,8 @@ function baseConfig(voice: HundredfoldConfig["voice"]): HundredfoldConfig {
   return { gateway: {}, engines: { default: "codex" }, voice } as unknown as HundredfoldConfig;
 }
 
-export async function startRoute(voice: HundredfoldConfig["voice"] = { enabled: true, limits: { maxConcurrentAttachments: 4 } }): Promise<Route> {
+/** With `realProviders`, the runtime builds its providers from the registry as the gateway does; the fakes are then unused. */
+export async function startRoute(voice: HundredfoldConfig["voice"] = { enabled: true, limits: { maxConcurrentAttachments: 4 } }, options: { realProviders?: boolean } = {}): Promise<Route> {
   const { createVoiceRuntime } = await import("../runtime.js");
   const config = { current: baseConfig(voice) };
   const stt = new FakeStt();
@@ -45,7 +46,7 @@ export async function startRoute(voice: HundredfoldConfig["voice"] = { enabled: 
     getConfig: () => config.current,
     getContext: () => ({ sessionManager: { getEngine: () => engine } }) as never,
     operatorAuthenticated: (req) => req.headers.authorization === `Bearer ${OPERATOR_TOKEN}`,
-    providers: () => ({ stt, tts, createVad: () => { const vad = new FakeVad(); vads.push(vad); return vad; } }),
+    ...(options.realProviders ? {} : { providers: () => ({ stt, tts, createVad: () => { const vad = new FakeVad(); vads.push(vad); return vad; } }) }),
   });
   if (!runtime) throw new Error("voice runtime was not created for an enabled config");
   const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
