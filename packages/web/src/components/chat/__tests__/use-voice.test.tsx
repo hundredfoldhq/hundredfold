@@ -48,7 +48,8 @@ vi.mock('@/lib/voice/native', async () => {
 })
 const principal = vi.hoisted(() => ({ member: null as unknown }))
 vi.mock('@/hooks/use-principal', () => ({ useMember: () => principal.member }))
-vi.mock('@/platform/native-bridge', () => ({ nativeBridge: () => undefined }))
+const shell = vi.hoisted(() => ({ bridge: undefined as unknown }))
+vi.mock('@/platform/native-bridge', () => ({ nativeBridge: () => shell.bridge }))
 vi.mock('@/lib/gateway-transport', () => ({ gatewayTransport: () => ({ profile: { origin: 'https://gw.example.test' } }) }))
 
 import { nextChipCheckMs, tapAction, useVoice } from '../use-voice'
@@ -67,6 +68,7 @@ beforeEach(() => {
   installVoice.mockReset()
   controllers.length = 0
   nativeState.bridge = null
+  shell.bridge = undefined
   principal.member = null
   resetVoiceConfigCache()
   stubBrowserAudio()
@@ -77,6 +79,18 @@ afterEach(() => {
 })
 
 describe('useVoice', () => {
+  it('says whether it runs inside the mobile shell, for the browser-only hint', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const browser = renderHook(() => useVoice('s1', null))
+    await waitFor(() => expect(browser.result.current.enabled).toBe(true))
+    expect(browser.result.current.inShell).toBe(false)
+    shell.bridge = {}
+    nativeState.bridge = {}
+    const inShell = renderHook(() => useVoice('s2', null))
+    await waitFor(() => expect(inShell.result.current.enabled).toBe(true))
+    expect(inShell.result.current.inShell).toBe(true)
+  })
+
   it('is disabled, with no controller, while the config is loading and when voice is off', async () => {
     getVoiceConfig.mockResolvedValue({ enabled: false })
     const { result } = renderHook(() => useVoice('s1', null))

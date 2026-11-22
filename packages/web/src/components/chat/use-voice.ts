@@ -42,6 +42,8 @@ export interface UseVoice {
   state: VoiceUiState
   phase: VoicePhase
   controller: VoiceController | null
+  /** Running inside the mobile app's shell rather than a browser. */
+  inShell: boolean
   chip: BackgroundChip | null
   /** A one-off line the control asked to show (e.g. the reason it is unavailable). */
   note: string | null
@@ -223,6 +225,7 @@ export function useVoice(
   return {
     ...facts,
     enabled: enabledConfig !== null && (Boolean(sessionId) || Boolean(newChat)),
+    inShell: nativeBridge() !== undefined,
     state, phase, controller, chip, note, showNote,
     onTap: () => handleTap(tap),
   }

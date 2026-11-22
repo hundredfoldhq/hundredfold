@@ -17,6 +17,8 @@ export interface SuspendDocument {
 }
 
 export interface SuspendTrack {
+  readonly readyState?: string
+  readonly muted?: boolean
   addEventListener(type: "mute" | "unmute" | "ended", listener: () => void): void
   removeEventListener(type: "mute" | "unmute" | "ended", listener: () => void): void
 }
@@ -43,6 +45,8 @@ export class SuspendWatcher {
   private lastHiddenAt: number | null = null
   private lastVisibleAt: number | null = null
   private readonly cleanups: Array<() => void> = []
+  private track: SuspendTrack | null = null
+  private ctx: SuspendContext | null = null
 
   constructor(
     private readonly doc: SuspendDocument,
@@ -60,12 +64,14 @@ export class SuspendWatcher {
   }
 
   watchTrack(track: SuspendTrack): void {
+    this.track = track
     this.listen(track, "mute", () => this.markSuspended("track-muted"))
     this.listen(track, "ended", () => this.markSuspended("track-ended"))
     this.listen(track, "unmute", () => this.handBack())
   }
 
   watchContext(ctx: SuspendContext): void {
+    this.ctx = ctx
     const changed = () => (ctx.state === "running" ? this.handBack() : this.markSuspendedUnlessClosed(ctx))
     ctx.addEventListener("statechange", changed)
     this.cleanups.push(() => ctx.removeEventListener("statechange", changed))
@@ -118,7 +124,22 @@ export class SuspendWatcher {
     }
     this.hiddenAt = null
     this.lastVisibleAt = this.now()
+    // A track that is still muted hands back through its own `unmute`, not now.
+    this.checkLiveness()
+    if (this.suspended?.reason === "track-muted" && this.track?.muted === true) return
     this.handBack()
+  }
+
+  /**
+   * A browser does not always deliver the `ended` or `mute` event a suspension
+   * caused (or delivers it only while the page is hidden), so on return look at
+   * the microphone and the audio context directly.
+   */
+  private checkLiveness(): void {
+    if (this.suspended) return
+    if (this.track?.readyState === "ended") this.markSuspended("track-ended")
+    else if (this.track?.muted === true) this.markSuspended("track-muted")
+    else if (this.ctx && this.ctx.state !== "running" && this.ctx.state !== "closed") this.markSuspended("audio-context")
   }
 
   private handBack(): void {

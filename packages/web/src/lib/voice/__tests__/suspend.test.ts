@@ -29,6 +29,58 @@ function setup() {
   return { doc, track, ctx, callbacks, watcher, tick: (ms: number) => { now += ms } }
 }
 
+describe("SuspendWatcher on return, without any event", () => {
+  function watched(track: { readyState?: string; muted?: boolean }) {
+    let now = 1_000_000
+    const doc = new FakeDocument()
+    const emitter = Object.assign(new FakeEmitter(), track)
+    const ctx = new FakeContext()
+    const callbacks = { onSuspended: vi.fn(), onReturn: vi.fn() }
+    const watcher = new SuspendWatcher(doc, callbacks, () => now)
+    watcher.watchTrack(emitter)
+    watcher.watchContext(ctx)
+    return { doc, emitter, ctx, callbacks, tick: (ms: number) => { now += ms } }
+  }
+
+  it("finds a microphone track that ended while the page was hidden and reports the return", () => {
+    const { doc, emitter, callbacks, tick } = watched({ readyState: "live" })
+    doc.set("hidden")
+    tick(40_000)
+    emitter.readyState = "ended" // no `ended` event reached the page
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("track-ended")
+    expect(callbacks.onReturn).toHaveBeenCalledWith({ suspendedMs: 40_000, reason: "track-ended" })
+  })
+
+  it("finds a track still muted on return, and waits for its unmute", () => {
+    const { doc, emitter, callbacks } = watched({ readyState: "live", muted: false })
+    doc.set("hidden")
+    emitter.muted = true
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("track-muted")
+    expect(callbacks.onReturn).not.toHaveBeenCalled()
+    emitter.muted = false
+    emitter.emit("unmute")
+    expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+  })
+
+  it("finds an audio context that is no longer running on return", () => {
+    const { doc, ctx, callbacks } = watched({ readyState: "live" })
+    doc.set("hidden")
+    ctx.state = "interrupted" // no `statechange` reached the page
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("audio-context")
+    expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+  })
+
+  it("a track that is fine on return is not a suspension", () => {
+    const { doc, callbacks } = watched({ readyState: "live", muted: false })
+    doc.set("hidden")
+    doc.set("visible")
+    expect(callbacks.onSuspended).not.toHaveBeenCalled()
+  })
+})
+
 describe("SuspendWatcher", () => {
   it("does not treat a hidden page as suspended by itself", () => {
     const { doc, callbacks, tick } = setup()

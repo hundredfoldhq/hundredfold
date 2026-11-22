@@ -87,6 +87,7 @@ interface Rig {
   /** Pending prompts and worklet loads, when the rig was built to defer them. */
   micGates: Gate<MediaStream>[]
   captureGates: Gate<void>[]
+  wakeLock: { request: ReturnType<typeof vi.fn>; sentinels: Array<{ released: boolean; drop(): void }> }
 }
 
 interface Gate<T> { open(value: T extends void ? void : T): void; fail(error: unknown): void }
@@ -104,6 +105,20 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
   const clock = { now: 1_000_000 }
   const captureStops = vi.fn()
   let sink: (p: Int16Array) => void = () => {}
+  const wakeLock = {
+    sentinels: [] as Array<{ released: boolean; drop(): void }>,
+    request: vi.fn(async (_type: "screen") => {
+      const listeners: Array<() => void> = []
+      const sentinel = {
+        released: false,
+        release: async () => { sentinel.released = true },
+        addEventListener: (_t: "release", l: () => void) => { listeners.push(l) },
+        drop: () => { sentinel.released = true; for (const l of listeners) l() },
+      }
+      wakeLock.sentinels.push(sentinel)
+      return sentinel
+    }),
+  }
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
   const cues: string[] = []
   const cuePlayer: VoiceCuePlayerLike = {
@@ -131,11 +146,12 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     createCuePlayer: () => cuePlayer,
     doc,
     mediaSession,
+    wakeLock,
     createMediaMetadata: () => ({ title: "Voice mode is on" }),
     now: () => clock.now,
   }
   const session = new BrowserVoiceSession({ sessionId: options.sessionId ?? "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, micGates, captureGates }
+  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, micGates, captureGates, wakeLock }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -592,15 +608,17 @@ describe("suspension and return", () => {
     expect(r.contexts[0].close).toHaveBeenCalled()
   })
 
-  it("a tap after the microphone track ended asks for a new microphone inside the tap", async () => {
+  it("a tap after the microphone track ended and could not be taken back asks for a new microphone inside the tap", async () => {
     vi.useFakeTimers()
     const r = await started()
     r.doc.set("hidden")
     r.tracks[0].readyState = "ended"
     r.tracks[0].emit("ended")
+    r.micError.value = new DOMException("needs a gesture", "NotAllowedError")
     r.doc.set("visible")
     await vi.advanceTimersByTimeAsync(500)
     expect(r.session.getSnapshot().needsTap).toBe(true)
+    r.micError.value = null
     r.calls.length = 0
     const tapped = r.session.resumeFromTap()
     expect(r.calls).toContain("microphone")
@@ -615,6 +633,154 @@ describe("suspension and return", () => {
     r.sockets[0].serverFrame({ type: "segment_start", segmentId: 9, messageId: "m1", text: "It is done." })
     r.sockets[0].serverAudio(9, 12_000)
     expect(r.contexts[0].sources).toHaveLength(1)
+  })
+})
+
+describe("screen wake lock", () => {
+  it("holds a screen lock while voice mode is on and lets it go on stop", async () => {
+    const r = await started()
+    await vi.waitFor(() => expect(r.wakeLock.request).toHaveBeenCalledWith("screen"))
+    await vi.waitFor(() => expect(r.wakeLock.sentinels).toHaveLength(1))
+    r.session.stop()
+    expect(r.wakeLock.sentinels[0].released).toBe(true)
+  })
+
+  it("asks again when the page returns, because the browser dropped the lock while it was hidden", async () => {
+    const r = await started()
+    await vi.waitFor(() => expect(r.wakeLock.sentinels).toHaveLength(1))
+    r.doc.set("hidden")
+    r.wakeLock.sentinels[0].drop()
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(r.wakeLock.sentinels).toHaveLength(2))
+    r.session.stop()
+    expect(r.wakeLock.sentinels[1].released).toBe(true)
+  })
+
+  it("is let go when the gateway detaches the session, and not asked for again", async () => {
+    const r = await started()
+    await vi.waitFor(() => expect(r.wakeLock.sentinels).toHaveLength(1))
+    r.sockets[0].serverFrame({ type: "detached", reason: "taken_over" })
+    expect(r.wakeLock.sentinels[0].released).toBe(true)
+    r.doc.set("hidden")
+    r.doc.set("visible")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(r.wakeLock.sentinels).toHaveLength(1)
+  })
+
+  it("voice mode works without the API", async () => {
+    const r = rig()
+    ;(r.session as unknown as { deps: BrowserVoiceDeps }).deps.wakeLock = undefined
+    await r.session.start()
+    r.sockets[0].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+  })
+})
+
+describe("paused state and resume without a reload", () => {
+  it("a microphone that ends is shown as paused, not as on", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    expect(voicePhase(r.session.getSnapshot())).toBe("suspended")
+    r.emitCapture(pcm(320)) // a dead mic's frames are not sent as if it were on
+    expect(r.sockets[0].audio).toHaveLength(0)
+  })
+
+  it("finds a dead microphone on return even though no event arrived", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(r.tracks).toHaveLength(2))
+    await vi.waitFor(() => expect(voicePhase(r.session.getSnapshot())).toBe("listening"))
+  })
+
+  it("takes the microphone back on return without a tap, and resume follows", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.clock.now += 30_000
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(voicePhase(r.session.getSnapshot())).toBe("listening"))
+    expect(r.tracks).toHaveLength(2)
+    expect(r.tracks[1].readyState).toBe("live")
+    expect(r.session.getSnapshot().needsTap).toBe(false)
+    expect(r.sockets).toHaveLength(1)
+    expect(r.sockets[0].frames).toContainEqual({ type: "resume", suspendedMs: 30_000 })
+    r.emitCapture(pcm(320))
+    expect(r.sockets[0].audio).toHaveLength(1) // audio flows from the new microphone
+  })
+
+  it("a microphone the browser will not hand over without a gesture shows one tap-to-resume", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    r.micError.value = new DOMException("needs a gesture", "NotAllowedError")
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(r.session.getSnapshot().needsTap).toBe(true))
+    expect(voicePhase(r.session.getSnapshot())).toBe("suspended")
+    expect(r.session.getSnapshot().error).toBeNull()
+    r.micError.value = null
+    await r.session.resumeFromTap()
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(r.sockets[0].frames.map((f) => f.type)).toContain("resume")
+  })
+
+  it("a microphone request that never settles asks for a tap, and lets a late stream go", async () => {
+    vi.useFakeTimers()
+    const r = await started({ deferMic: false })
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    // From here the microphone request stays pending.
+    const deps = (r.session as unknown as { deps: BrowserVoiceDeps }).deps
+    let grant!: (s: MediaStream) => void
+    const late = new FakeTrack()
+    deps.requestMicrophone = () => new Promise<MediaStream>((resolve) => { grant = resolve })
+    r.doc.set("visible")
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(r.session.getSnapshot().needsTap).toBe(true)
+    grant({ getTracks: () => [late] } as unknown as MediaStream)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(late.stopped).toBe(true)
+  })
+
+  it("a lost socket still waits for a tap (no reconnect without a gesture) and does not ask for the microphone first", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    r.sockets[0].drop(1006)
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(r.session.getSnapshot().needsTap).toBe(true))
+    expect(r.tracks).toHaveLength(1)
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it("resuming asks the chat view to re-read, so replies that finished meanwhile appear", async () => {
+    const r = await started()
+    const before = r.session.getSnapshot().syncTick
+    r.doc.set("hidden")
+    r.tracks[0].emit("mute")
+    r.tracks[0].emit("unmute")
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(voicePhase(r.session.getSnapshot())).toBe("listening"))
+    expect(r.session.getSnapshot().syncTick).toBeGreaterThan(before)
+  })
+
+  it("a stop while the microphone is being taken back leaves no live track", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    r.doc.set("visible")
+    r.session.stop()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(r.tracks.every((t) => t.stopped)).toBe(true)
+    expect(voicePhase(r.session.getSnapshot())).toBe("off")
   })
 })
 
