@@ -53,6 +53,9 @@ impl NativeState {
 pub struct StateEvent {
     pub state: NativeState,
     pub reason: Option<String>,
+    /// The WebSocket close code, only with the `socket_closed` reason, so the web
+    /// can say why (in use by someone else, attachment limit, access lost, ...).
+    pub code: Option<u16>,
 }
 
 impl StateEvent {
@@ -66,6 +69,9 @@ impl StateEvent {
         });
         if let Some(reason) = &self.reason {
             value["reason"] = serde_json::Value::String(reason.clone());
+        }
+        if let Some(code) = self.code {
+            value["code"] = serde_json::Value::from(code);
         }
         value.to_string()
     }
@@ -249,16 +255,24 @@ impl Session {
                     .to_json(),
                 )]
             }
-            Input::SocketClosed { .. } => {
-                let reason = if self.phase == Phase::AwaitingSocket {
-                    reason::ERROR
-                } else {
-                    reason::SOCKET_CLOSED
-                };
+            Input::SocketClosed { code, .. } => {
+                let connected = self.phase != Phase::AwaitingSocket;
                 self.phase = Phase::Stopped;
                 vec![
                     Action::StopPlatform,
-                    state(NativeState::Stopped, Some(reason.to_owned())),
+                    Action::State(StateEvent {
+                        state: NativeState::Stopped,
+                        reason: Some(
+                            if connected {
+                                reason::SOCKET_CLOSED
+                            } else {
+                                reason::ERROR
+                            }
+                            .to_owned(),
+                        ),
+                        // Only a socket that was open reports why it closed.
+                        code: if connected { code } else { None },
+                    }),
                 ]
             }
             Input::GatewayText(text) => self.gateway_text(text, now_ms),
@@ -422,7 +436,11 @@ impl Session {
 }
 
 fn state(state: NativeState, reason: Option<String>) -> Action {
-    Action::State(StateEvent { state, reason })
+    Action::State(StateEvent {
+        state,
+        reason,
+        code: None,
+    })
 }
 
 #[cfg(test)]
@@ -751,21 +769,12 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_socket_stops_the_platform_whatever_the_close_code() {
-        // The close code itself is not reported: the contract has one reason for a
-        // socket the gateway (or the network) closed.
-        for code in [
-            Some(4401),
-            Some(4409),
-            Some(4429),
-            Some(4404),
-            Some(1000),
-            None,
-        ] {
+    fn a_closed_socket_reports_the_close_code_to_the_web() {
+        for code in [4401u16, 4404, 4409, 4429, 1000, 1001] {
             let mut session = running(Mode::HandsFree);
             let actions = session.handle(
                 Input::SocketClosed {
-                    code,
+                    code: Some(code),
                     reason: String::new(),
                 },
                 1,
@@ -774,10 +783,56 @@ mod tests {
                 actions,
                 vec![
                     Action::StopPlatform,
-                    state(NativeState::Stopped, Some("socket_closed".into()))
+                    Action::State(StateEvent {
+                        state: NativeState::Stopped,
+                        reason: Some("socket_closed".into()),
+                        code: Some(code),
+                    })
                 ]
             );
         }
+    }
+
+    #[test]
+    fn a_4409_close_reaches_the_web_as_stopped_socket_closed_4409() {
+        let mut session = running(Mode::HandsFree);
+        let actions = session.handle(
+            Input::SocketClosed {
+                code: Some(4409),
+                reason: "in_use".into(),
+            },
+            1,
+        );
+        let json = actions
+            .iter()
+            .find_map(|a| match a {
+                Action::State(event) => Some(event.to_json()),
+                _ => None,
+            })
+            .expect("a state event");
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "native_state",
+                "state": "stopped",
+                "reason": "socket_closed",
+                "code": 4409
+            })
+        );
+    }
+
+    #[test]
+    fn a_connection_lost_without_a_close_frame_has_no_code() {
+        let mut session = running(Mode::HandsFree);
+        let actions = session.handle(
+            Input::SocketClosed {
+                code: None,
+                reason: String::new(),
+            },
+            1,
+        );
+        assert!(actions.contains(&state(NativeState::Stopped, Some("socket_closed".into()))));
     }
 
     #[test]
@@ -808,7 +863,11 @@ mod tests {
             },
             2,
         );
-        assert!(actions.contains(&state(NativeState::Stopped, Some("socket_closed".into()))));
+        assert!(actions.contains(&Action::State(StateEvent {
+            state: NativeState::Stopped,
+            reason: Some("socket_closed".into()),
+            code: Some(1000),
+        })));
     }
 
     #[test]
@@ -882,6 +941,7 @@ mod tests {
         let json = StateEvent {
             state: NativeState::Stopped,
             reason: Some("socket_closed".into()),
+            code: None,
         }
         .to_json();
         assert_eq!(
@@ -891,6 +951,7 @@ mod tests {
         let bare = StateEvent {
             state: NativeState::Running,
             reason: None,
+            code: None,
         }
         .to_json();
         assert_eq!(bare, r#"{"state":"running","type":"native_state"}"#);

@@ -70,7 +70,7 @@ Everything below is specified in `specs/009-voice-mode/contracts/native-voice.md
 
 | Command | Input | Result |
 |---|---|---|
-| `voice_start` | `{ target, sessionId, mode: "hands-free" \| "push-to-talk" }` and an event channel | `{ ok }`, or an error: `permission_denied`, `not_paired`, `unsupported` (the contract's spelling), or `voice-busy`, `invalid-path`, `invalid-request`, `transport-failed` |
+| `voice_start` | `{ target, sessionId, mode: "hands-free" \| "push-to-talk" }` and an event channel | `{ ok }`, or an error code: `permission-denied`, `not-paired`, `unsupported`, `voice-busy`, `invalid-path`, `invalid-request`, `transport-failed` |
 | `voice_stop` | none | `{ ok }` |
 | `voice_ptt` | `{ down }` | `{ ok }` |
 | `voice_status` | none | `{ running, state }` (`idle`, `connecting`, `running`, `paused`, `stopped`) |
@@ -78,8 +78,7 @@ Everything below is specified in `specs/009-voice-mode/contracts/native-voice.md
 They are confined to the local `main` window like the other four, and the bundle
 exposes them to the web app as `window.__HUNDREDFOLD_NATIVE__.{voiceStart, voiceStop,
 voicePtt, voiceStatus}` (`voiceStart(input, onFrame)` passes the channel's messages to
-`onFrame`). The three start failures the contract names use its underscore spelling;
-the shell's other error codes stay kebab-case.
+`onFrame`). Error codes are kebab-case, like the shell's other native errors.
 
 The channel carries the gateway's frames unchanged (`ready`, `transcript`,
 `segment_start`, `turn`, `detached`, ...; binary audio is never forwarded) plus the
