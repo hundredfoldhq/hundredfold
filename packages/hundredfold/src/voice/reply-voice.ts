@@ -150,10 +150,13 @@ export class ReplyVoice {
 
   /** Words were said: the new turn brings its own reply. */
   abandonHeld(heard: string): void {
-    this.pipeline.discardQueued();
-    this.pipeline.release();
     const cut = this.lastCut;
     this.lastCut = null;
+    // A report that became a pass of its own while the cut was held has only queued sentences: dropping them leaves it unheard.
+    const dropped = this.passes.filter((p) => !p.closed && p.id !== cut?.replyKey && this.pipeline.hasUnplayedFor(p.id));
+    this.pipeline.discardQueued();
+    this.pipeline.release();
+    for (const pass of dropped) this.recordNothingHeard(pass);
     const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
     if (cut && pass) return this.recordPassHeard(cut, pass);
     const reply = this.reply ?? this.last;
@@ -367,6 +370,16 @@ export class ReplyVoice {
       for (const row of pass.rows ?? []) {
         if (!recorded.has(row.id)) this.options.deps.mergeMessageMeta(row.id, { voice: { spokenText: null, interrupted: true } });
       }
+    } catch (error) {
+      this.logMetaFailure(error);
+    }
+  }
+
+  /** A pass whose sentences were dropped before any was said: each of its stored messages records that nothing was heard. */
+  private recordNothingHeard(pass: Reply): void {
+    pass.closed = true;
+    try {
+      for (const row of pass.rows ?? []) this.options.deps.mergeMessageMeta(row.id, { voice: { spokenText: null, interrupted: true } });
     } catch (error) {
       this.logMetaFailure(error);
     }
