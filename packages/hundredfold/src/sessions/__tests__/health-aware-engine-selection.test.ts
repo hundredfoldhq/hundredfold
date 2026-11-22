@@ -157,7 +157,7 @@ describe("validateNewSessionSelection — engine selection under a spent allowan
       // The run starts at the link it moved to, and the override names it.
       reroute: {
         from: "codex", model: "gpt-5.6-sol", until: expect.any(Date), target: { engine: "claude" },
-        run: { source: "engine", position: 1, tried: ["codex||gpt-5.6-sol"], startedAt: expect.any(String) },
+        run: { source: "engine", position: 1, at: "claude||", tried: ["codex||gpt-5.6-sol"], startedAt: expect.any(String) },
       },
     });
   });

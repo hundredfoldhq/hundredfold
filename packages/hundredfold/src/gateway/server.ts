@@ -1,4 +1,5 @@
 import http from "node:http";
+import { resetCreditsOnGroupChange } from "../sessions/account-pin.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -987,7 +988,9 @@ export async function startGateway(
 
   const reloadConfig = (): void => {
     try {
+      const previousConfig = currentConfig;
       currentConfig = loadConfig();
+      resetCreditsOnGroupChange(previousConfig, currentConfig);
       apiContext.config = currentConfig;
       accounts.onConfigReload(); // closes member sockets (4401) if auth is no longer required
       sessionManager.setConfig(currentConfig);

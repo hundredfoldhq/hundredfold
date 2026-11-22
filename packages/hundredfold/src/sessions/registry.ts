@@ -1,5 +1,6 @@
 import { parseBlocksColumn, parseMetaColumn, rowToMessage, type MessageRow, type MessageMedia, type SessionMessage, type MessagePage, type MessagePageOptions } from './message-row.js';
 export type { MessageMedia, SessionMessage, MessagePage, MessagePageOptions } from './message-row.js';
+import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { CALLBACK_DELIVERY_SELECT } from "./callback-delivery-query.js";
 import { pendingCompletionBatch } from "./completion-batching.js";
 import { withoutCatchUpMarkers } from "./sync-markers.js";
@@ -1281,6 +1282,8 @@ export interface SwitchSessionTargetOptions {
   sync?: "pointer" | "none";
   /** Written to `transportMeta.lastSwitch` in the same write. */
   lastSwitch?: JsonObject;
+  /** The account balancer's record, written in the same write: set by an engine-only switch onto Claude that picked an account, `null` removes an earlier one (the switch pinned a profile), absent leaves it. */
+  accountPick?: AccountPick | null;
 }
 
 /** The in-turn write fence: the attempt that owns the running turn. */
@@ -1378,6 +1381,8 @@ function switchedMeta(session: Session, opts: SwitchSessionTargetOptions, target
     meta.engineSyncMode = 'pointer';
   }
   if (opts.lastSwitch) meta.lastSwitch = opts.lastSwitch;
+  if (opts.accountPick) meta.accountPick = opts.accountPick as unknown as JsonObject;
+  else if (opts.accountPick === null) delete meta.accountPick;
   return meta as JsonObject;
 }
 

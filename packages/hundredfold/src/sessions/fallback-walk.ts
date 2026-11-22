@@ -65,6 +65,8 @@ interface Walk {
   tried: Set<string>;
   /** The chain index the next scan resumes after. */
   cursor: number;
+  /** Key of the link at `cursor`: it names the link the session stands on if the chain is re-ordered meanwhile. */
+  at?: string;
   source: FallbackChainSource | undefined;
   /** Every hop decided in this walk, oldest first; the first `written` are on the session already. */
   hops: FallbackHop[];
@@ -98,7 +100,7 @@ function sessionForChoice(w: Walk): Session {
 
 function choose(w: Walk): SubstituteDecision {
   const { opts, remote, remoteTarget } = w.input;
-  const run = w.source === undefined ? undefined : { position: w.cursor, tried: [...w.tried] };
+  const run = w.source === undefined ? undefined : { position: w.cursor, ...(w.at === undefined ? {} : { at: w.at }), tried: [...w.tried] };
   return chooseSubstituteOrReason({
     config: opts.config, engines: opts.engines, session: sessionForChoice(w), employee: opts.employee,
     account: w.failure.account, remote, remoteTarget, ...(run ? { run } : {}),
@@ -115,6 +117,7 @@ function adopt(w: Walk, decision: SubstituteDecision): void {
   w.ownLabel = chain.links[0]!.label;
   w.tried.add(chain.links[0]!.key);
   const here = chain.links[w.cursor]!;
+  w.at = here.key;
   w.tried.add(here.key);
   w.failure.end = endOf(here);
   for (const key of w.runAtStart?.tried ?? []) w.tried.add(key);
@@ -199,7 +202,7 @@ async function flipOnto(w: Walk, found: Found, hop: FallbackHop): Promise<Engine
   const backAt = standingOverrideUntil(current) ?? resumeAt;
   const engineLabel = rateLimitEngineLabel(w.failure.engine);
   await awaitEffortLevels(config, choice.engine, current, employee);
-  const run: FallbackRunState = { source: chain.source, position: next.index, tried: [...w.tried], startedAt: w.runAtStart?.startedAt ?? w.startedAt };
+  const run: FallbackRunState = { source: chain.source, position: next.index, at: next.link.key, tried: [...w.tried], startedAt: w.runAtStart?.startedAt ?? w.startedAt };
   const substitution = beginEngineSubstitution({
     session: current, attemptToken, config, employee, substitute: choice.engine, model: choice.model, accounts: choice.accounts, until, syncSince: new Date().toISOString(),
     lastError: backAt
@@ -251,6 +254,7 @@ function failedOver(w: Walk, found: Found, failure: { reason: FallbackHopReason;
   w.triedLabels.push(link.label);
   if (failure.refused) w.signedOut.push(link.label);
   w.cursor = found.next.index;
+  w.at = link.key;
   w.failure = { end: endOf(link), engine: link.engine, account: link.account, reason: failure.reason, resetsAt: failure.resetsAt };
   if (failure.isLimit) recordLinkLimit(link, failure.resetsAt, failure.model, { error: failure.error, config: w.input.opts.config, host: w.input.remote?.remoteHost });
   if (result?.error) logger.info(`Session ${w.input.opts.session.id}: ${link.label} could not serve the turn (${failure.reason})`);

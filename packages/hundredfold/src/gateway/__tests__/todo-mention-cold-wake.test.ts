@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Engine, EngineResult, HundredfoldConfig } from "../../shared/types.js";
+import { logger } from "../../shared/logger.js";
 import { mentionTestHome } from "./todo-mentions-harness.js";
 
 /**
@@ -36,9 +37,10 @@ vi.mock("../../shared/models.js", async (importOriginal) => ({
 const MINUTE = 60_000;
 const AUTO_COMPACT = { enabled: true, cacheWindowSeconds: 300, minContextTokens: 50_000 };
 
+const claudeEngine: { bin: string; model: string; autoCompact?: typeof AUTO_COMPACT } = { bin: "claude", model: "opus", autoCompact: AUTO_COMPACT };
 const config = {
   gateway: {},
-  engines: { default: "claude", claude: { bin: "claude", model: "opus", autoCompact: AUTO_COMPACT } },
+  engines: { default: "claude", claude: claudeEngine },
   models: { claude: { default: "opus", models: [{ id: "opus" }] } },
   sessions: {},
 } as unknown as HundredfoldConfig;
@@ -173,5 +175,46 @@ describe("an @mention waking a long, cache-cold session", () => {
     expect(prompts[0]).toMatch(/^\/compact /);
     expect(prompts[1]).toContain("any news?");
     expect(m.reg.getSession(sessionId)!.lastContextTokens).toBe(11_000);
+  });
+
+  // The instance had `engines.opencode.autoCompact` and nothing for
+  // Claude, so this very wake ran on the whole context and logged nothing.
+  it("with no policy on the engine, runs the mention uncompacted and says so in the log", async () => {
+    const saved = claudeEngine.autoCompact;
+    delete claudeEngine.autoCompact;
+    const info = vi.spyOn(logger, "info");
+    try {
+      queued.length = 0;
+      const item = m.store.createWorkItem({ title: "cold wake, policy off" });
+      const [first] = mention(item.id, "@sleeper have a look");
+      queued.length = 0;
+      const sessionId = first!.sessionId;
+      const longAgo = new Date(Date.now() - 112 * MINUTE).toISOString();
+      m.reg.recordEngineSessionId(sessionId, "claude", "claude-thread-2", { model: "opus", lastSyncedAt: longAgo });
+      m.reg.updateSession(sessionId, { status: "idle", lastContextTokens: 325_548 });
+
+      mention(item.id, "@sleeper any news?");
+      await until(() => queued.length === 1);
+
+      const prompts: string[] = [];
+      claude = {
+        name: "claude",
+        async run(opts): Promise<EngineResult> {
+          prompts.push(opts.prompt);
+          return { sessionId: "claude-thread-2", result: "no news yet", contextTokens: 326_000 };
+        },
+      };
+      await queued[0]();
+
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("any news?");
+      const lines = info.mock.calls.map(([line]) => String(line)).filter((line) => line.includes(`session=${sessionId} `));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("engine=claude outcome=skipped skip=disabled context=325548");
+      expect(lines[0]).toContain("cold=true config=absent");
+    } finally {
+      info.mockRestore();
+      claudeEngine.autoCompact = saved;
+    }
   });
 });

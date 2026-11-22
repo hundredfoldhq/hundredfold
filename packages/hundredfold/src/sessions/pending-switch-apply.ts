@@ -5,6 +5,8 @@ import { PENDING_SWITCH_KEY, type PendingSwitch } from "./pending-switch.js";
 import { switchSessionTarget, updateSessionForAttempt } from "./registry.js";
 import { recordSwitchNotice, type LastSwitch } from "./switch-notice.js";
 import { switchResumePrompt, type ResumeCarryOver } from "./switch-resume-prompt.js";
+import type { AccountPick } from "../shared/fallback-chain-wire.js";
+import { chargeAccountStart } from "./account-pin.js";
 import { ownSwitchTarget, resolveSwitchTarget, type SwitchRequest, type SwitchTargetView } from "./switch-target.js";
 
 /**
@@ -39,15 +41,16 @@ function stillOn(own: SwitchTargetView, from: SwitchTargetView): boolean {
 
 /** The request to re-resolve for the target the session asked for: the same engine, profile and model, as the request spelt them. */
 function requestFor(to: SwitchTargetView): SwitchRequest {
-  const profile = to.engine !== "claude" ? undefined : (to.claudeConfigDir === null ? "" : (to.profile ?? undefined));
+  // A balanced target names no profile: the balancer picks again when the switch is applied.
+  const profile = to.engine !== "claude" || to.balanced ? undefined : (to.claudeConfigDir === null ? "" : (to.profile ?? undefined));
   return { engine: to.engine, profile, model: to.model ?? undefined, effortLevel: to.effortLevel ?? undefined };
 }
 
 /** The target to apply, or why the switch no longer can happen: the session moved meanwhile, or the target is no longer one it may move to. */
-function resolveForApply(config: HundredfoldConfig, session: Session, pending: PendingSwitch): { ok: true; target: SwitchTargetView } | { ok: false; reason: string } {
+function resolveForApply(config: HundredfoldConfig, session: Session, pending: PendingSwitch): { ok: true; target: SwitchTargetView; accountPick?: AccountPick | null } | { ok: false; reason: string } {
   if (!stillOn(ownSwitchTarget(config, session), pending.from)) return { ok: false, reason: "the session was moved to another target meanwhile" };
   const resolved = resolveSwitchTarget(config, session, requestFor(pending.to), { caller: "session", reapply: true });
-  return resolved.ok ? { ok: true, target: resolved.target } : { ok: false, reason: resolved.error };
+  return resolved.ok ? { ok: true, target: resolved.target, ...(resolved.accountPick === undefined ? {} : { accountPick: resolved.accountPick }) } : { ok: false, reason: resolved.error };
 }
 
 /** What carried the conversation over, from how the compaction ended. */
@@ -116,7 +119,7 @@ function declineSwitch(env: ApplyEnvironment, session: Session, pending: Pending
 export function applyPendingSwitch(env: ApplyEnvironment, session: Session, pending: PendingSwitch, attemptToken: string): AppliedSwitch | undefined {
   const resolved = resolveForApply(env.config, session, pending);
   if (!resolved.ok) return declineSwitch(env, session, pending, attemptToken, resolved.reason);
-  const { target } = resolved;
+  const { target, accountPick } = resolved;
   const carried = carryFor(pending);
   // Read while the row still names the left conversation: the write below moves it.
   const leftTranscript = pending.conversation === "new" ? leftTranscriptOf(session, env.config) : undefined;
@@ -130,8 +133,10 @@ export function applyPendingSwitch(env: ApplyEnvironment, session: Session, pend
     freshTarget: pending.conversation === "new",
     sync: "none",
     lastSwitch: last as unknown as JsonObject,
+    ...(accountPick === undefined ? {} : { accountPick }),
   }, { attemptToken });
   if (!switched) return undefined;
+  chargeAccountStart({ accountPick: accountPick ?? undefined });
   finish(env, session.id, last);
   const prompt = switchResumePrompt({
     config: env.config, sessionId: session.id, target, current: pending.from, fromEngine: pending.compactedOn ?? pending.from.engine, handoff: pending.handoff,

@@ -174,3 +174,56 @@ describe("the walk's runner and its prior readings", () => {
     expect(state.priorFiveHourByAccount).toBeUndefined();
   });
 });
+
+describe("an assignee whose chain opens with a group of accounts", () => {
+  const groupConfig = {
+    engines: {
+      default: "claude",
+      claude: { bin: "claude", model: "opus", accounts: { friend: { configDir: FRIEND } }, fallback: [{ group: [{ engine: "claude" }, { engine: "claude", profile: "friend" }] }, "codex"] },
+      codex: { bin: "codex", model: "gpt" },
+    },
+  } as unknown as HundredfoldConfig;
+  const limitsDir = path.join(home, "tmp", "engine-limits");
+
+  /** `used` percent in each account's 5h window, read fresh at NOW. */
+  function writeUsage(used: Record<string, number>): void {
+    fs.rmSync(limitsDir, { recursive: true, force: true });
+    fs.mkdirSync(limitsDir, { recursive: true });
+    for (const [account, percent] of Object.entries(used)) {
+      const file = account === "claude" ? "claude-usage-history.json" : `claude-usage-history.${encodeURIComponent(account)}.json`;
+      fs.writeFileSync(path.join(limitsDir, file), JSON.stringify([{ at: NOW - 60_000, windows: [{ name: "5h", usedPercent: percent, resetsAt: Math.floor((NOW + 3 * 3600_000) / 1000) }] }]));
+    }
+  }
+  const groupView = () => m.accounts.walkAccounts({ config: groupConfig, now: NOW, health: {}, employee: (name) => roster[name] });
+
+  it("runs on the account the balancer would pick for it, a preview that does not move the rotation", async () => {
+    writeUsage({ claude: 40, [friendKey]: 60 });
+    const { resetAccountCredits } = await import("../../shared/fallback-account-pick.js");
+    resetAccountCredits();
+    const a = groupView();
+    expect(a.of({ id: "TST-1", assignee: "op" })).toBe("claude");
+    // Asking again, for this Todo or another, changes nothing: only a session that really starts is charged.
+    for (let i = 0; i < 4; i++) expect(groupView().of({ id: `TST-${i + 2}`, assignee: "op" })).toBe("claude");
+    const { chargeAccountStart, pinAccountAtCreation } = await import("../../sessions/account-pin.js");
+    chargeAccountStart(pinAccountAtCreation({ config: groupConfig, employee: roster.op, engine: "claude", now: new Date(NOW), inputs: { health: {} } }));
+    expect(groupView().of({ id: "TST-9", assignee: "op" })).toBe(friendKey);
+    resetAccountCredits();
+  });
+
+  it("judges the account it would pick, so a spent pick is refused as before", () => {
+    writeUsage({ claude: 40, [friendKey]: 60 });
+    const a = m.accounts.walkAccounts({ config: groupConfig, now: NOW, health: { claude: spent() }, employee: (name) => roster[name] });
+    // The default login is at its limit: the pick is the other account, and it is not spent.
+    expect(a.of({ id: "TST-1", assignee: "op" })).toBe(friendKey);
+    expect(a.exhausted(a.of({ id: "TST-1", assignee: "op" }))).toBe(false);
+  });
+
+  it("leaves other assignees and configs without groups as they were", () => {
+    writeUsage({ claude: 40, [friendKey]: 60 });
+    const a = groupView();
+    expect(a.of({ id: "TST-1", assignee: "coder" })).toBe("codex");
+    expect(a.of({ id: "TST-1", assignee: "side-dev" })).toBe(friendKey);
+    expect(a.of({ id: "TST-1", assignee: null })).toBe("unrouted");
+    expect(view().of({ id: "TST-1", assignee: "op" })).toBe("claude");
+  });
+});

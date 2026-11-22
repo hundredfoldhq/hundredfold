@@ -558,6 +558,16 @@ export function describeInteractiveArgument(args: readonly string[], index: numb
 }
 
 /**
+ * The hook that ends a tool call. A call that succeeds fires PostToolUse; one that fails (a Bash that
+ * exits non-zero, a Read of a missing file) fires PostToolUseFailure and no PostToolUse (verified on
+ * Claude Code 2.1.330). The failure hook is registered only for a build that knows the event (see
+ * claude-tool-failure-hook.ts), so on an older one only PostToolUse ever arrives.
+ */
+export function endsToolCall(event: unknown): boolean {
+  return event === "PostToolUse" || event === "PostToolUseFailure";
+}
+
+/**
  * Translate one tool hook into StreamDeltas.
  *  - PostToolUse → `tool_result` (the completion marker; the SSE stream has none).
  *  - PreToolUse  → `tool_use`. On a local session the SSE proxy has usually
@@ -950,14 +960,14 @@ export class TurnResolver {
         if (event === "Stop") this.opts.onForeignStop?.(h);
         return "foreign";
       }
-      if (event === "PostToolUse" && this.ownPromptAt !== undefined && !subagentHook) {
+      if (endsToolCall(event) && this.ownPromptAt !== undefined && !subagentHook) {
         // The re-run reached a tool boundary with our prompt queued: Claude
         // Code folds it into the re-run, whose Stop is now the only one we get.
         this.rerunAhead = false;
         this.ownTurnRunning = true;
       }
-      if (event === "PreToolUse" || event === "PostToolUse") return "foreign";
-    } else if (this.ownPromptAt !== undefined && !subagentHook && (event === "PreToolUse" || event === "PostToolUse")) {
+      if (event === "PreToolUse" || endsToolCall(event)) return "foreign";
+    } else if (this.ownPromptAt !== undefined && !subagentHook && (event === "PreToolUse" || endsToolCall(event))) {
       // Our queued prompt is the one running now.
       this.ownTurnRunning = true;
     }
@@ -1456,7 +1466,7 @@ interface ActiveTurn {
    *  is reported twice — by the SSE proxy and by its PreToolUse hook, in
    *  either order — and must be streamed (and recorded) once. */
   reportedToolIds?: Set<string>;
-  /** Local tool calls in flight (PreToolUse seen, PostToolUse not yet). A long
+  /** Local tool calls in flight (PreToolUse seen, neither PostToolUse nor PostToolUseFailure yet). A long
    *  tool is real work, so a quiet PTY with tools running is NOT a stall. */
   activeTools: number;
   /** Set when the CLI reports it is blocked on one of Claude Code's hardcoded
@@ -2724,9 +2734,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
           const moved = backgroundedByPostToolUse(h);
           if (moved?.toolUseId) entry.movedToBackground.set(moved.toolUseId, { taskId: moved.taskId, description: moved.description });
         }
-        if (h.hook_event_name === "PostToolUse") {
+        if (endsToolCall(h.hook_event_name)) {
           entry.activeTools = Math.max(0, entry.activeTools - 1);
-          // The tool ran, so whatever prompt was gating it is gone — whether we
+          // The tool ran (or failed), so whatever prompt was gating it is gone — whether we
           // answered it or a human did in the CLI/xterm view.
           entry.blockedOnPermissionAt = undefined;
         }
@@ -2776,7 +2786,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
           // Tools and dialogs counted while the paste was held were other
           // turns' (the hold kept them to gate its quiet backstop); a tool the
           // operator interrupted never fires PostToolUse, and would otherwise
-          // pin this turn "busy" for good.
+          // pin this turn "busy" for good. A late end hook of such a call
+          // (PostToolUse, or PostToolUseFailure on a build that registers it)
+          // finds the count at zero, which it clamps, and clears a dialog flag that
+          // is gone by then anyway.
           entry.activeTools = 0;
           entry.blockedOnPermissionAt = undefined;
         }

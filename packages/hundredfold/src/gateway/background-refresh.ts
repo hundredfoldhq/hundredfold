@@ -7,6 +7,7 @@
  */
 
 import type { GatewayEmit } from "../shared/gateway-events.js";
+import { ENGINE_HEALTH_REFRESH_INTERVAL_MS } from "../shared/engine-health-interval.js";
 import type { HundredfoldConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { collectEngineLimits } from "../shared/engine-limits.js";
@@ -35,13 +36,7 @@ import { opencodeDiscoveryEnv } from "../engines/opencode-launch.js";
  */
 export const MODEL_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-/**
- * How often to re-read every engine's quota windows. Without it the health store
- * is written almost only by a turn that already failed, so each new session pays
- * one wasted turn to discover an engine is out of allowance. Fifteen minutes is
- * finer than any quota window resets and costs a few short-lived CLI spawns.
- */
-export const ENGINE_HEALTH_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+export { ENGINE_HEALTH_REFRESH_INTERVAL_MS };
 
 export interface BackgroundRefreshes {
   /** Re-discover models now. The config-reload path asks for this directly,

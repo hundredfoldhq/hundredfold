@@ -3,6 +3,7 @@ import type React from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@/test/preload-menus'
+import type { AccountPick } from '@hundredfold/fallback-chain-wire'
 import SettingsPage from '../../page'
 
 /* The Engine Fallbacks section as the operator drives it: chains are edited into the
@@ -296,5 +297,100 @@ describe('Engine Fallbacks section', () => {
 
     expect(await screen.findByText(/Failed to save: engines\.claude\.fallback\[1\]/)).toBeTruthy()
     expect(engineRows('claude')).toEqual(['codex', 'opencode'])
+  })
+})
+
+/* A balanced group in a chain: one row, written back as the members config spells, never the
+ * models the gateway resolved them to. */
+describe('Engine Fallbacks section, balanced groups', () => {
+  const WRITTEN = { group: [{ engine: 'claude' }, { engine: 'claude', profile: 'spare' }, { engine: 'claude', profile: 'work' }] }
+  const ACCOUNTS = { spare: { configDir: '/s' }, work: { configDir: '/w' } }
+  const PROFILES = [{ name: 'spare', account: 'claude:spare', configDir: '/s' }, { name: 'work', account: 'claude:work', configDir: '/w' }]
+
+  /** What the gateway says of the chain: each member resolved to the model it would run, in headroom order. */
+  const member = (profile: string, headroomPercent: number) => ({
+    engine: 'claude', profile, model: 'opus', key: `claude|${profile}|opus`, account: `claude:${profile}`, label: `claude · ${profile} · opus`, origin: 'config',
+    written: { engine: 'claude', profile }, health: { state: 'ok' },
+    group: { index: 0, written: WRITTEN, headroom: { account: `claude:${profile}`, label: `claude · ${profile}`, state: 'fresh', headroomPercent, weight: headroomPercent, sharePercent: headroomPercent } },
+  })
+  const START: AccountPick = {
+    at: '2026-11-22T14:02:00', trigger: 'start', source: 'engine', groupIndex: 0, picked: 'claude:work', reason: 'weighted',
+    candidates: [
+      { account: 'claude:work', label: 'claude · work', state: 'fresh', headroomPercent: 70, weight: 70, sharePercent: 70 },
+      { account: 'claude:spare', label: 'claude · spare', state: 'fresh', headroomPercent: 30, weight: 30, sharePercent: 30 },
+    ],
+  }
+  const subject = (over: Record<string, unknown> = {}) => ({
+    kind: 'engine', id: 'claude', primary: null, configured: [WRITTEN, { engine: 'codex' }], legacy: false,
+    effective: [member('work', 70), member('spare', 30), { engine: 'codex', key: 'codex||', account: 'codex', label: 'codex', origin: 'config', written: { engine: 'codex' } }],
+    startPick: START, ...over,
+  })
+
+  beforeEach(() => {
+    loadConfig({ engines: { claude: { accounts: ACCOUNTS, fallback: [WRITTEN, { engine: 'codex' }] } } })
+    chains.current = { profiles: PROFILES, subjects: [subject()] }
+  })
+
+  it('shows the group as one row beside the links', async () => {
+    await renderSettings()
+
+    expect(engineRows('claude')).toEqual(['Balanced group (default login, spare, work)', 'codex'])
+  })
+
+  it('leaves a stored group exactly as written when another row is edited', async () => {
+    await renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Add a target to the Claude chain' }))
+
+    const saved = (await save()).engines.claude.fallback
+    expect(saved.slice(0, 2)).toEqual([WRITTEN, { engine: 'codex' }])
+  })
+
+  it('saves an edited group as its written members, with no resolved model on any of them', async () => {
+    await renderSettings()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'spare in link 1 of the Claude chain' }))
+
+    const saved = (await save()).engines.claude.fallback
+    expect(saved).toEqual([{ group: [{ engine: 'claude' }, { engine: 'claude', profile: 'work' }] }, { engine: 'codex' }])
+    expect(JSON.stringify(saved)).not.toContain('opus')
+  })
+
+  it('saves a group added from the button, reordered like any link', async () => {
+    loadConfig({ engines: { claude: { accounts: ACCOUNTS, fallback: [{ engine: 'codex' }] } } })
+    chains.current = { profiles: PROFILES, subjects: [] }
+    await renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Add a balanced group to the Claude chain' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Move Balanced group (default login, spare) earlier in the Claude chain' }))
+
+    expect((await saveLast()).engines.claude.fallback).toEqual([{ group: [{ engine: 'claude' }, { engine: 'claude', profile: 'spare' }] }, { engine: 'codex' }])
+  })
+
+  it('shows a chain written in names that holds a group as that group, and saves it as written', async () => {
+    loadConfig({ engines: { claude: { accounts: ACCOUNTS, fallback: ['codex', WRITTEN] } } })
+    chains.current = { profiles: PROFILES, subjects: [subject({ legacy: true, configured: ['codex', WRITTEN], effective: [
+      { engine: 'codex', key: 'codex||', account: 'codex', label: 'codex', origin: 'config', written: { engine: 'codex' } },
+      { ...member('work', 70), group: { ...member('work', 70).group, index: 1 } },
+      { ...member('spare', 30), group: { ...member('spare', 30).group, index: 1 } },
+    ] })] }
+    await renderSettings()
+
+    expect(engineRows('claude')).toEqual(['codex', 'Balanced group (default login, spare, work)'])
+    fireEvent.click(screen.getByRole('checkbox', { name: 'work in link 2 of the Claude chain' }))
+    expect((await save()).engines.claude.fallback).toEqual([{ engine: 'codex' }, { group: [{ engine: 'claude' }, { engine: 'claude', profile: 'spare' }] }])
+  })
+
+  it('draws the group as one node of members with their headroom, and the shares of new sessions on the start node', async () => {
+    await renderSettings()
+    fireEvent.click(within(document.querySelector('[data-engine-card="claude"]') as HTMLElement).getByRole('button', { name: 'Diagram' }))
+
+    const group = await waitFor(() => {
+      const node = document.querySelector('[data-engine-card="claude"] [data-chain-flow-group]') as HTMLElement
+      expect(node).toBeTruthy()
+      return node
+    })
+    expect(Array.from(group.querySelectorAll('[data-chain-flow-member]')).map((m) => m.getAttribute('data-chain-flow-member'))).toEqual(['claude · work · opus', 'claude · spare · opus'])
+    expect(group.textContent).toContain('headroom 70%')
+    expect(group.textContent).toContain('headroom 30%')
+    expect(group.textContent).not.toContain('share')
+    expect(document.querySelector('[data-engine-card="claude"] [data-chain-flow-start-note]')?.textContent).toBe('New sessions start on claude · work (share 70%)')
   })
 })

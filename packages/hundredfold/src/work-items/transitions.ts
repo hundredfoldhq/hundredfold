@@ -9,7 +9,7 @@ import { holdLiveSignalsUntilCommit, notifyTodoChanged, notifyTodoStatusChange }
 import { clearStopCause, writeStopCause, type TodoStopCause } from './stop-cause.js';
 import { changedStopCause, restateStopCause } from './stop-cause-restate.js';
 export { changedStopCause } from './stop-cause-restate.js';
-import { EDGES } from './transition-edges.js';
+import { EDGES, illegalEdgeRule } from './transition-edges.js';
 import { isMemberIdentity } from './member-identity.js';
 import {
   appendWorkItemEvent,
@@ -170,12 +170,12 @@ export function transition(id: string, to: WorkItemStatus, actor: string, opts: 
     // The operator sending work back from review is the review bounce (below).
     const bounce = opts.bounce || (opts.human === true && opts.manual === true && from === 'in_review' && to === 'executing');
     if (!opts.agent && !bounce && opts.manual && to === 'executing' && from !== 'backlog' && from !== 'blocked') {
-      throw new TransitionError('illegal-edge', `illegal manual transition ${from} → ${to} for work item ${id}`);
+      throw new TransitionError('illegal-edge', `illegal manual transition ${from} → ${to} for work item ${id}: ${illegalEdgeRule(from, to)}`);
     }
     // A same-status request reaches here only as a `dependency` re-block, which
     // routes away from `blocked` below; it is never an undeclared edge.
     if (from !== to && !EDGES[from].has(to)) {
-      throw new TransitionError('illegal-edge', `illegal transition ${from} → ${to} for work item ${id}`);
+      throw new TransitionError('illegal-edge', `illegal transition ${from} → ${to} for work item ${id}: ${illegalEdgeRule(from, to)}`);
     }
     if (to === 'done' && opts.callerSessionId && !opts.ancestorOwnerClose) {
       const linked = listSessionsByWorkItem(id);

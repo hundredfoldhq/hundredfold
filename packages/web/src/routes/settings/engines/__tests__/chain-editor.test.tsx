@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import type { FallbackLink } from '@hundredfold/fallback-chain-wire'
+import type { FallbackWrittenEntry } from '@hundredfold/fallback-chain-wire'
 import type { EnginesResponse } from '@/lib/api'
 import { ChainEditor } from '../chain-editor'
 
@@ -13,9 +13,9 @@ const REGISTRY: EnginesResponse = {
   engines: { claude: entry('claude'), codex: entry('codex'), opencode: entry('opencode') },
 }
 
-let latest: FallbackLink[] = []
+let latest: FallbackWrittenEntry[] = []
 
-function Harness({ initial, serverProblems }: { initial: FallbackLink[]; serverProblems?: string[] }) {
+function Harness({ initial, serverProblems }: { initial: FallbackWrittenEntry[]; serverProblems?: string[] }) {
   const [links, setLinks] = useState(initial)
   latest = links
   return (
@@ -35,7 +35,7 @@ function Harness({ initial, serverProblems }: { initial: FallbackLink[]; serverP
 }
 
 const order = () => Array.from(document.querySelectorAll('[data-chain-row]')).map((row) => row.getAttribute('data-chain-row'))
-const THREE: FallbackLink[] = [{ engine: 'codex' }, { engine: 'opencode' }, { engine: 'claude', profile: 'A' }]
+const THREE: FallbackWrittenEntry[] = [{ engine: 'codex' }, { engine: 'opencode' }, { engine: 'claude', profile: 'A' }]
 
 describe('moving a link with the buttons', () => {
   it('moves the same link two places on two presses, with focus following it', () => {
