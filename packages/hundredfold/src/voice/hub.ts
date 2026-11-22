@@ -111,7 +111,7 @@ export class VoiceHub {
     }
     if (existing.suspended) {
       this.cancelExpiry(request.sessionId);
-      existing.adopt(socket);
+      existing.adopt(socket, request.principal);
       return existing;
     }
     existing.detach("taken_over");

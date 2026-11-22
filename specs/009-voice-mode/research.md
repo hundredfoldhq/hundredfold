@@ -150,7 +150,7 @@ no GPU wheels story comparable to pip's CUDA wheels, and Kokoro's phonemiser is 
 
 **Decision**: documented in `docs/voice.md` as required before enabling the local
 providers: Python 3.10 or newer with `venv` and `pip`; about 1 GB of disk for CPU
-models or about 3.5 GB for GPU models; for the GPU path, an NVIDIA driver recent enough
+models or about 6 GB for GPU models; for the GPU path, an NVIDIA driver recent enough
 for CUDA 12 (the CUDA and cuDNN runtimes come from pip wheels). Nothing else: no
 `whisper-cli`, no `ffmpeg`, no espeak (Kokoro's phonemiser ships its own espeak-ng data
 in its wheel, confirmed in the spike on a host without espeak). The build machine already

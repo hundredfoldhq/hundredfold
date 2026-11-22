@@ -181,6 +181,19 @@ describe("attachment lifecycle and limits", () => {
     expect(pat.socket.closed?.code).toBe(VOICE_CLOSE.accessLost);
   });
 
+  it("a sign-in that picks up a suspended attachment is the one whose revoke ends it", () => {
+    const h = createHarness();
+    const first = h.connect({ sessionId: "m", principal: { kind: "member", userId: "pat", userSessionId: "us-a" } });
+    h.hub.socketClosed(first.attachment, first.socket, 1006);
+    const second = h.connect({ sessionId: "m", principal: { kind: "member", userId: "pat", userSessionId: "us-b" } });
+    expect(second.attachment).toBe(first.attachment);
+    h.hub.revoke("m", { kind: "member", userId: "pat", userSessionId: "us-a" });
+    expect(second.socket.closed).toBeNull();
+    h.hub.revoke("m", { kind: "member", userId: "pat", userSessionId: "us-b" });
+    expect(second.socket.ofType("detached")).toEqual([{ type: "detached", reason: "access_lost" }]);
+    expect(second.socket.closed?.code).toBe(VOICE_CLOSE.accessLost);
+  });
+
   it("a provider that is down is reported as speech_unavailable with a reason that carries no address, and the socket closes", () => {
     const h = createHarness();
     h.stt.available = false;

@@ -8,7 +8,7 @@ Run guide for proving the feature end to end. Contracts:
 ## Prerequisites (also the user-facing pre-installation steps in `docs/voice.md`)
 
 - Python 3.10+ with `venv` and `pip` on the gateway's machine.
-- Disk: about 1 GB (CPU models) or 3.5 GB (GPU models) under the instance home.
+- Disk: about 1 GB (CPU models) or 6 GB (GPU models) under the instance home.
 - Optional, for the GPU path: an NVIDIA GPU with a driver that supports CUDA 12.
 - For the demo only: Playwright Chromium (already on the build machine) and a static
   `ffmpeg` from the `imageio-ffmpeg` wheel in a scratch venv.

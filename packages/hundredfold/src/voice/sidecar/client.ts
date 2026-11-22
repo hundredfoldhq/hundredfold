@@ -65,8 +65,9 @@ interface TtsWaiter extends Waiter {
 export class SidecarUnavailableError extends Error {}
 
 /**
- * Audio held for a VAD stream while the sidecar is not ready: 30 seconds of 20 ms frames, so a person who starts speaking
- * as voice mode opens is still heard when a cold start (CUDA and model loading) takes many seconds.
+ * Audio held for a VAD stream while the sidecar is not ready: 30 seconds of 20 ms frames. The VAD's offsets count every
+ * byte written, so audio dropped from a full queue is replaced by silence of the same length and later cuts stay put.
+ * The held audio is only for the VAD: the transcript is cut from the capture's own, shorter ring.
  */
 export const MAX_VAD_QUEUE = 1500;
 /** The longest silent stand-in for dropped audio sent in one frame. */
