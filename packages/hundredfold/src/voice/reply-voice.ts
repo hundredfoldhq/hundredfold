@@ -8,7 +8,7 @@
 import type { JsonObject } from "../shared/types.js";
 import type { VoiceServerFrame, VoiceTurnState } from "../shared/gateway-events.js";
 import type { StoredReply, VoiceClock, VoiceHubDeps } from "./hub-types.js";
-import { SpeechPipeline, type CutResult, type PipelineOptions, type Segment } from "./speech-pipeline.js";
+import { SpeechPipeline, type CutResult, type HeardPart, type PipelineOptions, type Segment } from "./speech-pipeline.js";
 
 /** One assistant reply as the hub follows it. */
 interface Reply {
@@ -115,7 +115,8 @@ export class ReplyVoice {
 
   /** Stop speaking and keep what was not heard; returns what was. */
   cutPlayback(segmentId: number | null, playedMs: number): CutResult {
-    const result = this.pipeline.cut(segmentId, playedMs);
+    const open = new Set(this.passes.filter((p) => !p.closed).map((p) => p.id));
+    const result = this.pipeline.cut(segmentId, playedMs, open);
     this.lastCut = result;
     this.pipeline.hold();
     this.emitTurn();
@@ -135,6 +136,11 @@ export class ReplyVoice {
       void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
     } else {
       this.resumeStreamed(cut, unheard);
+    }
+    // The reports the cut left unheard are spoken after it: each stored message is told what went out, once it has.
+    for (const other of cut?.others ?? []) {
+      const report = this.passes.find((p) => p.id === other.replyKey);
+      if (report) void this.pipeline.whenIdle().then(() => this.applyPassMeta(report)).catch((error: unknown) => this.logMetaFailure(error));
     }
     this.pipeline.release();
   }
@@ -157,14 +163,23 @@ export class ReplyVoice {
     this.pipeline.discardQueued();
     this.pipeline.release();
     for (const pass of dropped) this.recordNothingHeard(pass);
+    this.recordUnheardReports(cut);
     const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
-    if (cut && pass) return this.recordPassHeard(cut, pass);
+    if (cut && pass) return this.recordPassHeard(cut.heardBy, pass);
     const reply = this.reply ?? this.last;
     if (!reply) return;
     reply.heard = heard;
     // A reply still being written has no stored message of its own yet: it is told when its turn ends.
     if (reply === this.reply) this.pendingMeta = reply;
     else this.safeApplyMeta(reply);
+  }
+
+  /** A report the cut left partly or wholly unheard (queued or sent behind the reply cut) keeps only what was heard of it. */
+  private recordUnheardReports(cut: CutResult | null): void {
+    for (const other of cut?.others ?? []) {
+      const report = this.passes.find((p) => p.id === other.replyKey && !p.closed);
+      if (report) this.recordPassHeard(other.heardBy, report);
+    }
   }
 
   markPlayed(segmentId: number): void {
@@ -358,11 +373,11 @@ export class ReplyVoice {
    * A cut pass: the message the cut fell in keeps what was heard, the ones before it were heard whole, the ones after
    * not at all, nor any that joined the pass after the cut.
    */
-  private recordPassHeard(cut: CutResult, pass: Reply): void {
+  private recordPassHeard(heardBy: readonly HeardPart[], pass: Reply): void {
     pass.closed = true;
     try {
       const recorded = new Set<string>();
-      for (const part of cut.heardBy) {
+      for (const part of heardBy) {
         if (!part.messageId) continue;
         recorded.add(part.messageId);
         this.options.deps.mergeMessageMeta(part.messageId, { voice: { spokenText: part.text || null, interrupted: part.complete ? null : true } });

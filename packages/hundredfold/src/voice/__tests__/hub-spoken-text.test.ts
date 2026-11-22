@@ -331,3 +331,132 @@ describe("which reply the sentences belong to", () => {
     expect(lastPatch(h, two)).toEqual({ voice: { spokenText: REPORT_TWO } });
   });
 });
+
+const FRESH = "Fresh reply one. Fresh reply two.";
+const turnStates = (socket: FakeSocket) => socket.ofType("turn").map((f) => f.state);
+
+/** The client reports every segment sent so far as played in full. */
+async function playAll(socket: FakeSocket, attachment: VoiceAttachment): Promise<void> {
+  for (const frame of socket.ofType("segment_start")) attachment.onText(JSON.stringify({ type: "played", segmentId: frame.segmentId }));
+  await settle();
+}
+
+describe("a report dropped when words follow a cut leaves nothing behind", () => {
+  async function run(withReport: boolean) {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    h.state.replyMessage = h.store("assistant", REPLY);
+    await h.reply(REPLY);
+    bargeIn(attachment, 2, 0);
+    if (withReport) h.externalTurn(REPORT_TWO);
+    await settle();
+    await h.say(attachment, "stop now");
+    h.state.replyMessage = h.store("assistant", FRESH);
+    await h.reply(FRESH);
+    await playAll(socket, attachment);
+    return { h, socket };
+  }
+
+  it("the turn ends idle after a fresh reply plays fully, as it does with no report", async () => {
+    const control = await run(false);
+    const dropped = await run(true);
+    expect(turnStates(control.socket).at(-1)).toBe("idle");
+    expect(turnStates(dropped.socket).at(-1)).toBe("idle");
+    expect(turnStates(dropped.socket)).toEqual(turnStates(control.socket));
+  });
+});
+
+describe("a report queued behind a gateway reply that is cut", () => {
+  const DELTA = "Delta report two.";
+  const EPSILON = "Epsilon ends it.";
+
+  /** The reply is made but nothing of it has been sent: the voice provider has not answered yet. */
+  async function gated() {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    h.state.replyMessage = h.store("assistant", REPLY);
+    h.tts.gate = new Promise<void>(() => undefined);
+    await h.reply(REPLY);
+    const [report] = h.externalTurn(REPORT_TWO);
+    await settle();
+    expect(texts(socket)).toEqual([]);
+    bargeIn(attachment, null, 0);
+    return { h, socket, attachment, report };
+  }
+
+  /** The reply and the report are sent, none of it played: the client is still on the reply's second sentence. */
+  async function sentNotPlayed() {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    h.state.replyMessage = h.store("assistant", REPLY);
+    await h.reply(REPLY);
+    const [report] = h.externalTurn(REPORT_TWO);
+    await settle();
+    expect(texts(socket)).toEqual([ALPHA, BETA, GAMMA, DELTA, EPSILON]);
+    bargeIn(attachment, 2, 0);
+    return { h, socket, attachment, report };
+  }
+
+  describe("before any of it was sent", () => {
+    it("when words follow, the report records that nothing was heard and is not spoken", async () => {
+      const { h, socket, attachment, report } = await gated();
+      await h.say(attachment, "stop now");
+      h.tts.gate = null;
+      await settle();
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: null, interrupted: true } });
+      expect(reportSentences(socket)).toEqual([]);
+    });
+
+    it("with no words, the reply starts over and the report is spoken once, and recorded as spoken", async () => {
+      const { h, socket, report } = await gated();
+      await noWordsFollow(h);
+      expect(texts(socket)).toEqual([ALPHA, BETA, GAMMA, DELTA, EPSILON]);
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: REPORT_TWO } });
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: REPLY } });
+    });
+  });
+
+  describe("sent in full but not yet played", () => {
+    it("when words follow, the report records only what was played of it: nothing", async () => {
+      const { h, attachment, report } = await sentNotPlayed();
+      await h.say(attachment, "stop now");
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: null, interrupted: true } });
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: ALPHA, interrupted: true } });
+    });
+
+    it("with no words, what was not played is spoken again, the report once more, and recorded as spoken", async () => {
+      const { h, socket, report } = await sentNotPlayed();
+      socket.clear();
+      await noWordsFollow(h);
+      expect(texts(socket)).toEqual([BETA, GAMMA, DELTA, EPSILON]);
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: REPORT_TWO } });
+    });
+
+    it("a report played before the cut one keeps all of it", async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      const [report] = h.externalTurn(REPORT_TWO);
+      await settle();
+      h.state.replyMessage = h.store("assistant", REPLY);
+      await h.reply(REPLY);
+      expect(texts(socket)).toEqual([DELTA, EPSILON, ALPHA, BETA, GAMMA]);
+      bargeIn(attachment, idOf(socket, BETA), 0);
+      await h.say(attachment, "stop now");
+      expect(lastPatch(h, report)).toEqual({ voice: { spokenText: REPORT_TWO } });
+    });
+  });
+
+  it("an earlier report that was spoken in full keeps its record when an unrelated reply is cut and words follow", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    const [earlier] = h.externalTurn("The first report.");
+    await settle();
+    await playAll(socket, attachment);
+    h.state.replyMessage = h.store("assistant", REPLY);
+    await h.reply(REPLY);
+    bargeIn(attachment, idOf(socket, BETA), 0);
+    await h.say(attachment, "stop now");
+    expect(lastPatch(h, earlier)).toEqual({ voice: { spokenText: "The first report." } });
+    expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: ALPHA, interrupted: true } });
+  });
+});
