@@ -5,7 +5,7 @@ import { FakeClock, FakeStt, FakeVad } from "./fakes.js";
 /** 20 ms of 16 kHz PCM16 mono. */
 const FRAME = Buffer.alloc(640, 3);
 
-function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number } = {}) {
+function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; unfinishedHoldMs?: number } = {}) {
   const clock = new FakeClock();
   const stt = new FakeStt();
   const vad = new FakeVad();
@@ -13,7 +13,7 @@ function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?:
   const finals: FinishedUtterance[] = [];
   let n = 0;
   const capture = new UtteranceCapture({
-    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000,
+    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, unfinishedHoldMs: over.unfinishedHoldMs, maxUtteranceMs: over.maxUtteranceMs ?? 60_000,
     pushToTalk: over.pushToTalk ?? false, clock, newId: () => `u${++n}`,
     events: {
       onVad: (s) => log.push(`vad:${s}`),
@@ -125,6 +125,66 @@ describe("UtteranceCapture, hands-free", () => {
     stt.last().final("late");
     feed(2);
     expect(log.filter((l) => l.startsWith("final"))).toEqual([]);
+  });
+});
+
+describe("UtteranceCapture, holding an unfinished utterance", () => {
+  it("does not end on the VAD's end while the words so far trail off, then ends after the hold", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("I would like to book a table and");
+    vad.end();
+    expect(stt.last().ended).toBe(false);
+    expect(log).toContain("vad:false");
+    clock.advance(799);
+    expect(stt.last().ended).toBe(false);
+    clock.advance(1);
+    expect(stt.last().ended).toBe(true);
+  });
+
+  it("speech resuming inside the hold continues the same utterance", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("I would like to book a table,");
+    vad.end();
+    clock.advance(500);
+    vad.start(900);
+    expect(stt.streams).toHaveLength(1);
+    clock.advance(2000); // the old hold must be gone
+    expect(stt.last().ended).toBe(false);
+    feed(10);
+    stt.last().partial("I would like to book a table, for four.");
+    vad.end();
+    expect(stt.last().ended).toBe(true);
+    expect(log.filter((l) => l.startsWith("start:"))).toEqual(["start:u1"]);
+  });
+
+  it("ends at once when the words read as finished, when the hold is off, or when nothing was heard", () => {
+    for (const [hold, partial] of [[800, "Book me a table."], [0, "Book me a table and"], [800, ""]] as const) {
+      const { vad, stt, feed } = make({ prerollMs: 0, unfinishedHoldMs: hold });
+      vad.start(0); feed(10);
+      if (partial) stt.last().partial(partial);
+      vad.end();
+      expect(stt.last().ended).toBe(true);
+    }
+  });
+
+  it("close during a hold leaves nothing running", () => {
+    const { vad, stt, feed, clock, capture } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(10);
+    stt.last().partial("and");
+    vad.end();
+    capture.close();
+    clock.advance(5000);
+    expect(stt.last().ended).toBe(false);
+  });
+
+  it("push-to-talk is never held", () => {
+    const { stt, feed, capture } = make({ pushToTalk: true, unfinishedHoldMs: 800 });
+    capture.pttDown(); feed(5);
+    stt.last().partial("and");
+    capture.pttUp();
+    expect(stt.last().ended).toBe(true);
   });
 });
 

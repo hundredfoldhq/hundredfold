@@ -18,7 +18,7 @@ describe("voiceConfigProblems", () => {
     expect(problems({
       enabled: true, mode: "push-to-talk", language: "en-GB",
       stt: { provider: "local", model: "m" }, tts: { provider: "local", voice: "bf_emma", speed: 0.5 },
-      vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, prerollMs: 1000 },
+      vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, unfinishedHoldMs: 5000, prerollMs: 1000 },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
       prompt: "x".repeat(8000), holdingLine: "y".repeat(300),
@@ -42,6 +42,8 @@ describe("voiceConfigProblems", () => {
     ["voice.vad.minSpeechMs", { vad: { minSpeechMs: 49 } }, "voice.vad.minSpeechMs"],
     ["voice.vad.minSpeechMs", { vad: { minSpeechMs: 250.5 } }, "voice.vad.minSpeechMs"],
     ["voice.vad.silenceMs", { vad: { silenceMs: 199 } }, "voice.vad.silenceMs"],
+    ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: -1 } }, "voice.vad.unfinishedHoldMs"],
+    ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: 5001 } }, "voice.vad.unfinishedHoldMs"],
     ["voice.vad.prerollMs", { vad: { prerollMs: 1001 } }, "voice.vad.prerollMs"],
     ["voice.bargeIn.enabled", { bargeIn: { enabled: 1 } }, "voice.bargeIn.enabled"],
     ["voice.bargeIn.minSpeechMs", { bargeIn: { minSpeechMs: 2001 } }, "voice.bargeIn.minSpeechMs"],
@@ -156,7 +158,7 @@ describe("resolveVoiceConfig", () => {
       mode: "hands-free", language: "en",
       stt: { provider: "local", model: "parakeet-tdt-0.6b-v2", baseUrl: null, apiKeyRef: null },
       tts: { provider: "local", model: "kokoro-v1.0", baseUrl: null, apiKeyRef: null, voice: "af_heart", speed: 1 },
-      vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
+      vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 1000, unfinishedHoldMs: 800, prerollMs: 300 },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
       prompt: DEFAULT_VOICE_PROMPT, promptFile: null, holdingLine: DEFAULT_HOLDING_LINE,
@@ -171,7 +173,7 @@ describe("resolveVoiceConfig", () => {
     })!;
     expect(resolved.mode).toBe("push-to-talk");
     expect(resolved.tts).toMatchObject({ voice: "bf_emma", speed: 1.25 });
-    expect(resolved.vad).toEqual({ threshold: 0.5, minSpeechMs: 250, silenceMs: 900, prerollMs: 300 });
+    expect(resolved.vad).toEqual({ threshold: 0.5, minSpeechMs: 250, silenceMs: 900, unfinishedHoldMs: 800, prerollMs: 300 });
     expect(resolved.bargeIn).toEqual({ enabled: false, minSpeechMs: 250, onsetThreshold: 0.02 });
     expect(resolved.limits).toEqual({ maxUtteranceSeconds: 60, maxConcurrentAttachments: 2 });
     expect(resolved.local.device).toBe("cpu");

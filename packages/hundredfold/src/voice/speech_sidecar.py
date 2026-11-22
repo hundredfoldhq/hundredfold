@@ -439,7 +439,7 @@ class Server:
         if models is None:
             return
         endpointer = Endpointer(
-            float(header.get("threshold", 0.5)), int(header.get("minSpeechMs", 250)), int(header.get("silenceMs", 700)), int(header.get("prerollMs", 300))
+            float(header.get("threshold", 0.5)), int(header.get("minSpeechMs", 250)), int(header.get("silenceMs", 1000)), int(header.get("prerollMs", 300))
         )
         stream = str(header["stream"])
         self._unknown_vad.pop(stream, None)
