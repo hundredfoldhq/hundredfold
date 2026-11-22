@@ -8,6 +8,7 @@
  * it, which is at its size limit.
  */
 import { initDb } from '../shared/db.js';
+import { isCompactCommand } from '../shared/skill-commands.js';
 import { parseDispatchPayload, serializeDispatchPayload, type QueueDispatch } from './queue-dispatch.js';
 
 interface MergeRow {
@@ -40,6 +41,8 @@ const PARKED_MESSAGES =
  * be withdrawn from under a turn that is about to read them.
  *
  * Internal rows (callback deliveries) keep their place and are never folded in.
+ * Neither is a parked `/compact`: text joined onto it would become the
+ * compaction's instructions, and the message would never be read as one.
  * Nor is a row that recorded no dispatch payload: its files still live on its
  * dispatch closure, which folding would drop. `intoId` must have one itself.
  *
@@ -50,9 +53,9 @@ export function mergePendingQueueItems(sessionKey: string, intoId: string): stri
   // Most interrupting sends have nothing parked: look before taking the write lock.
   if ((db.prepare(`SELECT COUNT(*) AS n ${PARKED_MESSAGES}`).get(sessionKey) as { n: number }).n < 2) return [];
   return db.transaction(() => {
-    const rows = db.prepare(
+    const rows = (db.prepare(
       `SELECT id, prompt, position, message_id, dispatch_payload ${PARKED_MESSAGES} ORDER BY position ASC, created_at ASC, rowid ASC`,
-    ).all(sessionKey) as MergeRow[];
+    ).all(sessionKey) as MergeRow[]).filter((row) => !isCompactCommand(row.prompt));
     if (rows.length < 2 || !rows.some((row) => row.id === intoId)) return [];
     const dispatches = rows.map((row) => parseDispatchPayload(row.dispatch_payload)!);
     const folded = rows.filter((row) => row.id !== intoId);

@@ -21,8 +21,8 @@ describe("shouldInterruptRunningTurn", () => {
   });
 
   it("lets a running auto-compaction finish instead of throwing it away", () => {
-    expect(shouldInterruptRunningTurn({ ...base, autoCompacting: true })).toBe(false);
-    expect(shouldInterruptRunningTurn({ ...base, autoCompacting: false })).toBe(true);
+    expect(shouldInterruptRunningTurn({ ...base, compacting: true })).toBe(false);
+    expect(shouldInterruptRunningTurn({ ...base, compacting: false })).toBe(true);
   });
 
   it("honours a per-message queue choice over the interrupting default", () => {
@@ -37,7 +37,7 @@ describe("shouldInterruptRunningTurn", () => {
   it("keeps the guards above an explicit send-now choice", () => {
     expect(shouldInterruptRunningTurn({ ...base, delivery: "now", isNotification: true })).toBe(false);
     expect(shouldInterruptRunningTurn({ ...base, delivery: "now", turnRunning: false })).toBe(false);
-    expect(shouldInterruptRunningTurn({ ...base, delivery: "now", autoCompacting: true })).toBe(false);
+    expect(shouldInterruptRunningTurn({ ...base, delivery: "now", compacting: true })).toBe(false);
     expect(shouldInterruptRunningTurn({ ...base, delivery: "now", prompt: "/compact" })).toBe(false);
     expect(shouldInterruptRunningTurn({ ...base, delivery: "now", queuePaused: () => true })).toBe(false);
     expect(shouldInterruptRunningTurn({ ...base, queuePaused: () => true })).toBe(false);
@@ -79,7 +79,7 @@ describe("runningTurnAction", () => {
     { name: "interruptOnNewMessage on, engine can steer", extra: { interruptOnNewMessage: true, ...steerable }, flagged: "steer", unflagged: "queue" },
     { name: "queue paused", extra: { queuePaused: () => true, ...steerable }, flagged: "queue", unflagged: "queue" },
     { name: "queue not paused", extra: { queuePaused: () => false, ...steerable }, flagged: "steer", unflagged: "queue" },
-    { name: "auto-compacting", extra: { autoCompacting: true, ...steerable }, flagged: "queue", unflagged: "queue" },
+    { name: "auto-compacting", extra: { compacting: true, ...steerable }, flagged: "queue", unflagged: "queue" },
     { name: "a compact command", extra: { prompt: "/compact keep the ids", ...steerable }, flagged: "queue", unflagged: "queue" },
   ];
 
@@ -116,7 +116,7 @@ describe("runningTurnAction", () => {
   it("leaves everything unflagged exactly as shouldInterruptRunningTurn has it", () => {
     const base = { isNotification: false, prompt: "stop, do this instead", interruptOnNewMessage: undefined as boolean | undefined, turnRunning: true };
     for (const extra of [{}, { interruptOnNewMessage: false }, { delivery: "queue" as const }, { delivery: "now" as const, interruptOnNewMessage: false },
-      { prompt: "/compact" }, { autoCompacting: true }, { turnRunning: false }, { queuePaused: () => true }, { isNotification: true }, { isNotification: true, delivery: "now" as const }]) {
+      { prompt: "/compact" }, { compacting: true }, { turnRunning: false }, { queuePaused: () => true }, { isNotification: true }, { isNotification: true, delivery: "now" as const }]) {
       expect(runningTurnAction({ ...base, ...extra, ...steerable })).toBe(shouldInterruptRunningTurn({ ...base, ...extra }) ? "interrupt" : "queue");
     }
   });
