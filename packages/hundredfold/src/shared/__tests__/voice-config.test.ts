@@ -175,7 +175,7 @@ describe("resolveVoiceConfig", () => {
       tts: { provider: "openai-compatible", baseUrl: "http://localhost:8880/", apiKey: "${LOCAL_TTS_KEY}" },
       language: "fr",
     })!;
-    expect(resolved.stt).toEqual({ provider: "openai", model: "gpt-4o-mini-transcribe", baseUrl: null, apiKeyRef: "${OPENAI_API_KEY}" });
+    expect(resolved.stt).toEqual({ provider: "openai", model: "gpt-live-transcribe", baseUrl: null, apiKeyRef: "${OPENAI_API_KEY}" });
     expect(resolved.tts).toEqual({ provider: "openai-compatible", model: "tts-1", baseUrl: "http://localhost:8880", apiKeyRef: "${LOCAL_TTS_KEY}", voice: "alloy", speed: 1 });
     expect(JSON.stringify(resolved)).not.toMatch(/sk-/);
   });

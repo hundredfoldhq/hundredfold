@@ -100,10 +100,15 @@ export function spawnSidecar(paths: VoicePaths): ChildProcessWithoutNullStreams 
 
 export type GpuProbe = () => boolean;
 
-/** True when `nvidia-smi` lists a GPU. */
+const PROBE_TTL_MS = 30_000;
+let probed: { at: number; gpu: boolean } | null = null;
+
+/** True when `nvidia-smi` lists a GPU. Remembered for 30 s: it is asked on every status read. */
 export const nvidiaSmiProbe: GpuProbe = () => {
+  if (probed && Date.now() - probed.at < PROBE_TTL_MS) return probed.gpu;
   const result = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { encoding: "utf8", timeout: 10_000 });
-  return result.status === 0 && result.stdout.trim().length > 0;
+  probed = { at: Date.now(), gpu: result.status === 0 && result.stdout.trim().length > 0 };
+  return probed.gpu;
 };
 
 /** `local.device` to the device that will run: `auto` is the GPU when one is reported. */

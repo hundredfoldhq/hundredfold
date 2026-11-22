@@ -102,7 +102,7 @@ export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come 
 /** Per provider: the model and voice used when the config names none. */
 export const VOICE_PROVIDER_DEFAULTS: Record<VoiceProviderId, { sttModel: string; ttsModel: string; ttsVoice: string }> = {
   local: { sttModel: "parakeet-tdt-0.6b-v2", ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
-  openai: { sttModel: "gpt-4o-mini-transcribe", ttsModel: "gpt-4o-mini-tts", ttsVoice: "alloy" },
+  openai: { sttModel: "gpt-live-transcribe", ttsModel: "gpt-4o-mini-tts", ttsVoice: "marin" },
   "openai-compatible": { sttModel: "whisper-1", ttsModel: "tts-1", ttsVoice: "alloy" },
 };
 
