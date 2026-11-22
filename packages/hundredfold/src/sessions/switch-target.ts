@@ -15,6 +15,8 @@ import { namesClaudeProfile } from "./primary-profile.js";
 import { scopedSwitchRefusal } from "./scoped-engine.js";
 import { ownClaudeAccountOf, withoutAccountOverride } from "./session-account.js";
 import { validateNewSessionSelection } from "./session-patch.js";
+import { pinAccountAtCreation, type AccountPin } from "./account-pin.js";
+import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { getEngineSessionRef } from "./registry.js";
 
 /**
@@ -45,6 +47,8 @@ export interface SwitchTargetView {
   claudeConfigDir: string | null;
   model: string | null;
   effortLevel: string | null;
+  /** The account balancer chose the profile (an engine-only switch onto Claude): applying the switch picks again, then. */
+  balanced?: boolean;
 }
 
 /** What a caller asks for. `profile` null or "" is the session's own login; every field is optional. */
@@ -56,7 +60,11 @@ export interface SwitchRequest {
 }
 
 export type SwitchResolution =
-  | { ok: true; target: SwitchTargetView; own: SwitchTargetView; sameTarget: boolean }
+  | {
+    ok: true; target: SwitchTargetView; own: SwitchTargetView; sameTarget: boolean;
+    /** What the switch writes of the balancer's record: the pick (an engine-only switch onto Claude whose chain opens with a group), null to clear it (the switch names a profile), absent to leave it. */
+    accountPick?: AccountPick | null;
+  }
   | { ok: false; code: SwitchRefusalCode; status: 400 | 403 | 409; error: string; until?: string; listEngine?: string };
 
 export interface ResolveOptions {
@@ -238,7 +246,7 @@ function buildTarget(
   const selection = validateNewSessionSelection(
     config,
     { engine: chosen.engine, model: request.model ?? kept.model, effortLevel: request.effortLevel ?? undefined },
-    { effortLevel: kept.effortLevel },
+    { effortLevel: kept.effortLevel, validateOnly: true },
   );
   if (!selection.ok) return refusal("invalid-target", selection.error || "invalid engine/model/effort") as Extract<SwitchResolution, { ok: false }>;
   return {
@@ -253,6 +261,32 @@ function buildTarget(
   };
 }
 
+/**
+ * The account the balancer picks for a deliberate engine-only switch onto Claude (no profile named, the session
+ * coming from another engine), when the session's chain opens with a group holding its own login. A switch
+ * naming a profile, or staying on Claude, is never balanced.
+ */
+function balancedSwitch(config: HundredfoldConfig, session: Session, own: SwitchTargetView, engine: string, request: SwitchRequest): AccountPin | undefined {
+  if (engine !== "claude" || own.engine === "claude" || request.profile !== undefined) return undefined;
+  const pin = pinAccountAtCreation({
+    config, employee: employeeOf(config, session), engine, model: typeof request.model === "string" ? request.model.trim() : undefined, trigger: "switch",
+  });
+  return pin.accountPick ? pin : undefined;
+}
+
+/** The profile directory a switch lands on: the balancer's pick, else what the request names (or keeps). */
+function switchProfile(
+  config: HundredfoldConfig, session: Session, engine: string, request: SwitchRequest, balanced: AccountPin | undefined,
+): { ok: true; dir: string | null } | Extract<SwitchResolution, { ok: false }> {
+  return balanced ? { ok: true, dir: balanced.claudeConfigDir ?? null } : resolveProfile(config, session, engine, request.profile);
+}
+
+/** What the switch writes of the balancer's record: the pick, null to clear an earlier one (a switch that names a profile pins it), or nothing. */
+function pickWrite(engine: string, request: SwitchRequest, balanced: AccountPin | undefined): Pick<Extract<SwitchResolution, { ok: true }>, "accountPick"> {
+  const accountPick = balanced?.accountPick ?? (engine === "claude" && request.profile !== undefined ? null : undefined);
+  return accountPick === undefined ? {} : { accountPick };
+}
+
 /** The target `request` asks for on `session`, or the rule that refuses it. */
 export function resolveSwitchTarget(config: HundredfoldConfig, session: Session, request: SwitchRequest, opts: ResolveOptions): SwitchResolution {
   const own = ownSwitchTarget(config, session);
@@ -260,15 +294,17 @@ export function resolveSwitchTarget(config: HundredfoldConfig, session: Session,
   if (!named.ok) return refusal("invalid-target", named.error);
   const engineProblem = engineRefusal(config, session, named.engine, opts);
   if (engineProblem) return engineProblem;
-  const profile = resolveProfile(config, session, named.engine, request.profile);
+  const balanced = balancedSwitch(config, session, own, named.engine, request);
+  const profile = switchProfile(config, session, named.engine, request, balanced);
   if (!profile.ok) return profile;
   const modelProblem = modelRefusal(config, named.engine, request.model, opts);
   if (modelProblem) return modelProblem;
   const built = buildTarget(config, session, own, { engine: named.engine, dir: profile.dir }, request);
   if (!built.ok) return built;
-
-  const refused = opts.caller === "session" ? selfRefusal(config, session, own, built.target, opts.now ?? new Date()) : undefined;
-  return refused ?? { ok: true, target: built.target, own, sameTarget: isOwnTarget(config, session, own, built.target) };
+  const target = balanced ? { ...built.target, balanced: true } : built.target;
+  const refused = opts.caller === "session" ? selfRefusal(config, session, own, target, opts.now ?? new Date()) : undefined;
+  if (refused) return refused;
+  return { ok: true, target, own, sameTarget: isOwnTarget(config, session, own, target), ...pickWrite(named.engine, request, balanced) };
 }
 
 /** What a target reads as to its allowance: `ok`, or `exhausted` with the end of the window. */

@@ -1,6 +1,6 @@
 import { act, fireEvent, render } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FallbackLink } from '@hundredfold/fallback-chain-wire'
+import type { FallbackWrittenEntry } from '@hundredfold/fallback-chain-wire'
 import type { EnginesResponse } from '@/lib/api'
 import { ChainEditor } from '../chain-editor'
 
@@ -34,10 +34,10 @@ const REGISTRY: EnginesResponse = {
   engines: { claude: entry('claude'), codex: entry('codex'), grok: entry('grok'), pi: entry('pi') },
 }
 
-let onChange: ReturnType<typeof vi.fn<(links: FallbackLink[]) => void>>
+let onChange: ReturnType<typeof vi.fn<(links: FallbackWrittenEntry[]) => void>>
 
 function renderEditor() {
-  onChange = vi.fn<(links: FallbackLink[]) => void>()
+  onChange = vi.fn<(links: FallbackWrittenEntry[]) => void>()
   render(
     <ChainEditor
       chainName="Claude chain"

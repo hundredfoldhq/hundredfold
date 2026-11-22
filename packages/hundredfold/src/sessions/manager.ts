@@ -11,6 +11,7 @@ import type {
 } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { newSessionEngineSelection } from "./new-session-engine.js";
+import { chargeAccountStart } from "./account-pin.js";
 import { removeCodexSessionHome } from "../engines/codex.js";
 import { ptySnapshotStore } from "../engines/pty-snapshot.js";
 import {
@@ -137,8 +138,10 @@ export class SessionManager {
     let session = getSessionBySessionKey(msg.sessionKey);
     if (!session && refuseScopedConnectorSession(msg, opts.employee?.name, connector)) return;
     if (!session) {
+      // Pick, create and charge run in one synchronous stretch: no concurrent start reads the credits between them.
+      const { accountPick, ...selection } = newSessionEngineSelection(this.config, this.engines, opts, msg.transportMeta);
       session = createSession({
-        ...newSessionEngineSelection(this.config, this.engines, opts, msg.transportMeta),
+        ...selection,
         source: msg.source,
         sourceRef: msg.sessionKey,
         connector: msg.connector,
@@ -150,6 +153,7 @@ export class SessionManager {
         prompt: msg.text,
         portalName: this.config.portal?.portalName,
       });
+      chargeAccountStart({ accountPick });
       logger.info(
         `Created new session ${session.id} for ${msg.sessionKey}` +
         (opts.employee ? ` (employee: ${opts.employee.name})` : ""),

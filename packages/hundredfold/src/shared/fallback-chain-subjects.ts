@@ -1,14 +1,15 @@
 import { declaredAccountByKey, declaredClaudeAccounts, declaredRemoteClaudeAccounts, type DeclaredClaudeAccount } from "./claude-accounts-config.js";
-import { accountForEmployee } from "./engine-account.js";
+import { accountForEmployee, DEFAULT_CLAUDE_ACCOUNT } from "./engine-account.js";
 import { employeeOwnLink } from "./employee-fallback.js";
 import type { FallbackExpansionMode } from "./fallback-chain-expand.js";
 import {
   inheritedChain, ownTargetLink, resolveFallbackLinks,
   type FallbackChainEnv, type FallbackChainSpec,
 } from "./fallback-chain.js";
+import { homeGroupOf, startPickOf } from "./fallback-chain-group.js";
 import {
-  fallbackLinkOf,
-  type FallbackChainEntry, type FallbackChainSource, type FallbackChainSubject, type FallbackChainsResponse, type FallbackProfileOption,
+  fallbackGroupOf, fallbackLinkOf,
+  type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackChainSubject, type FallbackChainsResponse, type FallbackProfileOption, type ResolvedFallbackLink,
 } from "./fallback-chain-wire.js";
 import { duplicateProblemsByChain } from "./fallback-chain-load.js";
 import { ENGINE_NAMES } from "./models.js";
@@ -40,19 +41,36 @@ export function fallbackProfiles(config: HundredfoldConfig): FallbackProfileOpti
   ];
 }
 
+/** The chain as written, normalised: each entry a link, a group kept whole; null when nothing is written. */
+function configuredOf(written: readonly FallbackChainEntry[] | undefined): FallbackChainSubject["configured"] {
+  return written === undefined ? null : written.flatMap((entry) => fallbackGroupOf(entry) ?? fallbackLinkOf(entry) ?? []);
+}
+
 function subjectOf(
   env: FallbackChainEnv, identity: Pick<FallbackChainSubject, "kind" | "id">, spec: FallbackChainSpec, written: readonly FallbackChainEntry[] | undefined,
-  problems: readonly string[] = [],
+  extra: { problems?: readonly string[]; pickSource?: Exclude<FallbackChainSource, "session"> } = {},
 ): FallbackChainSubject {
+  const { problems = [], pickSource } = extra;
   const [primary, ...effective] = resolveFallbackLinks(env, spec);
+  const startPick = pickSource === undefined ? undefined : subjectStartPick(env, spec, effective, pickSource, primary?.model);
   return {
     ...(problems.length > 0 ? { problems: [...problems] } : {}),
     ...identity,
     primary: primary ?? null,
-    configured: written === undefined ? null : written.flatMap((entry) => fallbackLinkOf(entry) ?? []),
+    configured: configuredOf(written),
     legacy: written?.some((entry) => typeof entry === "string") ?? false,
     effective,
+    ...(startPick ? { startPick } : {}),
   };
+}
+
+/** What a new session of this subject would be balanced onto now, when its chain opens with a group holding its own account (a local Claude subject only). */
+function subjectStartPick(
+  env: FallbackChainEnv, spec: FallbackChainSpec, effective: readonly ResolvedFallbackLink[], source: Exclude<FallbackChainSource, "session">, model: string | undefined,
+): AccountPick | undefined {
+  if (spec.mode !== "account" || spec.scope.remote || spec.own.engine !== "claude") return undefined;
+  const home = homeGroupOf(env.config, spec.entries, spec.ownAccount);
+  return home ? startPickOf(env, home, effective, { source, ownAccount: spec.ownAccount, model }) : undefined;
 }
 
 const OPEN_SCOPE = { scoped: false, remote: false };
@@ -68,7 +86,8 @@ export function engineSubject(env: FallbackChainEnv, engine: string): FallbackCh
   const mode: FallbackExpansionMode = engine === "claude" ? "account" : "engine";
   const own = ownTargetLink(env.config, { engine, model: defaultModel(env.config, env.registry, engine) });
   const problems = [...(duplicateProblemsByChain(env.config.engines)[`engines.${engine}.fallback`] ?? []), ...opencodeProblems(env, `engines.${engine}.fallback`, written)];
-  return subjectOf(env, { kind: "engine", id: engine }, { own, ownAccount: engine, entries: written ?? [], mode, scope: OPEN_SCOPE }, written, problems);
+  const ownAccount = engine === "claude" ? DEFAULT_CLAUDE_ACCOUNT : engine;
+  return subjectOf(env, { kind: "engine", id: engine }, { own, ownAccount, entries: written ?? [], mode, scope: OPEN_SCOPE }, written, { problems, pickSource: "engine" });
 }
 
 /** A declared Claude account's chain, `engines.claude.accounts.<name>.fallback`. */
@@ -78,13 +97,13 @@ export function accountSubject(env: FallbackChainEnv, account: DeclaredClaudeAcc
   const spec: FallbackChainSpec = { own, ownAccount: account.key, entries: account.fallback ?? [], mode: "account", scope: OPEN_SCOPE };
   const where = `engines.claude.accounts.${account.name}.fallback`;
   const problems = [...(duplicateProblemsByChain(env.config.engines)[where] ?? []), ...opencodeProblems(env, where, account.fallback)];
-  return subjectOf(env, { kind: "account", id: account.name }, spec, account.fallback, problems);
+  return subjectOf(env, { kind: "account", id: account.name }, spec, account.fallback, { problems });
 }
 
 /** Where an employee's chain comes from, and the account or engine that names it. */
 function inheritedSource(
   config: HundredfoldConfig, engine: string, ownAccount: string, source: FallbackChainSource | undefined,
-): Pick<FallbackChainSubject, "source" | "sourceId"> {
+): { source: Exclude<FallbackChainSource, "session">; sourceId?: string } {
   if (source === undefined) return { source: "employee" };
   if (source === "account") return { source, sourceId: declaredAccountByKey(config, ownAccount)?.name };
   return source === "engine" ? { source, sourceId: engine } : { source: "none" };
@@ -101,10 +120,9 @@ export function employeeSubject(env: FallbackChainEnv, employee: Employee, scope
   const inherited = employee.fallback === undefined ? inheritedChain(env.config, employee.engine, mode, ownAccount) : undefined;
   const entries = employee.fallback ?? inherited?.entries ?? [];
   const own = employeeOwnLink(env.config, employee);
-  const subject = {
-    ...subjectOf(env, { kind: "employee", id: employee.name }, { own, ownAccount, claudeAccount: accountForEmployee(employee, "claude"), entries, mode, scope }, employee.fallback),
-    ...inheritedSource(env.config, employee.engine, ownAccount, inherited?.source),
-  };
+  const where = inheritedSource(env.config, employee.engine, ownAccount, inherited?.source);
+  const spec: FallbackChainSpec = { own, ownAccount, claudeAccount: accountForEmployee(employee, "claude"), entries, mode, scope };
+  const subject = { ...subjectOf(env, { kind: "employee", id: employee.name }, spec, employee.fallback, { pickSource: where.source }), ...where };
   const problems = [...(employee.fallbackProblems ?? []), ...opencodeProblems(env, "fallback", employee.fallback)];
   return problems.length > 0 ? { ...subject, problems } : subject;
 }

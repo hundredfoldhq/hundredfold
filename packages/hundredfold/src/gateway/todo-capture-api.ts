@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation } from "../sessions/account-pin.js";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import { createSession, getSession, insertMessage, updateSession } from "../sessions/registry.js";
 import { enqueueQueueItem } from "../sessions/queue-item-registry.js";
@@ -122,7 +123,10 @@ async function startCapture(req: HttpRequest, res: ServerResponse, context: ApiC
   // so on the engine side only; the operator's own words are what gets stored.
   const { visible, engine: enginePrompt } = resolveMessageAudiences(prompt, speechDerived);
   const sessionKey = `todo-shaper:${crypto.randomUUID()}`;
+  const pin = pinAccountAtCreation({ config, employee: shaper, engine: shaper.engine, model: shaper.model });
   const session = createSession({
+    ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.accountPick ? { transportMeta: metaWithAccountPick(undefined, pin) } : {}),
     engine: shaper.engine,
     source: "web",
     sourceRef: sessionKey,
@@ -136,6 +140,7 @@ async function startCapture(req: HttpRequest, res: ServerResponse, context: ApiC
     title: "Quick capture",
     portalName: config.portal?.portalName,
   });
+  chargeAccountStart(pin);
   insertMessage(session.id, "user", visible);
   updateSession(session.id, { status: "running", lastActivity: new Date().toISOString() });
   session.status = "running";

@@ -11,6 +11,8 @@ import { orgRegistry } from "../gateway/org-registry.js";
 import { runsOnlyOnClaude, scopedEngineRefusal } from "./scoped-engine.js";
 import { startsOnPreferredEngine } from "./session-fallback.js";
 import type { SessionFallbackMode } from "../shared/session-fallback-config.js";
+import type { AccountPick } from "../shared/fallback-chain-wire.js";
+import { pinAccountAtCreation, type AccountPin } from "./account-pin.js";
 
 /**
  * Validate a mid-chat model/effort change for an existing session.
@@ -39,6 +41,11 @@ export interface NewSessionSelectionResult {
    *  the caller folds it into the new session's transport meta with
    *  `reroutedSessionMeta`, so the session goes back once the window passes. */
   reroute?: SessionReroute;
+  /** The account the balancer pinned the session to, when its chain opens with a group holding its own login:
+   *  `claudeConfigDir` goes to `createSession`, `accountPick` into the transport meta (`metaWithAccountPick`),
+   *  and the creating caller charges the start (`chargeAccountStart`) right after the row exists. A validation never charges it. */
+  claudeConfigDir?: AccountPin["claudeConfigDir"];
+  accountPick?: AccountPick;
   error?: string;
 }
 
@@ -50,7 +57,11 @@ export interface SessionPatchContext {
 export function validateNewSessionSelection(
   config: HundredfoldConfig,
   body: { engine?: unknown; model?: unknown; effortLevel?: unknown },
-  defaults: { engine?: string; model?: string; effortLevel?: string; employee?: string; fallbackMode?: SessionFallbackMode } = {},
+  defaults: { engine?: string; model?: string; effortLevel?: string; employee?: string; fallbackMode?: SessionFallbackMode;
+    /** The caller named a Claude profile: that account is the session's, nothing is balanced. */
+    namedProfile?: boolean;
+    /** A validation that starts no session (a stored override, a switch's target): no account is picked. */
+    validateOnly?: boolean } = {},
 ): NewSessionSelectionResult {
   const registry = getModelRegistry(config);
   let engine: string = defaults.engine?.trim() || config.engines.default;
@@ -80,9 +91,16 @@ export function validateNewSessionSelection(
   // Nor is a department-scoped employee, which runs only on claude.
   const ownAccount = engine === "claude" && Boolean(defaults.employee)
     && resolveEmployeeClaudeProfile(orgRegistry().get(defaults.employee!)) !== null;
+  // A Claude session whose chain opens with a group holding its own login runs on the account the balancer picks, which
+  // is then its own account: a named profile is no reason to leave it where it is, and its health is the pinned account's.
+  const pinModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
+  const pin: AccountPin = defaults.validateOnly ? {} : pinAccountAtCreation({
+    config, employee: defaults.employee ? orgRegistry().get(defaults.employee) : undefined,
+    engine, model: pinModel, namedProfile: defaults.namedProfile,
+  });
   // Nor is a session whose fallback mode is `auto-resume` (`defaults.fallbackMode`, else the config's):
   // it starts where it prefers and waits out a spent allowance.
-  if (body.engine === undefined && body.model === undefined && isKnownEngine(engine) && !ownAccount
+  if (body.engine === undefined && body.model === undefined && isKnownEngine(engine) && (!ownAccount || pin.accountPick !== undefined)
     && !runsOnlyOnClaude(defaults.employee) && !startsOnPreferredEngine(config, defaults.fallbackMode)) {
     // NOT scoped by host, unlike the other two engine-choosing paths: `defaults`
     // carries the employee's NAME, not its record, so this cannot tell whether
@@ -93,7 +111,7 @@ export function validateNewSessionSelection(
     const health = readEngineHealth();
     const employee = defaults.employee ? orgRegistry().get(defaults.employee) : undefined;
     const choice = rerouteAtCreation({
-      config, employee, engine, model: defaultModel, health, scope: { scoped: false, remote: false },
+      config, employee, engine, model: defaultModel, health, scope: { scoped: false, remote: false }, pin,
       registry: availabilityRegistry(registry, (candidate) => registry[candidate]?.available === true),
     });
     if (choice) {
@@ -191,7 +209,11 @@ export function validateNewSessionSelection(
     }
   }
 
-  return { ok: true, engine, model, effortLevel, ...(reroute ? { reroute } : {}) };
+  return {
+    ok: true, engine, model, effortLevel, ...(reroute ? { reroute } : {}),
+    ...(pin.accountPick ? { accountPick: pin.accountPick } : {}),
+    ...(pin.claudeConfigDir !== undefined ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+  };
 }
 
 export function validateSessionPatch(

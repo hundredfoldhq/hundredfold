@@ -3,6 +3,7 @@ import { isEngineExhausted, readEngineHealth, type EngineHealthReading } from ".
 import { rosterClaudeAccounts } from "../shared/engine-limits-accounts.js";
 import type { Employee, HundredfoldConfig } from "../shared/types.js";
 import { orgRegistry } from "../gateway/org-registry.js";
+import { pinAccountAtCreation } from "../sessions/account-pin.js";
 import { OPERATOR_ASSIGNEE } from "../work-items/assignment.js";
 import { getTodoDispatchConfig } from "../work-items/dispatch-config.js";
 import type { WorkItem } from "../work-items/store.js";
@@ -19,7 +20,10 @@ import type { WorkItem } from "../work-items/store.js";
  * An unassigned Todo is `unrouted`: the Dispatcher picks its employee, so it is
  * judged against the default account, and the exhausted accounts go to the
  * Dispatcher as advice. A child that still lands on an exhausted account waits
- * for that account's own reset (FR-056).
+ * for that account's own reset (FR-056). An assignee whose chain opens with a
+ * group of Claude accounts holding its own login is judged on the account the
+ * balancer would pick for it now (a preview: nothing is charged, so the view
+ * does not move until a session really starts).
  */
 
 export const UNROUTED = "unrouted";
@@ -57,7 +61,8 @@ export function walkAccounts(deps: WalkAccountsDeps): WalkAccounts {
       const assignee = employee(item.assignee);
       if (!assignee) return UNROUTED;
       const engine = getTodoDispatchConfig(item.id)?.engine ?? assignee.engine ?? config.engines.default;
-      return accountForEmployee(assignee, engine);
+      const { accountPick } = pinAccountAtCreation({ config, employee: assignee, engine, model: assignee.model, now: new Date(now), inputs: { health } });
+      return accountPick?.picked ?? accountForEmployee(assignee, engine);
     },
     label: (account) => labels.get(account) ?? account,
     exhausted,

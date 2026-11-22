@@ -26,6 +26,8 @@ import {
 import { withEngineHealth } from "../shared/engine-health.js";
 import { withInternalFallback } from "../engines/opencode-internal-fallback.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
+import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
+import { transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
 import { fallbackPreviewFor, parseFallbackModeParam, parseFallbackModePatch, withFallbackView } from "./session-fallback-api.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget } from "../sessions/fallback-target.js";
@@ -1127,6 +1129,8 @@ export function serializeSession(
     backgroundActivity: bg ? serializeRuntimeActivity(bg) : null,
     delegatedActivity: delegatedActivityIndex?.get(session.id) ?? null,
     claudeProfile: sessionClaudeProfileWire(session, context),
+    // The balancer's record without its usage numbers: those are the fallback view's `pick`, which a scoped caller gets stripped.
+    transportMeta: transportMetaWithoutPickNumbers(session.transportMeta),
   };
 }
 
@@ -3560,7 +3564,7 @@ export async function handleApiRequest(
         engine: todoOverride.engine ?? requestedEngine,
         model: todoOverride.engine ? todoOverride.model ?? undefined : body.model,
         effortLevel: body.effortLevel,
-      }, { ...(todoOverride.engine ? { employee: employeeName } : employeeDefaults), ...(fallbackMode ? { fallbackMode } : {}) });
+      }, { ...(todoOverride.engine ? { employee: employeeName } : employeeDefaults), ...(fallbackMode ? { fallbackMode } : {}), ...(claudeConfigDir ? { namedProfile: true } : {}) });
       if (!selection.ok) return badRequest(res, selection.error || "invalid engine/model/effort");
       // The Todo's skills are preloaded by prefixing the brief the delegate reads.
       const brief = todoOverride.prefix + task;
@@ -3711,16 +3715,17 @@ export async function handleApiRequest(
           effortLevel: selection.effortLevel,
           fallbackMode,
           fallbackTarget,
-          claudeConfigDir,
+          claudeConfigDir: claudeConfigDir ?? selection.claudeConfigDir ?? undefined,
           prompt: brief,
           title,
           portalName: config.portal?.portalName,
-          transportMeta: reroutedSessionMeta(selection.reroute, {
+          transportMeta: reroutedSessionMeta(selection.reroute, metaWithAccountPick({
             [DELEGATION_COMPLETION_TRACKED_META_KEY]: true,
             ...(replaced ? { [REPLACED_SESSION_META_KEY]: replaced.id } : {}),
             ...(delegateEmployee?.displayName ? { delegationEmployeeDisplay: delegateEmployee.displayName } : {}),
-          }),
+          }, selection)),
         });
+        chargeAccountStart(selection);
       } catch (spawnErr) {
         claim.release();
         const replay = idempotencySessionKey ? getSessionBySessionKey(idempotencySessionKey) : undefined;

@@ -108,7 +108,8 @@ describe("rerouteAtCreation", () => {
         originalEngine: "claude", originalEngineSessionId: null, originalModel: "opus", until: choice.reroute.until.toISOString(), syncSince: NOW.toISOString(),
         substituteTarget: { engine: "codex" },
       },
-      fallbackRun: { source: "engine", position: 1, tried: ["claude||opus"], startedAt: NOW.toISOString() },
+      // `at` is the key of the link the run starts on, which finds it again if the chain is re-ordered meanwhile.
+      fallbackRun: { source: "engine", position: 1, at: "codex||", tried: ["claude||opus"], startedAt: NOW.toISOString() },
     });
   });
 
