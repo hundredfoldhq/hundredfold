@@ -219,7 +219,7 @@ describe("speech sidecar client: recovery and abort", () => {
     const sidecar = client("die-on-tts", { respawnMinMs: 150 });
     const vad = sidecar.vad("v1", VAD);
     const events: unknown[] = [];
-    vad.on((event) => events.push(event));
+    vad.on((event) => { if (event.kind !== "reset") events.push(event); }); // the reset has its own tests
     vad.write(Buffer.alloc(640));
     await until(() => events.length === 1);
     await expect(collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal))).rejects.toThrow();
@@ -236,7 +236,7 @@ describe("speech sidecar client: recovery and abort", () => {
     const sidecar = client("die-on-tts", { respawnMinMs: 150 });
     const vad = sidecar.vad("v1", VAD);
     const events: unknown[] = [];
-    vad.on((event) => events.push(event));
+    vad.on((event) => { if (event.kind !== "reset") events.push(event); }); // the reset has its own tests
     vad.write(Buffer.alloc(640));
     await until(() => events.length === 1);
     await expect(collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal))).rejects.toThrow();
@@ -281,6 +281,72 @@ describe("speech sidecar client: recovery and abort", () => {
     await until(() => events.some((event) => event.kind === "start"));
     expect(events.find((event) => event.kind === "start")!.atMs).toBe((10 + MAX_VAD_QUEUE + 100) * 20 - VAD.prerollMs);
     vad.close();
+  });
+
+  describe("a VAD stream whose sidecar is lost", () => {
+    const loudFrame = (): Buffer => {
+      const loud = Buffer.alloc(640);
+      for (let i = 0; i < 320; i += 1) loud.writeInt16LE(5000, i * 2);
+      return loud;
+    };
+
+    it("is told where the next sidecar counts from, and that is where it does", async () => {
+      // The first sidecar comes up late, so the stream's audio is held, and the oldest of it dropped to silence, first.
+      const sidecar = client("die-on-tts", { respawnMinMs: 150 }, { FAKE_MARKER: "1", FAKE_HELLO_DELAY_MS: "300" });
+      const vad = sidecar.vad("v1", VAD);
+      const events: Array<{ kind: string; atMs: number }> = [];
+      vad.on((event) => events.push(event));
+      const quiet = Buffer.alloc(640);
+      const held = MAX_VAD_QUEUE + 100;
+      for (let i = 0; i < held; i += 1) vad.write(quiet);
+      await until(() => logged().filter((line) => line === "vad.audio").length >= MAX_VAD_QUEUE + 1, 8000);
+      await collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal)).catch(() => undefined); // it dies
+      expect(events).toEqual([{ kind: "reset", atMs: held * 20 }]);
+      await sleep(200);
+      // Speech in the first frame the next sidecar is sent: its start is at its own 0, which is the reset position.
+      vad.write(loudFrame());
+      for (let i = 0; i < 40; i += 1) vad.write(quiet);
+      await until(() => events.some((event) => event.kind === "start"), 8000);
+      expect(events.find((event) => event.kind === "start")!.atMs).toBe(held * 20);
+      vad.close();
+    });
+
+    it("hears nothing when it never reached the sidecar, or the client is shut down on purpose", async () => {
+      const never = client("nohello", { helloTimeoutMs: 300, respawnMinMs: 50 });
+      const waiting = never.vad("v1", VAD);
+      const seen: string[] = [];
+      waiting.on((event) => seen.push(event.kind));
+      waiting.write(Buffer.alloc(640));
+      await sleep(600); // the hello times out: the sidecar the stream was waiting for is gone, but it never had it
+      expect(seen).toEqual([]);
+
+      const shut = client("", { respawnMinMs: 50 });
+      const open = shut.vad("v2", VAD);
+      open.on((event) => seen.push(event.kind));
+      open.write(Buffer.alloc(640));
+      await until(() => logged().includes("vad.open"));
+      shut.close();
+      await sleep(100);
+      expect(seen.filter((kind) => kind === "reset")).toEqual([]);
+      waiting.close();
+    });
+
+    it("says so once for each sidecar, not again when the next one fails to come up", async () => {
+      const sidecar = client("die-on-tts", { respawnMinMs: 100, helloTimeoutMs: 300 }, { FAKE_MARKER: "1" });
+      const vad = sidecar.vad("v1", VAD);
+      const kinds: string[] = [];
+      vad.on((event) => kinds.push(event.kind));
+      await sidecar.ensureReady();
+      vad.write(Buffer.alloc(640));
+      await until(() => logged().includes("vad.audio"));
+      await collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal)).catch(() => undefined);
+      expect(kinds).toEqual(["reset"]);
+      await sleep(150);
+      vad.write(Buffer.alloc(640)); // the next sidecar starts, then dies on the next synthesis
+      await sidecar.ensureReady();
+      await collect(sidecar.synthesize("t2", SPEECH, new AbortController().signal)).catch(() => undefined);
+      expect(kinds).toEqual(["reset", "reset"]);
+    });
   });
 
   it("reports unavailable once closed, rather than available after the respawn hold", async () => {

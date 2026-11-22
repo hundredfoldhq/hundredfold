@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { UtteranceCapture, type FinishedUtterance } from "../utterance-capture.js";
+import { UtteranceCapture, vadLagFor, type FinishedUtterance } from "../utterance-capture.js";
 import { VAD_HOLD_MS } from "../sidecar/client.js";
 import { FakeClock, FakeStt, FakeVad } from "./fakes.js";
 
 /** 20 ms of 16 kHz PCM16 mono. */
 const FRAME = Buffer.alloc(640, 3);
 
-function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; tailMs?: number } = {}) {
+function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; tailMs?: number; vadLagMs?: number } = {}) {
   const clock = new FakeClock();
   const stt = new FakeStt();
   const vad = new FakeVad();
@@ -14,7 +14,7 @@ function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?:
   const finals: FinishedUtterance[] = [];
   let n = 0;
   const capture = new UtteranceCapture({
-    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000, tailMs: over.tailMs,
+    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000, tailMs: over.tailMs, vadLagMs: over.vadLagMs,
     pushToTalk: over.pushToTalk ?? false, clock, newId: () => `u${++n}`,
     events: {
       onVad: (s) => log.push(`vad:${s}`),
@@ -164,7 +164,7 @@ const range = (from: number, to: number): number[] => Array.from({ length: to - 
 
 describe("UtteranceCapture, speech spoken while the models load", () => {
   /** 20 ms frames, frame n carrying marker n + 1 so no two frames look alike. */
-  function loaded(over: { prerollMs?: number; tailMs?: number; maxUtteranceMs?: number } = {}) {
+  function loaded(over: { prerollMs?: number; tailMs?: number; maxUtteranceMs?: number; vadLagMs?: number } = {}) {
     const made = make({ prerollMs: 100, tailMs: 100, ...over });
     const frames = (count: number) => { for (let i = 0; i < count; i += 1) made.capture.write(marked(++made.sent)); };
     return { ...made, frames };
@@ -316,6 +316,86 @@ describe("UtteranceCapture, speech spoken while the models load", () => {
     vad.end(2100);
     expect(stt.last().ended).toBe(true);
     expect(given(stt.last())).toEqual(range(ms(1840) + 1, 111)); // live ends where the end event arrives
+  });
+
+  it("a reset ends the live utterance that was open, at the frames it already holds", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(100);
+    vad.start(1840); // live
+    frames(10);
+    vad.reset(); // the sidecar behind the VAD was replaced before it ended the utterance
+    expect(stt.streams[0].ended).toBe(true);
+    expect(given(stt.streams[0])).toEqual(range(ms(1840) + 1, 111));
+    expect(log.slice(-1)).toEqual(["vad:false"]);
+    expect(stt.streams).toHaveLength(1);
+  });
+
+  it("a reset cuts a catch-up utterance from its start to the reset position", () => {
+    const { stt, vad, frames } = loaded();
+    frames(400);
+    vad.start(1000); // catch-up
+    vad.reset(5000); // the detector that was working through the hold was replaced at 5 s
+    expect(stt.streams[0].ended).toBe(true);
+    expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, ms(5000) + 1));
+    // What the new detector reports counts from the reset on: the next speech is a separate utterance.
+    vad.start(5000);
+    vad.end(6000);
+    expect(given(stt.streams[1])).toEqual(range(ms(5000) + 1, ms(6100) + 1));
+  });
+
+  it("a reset holds a catch-up utterance to the length limit", () => {
+    const { stt, vad, frames, log } = loaded({ maxUtteranceMs: 5000 });
+    frames(750);
+    vad.start(0);
+    vad.reset(11_000);
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
+    expect(given(stt.streams[0])).toEqual(range(1, ms(5000) + 1));
+  });
+
+  it("a reset clears the ignoring that follows a cut for length, so the next speech is heard", () => {
+    const { stt, vad, frames, log } = loaded({ maxUtteranceMs: 1000 });
+    frames(10);
+    vad.start(0);
+    frames(60); // over the limit: cut, and the rest of that speech is ignored
+    expect(log.filter((l) => l.startsWith("toolong"))).toHaveLength(1);
+    vad.reset();
+    expect(log.slice(-1)).toEqual(["vad:false"]);
+    vad.start();
+    expect(stt.streams).toHaveLength(2);
+  });
+
+  it("a reset with nothing open changes nothing", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(50);
+    vad.reset();
+    expect(log).toEqual([]);
+    expect(stt.streams).toHaveLength(0);
+  });
+
+  it("a reset does nothing in push-to-talk", () => {
+    const { capture, stt, vad, feed, log } = make({ pushToTalk: true });
+    capture.pttDown();
+    feed(5);
+    vad.reset();
+    expect(stt.last().ended).toBe(false);
+    expect(log).toEqual(["start:u1"]);
+  });
+
+  it("the live lag follows the detector's minimum speech: a start that late is still live", () => {
+    const lagged = loaded({ vadLagMs: 2500 });
+    lagged.frames(200); // 4 s
+    lagged.vad.start(4000 - 2000); // 100 + 2500 allowed; this one is 2.1 s behind
+    expect(lagged.stt.last().bytes()).toBe(ms(2000) * 640);
+    const standard = loaded();
+    standard.frames(200);
+    standard.vad.start(4000 - 2000); // the same start with the default lag is a catch-up
+    expect(standard.stt.last().bytes()).toBe(0);
+  });
+
+  it("derives the lag from the minimum speech with a floor of 1.5 s", () => {
+    expect(vadLagFor(250)).toBe(1500);
+    expect(vadLagFor(1000)).toBe(1500);
+    expect(vadLagFor(2000)).toBe(2500);
   });
 
   it("a start exactly at the live lag bound is live; one frame past it is a catch-up", () => {

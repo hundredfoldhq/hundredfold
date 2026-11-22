@@ -16,14 +16,21 @@
  * event offsets, so two utterances spoken during the load stay apart.
  */
 import { VOICE_INPUT_SAMPLE_RATE } from "../shared/gateway-events.js";
-import type { SttProvider, SttStream, VadStream } from "./provider.js";
+import type { SttProvider, SttStream, VadEvent, VadStream } from "./provider.js";
 import type { VoiceClock, CancelTimer } from "./hub-types.js";
 import { VAD_HOLD_MS } from "./sidecar/client.js";
 
 /** Bytes of PCM16 mono at the input rate per millisecond. */
 const BYTES_PER_MS = (VOICE_INPUT_SAMPLE_RATE * 2) / 1000;
-/** Audio kept beyond the pre-roll, for the delay between speech starting and the VAD saying so. */
-const VAD_LAG_MS = 1500;
+/** Audio kept beyond the pre-roll, for the delay between speech starting and the VAD saying so, when the options name none. */
+const DEFAULT_VAD_LAG_MS = 1500;
+/** The VAD says speech started only once it has lasted this long, plus a frame or two: that much lag, and a margin. */
+const VAD_LAG_MARGIN_MS = 500;
+
+/** How far behind the audio a live VAD's start can be, for a detector that wants `minSpeechMs` of speech first. */
+export function vadLagFor(minSpeechMs: number): number {
+  return Math.max(DEFAULT_VAD_LAG_MS, minSpeechMs + VAD_LAG_MARGIN_MS);
+}
 /** Audio after the end of speech that a catch-up utterance is given when the options name no trailing silence. */
 const DEFAULT_TAIL_MS = 700;
 /** A provider that never answers the end of an utterance is given up on after this. */
@@ -56,6 +63,8 @@ export interface CaptureOptions {
   maxUtteranceMs: number;
   /** The VAD's trailing silence: what a live utterance holds past the end of speech, and a catch-up one is given. */
   tailMs?: number;
+  /** How long after speech began the VAD may say so while still live (default 1.5 s); see `vadLagFor`. */
+  vadLagMs?: number;
   pushToTalk: boolean;
   clock: VoiceClock;
   newId(): string;
@@ -90,7 +99,7 @@ export class UtteranceCapture {
   private closed = false;
 
   constructor(private readonly options: CaptureOptions) {
-    options.vad.on((event) => this.onVad(event.kind, event.atMs));
+    options.vad.on((event) => this.onVad(event));
   }
 
   /** Whether the person is being captured right now. */
@@ -142,12 +151,17 @@ export class UtteranceCapture {
     this.ring.push(pcm);
     this.ringBytes += pcm.length;
     this.written += pcm.length;
-    const keep = (this.options.prerollMs + VAD_LAG_MS + VAD_HOLD_MS) * BYTES_PER_MS;
+    const keep = (this.options.prerollMs + this.vadLagMs + VAD_HOLD_MS) * BYTES_PER_MS;
     while (this.ringBytes - this.ring[0].length >= keep) this.ringBytes -= this.ring.shift()!.length;
   }
 
-  private onVad(kind: "start" | "end", atMs: number): void {
+  private get vadLagMs(): number {
+    return this.options.vadLagMs ?? DEFAULT_VAD_LAG_MS;
+  }
+
+  private onVad({ kind, atMs }: VadEvent): void {
     if (this.closed || this.options.pushToTalk) return;
+    if (kind === "reset") return this.onReset(atMs);
     if (kind === "end") {
       this.options.events.onVad(false);
       this.closeOpen(this.capturing?.catchUp ? this.catchUpEnd(atMs) : this.written);
@@ -155,8 +169,8 @@ export class UtteranceCapture {
       return;
     }
     const fromByte = Math.max(0, atMs * BYTES_PER_MS);
-    // The VAD does not start twice without an end between, unless the sidecar behind it was replaced: what was open then
-    // lost its end, so it stops where this speech begins (never past what was written).
+    // The VAD does not start twice without an end between, and a replaced detector says so (a reset), so this is a fallback
+    // for one that did not: what was open stops where this speech begins (never past what was written).
     if (this.capturing) {
       this.options.events.onVad(false);
       this.closeOpen(Math.min(this.written, fromByte));
@@ -164,6 +178,17 @@ export class UtteranceCapture {
     }
     this.options.events.onVad(true);
     if (!this.ignoringUntilEnd) this.onVadStart(fromByte);
+  }
+
+  /**
+   * The detector behind the VAD was replaced: the speech it was in the middle of will never get an end. The open
+   * utterance ends here, at the byte the new detector counts from. A live one already holds everything up to that byte;
+   * a catch-up one is cut from its start to it. What the new detector reports from now on starts at or after it.
+   */
+  private onReset(atMs: number): void {
+    if (this.capturing || this.ignoringUntilEnd) this.options.events.onVad(false);
+    this.closeOpen(Math.min(this.written, Math.max(0, atMs * BYTES_PER_MS)));
+    this.ignoringUntilEnd = false;
   }
 
   /** End the open utterance. A live one has had its audio as it came; a catch-up one is cut from the ring, to `toByte`. */
@@ -181,7 +206,7 @@ export class UtteranceCapture {
    * is treated as live and seeded from the most recent window instead.
    */
   private onVadStart(fromByte: number): void {
-    const windowBytes = (this.options.prerollMs + VAD_LAG_MS) * BYTES_PER_MS;
+    const windowBytes = (this.options.prerollMs + this.vadLagMs) * BYTES_PER_MS;
     if (fromByte < this.written - this.ringBytes) return this.begin(Math.max(fromByte, this.written - windowBytes));
     this.begin(fromByte, this.written - fromByte > windowBytes);
   }

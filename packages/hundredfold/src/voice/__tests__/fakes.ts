@@ -3,7 +3,7 @@
  * Nothing here touches a network, a model or a process.
  */
 import type { Engine, EngineResult, EngineRunOpts, ForegroundWork, SoftInterruptOutcome } from "../../shared/types.js";
-import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VadStream } from "../provider.js";
+import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VadEventHandler, VadStream } from "../provider.js";
 import type { CancelTimer, VoiceClock, VoiceSocket } from "../hub-types.js";
 
 export class FakeClock implements VoiceClock {
@@ -42,11 +42,11 @@ export async function settle(rounds = 8): Promise<void> {
 export class FakeVad implements VadStream {
   written = 0;
   closed = false;
-  private handler: ((event: { kind: "start" | "end"; atMs: number }) => void) | null = null;
+  private handler: VadEventHandler | null = null;
   write(pcm: Buffer): void {
     this.written += pcm.length;
   }
-  on(handler: (event: { kind: "start" | "end"; atMs: number }) => void): void {
+  on(handler: VadEventHandler): void {
     this.handler = handler;
   }
   close(): void {
@@ -61,6 +61,10 @@ export class FakeVad implements VadStream {
   }
   end(atMs = this.positionMs()): void {
     this.handler?.({ kind: "end", atMs });
+  }
+  /** The detector behind the stream was replaced at this position. */
+  reset(atMs = this.positionMs()): void {
+    this.handler?.({ kind: "reset", atMs });
   }
 }
 

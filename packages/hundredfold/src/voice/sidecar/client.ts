@@ -6,6 +6,7 @@
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { logger } from "../../shared/logger.js";
+import type { VadEventHandler } from "../provider.js";
 import { FrameDecoder, FramingError, encodeFrame, type SidecarFrame } from "./framing.js";
 
 export interface SidecarTiming {
@@ -38,7 +39,7 @@ export interface SidecarClientOptions {
 }
 
 export interface VadParams { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number }
-export type VadEventHandler = (event: { kind: "start" | "end"; atMs: number }) => void;
+export type { VadEvent, VadEventHandler } from "../provider.js";
 
 /** One continuous audio stream through the sidecar's VAD. Holds the sidecar awake while open. */
 export interface SidecarVad {
@@ -94,6 +95,11 @@ interface VadStreamState {
   baseBytes: number;
   closed: boolean;
   warned: boolean;
+}
+
+/** The caller's byte position of the first byte not yet sent to a sidecar: what a new process's offsets count from. */
+function vadStreamPosition(state: VadStreamState): number {
+  return state.written - state.queue.reduce((sum, pcm) => sum + pcm.length, 0) - state.dropped;
 }
 
 /** `promise`, or a rejection as soon as `signal` aborts (the promise is still handled, so its later failure is not unhandled). */
@@ -194,6 +200,8 @@ export class SpeechSidecarClient {
     const decoder = new FrameDecoder();
     this.child = child;
     child.stdout.on("data", (chunk: Buffer) => {
+      // A process that has been replaced or told to stop may still have frames in flight; they belong to no one now.
+      if (child !== this.child) return;
       try {
         for (const frame of decoder.push(chunk)) this.onFrame(frame);
       } catch (error) {
@@ -314,7 +322,7 @@ export class SpeechSidecarClient {
     if (state.closed || this.phase.kind !== "ready") return;
     if (state.openedGeneration !== this.generation) {
       // This generation's VAD counts from its first byte: the dropped silence, then what is queued.
-      state.baseBytes = state.written - state.queue.reduce((sum, pcm) => sum + pcm.length, 0) - state.dropped;
+      state.baseBytes = vadStreamPosition(state);
       this.write({ op: "vad.open", stream, ...state.params });
       state.openedGeneration = this.generation;
       state.warned = false;
@@ -448,6 +456,20 @@ export class SpeechSidecarClient {
     for (const waiter of [...this.stt.values(), ...this.tts.values()]) waiter.fail(error);
     this.stt.clear();
     this.tts.clear();
+    if (!this.closed) this.resetVadStreams();
+  }
+
+  /**
+   * Tell each VAD stream that was open under the process that just died that its detector is gone, at the byte the next
+   * process will count from (the first one not yet sent: what the dead one took is lost with it).
+   */
+  private resetVadStreams(): void {
+    for (const state of this.vadStreams.values()) {
+      if (state.openedGeneration !== this.generation) continue;
+      state.openedGeneration = -1; // a second crash before the next open has nothing more to report
+      const event = { kind: "reset" as const, atMs: vadStreamPosition(state) / VAD_BYTES_PER_MS };
+      for (const handler of state.handlers) handler(event);
+    }
   }
 
   private write(header: Record<string, unknown>, body?: Buffer): void {

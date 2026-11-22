@@ -15,7 +15,7 @@ import { Dispatcher } from "./dispatcher.js";
 import type { VoiceHubDeps, VoicePrincipal, VoiceProviderSet, VoiceSocket } from "./hub-types.js";
 import { ReplyVoice } from "./reply-voice.js";
 import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
-import { UtteranceCapture, type FinishedUtterance } from "./utterance-capture.js";
+import { UtteranceCapture, vadLagFor, type FinishedUtterance } from "./utterance-capture.js";
 
 const OPEN = 1;
 /** Close codes after which the attachment ends rather than waiting for the client to come back. */
@@ -305,6 +305,7 @@ export class VoiceAttachment {
       prerollMs: this.config.vad.prerollMs,
       maxUtteranceMs: this.config.limits.maxUtteranceSeconds * 1000,
       tailMs: this.config.vad.silenceMs,
+      vadLagMs: vadLagFor(this.config.vad.minSpeechMs),
       pushToTalk: this.mode === "push-to-talk",
       clock: this.deps.clock,
       newId: () => this.deps.newId(),

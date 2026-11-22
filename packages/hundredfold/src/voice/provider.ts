@@ -67,11 +67,19 @@ export interface TtsProvider {
   close?(): void;
 }
 
+/**
+ * What a VAD stream reports, at `atMs`, an offset into everything written to the stream. `start` and `end` mark speech.
+ * `reset` says the detector behind the stream was replaced (the sidecar restarted): nothing before `atMs` will get an
+ * end, and every later event has `atMs` at or after it. The in-process detector never emits one.
+ */
+export interface VadEvent { kind: "start" | "end" | "reset"; atMs: number }
+export type VadEventHandler = (event: VadEvent) => void;
+
 /** The gateway's voice activity detection over one attachment's continuous audio. */
 export interface VadStream {
   /** Append PCM16LE mono at 16 kHz. */
   write(pcm: Buffer): void;
-  /** Speech started or ended, at an offset into the stream. */
-  on(handler: (event: { kind: "start" | "end"; atMs: number }) => void): void;
+  /** Speech started or ended, or the detector was replaced, at an offset into the stream. */
+  on(handler: VadEventHandler): void;
   close(): void;
 }

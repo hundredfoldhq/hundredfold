@@ -26,19 +26,22 @@ afterEach(() => {
   for (const child of spawned.splice(0)) child.kill("SIGKILL");
 });
 
-/** Frame n: a quiet frame carries n + 1, a loud one 1000 + n, so the audio an STT stream was given names its own frames. */
+/**
+ * Frame n: its first sample says loud (1000) or quiet (1), its second is n, so the audio an STT stream was given names
+ * its own frames, however far the stream runs.
+ */
 function frameFor(n: number, loud: boolean): Buffer {
   const frame = Buffer.alloc(640);
-  for (let i = 0; i < 320; i += 1) frame.writeInt16LE(loud ? 1000 + n : n + 1, i * 2);
+  for (let i = 0; i < 320; i += 2) {
+    frame.writeInt16LE(loud ? 1000 : 1, i * 2);
+    frame.writeInt16LE(n, i * 2 + 2);
+  }
   return frame;
 }
 const framesOf = (writes: Buffer[]): number[] => {
   const all = Buffer.concat(writes);
   const out: number[] = [];
-  for (let at = 0; at < all.length; at += 640) {
-    const value = all.readInt16LE(at);
-    out.push(value >= 1000 ? value - 1000 : value - 1);
-  }
+  for (let at = 0; at < all.length; at += 640) out.push(all.readInt16LE(at + 2));
   return out;
 };
 const range = (from: number, to: number): number[] => Array.from({ length: to - from }, (_, i) => from + i);
@@ -78,11 +81,22 @@ async function waitFor(condition: () => boolean, ms: number): Promise<void> {
   }
 }
 
-/** Kill the fake sidecar (it dies on a synthesis), let the respawn hold pass, and bring a new one up. */
-async function replaceSidecar(sidecar: SpeechSidecarClient): Promise<void> {
+/** Kill the fake sidecar (it dies on a synthesis) and let the respawn hold pass. */
+async function killSidecar(sidecar: SpeechSidecarClient): Promise<void> {
   try { for await (const chunk of sidecar.synthesize("t1", SPEECH, new AbortController().signal)) void chunk; } catch { /* it died */ }
   await sleep(250);
+}
+
+/** Kill the fake sidecar, let the respawn hold pass, and bring a new one up. */
+async function replaceSidecar(sidecar: SpeechSidecarClient): Promise<void> {
+  await killSidecar(sidecar);
   await sidecar.ensureReady();
+}
+
+/** No frame reached two utterances. */
+function expectNoOverlap(streams: Array<{ writes: Buffer[] }>): void {
+  const all = streams.flatMap((stream) => framesOf(stream.writes));
+  expect(new Set(all).size).toBe(all.length);
 }
 
 describe("speech spoken while the sidecar loads", () => {
@@ -137,9 +151,52 @@ describe("speech after the sidecar is replaced mid-session", () => {
     frames(1, true); // the new sidecar's first speech: global frame 650
     await waitFor(() => stt.streams.length === 2, 10_000);
     expect(stt.streams[0].ended).toBe(true);
-    expect(Math.max(...framesOf(stt.streams[0].writes))).toBeLessThanOrEqual(650);
-    expect(framesOf(stt.streams[0].writes)[0]).toBe(500 - VAD.prerollMs / FRAME_MS);
+    // The first stops where the sidecar was lost (frame 550) and the second starts at its own pre-roll: no frame twice.
+    expect(framesOf(stt.streams[0].writes)).toEqual(range(500 - VAD.prerollMs / FRAME_MS, 550));
     expect(framesOf(stt.streams[1].writes)[0]).toBe(650 - VAD.prerollMs / FRAME_MS);
+    expectNoOverlap(stt.streams);
     expect(log.filter((line) => line.startsWith("toolong"))).toEqual([]);
+  }, 30_000);
+
+  it("does not give the same speech to two utterances when the sidecar is replaced during one and reloads slowly", async () => {
+    const { sidecar, stt, frames } = rig({ ...replaced, FAKE_HELLO_DELAY_MS: "2000" }, timing);
+    await sidecar.ensureReady();
+    frames(100); // quiet
+    frames(50, true); // a live utterance opens at global frames 100..149
+    await waitFor(() => stt.streams.length === 1, 10_000);
+    await killSidecar(sidecar);
+    // The next write brings the new sidecar up; it takes 2 s to load and the audio is held meanwhile.
+    frames(50, true); // 150..199
+    frames(50); // quiet
+    frames(50, true); // 250..299
+    frames(60);
+    await waitFor(() => stt.streams.length >= 3 && stt.streams.every((s) => s.ended), 15_000);
+    const preroll = VAD.prerollMs / FRAME_MS;
+    const tail = VAD.silenceMs / FRAME_MS;
+    expect(stt.streams).toHaveLength(3);
+    // The first utterance ends where the old sidecar was lost; each of the others is cut apart from the held audio.
+    expect(framesOf(stt.streams[0].writes)).toEqual(range(100 - preroll, 150));
+    expect(framesOf(stt.streams[1].writes)).toEqual(range(150, 200 + tail));
+    expect(framesOf(stt.streams[2].writes)).toEqual(range(250 - preroll, 300 + tail));
+    expectNoOverlap(stt.streams);
+  }, 40_000);
+
+  it("ignores what a replaced sidecar still reports, instead of counting it from the new one", async () => {
+    // The first sidecar stalls on its 50th frame of audio, stops answering pings and is replaced; once it wakes it
+    // reports the loud frame it was sent, which the new sidecar's offsets must not be mistaken for.
+    const { sidecar, stt, frames, log } = rig(
+      { FAKE_MARKER: "1", FAKE_STALL_AT: "50", FAKE_STALL_MS: "1500" },
+      { pingEveryMs: 60, missedPongs: 2, respawnMinMs: 50, killGraceMs: 3000 },
+    );
+    await sidecar.ensureReady();
+    frames(49); // quiet
+    frames(1, true); // frame 49 is the 50th: the sidecar stalls on it
+    for (let i = 0; i < 30; i += 1) { // real time: the client gives up on it and brings up a new one
+      frames(1);
+      await sleep(FRAME_MS);
+    }
+    await sleep(2500); // the stalled sidecar wakes, and says what it saw
+    expect(stt.streams).toHaveLength(0);
+    expect(log.filter((line) => line.startsWith("start"))).toEqual([]);
   }, 30_000);
 });
