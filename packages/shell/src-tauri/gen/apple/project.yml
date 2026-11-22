@@ -53,6 +53,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        NSMicrophoneUsageDescription: Hundredfold listens through the microphone while voice mode is on.
+        UIBackgroundModes: [audio]
     entitlements:
       path: hundredfold-shell_iOS/hundredfold-shell_iOS.entitlements
     scheme:
@@ -62,6 +64,8 @@ targets:
     settings:
       base:
         ENABLE_BITCODE: false
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/hundredfold-shell/hundredfold-shell-Bridging-Header.h
+        SWIFT_VERSION: "5.9"
         ARCHS: [arm64]
         VALID_ARCHS: arm64
         LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
@@ -72,7 +76,9 @@ targets:
     dependencies:
       - framework: libapp.a
         embed: false
+      - sdk: AVFoundation.framework
       - sdk: CoreGraphics.framework
+      - sdk: MediaPlayer.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
