@@ -7,13 +7,18 @@ import { formatReset, formatUsed, skipText } from "@/lib/fallback-format"
 /* The chain diagram's data and layout, apart from the component that draws it. */
 
 export const FLOW_NODE_W = 176
+/** A group node is wider: each member carries a "headroom 30% · share 60%" line under its name. */
+export const FLOW_GROUP_W = 224
 export const FLOW_NODE_H = 76
 /** A group node's header, each member's row, and the room under the last. */
 const GROUP_HEADER_H = 26
 const GROUP_MEMBER_H = 32
 const GROUP_PAD_H = 10
+/** About how many characters of a member's detail fit on one line of a group node, and what a second line costs. */
+const GROUP_DETAIL_CHARS = 32
+const GROUP_DETAIL_LINE_H = 14
 /** The extra line under the start node's label when it says where new sessions start. */
-const START_NOTE_H = 16
+const START_NOTE_H = 30
 
 export type FlowOrientation = "horizontal" | "vertical"
 
@@ -51,6 +56,7 @@ export interface FlowTargetData extends Record<string, unknown> {
   members: FlowMember[] | null
   /** Set on the start node when a new session would be balanced onto an account of the chain's group. */
   startNote: string | null
+  width: number
   height: number
 }
 
@@ -106,8 +112,13 @@ function memberOf(link: ResolvedFallbackLink, index: number, input: ChainFlowInp
   }
 }
 
+/** A member's row, taller when its detail line is long enough to wrap in the group node. */
+function memberHeight(member: FlowMember): number {
+  return GROUP_MEMBER_H + (member.detail.length > GROUP_DETAIL_CHARS ? GROUP_DETAIL_LINE_H : 0)
+}
+
 function heightOf(members: FlowMember[] | null, startNote: string | null): number {
-  if (members) return Math.max(FLOW_NODE_H, GROUP_HEADER_H + members.length * GROUP_MEMBER_H + GROUP_PAD_H)
+  if (members) return Math.max(FLOW_NODE_H, GROUP_HEADER_H + members.reduce((sum, m) => sum + memberHeight(m), 0) + GROUP_PAD_H)
   return FLOW_NODE_H + (startNote ? START_NOTE_H : 0)
 }
 
@@ -138,21 +149,22 @@ function targetData(item: FlowItem, node: number, input: ChainFlowInput, orienta
     orientation,
     members,
     startNote,
+    width: members ? FLOW_GROUP_W : FLOW_NODE_W,
     height: heightOf(members, startNote),
   }
   if (members) return { ...base, label: "Balanced group", used: null, resets: null, skip: null, skipText: null }
   return { ...base, label: link.label, ...usageOf(link, input), skip: link.skip ?? null, skipText: link.skip ? skipText(link.skip, link.skipDetail) : null }
 }
 
-function layout(heights: number[], orientation: FlowOrientation): { x: number; y: number }[] {
+function layout(sizes: { width: number; height: number }[], orientation: FlowOrientation): { x: number; y: number }[] {
   const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: orientation === "horizontal" ? "LR" : "TB", nodesep: 16, ranksep: orientation === "horizontal" ? 64 : 44, marginx: 8, marginy: 8 })
-  heights.forEach((height, i) => g.setNode(String(i), { width: FLOW_NODE_W, height }))
-  for (let i = 1; i < heights.length; i++) g.setEdge(String(i - 1), String(i))
+  sizes.forEach((size, i) => g.setNode(String(i), size))
+  for (let i = 1; i < sizes.length; i++) g.setEdge(String(i - 1), String(i))
   dagre.layout(g)
-  return heights.map((height, i) => {
+  return sizes.map((size, i) => {
     const { x, y } = g.node(String(i))
-    return { x: x - FLOW_NODE_W / 2, y: y - height / 2 }
+    return { x: x - size.width / 2, y: y - size.height / 2 }
   })
 }
 
@@ -167,12 +179,12 @@ export interface ChainFlowGraph {
 export function buildChainFlow(input: ChainFlowInput, orientation: FlowOrientation): ChainFlowGraph {
   const items = collapseGroups(input.links)
   const data = items.map((item, node) => targetData(item, node, input, orientation))
-  const at = layout(data.map((d) => d.height), orientation)
+  const at = layout(data, orientation)
   const nodes = data.map((d, index) => ({
     id: String(index),
     type: "chainTarget",
     position: at[index],
-    width: FLOW_NODE_W,
+    width: d.width,
     height: d.height,
     data: d,
     draggable: false,
@@ -185,7 +197,7 @@ export function buildChainFlow(input: ChainFlowInput, orientation: FlowOrientati
     type: "smoothstep",
     label: "on limit",
   }))
-  const right = Math.max(0, ...at.map((p) => p.x)) + FLOW_NODE_W + 16
+  const right = Math.max(0, ...at.map((p, i) => p.x + data[i].width)) + 16
   const bottom = Math.max(0, ...at.map((p, i) => p.y + data[i].height)) + 16
   return { nodes, edges, width: right, height: bottom }
 }

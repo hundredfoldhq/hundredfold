@@ -93,7 +93,7 @@ function MemberRow({ member }: { member: FlowMember }) {
           <span key={mark} data-chain-flow-badge={mark} className="shrink-0 rounded-[5px] bg-[var(--fill-secondary)] px-1 text-[length:var(--text-caption2)] text-[var(--text-secondary)]">{mark}</span>
         ))}
       </span>
-      {member.detail && <span data-chain-flow-member-detail className="truncate pl-[12px] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">{member.detail}</span>}
+      {member.detail && <span data-chain-flow-member-detail className="pl-[12px] text-[length:var(--text-caption2)] leading-tight text-[var(--text-tertiary)] [overflow-wrap:anywhere]">{member.detail}</span>}
     </li>
   )
 }
@@ -148,7 +148,7 @@ export function ChainTargetNode({ data }: NodeProps) {
         <Badges data={target} />
         {detail && <span className="truncate text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">{detail}</span>}
       </div>
-      {target.startNote && <div data-chain-flow-start-note title={target.startNote} className="truncate text-[length:var(--text-caption2)] text-[var(--text-secondary)]">{target.startNote}</div>}
+      {target.startNote && <div data-chain-flow-start-note title={target.startNote} className="line-clamp-2 [overflow-wrap:anywhere] text-[length:var(--text-caption2)] leading-tight text-[var(--text-secondary)]">{target.startNote}</div>}
       <Handle type="source" position={vertical ? Position.Bottom : Position.Right} isConnectable={false} className="!opacity-0" />
     </div>
   )
