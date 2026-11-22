@@ -63,11 +63,11 @@ voice:
     model: parakeet-unified-en-0.6b
 ```
 
-Any other value is refused when the configuration loads, with the list of choices. Leaving `stt.model` out keeps the default, so existing configurations are unchanged.
+With the local provider, any other value keeps voice off and says so, naming `voice.stt.model` and the two choices (a stale or misspelt name no longer runs the default silently). Leaving `stt.model` out keeps the default, so a configuration that names no model, or the default, is unchanged. Hosted providers (`openai`, `openai-compatible`) keep taking any model name.
 
 Changing the model needs the new model's files, not a new install of everything. Reload the configuration, then ask for the install again (the voice control's "Install", or `POST /api/voice/install`): the Python environment is kept and only the model is downloaded (a few minutes; it refuses to start with less than 3.5 GB free for the GPU path, 1 GB for the CPU path). Both models can stay installed, and switching back is instant. Each downloaded file of the unified model is pinned to a commit and its SHA-256, and a file that does not match fails the install.
 
-Measured on one workstation with a 16 GB NVIDIA GPU while its CPU was heavily loaded (load average about 60), over 73 clean LibriSpeech clips (8 minutes of read speech, 1,150 words): word error rate 2.87% for `parakeet-tdt-0.6b-v2` and 2.35% for `parakeet-unified-en-0.6b` (33 and 27 word errors, mostly proper names). The gap is six words, so read it as "no worse", not as proof of better. Warm decode took a median of 0.45 to 0.60 s for both; it is dominated by a Python decoding loop that the loaded CPU slows, and the unified model's grows faster with the length of the utterance (about 0.85 s against 0.5 to 0.65 s for 10 to 15 seconds of speech). Your numbers on an idle machine will be several times lower.
+Measured on one workstation with a 16 GB NVIDIA GPU while its CPU was heavily loaded (load average about 60), over 73 clean LibriSpeech clips (8 minutes of read speech, 1,150 words): word error rate 2.87% for `parakeet-tdt-0.6b-v2` and 2.35% for `parakeet-unified-en-0.6b` (33 and 27 word errors, mostly proper names). The gap is six words, so read it as "no worse", not as proof of better. Warm decode took a median of 0.45 to 0.60 s for the default and 0.55 to 0.70 s for the unified model; it is dominated by a Python decoding loop that the loaded CPU slows, and the unified model's grows faster with the length of the utterance (about 0.85 s against 0.5 to 0.65 s for 10 to 15 seconds of speech). Your numbers on an idle machine will be several times lower.
 
 ### Speed
 
