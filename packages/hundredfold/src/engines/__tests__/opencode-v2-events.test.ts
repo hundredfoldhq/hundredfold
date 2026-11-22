@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { OpencodeTurn } from "../opencode-turn.js";
-import { runLinesFromStoredReply, v2ErrorLine, v2ReplyIsDone, V2RunLines, type V2Event, type V2Message } from "../opencode-v2-events.js";
+import { runLinesFromStoredReply, v2ErrorLine, v2ReplyIsDone, V2ForegroundTools, V2RunLines, type V2Event, type V2Message } from "../opencode-v2-events.js";
 import type { StreamDelta } from "../../shared/types.js";
 
 /**
@@ -316,5 +316,44 @@ describe("v2ReplyIsDone", () => {
   it("is not done while the reply has not completed", () => {
     expect(v2ReplyIsDone({ ...STORED_TEXT, time: { created: 1, streamed: 2 } })).toBe(false);
     expect(v2ReplyIsDone({ id: "msg_open" })).toBe(false);
+  });
+});
+
+describe("V2ForegroundTools", () => {
+  it("runs a tool from its call to its result, named by the earlier input event", () => {
+    const tools = new V2ForegroundTools();
+    tools.onEvent(ev("session.tool.input.started", { id: CALL, name: "bash" }), 1_000);
+    // Streaming the input is the model talking: not yet running.
+    expect(tools.oldest()).toBeNull();
+    tools.onEvent(ev("session.tool.called", { id: CALL, input: { command: "make all", description: "Build" }, executed: false }), 2_000);
+    expect(tools.oldest()).toEqual({ tool: "bash", startedAt: 2_000, description: "Build", backgroundable: false });
+    tools.onEvent(ev("session.tool.success", { id: CALL, content: [] }));
+    expect(tools.oldest()).toBeNull();
+  });
+
+  it("ends a tool on its failure too, and falls back to the command, then to a generic name", () => {
+    const tools = new V2ForegroundTools();
+    tools.onEvent(ev("session.tool.called", { id: "c1", input: { command: "make all" } }), 5);
+    expect(tools.oldest()).toEqual({ tool: "tool", startedAt: 5, description: "make all", backgroundable: false });
+    tools.onEvent(ev("session.tool.failed", { id: "c1", error: { message: "boom" } }));
+    expect(tools.oldest()).toBeNull();
+  });
+
+  it("reports the longest-running of several, and forgets them all when a step ends", () => {
+    const tools = new V2ForegroundTools();
+    tools.onEvent(ev("session.tool.called", { id: "late", input: {} }), 20);
+    tools.onEvent(ev("session.tool.called", { id: "early", input: {} }), 10);
+    expect(tools.oldest()?.startedAt).toBe(10);
+    tools.clear();
+    expect(tools.oldest()).toBeNull();
+  });
+
+  it("returns a copy, and ignores an event with no call id", () => {
+    const tools = new V2ForegroundTools();
+    tools.onEvent(ev("session.tool.called", { input: {} }));
+    expect(tools.oldest()).toBeNull();
+    tools.onEvent(ev("session.tool.called", { id: "c1", input: {} }), 1);
+    tools.oldest()!.tool = "changed";
+    expect(tools.oldest()!.tool).toBe("tool");
   });
 });
