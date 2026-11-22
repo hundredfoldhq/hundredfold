@@ -64,12 +64,17 @@ interface TtsWaiter extends Waiter {
 
 export class SidecarUnavailableError extends Error {}
 
+/** How long a VAD stream's audio is held while the sidecar is not ready, in ms of audio. */
+export const VAD_HOLD_MS = 30_000;
+/** One audio frame, as the gateway sends it. */
+const VAD_FRAME_MS = 20;
 /**
- * Audio held for a VAD stream while the sidecar is not ready: 30 seconds of 20 ms frames. The VAD's offsets count every
+ * Audio held for a VAD stream while the sidecar is not ready: `VAD_HOLD_MS` of 20 ms frames. The VAD's offsets count every
  * byte written, so audio dropped from a full queue is replaced by silence of the same length and later cuts stay put.
- * The held audio is only for the VAD: the transcript is cut from the capture's own, shorter ring.
+ * The held audio is only for the VAD: the transcript is cut from the capture's own ring, which keeps the same window
+ * (`UtteranceCapture`), because the VAD's events for what was said during the hold arrive after it, in a burst.
  */
-export const MAX_VAD_QUEUE = 1500;
+export const MAX_VAD_QUEUE = VAD_HOLD_MS / VAD_FRAME_MS;
 /** The longest silent stand-in for dropped audio sent in one frame. */
 const MAX_FILLER_BYTES = 64 * 1024;
 

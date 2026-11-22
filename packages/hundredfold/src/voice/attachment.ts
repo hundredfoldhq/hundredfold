@@ -304,6 +304,7 @@ export class VoiceAttachment {
       language: this.config.language,
       prerollMs: this.config.vad.prerollMs,
       maxUtteranceMs: this.config.limits.maxUtteranceSeconds * 1000,
+      tailMs: this.config.vad.silenceMs,
       pushToTalk: this.mode === "push-to-talk",
       clock: this.deps.clock,
       newId: () => this.deps.newId(),

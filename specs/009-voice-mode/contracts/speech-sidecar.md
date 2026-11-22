@@ -27,7 +27,9 @@ Every reply can instead be `error {ref, message}`. A request is answered in the 
 sidecar finishes it, not the order sent: replies carry the request's id, stream or
 utterance.
 
-**VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence. Offsets count from the first audio the sidecar received on this stream: when the gateway reopens a stream after a sidecar respawn they start again at 0, and audio dropped while the sidecar was down (the client holds at most 256 chunks) is not counted, so offsets from before a respawn are invalid after it.
+**VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence. Offsets count from the first audio the sidecar received on this stream: when the gateway reopens a stream after a sidecar respawn they start again at 0, so offsets from before a respawn are invalid after it.
+
+**Hold and catch-up**: while the sidecar is not ready the client holds the stream's audio, up to 30 s (1500 frames of 20 ms, `VAD_HOLD_MS`); beyond that the oldest is replaced by silence of the same length, so offsets keep counting every byte written. Once the sidecar is up the VAD works through the hold and its events for that speech arrive late, in a burst. The hub keeps its own ring of `prerollMs` + 1.5 s + `VAD_HOLD_MS` of audio and cuts utterances from it by the event offsets: a `start` that arrives more than `prerollMs` + 1.5 s after the audio it points at opens an utterance that is fed nothing until its `end`, then `[start.atMs, end.atMs + silenceMs]` from the ring, so two utterances spoken during the load stay apart. A start that arrives promptly is streamed live.
 
 ## Lifecycle
 

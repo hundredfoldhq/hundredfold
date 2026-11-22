@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { UtteranceCapture, type FinishedUtterance } from "../utterance-capture.js";
+import { VAD_HOLD_MS } from "../sidecar/client.js";
 import { FakeClock, FakeStt, FakeVad } from "./fakes.js";
 
 /** 20 ms of 16 kHz PCM16 mono. */
 const FRAME = Buffer.alloc(640, 3);
 
-function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number } = {}) {
+function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; tailMs?: number } = {}) {
   const clock = new FakeClock();
   const stt = new FakeStt();
   const vad = new FakeVad();
@@ -13,7 +14,7 @@ function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?:
   const finals: FinishedUtterance[] = [];
   let n = 0;
   const capture = new UtteranceCapture({
-    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000,
+    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000, tailMs: over.tailMs,
     pushToTalk: over.pushToTalk ?? false, clock, newId: () => `u${++n}`,
     events: {
       onVad: (s) => log.push(`vad:${s}`),
@@ -25,7 +26,7 @@ function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?:
     },
   });
   const feed = (frames: number) => { for (let i = 0; i < frames; i += 1) capture.write(FRAME); };
-  return { clock, stt, vad, log, finals, capture, feed };
+  return { clock, stt, vad, log, finals, capture, feed, sent: 0 };
 }
 
 describe("UtteranceCapture, hands-free", () => {
@@ -143,5 +144,124 @@ describe("UtteranceCapture, push-to-talk", () => {
     expect(vad.written).toBe(0);
     expect(stt.last().bytes()).toBe(10 * 640);
     expect(finals[0].text).toBe("pushed to talk");
+  });
+});
+
+/** A frame whose every sample is `marker`, so the bytes an STT stream received say which audio they were. */
+const marked = (marker: number): Buffer => {
+  const frame = Buffer.alloc(640);
+  for (let i = 0; i < 320; i += 1) frame.writeInt16LE(marker, i * 2);
+  return frame;
+};
+/** The marker of each 20 ms frame an STT stream was given, in order. */
+const markers = (bytes: Buffer): number[] => {
+  const out: number[] = [];
+  for (let at = 0; at < bytes.length; at += 640) out.push(bytes.readInt16LE(at));
+  return out;
+};
+const given = (stream: { writes: Buffer[] }): number[] => markers(Buffer.concat(stream.writes));
+const range = (from: number, to: number): number[] => Array.from({ length: to - from }, (_, i) => from + i);
+
+describe("UtteranceCapture, speech spoken while the models load", () => {
+  /** 20 ms frames, frame n carrying marker n + 1 so no two frames look alike. */
+  function loaded(over: { prerollMs?: number; tailMs?: number; maxUtteranceMs?: number } = {}) {
+    const made = make({ prerollMs: 100, tailMs: 100, ...over });
+    const frames = (count: number) => { for (let i = 0; i < count; i += 1) made.capture.write(marked(++made.sent)); };
+    return { ...made, frames };
+  }
+  const ms = (n: number) => n / 20;
+
+  it("keeps the whole load window in its ring", () => {
+    const { capture, stt, vad } = make({ prerollMs: 100 });
+    const frameCount = (VAD_HOLD_MS + 1500 + 100) / 20 - 10;
+    for (let i = 0; i < frameCount; i += 1) capture.write(marked(i + 1));
+    vad.start(0); // the earliest audio there is: still in the ring, so nothing was lost
+    vad.end(frameCount * 20);
+    expect(markers(Buffer.concat(stt.last().writes))[0]).toBe(1);
+  });
+
+  it("cuts two utterances spoken during the load apart, each from its own start offset to its end plus the tail", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(400); // 8 s of audio written while the sidecar loads; no VAD event yet
+    // The sidecar is up: the VAD works through the hold and reports both utterances in a burst.
+    vad.start(1000); // speech at 1.1 s (pre-roll 100 ms already off)
+    expect(stt.streams).toHaveLength(1);
+    expect(stt.streams[0].bytes()).toBe(0); // a late start is fed nothing yet
+    vad.end(2000);
+    vad.start(5000);
+    expect(stt.streams).toHaveLength(2);
+    vad.end(6000);
+    // [start, end + tail): frames 50..104 (markers 51..105) and 250..304.
+    expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, ms(2100) + 1));
+    expect(given(stt.streams[1])).toEqual(range(ms(5000) + 1, ms(6100) + 1));
+    expect(stt.streams.map((s) => s.ended)).toEqual([true, true]);
+    expect(log.filter((l) => l.startsWith("start"))).toEqual(["start:u1", "start:u2"]);
+  });
+
+  it("feeds no live frame to a catch-up utterance, and cuts it from the ring when its end comes later", () => {
+    const { stt, vad, frames } = loaded();
+    frames(400);
+    vad.start(1000); // late start; speech goes on
+    frames(50); // live audio while it waits
+    expect(stt.streams[0].bytes()).toBe(0);
+    vad.end(9000);
+    expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, 451));
+    expect(stt.streams[0].ended).toBe(true);
+  });
+
+  it("never runs a catch-up utterance past what was written", () => {
+    const { stt, vad, frames } = loaded({ tailMs: 5000 });
+    frames(100);
+    vad.start(200);
+    vad.end(1900); // the tail would reach 6.9 s; only 2 s exist
+    expect(given(stt.streams[0])).toEqual(range(ms(200) + 1, 101));
+  });
+
+  it("cuts a catch-up utterance for length once its span reaches the limit", () => {
+    const { stt, vad, frames, log } = loaded({ maxUtteranceMs: 3000 });
+    frames(400);
+    vad.start(1000); // 7 s old already: over the limit as soon as the next frame arrives
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
+    frames(1);
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
+    expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, ms(4000) + 1)); // the first 3 s of it
+    expect(stt.streams[0].ended).toBe(true);
+    vad.start(7000); // the rest of that speech is ignored until it ends
+    expect(stt.streams).toHaveLength(1);
+    vad.end(8000);
+    vad.start(8500);
+    expect(stt.streams).toHaveLength(2);
+  });
+
+  it("cuts a catch-up utterance for length when its start falls out of the ring", () => {
+    const { stt, vad, frames, log } = loaded({ maxUtteranceMs: 600_000 });
+    frames(400);
+    vad.start(1000);
+    frames((VAD_HOLD_MS + 1600) / 20); // speech goes on until the start has left the ring
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
+    expect(given(stt.streams[0])[0]).toBeGreaterThan(ms(1000) + 1); // what the ring still had of it
+    expect(stt.streams[0].ended).toBe(true);
+  });
+
+  it("a live start behaves as before: seeded from its start, then the live frames, nothing twice", () => {
+    const { stt, vad, frames } = loaded();
+    frames(100); // 2 s
+    vad.start(1840); // 160 ms behind: not a catch-up
+    expect(given(stt.last())).toEqual(range(ms(1840) + 1, 101));
+    frames(10);
+    expect(given(stt.last())).toEqual(range(ms(1840) + 1, 111));
+    vad.end(2100);
+    expect(stt.last().ended).toBe(true);
+    expect(given(stt.last())).toEqual(range(ms(1840) + 1, 111)); // live ends where the end event arrives
+  });
+
+  it("a start exactly at the live lag bound is live; one frame past it is a catch-up", () => {
+    const { stt, vad, frames } = loaded();
+    frames(200); // 4 s
+    vad.start(4000 - 1600); // preroll 100 + lag 1500 = 1600 ms behind
+    expect(stt.last().bytes()).toBe(ms(1600) * 640);
+    vad.end();
+    vad.start(4000 - 1620);
+    expect(stt.streams[1].bytes()).toBe(0);
   });
 });
