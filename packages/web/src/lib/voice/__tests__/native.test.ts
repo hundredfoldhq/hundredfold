@@ -257,3 +257,37 @@ describe("NativeVoiceSession native_state events", () => {
     expect(voicePhase(session.getSnapshot())).toBe("off")
   })
 })
+
+describe("NativeVoiceSession on a chat that does not exist yet", () => {
+  it("creates the chat once, then starts the shell on it", async () => {
+    const { value, voiceStart } = bridge()
+    const starter = { create: vi.fn(async () => "new-1"), discard: vi.fn() }
+    const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    expect(starter.create).toHaveBeenCalledTimes(1)
+    expect(voiceStart.mock.calls[0][0]).toEqual({ target: { origin: ORIGIN }, sessionId: "new-1", mode: "hands-free" })
+    expect(session.boundSessionId()).toBe("new-1")
+  })
+
+  it("a creation that fails is reported and the shell is never started", async () => {
+    const { value, voiceStart } = bridge()
+    const starter = { create: vi.fn(async () => { throw new Error("no chat") }), discard: vi.fn() }
+    const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    expect(voiceStart).not.toHaveBeenCalled()
+    expect(session.getSnapshot()).toMatchObject({ status: "off", error: "no chat" })
+  })
+
+  it("a stop before the chat exists discards it and never starts the shell", async () => {
+    const { value, voiceStart } = bridge()
+    let resolve!: (id: string) => void
+    const starter = { create: vi.fn(() => new Promise<string>((r) => { resolve = r })), discard: vi.fn() }
+    const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
+    const run = session.start()
+    session.stop()
+    resolve("new-1")
+    await run
+    expect(starter.discard).toHaveBeenCalledWith("new-1")
+    expect(voiceStart).not.toHaveBeenCalled()
+  })
+})

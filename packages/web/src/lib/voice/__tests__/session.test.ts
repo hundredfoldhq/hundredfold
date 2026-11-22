@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { floatToInt16 } from "../pcm"
 import { VoicePlayer } from "../player"
+import type { VoiceSessionStarter } from "../controller"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import type { VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
@@ -67,6 +68,8 @@ class FakeDocument extends Emitter {
 interface Rig {
   session: BrowserVoiceSession
   calls: string[]
+  /** The session id of each socket opened. */
+  opened: string[]
   sockets: FakeSocket[]
   contexts: FakeSessionContext[]
   tracks: FakeTrack[]
@@ -78,8 +81,9 @@ interface Rig {
   captureStops: ReturnType<typeof vi.fn>
 }
 
-function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean }> = {}): Rig {
+function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; sessionId: string | VoiceSessionStarter }> = {}): Rig {
   const calls: string[] = []
+  const opened: string[] = []
   const sockets: FakeSocket[] = []
   const contexts: FakeSessionContext[] = []
   const tracks: FakeTrack[] = []
@@ -90,7 +94,7 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
   let sink: (p: Int16Array) => void = () => {}
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
   const deps: BrowserVoiceDeps = {
-    openSocket: (_id, handlers) => { calls.push("socket"); const s = new FakeSocket(handlers); sockets.push(s); return s },
+    openSocket: (id, handlers) => { calls.push("socket"); opened.push(id); const s = new FakeSocket(handlers); sockets.push(s); return s },
     createContext: () => { calls.push("context"); const c = new FakeSessionContext(); contexts.push(c); const resume = c.resume; c.resume = vi.fn(async () => { calls.push("resume"); return resume() }); return c },
     requestMicrophone: () => {
       calls.push("microphone")
@@ -109,8 +113,8 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     createMediaMetadata: () => ({ title: "Voice mode is on" }),
     now: () => clock.now,
   }
-  const session = new BrowserVoiceSession({ sessionId: "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops }
+  const session = new BrowserVoiceSession({ sessionId: options.sessionId ?? "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
+  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -470,5 +474,74 @@ describe("reconnecting", () => {
     await r.session.start()
     expect(r.sockets).toHaveLength(2)
     expect(r.contexts).toHaveLength(2)
+  })
+})
+
+describe("starting on a chat that does not exist yet", () => {
+  function starter() {
+    let resolve!: (id: string) => void
+    let reject!: (error: unknown) => void
+    const create = vi.fn(() => new Promise<string>((res, rej) => { resolve = res; reject = rej }))
+    const discard = vi.fn()
+    return { create, discard, resolve: (id: string) => resolve(id), reject: (e: unknown) => reject(e), api: { create, discard } satisfies VoiceSessionStarter }
+  }
+
+  it("asks for the microphone inside the tap, creates the chat once, then opens the socket on it", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    expect(r.calls).toEqual(["context", "resume", "microphone"])
+    expect(s.create).toHaveBeenCalledTimes(1)
+    expect(r.sockets).toHaveLength(0)
+    expect(r.session.boundSessionId()).toBeNull()
+    s.resolve("new-1")
+    await run
+    expect(r.opened).toEqual(["new-1"])
+    expect(r.session.boundSessionId()).toBe("new-1")
+    expect(s.create).toHaveBeenCalledTimes(1)
+  })
+
+  it("a second start while the chat is being created does nothing", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    await r.session.start()
+    s.resolve("new-1")
+    await run
+    expect(s.create).toHaveBeenCalledTimes(1)
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it("a creation that fails reports it, opens no socket and releases the microphone", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    s.reject(new Error("The gateway refused to start a chat."))
+    await run
+    await Promise.resolve()
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "The gateway refused to start a chat." })
+    expect(r.sockets).toHaveLength(0)
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
+  })
+
+  it("a stop before the chat exists discards the chat that then arrives and keeps the microphone released", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    r.session.stop()
+    s.resolve("new-1")
+    await run
+    expect(s.discard).toHaveBeenCalledWith("new-1")
+    expect(r.sockets).toHaveLength(0)
+    await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
+  })
+
+  it("a chat that is already there never calls the starter", async () => {
+    const s = starter()
+    const r = rig({ sessionId: "s1" })
+    await r.session.start()
+    expect(s.create).not.toHaveBeenCalled()
+    expect(r.opened).toEqual(["s1"])
   })
 })

@@ -15,7 +15,9 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { MemberPrincipal } from "../accounts/runtime.js";
 import type { ApiContext } from "../gateway/api.js";
-import { getSession, externalRepliesSince, latestAssistantMessageId, mergeMessageMeta } from "../sessions/registry.js";
+import { cleanUpDeletedSession } from "../gateway/session-cleanup.js";
+import { isEmptySpokenStart } from "../sessions/awaiting-first-message.js";
+import { deleteSession, getSession, externalRepliesSince, latestAssistantMessageId, mergeMessageMeta } from "../sessions/registry.js";
 import { resolveEnvVar } from "../shared/env-ref.js";
 import { logger } from "../shared/logger.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
@@ -104,6 +106,16 @@ export function redactorFor(getConfig: () => HundredfoldConfig): (text: string) 
   return (text) => configuredKeys(getConfig()).reduce((out, key) => out.split(key).join("[redacted]"), text);
 }
 
+/** A spoken start that ended with no message leaves no session: the same teardown as a delete. */
+function discardEmptySpokenStart(context: ApiContext, sessionId: string): void {
+  if (!isEmptySpokenStart(sessionId)) return;
+  if (!deleteSession(sessionId)) return;
+  cleanUpDeletedSession(sessionId);
+  logger.info(`Session deleted: ${sessionId} (voice ended before a first message)`);
+  context.emit("session:deleted", { sessionId });
+  context.emit("pins:changed", {});
+}
+
 function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
   return {
     config: memoisedConfig(options.getConfig),
@@ -115,6 +127,7 @@ function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
       return session ? turnRunningFor(session, engine, sessionId) : false;
     },
     deliver: (delivery) => voiceDeliveryFor(options.getContext())(delivery),
+    discardIfEmptySpokenStart: (sessionId) => discardEmptySpokenStart(options.getContext(), sessionId),
     mergeMessageMeta: (messageId, patch) => { mergeMessageMeta(messageId, patch); },
     findReplyMessageId: latestAssistantMessageId,
     externalRepliesSince,

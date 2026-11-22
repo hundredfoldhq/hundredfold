@@ -16,6 +16,7 @@ import { resolveMessageAudiences, speechContextApplies } from "./speech-context.
 import { isRawEngineCommand } from "../shared/skill-commands.js";
 import { dispatchWebSessionRun, resolveAttachmentPaths } from "./web-session-dispatch.js";
 import type { ApiContext } from "./api.js";
+import { awaitingFirstMessageMeta } from "../sessions/awaiting-first-message.js";
 
 /**
  * Spawning a session, with nothing about HTTP in it.
@@ -35,8 +36,12 @@ export interface SpawnProvenance {
   sourceRef: string;
 }
 
+/** A spawn that carries its first message. */
+type FirstMessageInput = SpawnSessionInput & { prompt: string };
+
 export interface SpawnSessionInput {
-  prompt: string;
+  /** The first message. Absent only with `awaitFirstMessage`. */
+  prompt?: string;
   /** Already coerced against the portal name by the caller, because whether a
    *  name is a pseudo-employee depends on config the caller has read. */
   employee?: string | null;
@@ -63,6 +68,13 @@ export interface SpawnSessionInput {
    *  persisted and queued text never carries. */
   speech?: boolean;
   provenance?: SpawnProvenance;
+  /**
+   * Create the row idle: no first message, no turn, no engine run. The first
+   * message arrives later through the ordinary delivery path (a spoken start),
+   * and the row is marked so a voice conversation that ends without one can
+   * discard it. Only the operator's `speech: true` spawn asks for this.
+   */
+  awaitFirstMessage?: boolean;
 }
 
 /**
@@ -199,7 +211,7 @@ function spawnSelectionOf(
 function startFirstTurn(
   context: ApiContext,
   session: Session,
-  input: SpawnSessionInput,
+  input: FirstMessageInput,
   engineName: string,
 ): SpawnSessionOutcome {
   // Run engine asynchronously — respond immediately, push result via WebSocket.
@@ -252,7 +264,7 @@ function startFirstTurn(
  * Re-home them under uploads/<date>/<sessionId>/ now that we have an id, then persist
  * the media on the user message so the bubble renders chips/thumbnails on reload.
  */
-function recordFirstMessage(session: Session, input: SpawnSessionInput): void {
+function recordFirstMessage(session: Session, input: FirstMessageInput): void {
   rehomeAttachmentsToSession(input.attachments, session.id);
   const newSessionMedia = fileIdsToMedia(input.attachments);
   insertMessage(session.id, "user", input.prompt, newSessionMedia.length > 0 ? newSessionMedia : undefined);
@@ -262,6 +274,7 @@ export async function spawnSession(
   context: ApiContext,
   input: SpawnSessionInput,
 ): Promise<SpawnSessionOutcome> {
+  if (!input.awaitFirstMessage && typeof input.prompt !== "string") return { ok: false, error: "prompt or message is required" };
   const config = context.getConfig();
   const employeeName = input.employee ?? null;
   const fallbackMode = resolveFallbackMode(config, input);
@@ -276,9 +289,11 @@ export async function spawnSession(
 
   const session = createSpawnedSession(config, input, employeeName, selection, fallback.stored);
   logger.info(`Web session created: ${session.id} (model=${selection.model || "default"})`);
-  recordFirstMessage(session, input);
+  if (input.awaitFirstMessage) return { ok: true, session, dispatched: false };
+  const first: FirstMessageInput = { ...input, prompt: input.prompt as string };
+  recordFirstMessage(session, first);
 
-  return startFirstTurn(context, session, input, selection.engineName);
+  return startFirstTurn(context, session, first, selection.engineName);
 }
 
 /** The row for a spawn, charged to the account the balancer picked once it exists. */
@@ -316,7 +331,7 @@ function createSpawnedSession(
     // scaffolded prompt pass the verbatim ask so list UIs show that instead).
     promptExcerpt: input.promptExcerpt,
     portalName: config.portal?.portalName,
-    transportMeta: reroutedSessionMeta(selection.reroute, metaWithAccountPick(undefined, selection)),
+    transportMeta: reroutedSessionMeta(selection.reroute, awaitingFirstMessageMeta(input, metaWithAccountPick(undefined, selection))),
   });
   chargeAccountStart(selection);
   return session;

@@ -37,6 +37,8 @@ export class VoiceHub {
   private providers: { config: ResolvedVoiceConfig; set: VoiceProviderSet } | null = null;
   /** Providers of a config that was replaced while attachments still used them; closed once none do. */
   private retired: VoiceProviderSet[] = [];
+  /** The session whose attachment a takeover is ending: its conversation goes on in the new one. */
+  private takingOver: string | null = null;
 
   constructor(private readonly deps: VoiceHubDeps) {}
 
@@ -116,7 +118,8 @@ export class VoiceHub {
       existing.adopt(socket, request.principal);
       return existing;
     }
-    existing.detach("taken_over");
+    this.takingOver = request.sessionId;
+    try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
     return config ? this.create(socket, request, config) : null;
   }
@@ -149,6 +152,15 @@ export class VoiceHub {
     if (this.attachments.get(attachment.sessionId) === attachment) this.attachments.delete(attachment.sessionId);
     this.cancelExpiry(attachment.sessionId);
     if (this.attachments.size === 0) this.closeRetired();
+    if (this.takingOver !== attachment.sessionId && !this.attachments.has(attachment.sessionId)) this.discardEmpty(attachment.sessionId);
+  }
+
+  private discardEmpty(sessionId: string): void {
+    try {
+      this.deps.discardIfEmptySpokenStart?.(sessionId);
+    } catch (error) {
+      this.deps.log.warn(`voice: could not discard empty session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private cancelExpiry(sessionId: string): void {

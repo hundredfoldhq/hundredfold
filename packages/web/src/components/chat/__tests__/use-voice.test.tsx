@@ -317,3 +317,74 @@ describe('tapAction', () => {
     expect(tapAction('off', false, 'push-to-talk')).toBe('start')
   })
 })
+
+describe('useVoice on a new chat', () => {
+  const starter = { create: vi.fn(() => Promise.resolve('new-1')), discard: vi.fn() }
+
+  it('shows the control on a new chat when voice is enabled, and not when voice is off', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const on = renderHook(() => useVoice(null, null, undefined, starter))
+    await waitFor(() => expect(on.result.current.enabled).toBe(true))
+    expect(on.result.current.unavailable).toBeNull()
+    getVoiceConfig.mockResolvedValue({ enabled: false })
+    resetVoiceConfigCache()
+    const off = renderHook(() => useVoice(null, null, undefined, starter))
+    await waitFor(() => expect(getVoiceConfig).toHaveBeenCalledTimes(2))
+    expect(off.result.current.enabled).toBe(false)
+  })
+
+  it('stays hidden on a new chat for a board member', async () => {
+    principal.member = { user: { id: 'u1' }, boards: [] }
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result } = renderHook(() => useVoice(null, null, undefined, starter))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(result.current.enabled).toBe(false)
+    expect(controllers).toHaveLength(0)
+  })
+
+  it('stays hidden on a new chat when the pane offers no way to create one', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result } = renderHook(() => useVoice(null, null))
+    await waitFor(() => expect(getVoiceConfig).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(result.current.enabled).toBe(false)
+  })
+
+  it('one tap starts the one controller, made with the starter rather than an id', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result } = renderHook(() => useVoice(null, null, undefined, starter))
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    act(() => result.current.onTap())
+    expect(controllers).toHaveLength(1)
+    expect((controllers[0].options as { sessionId: unknown }).sessionId).toBe(starter)
+    expect(controllers[0].start).toHaveBeenCalledTimes(1)
+  })
+
+  it('binding the pane to the chat the controller created keeps that controller running', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result, rerender } = renderHook(({ id, s }: { id: string | null; s: typeof starter | null }) => useVoice(id, null, undefined, s), {
+      initialProps: { id: null as string | null, s: starter as typeof starter | null },
+    })
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    const first = controllers[0] as unknown as { boundSessionId?: () => string | null; dispose: ReturnType<typeof vi.fn> }
+    first.boundSessionId = () => 'new-1'
+    rerender({ id: 'new-1', s: null })
+    expect(controllers).toHaveLength(1)
+    expect(first.dispose).not.toHaveBeenCalled()
+    expect(result.current.controller).toBe(first)
+  })
+
+  it('moving to another chat ends the run', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result, rerender } = renderHook(({ id, s }: { id: string | null; s: typeof starter | null }) => useVoice(id, null, undefined, s), {
+      initialProps: { id: null as string | null, s: starter as typeof starter | null },
+    })
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    const first = controllers[0] as unknown as { boundSessionId?: () => string | null; dispose: ReturnType<typeof vi.fn> }
+    first.boundSessionId = () => 'new-1'
+    rerender({ id: 'other', s: null })
+    expect(first.dispose).toHaveBeenCalled()
+    expect(controllers).toHaveLength(2)
+  })
+})
+

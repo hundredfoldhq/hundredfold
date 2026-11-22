@@ -17,6 +17,7 @@ import { compactionInFlight } from "../sessions/compaction-in-flight.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { enqueueQueueItem } from "../sessions/queue-item-registry.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
+import { nameFromFirstMessage } from "../sessions/awaiting-first-message.js";
 import { getSession, updateSession } from "../sessions/registry.js";
 import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { supersedeRunningTurn } from "../sessions/turn/superseded.js";
@@ -90,6 +91,7 @@ function acceptMessage(session: Session, delivery: VoiceDelivery, mode: VoiceDel
   });
   if (!claim.messageId) throw new Error("the message could not be recorded");
   endStopOnDeliberateSend(session);
+  nameFromFirstMessage(session, delivery.text);
   const queueItemId = enqueueQueueItem(session.id, sessionKey, delivery.text, {
     messageId: claim.messageId,
     dispatch: { attachments: [], speechDerived: false, ...(delivery.envelope ? { voiceEnvelope: delivery.envelope } : {}) },

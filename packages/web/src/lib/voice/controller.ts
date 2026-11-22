@@ -1,8 +1,19 @@
 import { INITIAL_VOICE_STATE, voiceReducer, type VoiceAction, type VoiceUiState } from "./state"
 
+/**
+ * How a controller on a chat that does not exist yet gets one: the first tap creates the session, and the
+ * conversation attaches to it. `discard` is for a session that was created after the run had already ended.
+ */
+export interface VoiceSessionStarter {
+  create(): Promise<string>
+  discard(sessionId: string): void
+}
+
 /** What the composer control drives. The browser session and the native shell's session both implement it. */
 export interface VoiceController {
   getSnapshot(): VoiceUiState
+  /** The chat the controller is attached to, or null while it is still being created. Absent: the one it was made for. */
+  boundSessionId?(): string | null
   subscribe(listener: () => void): () => void
   /** Start voice mode. Call it synchronously inside the tap handler: iOS only allows the microphone and audio there. */
   start(): Promise<void>
