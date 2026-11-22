@@ -176,6 +176,20 @@ describe("a balanced session", () => {
     expect({ dir: after.claudeConfigDir, pick: pickOf(after) }).toEqual(before);
   });
 
+  it("is copied with its pin and pick by a duplicate, which is no start and charges nothing", async () => {
+    const created = await spawn({ employee: "a-worker" });
+    const session = registry.getSession(created.body.id)!;
+    registry.recordEngineSessionId(session.id, "claude", "thread-to-fork");
+    const next = async () => pickOf(registry.getSession((await spawn({ employee: "a-worker" })).body.id)!)!.picked;
+    resetAccountCredits();
+    const first = await next(); // the rotation's first start
+    resetAccountCredits();
+    const copy = registry.duplicateSession(session.id).session;
+    expect(copy.claudeConfigDir).toBe(session.claudeConfigDir);
+    expect(pickOf(copy)).toEqual(pickOf(session));
+    expect(await next()).toBe(first);
+  });
+
   it("carries no usage number in the session body any caller reads: the get, the list and the spawn response", async () => {
     const created = await spawn({ employee: "a-worker" });
     const numbers = /"(weight|sharePercent|headroomPercent|usedPercent|readingAt|tightest)"/;
