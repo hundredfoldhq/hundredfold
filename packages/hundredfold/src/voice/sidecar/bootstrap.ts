@@ -152,8 +152,8 @@ export function findPythonCached(): PythonInfo | null {
 
 // ── the installer ────────────────────────────────────────────────────────────
 
-/** Disk needed under the home: the GPU path adds the CUDA wheels and the 2.4 GB fp32 model. */
-export const REQUIRED_BYTES: Record<VoiceDevice, number> = { gpu: 3_800_000_000, cpu: 1_200_000_000 };
+/** Disk needed under the home. The GPU path adds the CUDA wheels and the 2.4 GB fp32 model: measured at 5.2 GB after a first-run install, so 6 GB leaves headroom. */
+export const REQUIRED_BYTES: Record<VoiceDevice, number> = { gpu: 6_000_000_000, cpu: 1_200_000_000 };
 const EXPECTED_MODEL_BYTES: Record<VoiceDevice, number> = { gpu: 2_900_000_000, cpu: 1_050_000_000 };
 const STAGES = { venv: 0.02, pip: 0.35, models: 1 } as const;
 

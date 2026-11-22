@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SpeechInstaller, findPython, installReason, helloModels, resolveDevice, sidecarEnv, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
+import { REQUIRED_BYTES, SpeechInstaller, findPython, installReason, helloModels, resolveDevice, sidecarEnv, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
 
 let home: string;
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), "voice-bootstrap-")); });
@@ -96,8 +96,13 @@ describe("SpeechInstaller", () => {
   it("fails before touching the venv when there is not enough disk", async () => {
     const { installer } = make({ findPython: () => ({ command: "python3", version: "3.13.0" }), freeBytes: () => 1e9 }, "gpu");
     const result = await installer.ensureInstalled();
-    expect(result.reason).toMatch(/not enough disk space.*4 GB needed, 1\.0 GB free/);
+    expect(result.reason).toMatch(/not enough disk space.*6 GB needed, 1\.0 GB free/);
     expect(fs.existsSync(voicePaths(home).venv)).toBe(false);
+  });
+
+  it("asks for more than the 5.2 GB a first-run GPU install measured, and 1.2 GB for the CPU path", () => {
+    expect(REQUIRED_BYTES.gpu).toBeGreaterThan(5.2e9);
+    expect(REQUIRED_BYTES.cpu).toBe(1.2e9);
   });
 
   it("fails with the command's own error when a step fails, and can be retried", async () => {

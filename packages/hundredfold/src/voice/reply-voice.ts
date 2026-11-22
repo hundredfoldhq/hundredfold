@@ -260,9 +260,14 @@ export class ReplyVoice {
     const id = this.resolveMessage(reply);
     if (!id) return;
     const voice: JsonObject = {};
-    const spoken = reply.heard ?? this.spokenOf(reply);
-    if (spoken) voice.spokenText = spoken;
-    if (reply.heard !== undefined) voice.interrupted = true;
+    // A cut-off reply keeps exactly what was heard, including nothing: the turn-end merge may already have stored every sentence sent.
+    if (reply.heard !== undefined) {
+      voice.spokenText = reply.heard;
+      voice.interrupted = true;
+    } else {
+      const spoken = this.spokenOf(reply);
+      if (spoken) voice.spokenText = spoken;
+    }
     if (reply.ttfaMs !== undefined) voice.ttfaMs = reply.ttfaMs;
     if (Object.keys(voice).length > 0) this.options.deps.mergeMessageMeta(id, { voice });
   }

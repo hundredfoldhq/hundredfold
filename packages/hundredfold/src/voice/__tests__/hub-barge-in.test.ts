@@ -114,6 +114,18 @@ describe("barge-in (US2)", () => {
     expect(h.delivered[0].envelope).toContain(interruptedNote(""));
   });
 
+  it("cut off before any sentence was heard: the stored message says nothing was heard, not that all of it was", async () => {
+    const h = createHarness();
+    h.state.turnRunning = true;
+    const { attachment } = h.connect();
+    await midReply(h);
+    bargeIn(attachment, null, 0); // the gateway-first cut: no segment, nothing played
+    await h.say(attachment, "hold on a second");
+    h.event("session:completed", { result: "", error: null });
+    await settle();
+    expect(h.merges).toEqual([{ id: "assistant-1", patch: { voice: { spokenText: "", interrupted: true } } }]);
+  });
+
   it("a stop when nothing is playing is not a barge-in", async () => {
     const h = createHarness();
     const { attachment } = h.connect();
