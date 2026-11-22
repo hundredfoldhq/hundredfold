@@ -168,6 +168,19 @@ function annotated(
 }
 
 /**
+ * The keys that stand for the subject's own target: its own link, a remote subject's unprofiled spelling of it
+ * (a link naming no profile runs the account it has), and an opencode target naming no model on the engine's
+ * configured one (a group member on that model is the own account).
+ */
+function ownTargetKeys(config: HundredfoldConfig, subject: FallbackChainSpec, own: ResolvedFallbackLink): string[] {
+  const keys = [own.key];
+  if (subject.scope.remote && own.profile !== undefined) keys.push(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  const effective = own.engine === "opencode" && own.model === undefined ? opencodeOwnModel(config, undefined) : undefined;
+  if (effective !== undefined) keys.push(fallbackLinkKey({ engine: "opencode", model: effective }));
+  return keys;
+}
+
+/**
  * The subject's chain, resolved: index 0 is its own target, then the effective
  * chain (legacy strings expanded in place) with each link's model, account,
  * label, health and skip reason. A link that resolves to a target already listed
@@ -179,9 +192,7 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   // An account chain names its Claude accounts itself; an engine chain's unprofiled Claude link is the subject's own login.
   const claudeAccount = subject.mode === "engine" ? subject.claudeAccount : undefined;
   const own = resolvedLink(env, subject.own, "config", subject.own, { claudeAccount, healthProvider: unpinnedHealthProvider(env.config, subject.own) });
-  const seen = new Set<string>([own.key]);
-  // A remote subject on a declared account is also its own target when a link names no profile: that runs the account it has.
-  if (subject.scope.remote && own.profile !== undefined) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  const seen = new Set<string>(ownTargetKeys(env.config, subject, own));
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {

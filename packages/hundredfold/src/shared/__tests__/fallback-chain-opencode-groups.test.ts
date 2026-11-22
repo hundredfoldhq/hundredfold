@@ -129,6 +129,15 @@ describe("expansion to the session's model key on each member's provider", () =>
     expect(keys(links)).toEqual(["opencode||opencode-go/glm-5", "claude||", "opencode||opencode-go-c/glm-5", "opencode||opencode-go-b/glm-5"]);
   });
 
+  it("drops the own account too when the subject names no model, whose own model is then the engine's", () => {
+    const bare = resolve({ session: { model: null } });
+    expect(keys(bare.links)).toEqual(["opencode||", "opencode||opencode-go-c/glm-5", "opencode||opencode-go-b/glm-5", "claude||"]);
+    const modelless = employeeSubject(env(), { ...worker([GROUP, TAIL]), model: undefined } as Employee, { scoped: false, remote: false });
+    expect(keys(modelless.effective)).toEqual(["opencode||opencode-go-c/glm-5", "opencode||opencode-go-b/glm-5", "claude||"]);
+    // The own account is still a candidate of the start pick.
+    expect(modelless.startPick!.candidates.map((candidate) => candidate.account).sort()).toEqual([A, B, C]);
+  });
+
   it("lists a member once when the chain also names it as a link (a tolerated duplicate)", () => {
     const { links } = resolve({ config: config([{ engine: "opencode", model: "opencode-go-b/glm-5" }, GROUP]) });
     expect(keys(links).filter((k) => k === "opencode||opencode-go-b/glm-5")).toHaveLength(1);
@@ -154,6 +163,11 @@ describe("ranking under opencode/<provider> keys", () => {
     expect(order({ health: { [`${C}/glm-5`]: spent() } })).toEqual(["opencode-go-b/glm-5", "opencode-go-c/glm-5"]);
     // A hold on another model of the provider does not count.
     expect(order({ health: { [`${C}/kimi`]: spent() } })).toEqual(["opencode-go-c/glm-5", "opencode-go-b/glm-5"]);
+  });
+
+  it("does not read the engine-wide opencode key: the engine as a whole being out is no member's hold", () => {
+    expect(order({ health: { opencode: spent() } })).toEqual(["opencode-go-c/glm-5", "opencode-go-b/glm-5"]);
+    expect(pickOf({ health: { opencode: spent() } })!.candidates.every((candidate) => candidate.state === "fresh")).toBe(true);
   });
 
   it("orders an account with no reading after the rest", () => {
