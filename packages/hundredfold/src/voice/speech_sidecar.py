@@ -539,19 +539,72 @@ def _say(**fields: Any) -> None:
 def download(spec: dict[str, Any]) -> int:
     """Fetch the models named by `spec` into their directories, one JSON line per step. Uses
     `local_dir` throughout: ONNX Runtime refuses weights reached through the shared Hugging
-    Face cache's symlinked blobs."""
-    from onnx_asr.loader import create_asr_resolver, create_vad_resolver
+    Face cache's symlinked blobs. `spec["only"]`, when present, lists the steps to run
+    (`stt`, `vad`, `tts`); a missing list runs them all."""
+    only = spec.get("only")
+
+    def wanted(step: str) -> bool:
+        return only is None or step in only
 
     stt = spec["stt"]
-    _say(step="stt", name=stt["name"])
-    create_asr_resolver(stt["name"], stt["path"], offline=False).resolve_model(quantization=stt.get("quantization"))
-    _say(step="vad")
-    create_vad_resolver("silero", spec["vad"]["path"], offline=False).resolve_model()
-    for name, dest in (("kokoro-v1.0.onnx", spec["tts"]["model"]), ("voices-v1.0.bin", spec["tts"]["voices"])):
-        _say(step="tts", name=name)
-        _fetch(f"{KOKORO_RELEASE}/{name}", dest)
+    if wanted("stt"):
+        _say(step="stt", name=stt["name"])
+        if stt.get("download"):
+            _download_pinned(stt["path"], stt["download"])
+        else:
+            from onnx_asr.loader import create_asr_resolver
+
+            create_asr_resolver(stt["name"], stt["path"], offline=False).resolve_model(quantization=stt.get("quantization"))
+    if wanted("vad"):
+        from onnx_asr.loader import create_vad_resolver
+
+        _say(step="vad")
+        create_vad_resolver("silero", spec["vad"]["path"], offline=False).resolve_model()
+    if wanted("tts"):
+        for name, dest in (("kokoro-v1.0.onnx", spec["tts"]["model"]), ("voices-v1.0.bin", spec["tts"]["voices"])):
+            _say(step="tts", name=name)
+            _fetch(f"{KOKORO_RELEASE}/{name}", dest)
     _say(step="done")
     return 0
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download_pinned(dest: str, download: dict[str, Any]) -> None:
+    """A model `onnx-asr` has no name for: each file at a pinned commit of a Hugging Face repository,
+    checked against its SHA-256, and put in `dest` under the name the loader looks for. A file already
+    there with the right hash is kept, so a failed install resumes where it stopped. `download["config"]`
+    becomes `config.json`, written last: the directory is a loadable model only once everything is in it."""
+    from huggingface_hub import hf_hub_download
+
+    os.makedirs(dest, exist_ok=True)
+    staging = os.path.join(dest, ".downloading")
+    try:
+        for entry in download["files"]:
+            target = os.path.join(dest, entry["local"])
+            if os.path.isfile(target) and _sha256(target) == entry["sha256"]:
+                continue
+            fetched = hf_hub_download(entry["repo"], entry["remote"], revision=entry["revision"], local_dir=staging)
+            found = _sha256(fetched)
+            if found != entry["sha256"]:
+                raise RuntimeError(f"{entry['remote']} from {entry['repo']} has SHA-256 {found}, expected {entry['sha256']}")
+            os.replace(fetched, target)
+        partial = os.path.join(dest, "config.json.downloading")
+        with open(partial, "w", encoding="utf-8") as out:
+            json.dump(download["config"], out)
+        os.replace(partial, os.path.join(dest, "config.json"))
+    finally:
+        import shutil
+
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _fetch(url: str, dest: str) -> None:

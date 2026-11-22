@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { REQUIRED_BYTES, SpeechInstaller, findPython, installReason, helloModels, resolveDevice, sidecarEnv, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
+import { MODEL_ONLY_REQUIRED_BYTES, REQUIRED_BYTES, SpeechInstaller, findPython, installReason, helloModels, resolveDevice, sidecarEnv, sttDownload, voicePaths, type InstallStatus, type VoiceDevice } from "../sidecar/bootstrap.js";
+import type { LocalSttModelId } from "../../shared/voice-config.js";
 
 let home: string;
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), "voice-bootstrap-")); });
@@ -44,6 +45,16 @@ describe("paths and environment", () => {
     expect(helloModels(paths, "cpu").stt).toMatchObject({ quantization: "int8" });
   });
 
+  it("keeps the default model's directory and loader name exactly as before, and gives the unified model its own", () => {
+    const paths = voicePaths(home);
+    expect(paths.sttDir("gpu")).toBe(path.join(paths.root, "parakeet-tdt-0.6b-v2-fp32"));
+    expect(paths.sttDir("gpu", "parakeet-tdt-0.6b-v2")).toBe(paths.sttDir("gpu"));
+    expect(helloModels(paths, "gpu").stt).toEqual({ name: "nemo-parakeet-tdt-0.6b-v2", path: paths.sttDir("gpu"), quantization: null });
+    expect(helloModels(paths, "gpu", "parakeet-unified-en-0.6b").stt).toEqual({ name: "nemo-conformer-rnnt", path: path.join(paths.root, "parakeet-unified-en-0.6b-fp32"), quantization: null });
+    expect(helloModels(paths, "cpu", "parakeet-unified-en-0.6b").stt).toEqual({ name: "nemo-conformer-rnnt", path: path.join(paths.root, "parakeet-unified-en-0.6b-int8"), quantization: "int8" });
+    expect(helloModels(paths, "cpu", "parakeet-unified-en-0.6b").tts).toEqual(helloModels(paths, "cpu").tts);
+  });
+
   it("gives the sidecar a few names, never the gateway's keys", () => {
     const env = sidecarEnv({ PATH: "/bin", HTTPS_PROXY: "http://proxy:3128", OPENAI_API_KEY: "sk-secret", HUNDREDFOLD_TOKEN: "t", HOME: "/home/x" });
     expect(env.PATH).toBe("/bin");
@@ -52,6 +63,38 @@ describe("paths and environment", () => {
     expect([gpu.CUDA_VISIBLE_DEVICES, gpu.NVIDIA_VISIBLE_DEVICES]).toEqual(["1", "all"]);
     expect(Object.keys(env).join()).not.toMatch(/OPENAI|TOKEN/);
     expect(JSON.stringify(env)).not.toContain("sk-secret");
+  });
+});
+
+describe("sttDownload", () => {
+  it("is none for the default model, which onnx-asr fetches by name", () => {
+    expect(sttDownload("parakeet-tdt-0.6b-v2", "gpu")).toBeNull();
+    expect(sttDownload("parakeet-tdt-0.6b-v2", "cpu")).toBeNull();
+  });
+
+  it.each<[VoiceDevice, string[]]>([
+    ["gpu", ["encoder-model.onnx", "encoder.onnx.data", "decoder_joint-model.onnx", "decoder_joint.onnx.data", "vocab.txt"]],
+    ["cpu", ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"]],
+  ])("names the files onnx-asr loads for the unified model on the %s", (device, locals) => {
+    const download = sttDownload("parakeet-unified-en-0.6b", device)!;
+    expect(download.files.map((file) => file.local)).toEqual(locals);
+    expect(download.config).toMatchObject({ model_type: "nemo-conformer-rnnt", features_size: 128, subsampling_factor: 8 });
+  });
+
+  it("pins every file to a commit and a SHA-256, never a branch", () => {
+    for (const device of ["gpu", "cpu"] as const) {
+      for (const file of sttDownload("parakeet-unified-en-0.6b", device)!.files) {
+        expect(file.revision, file.remote).toMatch(/^[0-9a-f]{40}$/);
+        expect(file.sha256, file.remote).toMatch(/^[0-9a-f]{64}$/);
+        expect(file.repo, file.remote).toMatch(/^[\w.-]+\/[\w.-]+$/);
+      }
+    }
+  });
+
+  it("does not share files between the two devices' variants except the vocabulary", () => {
+    const gpu = sttDownload("parakeet-unified-en-0.6b", "gpu")!.files.map((file) => file.sha256);
+    const cpu = sttDownload("parakeet-unified-en-0.6b", "cpu")!.files.map((file) => file.sha256);
+    expect(gpu.filter((hash) => cpu.includes(hash))).toHaveLength(1);
   });
 });
 
@@ -83,6 +126,73 @@ describe("SpeechInstaller", () => {
   it("is not ready when the marker is for the other device", () => {
     markReady("gpu");
     expect(make({}, "cpu").installer.status().state).toBe("not_installed");
+  });
+
+  describe("per speech-to-text model", () => {
+    const unified: LocalSttModelId = "parakeet-unified-en-0.6b";
+    const markWith = (device: VoiceDevice, extra: Record<string, unknown>) => {
+      const paths = voicePaths(home);
+      fs.mkdirSync(path.dirname(paths.python), { recursive: true });
+      fs.writeFileSync(paths.python, "");
+      fs.writeFileSync(paths.marker, JSON.stringify({ version: 1, device, python: "3.13.0", ...extra }));
+    };
+
+    it("treats a marker from before there were several models as holding the default only", () => {
+      markReady("cpu");
+      expect(make().installer.status().state).toBe("ready");
+      expect(make({ sttModel: () => unified }).installer.status().state).toBe("not_installed");
+    });
+
+    it("is ready for a model its marker lists, and not for one it does not", () => {
+      markWith("cpu", { sttModels: [unified] });
+      expect(make({ sttModel: () => unified }).installer.status().state).toBe("ready");
+      expect(make({ sttModel: () => "parakeet-tdt-0.6b-v2" }).installer.status().state).toBe("not_installed");
+      markWith("cpu", { sttModels: ["parakeet-tdt-0.6b-v2", unified] });
+      expect(make({ sttModel: () => unified }).installer.status().state).toBe("ready");
+      expect(make().installer.status().state).toBe("ready");
+    });
+
+    it("adds only the model to an install whose environment works: no Python lookup, no venv rebuild, and a smaller disk check", async () => {
+      markWith("cpu", {});
+      const venvMarker = path.join(path.dirname(voicePaths(home).python), "kept");
+      fs.writeFileSync(venvMarker, "x");
+      // The download step runs this stand-in "python": it records its arguments and succeeds.
+      const log = path.join(home, "download-args.json");
+      fs.writeFileSync(voicePaths(home).python, `#!/bin/sh\nprintf '%s' "$3" > ${JSON.stringify(log)}\n`, { mode: 0o755 });
+      fs.chmodSync(voicePaths(home).python, 0o755); // markWith made it as an empty, non-executable file
+      const { installer, seen } = make({ sttModel: () => unified, findPython: () => { throw new Error("must not look for Python"); }, freeBytes: () => MODEL_ONLY_REQUIRED_BYTES.cpu + 1 });
+      await expect(installer.ensureInstalled()).resolves.toEqual({ state: "ready", progress: 1 });
+      expect(fs.existsSync(venvMarker)).toBe(true);
+      const args = JSON.parse(fs.readFileSync(log, "utf8")) as { only: string[]; stt: { name: string; download: { files: unknown[] } } };
+      expect(args.only).toEqual(["stt"]);
+      expect(args.stt.name).toBe("nemo-conformer-rnnt");
+      expect(args.stt.download.files).toHaveLength(3);
+      const marker = JSON.parse(fs.readFileSync(voicePaths(home).marker, "utf8")) as { sttModels: string[]; device: string; python: string };
+      expect(marker).toMatchObject({ device: "cpu", python: "3.13.0" });
+      expect([...marker.sttModels].sort()).toEqual(["parakeet-tdt-0.6b-v2", unified].sort());
+      expect(seen.at(-1)).toEqual({ state: "ready", progress: 1 });
+      expect(make().installer.status().state).toBe("ready"); // the default is still installed
+    });
+
+    it("refuses a model-only install without room for the model, naming the smaller need", async () => {
+      markReady("gpu");
+      const { installer } = make({ sttModel: () => unified, freeBytes: () => 1e9 }, "gpu");
+      const result = await installer.ensureInstalled();
+      expect(result.reason).toMatch(/not enough disk space.*4 GB needed, 1\.0 GB free/);
+      expect(MODEL_ONLY_REQUIRED_BYTES.gpu).toBeLessThan(REQUIRED_BYTES.gpu);
+    });
+
+    it("a fresh install records the model it downloaded", async () => {
+      const python = path.join(home, "fake-python.sh");
+      // `-m venv <dir>` makes a venv whose python is the stand-in below; everything else succeeds.
+      fs.writeFileSync(python, `#!/bin/sh\nif [ "$1" = "-m" ] && [ "$2" = "venv" ]; then mkdir -p "$3/bin" && printf '#!/bin/sh\\nexit 0\\n' > "$3/bin/python" && chmod +x "$3/bin/python"; fi\nexit 0\n`, { mode: 0o755 });
+      const { installer } = make({ sttModel: () => unified, findPython: () => ({ command: python, version: "3.13.0" }) });
+      await expect(installer.ensureInstalled()).resolves.toEqual({ state: "ready", progress: 1 });
+      const marker = JSON.parse(fs.readFileSync(voicePaths(home).marker, "utf8")) as { sttModels: string[] };
+      expect(marker.sttModels).toEqual([unified]);
+      expect(make({ sttModel: () => unified }).installer.status().state).toBe("ready");
+      expect(make().installer.status().state).toBe("not_installed");
+    });
   });
 
   it("fails with an actionable reason when Python is missing", async () => {

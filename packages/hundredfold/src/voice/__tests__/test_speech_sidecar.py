@@ -1,12 +1,16 @@
 """Unit tests for the speech sidecar with the models stubbed: `python3 -m unittest`
 from this directory. No third-party package is needed."""
 
+import hashlib
 import io
+import json
 import os
 import struct
 import sys
+import tempfile
 import threading
 import time
+import types
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -418,6 +422,87 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(sc.kokoro_language("af_heart", "en"), "en-us")
         self.assertEqual(sc.kokoro_language("bf_emma", "en-GB"), "en-gb")
         self.assertEqual(sc.kokoro_language("ff_siwis", "fr-fr"), "fr-fr")
+
+
+class PinnedDownloadTests(unittest.TestCase):
+    """The download of a model `onnx-asr` has no name for: pinned files, checked by hash, renamed for the loader."""
+
+    CONTENT = {"x/enc.onnx": b"graph", "x/enc.onnx.data": b"weights", "vocab.txt": b"a 0\n"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = os.path.join(self.tmp.name, "model")
+        self.fetched: list[tuple[str, str, str]] = []
+        outer = self
+
+        def hf_hub_download(repo, filename, revision=None, local_dir=None):
+            outer.fetched.append((repo, filename, revision))
+            path = os.path.join(local_dir, filename)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as out:
+                out.write(outer.CONTENT[filename])
+            return path
+
+        self._saved = sys.modules.get("huggingface_hub")
+        sys.modules["huggingface_hub"] = types.SimpleNamespace(hf_hub_download=hf_hub_download)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        self.tmp.cleanup()
+        if self._saved is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = self._saved
+
+    def download(self, **overrides):
+        files = [
+            {"repo": "o/r", "revision": "abc", "remote": remote, "local": local, "sha256": hashlib.sha256(self.CONTENT[remote]).hexdigest()}
+            for remote, local in (("x/enc.onnx", "encoder-model.onnx"), ("x/enc.onnx.data", "enc.onnx.data"), ("vocab.txt", "vocab.txt"))
+        ]
+        return {"files": files, "config": {"model_type": "nemo-conformer-rnnt"}, **overrides}
+
+    def test_files_land_under_the_loader_names_with_a_config_and_no_leftovers(self):
+        sc._download_pinned(self.dest, self.download())
+        self.assertEqual(sorted(os.listdir(self.dest)), ["config.json", "enc.onnx.data", "encoder-model.onnx", "vocab.txt"])
+        self.assertEqual(open(os.path.join(self.dest, "encoder-model.onnx"), "rb").read(), b"graph")
+        self.assertEqual(json.load(open(os.path.join(self.dest, "config.json"))), {"model_type": "nemo-conformer-rnnt"})
+        self.assertEqual(self.fetched[0], ("o/r", "x/enc.onnx", "abc"))
+
+    def test_a_file_with_the_wrong_hash_fails_the_install_and_is_not_kept(self):
+        spec = self.download()
+        spec["files"][1]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(RuntimeError, "x/enc.onnx.data from o/r has SHA-256"):
+            sc._download_pinned(self.dest, spec)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "enc.onnx.data")))
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "config.json")))  # not a loadable model
+        self.assertFalse(os.path.exists(os.path.join(self.dest, ".downloading")))
+
+    def test_files_already_there_with_the_right_hash_are_not_fetched_again(self):
+        sc._download_pinned(self.dest, self.download())
+        self.fetched.clear()
+        sc._download_pinned(self.dest, self.download())
+        self.assertEqual(self.fetched, [])
+
+    def test_a_damaged_file_is_fetched_again(self):
+        sc._download_pinned(self.dest, self.download())
+        with open(os.path.join(self.dest, "encoder-model.onnx"), "wb") as out:
+            out.write(b"half")
+        self.fetched.clear()
+        sc._download_pinned(self.dest, self.download())
+        self.assertEqual([name for _, name, _ in self.fetched], ["x/enc.onnx"])
+        self.assertEqual(open(os.path.join(self.dest, "encoder-model.onnx"), "rb").read(), b"graph")
+
+    def test_download_with_a_pinned_stt_runs_only_the_steps_asked_for(self):
+        spec = {"stt": {"name": "nemo-conformer-rnnt", "path": self.dest, "quantization": None, "download": self.download()}, "only": ["stt"]}
+        out = io.StringIO()
+        saved, sys.stdout = sys.stdout, out
+        try:
+            self.assertEqual(sc.download(spec), 0)
+        finally:
+            sys.stdout = saved
+        steps = [json.loads(line)["step"] for line in out.getvalue().splitlines()]
+        self.assertEqual(steps, ["stt", "done"])  # no vad, no kokoro
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, "config.json")))
 
 
 if __name__ == "__main__":

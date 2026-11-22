@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUNDREDFOLD_HOME } from "../../shared/paths.js";
 import { logger } from "../../shared/logger.js";
+import { DEFAULT_LOCAL_STT_MODEL, type LocalSttModelId } from "../../shared/voice-config.js";
 
 /** The packages the venv gets. `kokoro-onnx` is installed without its dependencies: it requires the CPU
  *  `onnxruntime`, which would sit beside `onnxruntime-gpu` and shadow it. */
@@ -24,6 +25,7 @@ export const PIN = {
   kokoroDeps: ["espeakng-loader==0.2.4", "phonemizer==3.6.0", "numpy", "huggingface_hub"],
 } as const;
 
+/** `onnx-asr`'s name for the default model, which it fetches itself. */
 export const PARAKEET_NAME = "nemo-parakeet-tdt-0.6b-v2";
 const PYTHON_CANDIDATES = ["python3.13", "python3.12", "python3.11", "python3.10", "python3"];
 const MIN_PYTHON: readonly [number, number] = [3, 10];
@@ -46,8 +48,8 @@ export interface VoicePaths {
   script: string;
   vadDir: string;
   kokoroDir: string;
-  /** The Parakeet directory for a device: fp32 for the GPU, int8 for the CPU. */
-  sttDir(device: VoiceDevice): string;
+  /** The Parakeet directory for a model and device: fp32 for the GPU, int8 for the CPU. */
+  sttDir(device: VoiceDevice, model?: LocalSttModelId): string;
 }
 
 export function voicePaths(home: string = HUNDREDFOLD_HOME): VoicePaths {
@@ -61,8 +63,58 @@ export function voicePaths(home: string = HUNDREDFOLD_HOME): VoicePaths {
     script: sidecarScriptPath(),
     vadDir: path.join(root, "silero-vad"),
     kokoroDir: path.join(root, "kokoro-v1.0"),
-    sttDir: (device) => path.join(root, `parakeet-tdt-0.6b-v2-${device === "gpu" ? "fp32" : "int8"}`),
+    sttDir: (device, model = DEFAULT_LOCAL_STT_MODEL) => path.join(root, `${model}-${device === "gpu" ? "fp32" : "int8"}`),
   };
+}
+
+// ── the local speech-to-text models ──────────────────────────────────────────
+
+/** One pinned file of a model that `onnx-asr` cannot fetch by name: the repository, the commit, its path there, the name the loader wants, and its SHA-256. */
+export interface PinnedFile {
+  repo: string;
+  revision: string;
+  remote: string;
+  local: string;
+  sha256: string;
+}
+
+/** Third-party ONNX exports of NVIDIA's `parakeet-unified-en-0.6b` (NVIDIA Open Model License), pinned by commit and checked by hash. */
+const UNIFIED_EXPORT = { repo: "eschmidbauer/parakeet-unified-en-0.6b-onnx", revision: "7a16ff98b72e5b0beba6f182a5357c704d977b15" } as const;
+/** The same model's vocabulary in the layout `onnx-asr` reads (`token id` per line, blank last). */
+const UNIFIED_VOCAB = { repo: "mrfakename/parakeet-unified-ONNX", revision: "a34b30ffd9dc312a4012ec0305d28f92a1c86c66" } as const;
+
+const UNIFIED_FILES: Record<VoiceDevice, PinnedFile[]> = {
+  gpu: [
+    { ...UNIFIED_EXPORT, remote: "onnx_fp32/encoder.onnx", local: "encoder-model.onnx", sha256: "50083dd0b2af503b87ea8fcf9fd7d7dc15dda3130e4113017c8b37ed00418ba4" },
+    // The graphs name their weight files, so these keep their exported names.
+    { ...UNIFIED_EXPORT, remote: "onnx_fp32/encoder.onnx.data", local: "encoder.onnx.data", sha256: "c054b2932ee13aa39ed84982a399822f3193311fb6fd8e1e204566722614bd87" },
+    { ...UNIFIED_EXPORT, remote: "onnx_fp32/decoder_joint.onnx", local: "decoder_joint-model.onnx", sha256: "ecf068008e3762f8601168c983433ef9e913c685fdaf8ee63882a5d6278f0556" },
+    { ...UNIFIED_EXPORT, remote: "onnx_fp32/decoder_joint.onnx.data", local: "decoder_joint.onnx.data", sha256: "dda5c696945373bf9099c5c2fdd092b5c978d03ab79734a9f5623e527f5509ff" },
+  ],
+  cpu: [
+    { ...UNIFIED_EXPORT, remote: "onnx_int8/encoder.int8.onnx", local: "encoder-model.int8.onnx", sha256: "8c430baee5a815b4ceee861f5f51b5b44db5836623ab2bfe9d0386e57b3f25ab" },
+    { ...UNIFIED_EXPORT, remote: "onnx_int8/decoder_joint.int8.onnx", local: "decoder_joint-model.int8.onnx", sha256: "26a9f0ffb682cf2a712ac86e2e11b6da932f9860f70dc996841cba6392010b55" },
+  ],
+};
+const UNIFIED_VOCAB_FILE: PinnedFile = { ...UNIFIED_VOCAB, remote: "vocab.txt", local: "vocab.txt", sha256: "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff" };
+
+/** `config.json` as `onnx-asr` reads it for this model (the export ships none): a FastConformer RNN-T with 128 mel bins and 8x subsampling. */
+const UNIFIED_CONFIG = { model_type: "nemo-conformer-rnnt", features_size: 128, subsampling_factor: 8, max_tokens_per_step: 10 } as const;
+
+/** What the sidecar downloads when `onnx-asr` has no name for the model; absent for the default, which it fetches itself. */
+export interface SttDownload {
+  files: PinnedFile[];
+  config: Record<string, unknown>;
+}
+
+/** Bytes a model's files take on disk, for the install's progress and its free-space check. */
+export const STT_MODEL_BYTES: Record<LocalSttModelId, Record<VoiceDevice, number>> = {
+  "parakeet-tdt-0.6b-v2": { gpu: 2_500_000_000, cpu: 700_000_000 },
+  "parakeet-unified-en-0.6b": { gpu: 2_500_000_000, cpu: 670_000_000 },
+};
+
+export function sttDownload(model: LocalSttModelId, device: VoiceDevice): SttDownload | null {
+  return model === "parakeet-unified-en-0.6b" ? { files: [...UNIFIED_FILES[device], UNIFIED_VOCAB_FILE], config: { ...UNIFIED_CONFIG } } : null;
 }
 
 /** `speech_sidecar.py` sits beside this module's parent, in src and in dist (the build copies it). */
@@ -71,9 +123,9 @@ function sidecarScriptPath(): string {
 }
 
 /** The `hello.models` the sidecar loads from (shape documented in speech_sidecar.py). */
-export function helloModels(paths: VoicePaths, device: VoiceDevice): Record<string, unknown> {
+export function helloModels(paths: VoicePaths, device: VoiceDevice, model: LocalSttModelId = DEFAULT_LOCAL_STT_MODEL): Record<string, unknown> {
   return {
-    stt: { name: PARAKEET_NAME, path: paths.sttDir(device), quantization: device === "gpu" ? null : "int8" },
+    stt: { name: model === "parakeet-unified-en-0.6b" ? "nemo-conformer-rnnt" : PARAKEET_NAME, path: paths.sttDir(device, model), quantization: device === "gpu" ? null : "int8" },
     tts: { model: path.join(paths.kokoroDir, "kokoro-v1.0.onnx"), voices: path.join(paths.kokoroDir, "voices-v1.0.bin") },
     vad: { path: paths.vadDir, model: path.join(paths.vadDir, "silero_vad.onnx") },
   };
@@ -154,16 +206,29 @@ export function findPythonCached(): PythonInfo | null {
 
 /** Disk needed under the home. The GPU path adds the CUDA wheels and the 2.4 GB fp32 model: measured at 5.2 GB after a first-run install, so 6 GB leaves headroom. */
 export const REQUIRED_BYTES: Record<VoiceDevice, number> = { gpu: 6_000_000_000, cpu: 1_200_000_000 };
+/** Adding one speech-to-text model to an install that has its Python environment: the model plus headroom. */
+export const MODEL_ONLY_REQUIRED_BYTES: Record<VoiceDevice, number> = { gpu: 3_500_000_000, cpu: 1_000_000_000 };
 const EXPECTED_MODEL_BYTES: Record<VoiceDevice, number> = { gpu: 2_900_000_000, cpu: 1_050_000_000 };
 const STAGES = { venv: 0.02, pip: 0.35, models: 1 } as const;
 
 export interface InstallerOptions {
   home?: string;
   device: () => VoiceDevice;
+  /** The speech-to-text model to have installed. Defaults to the default model. */
+  sttModel?: () => LocalSttModelId;
   /** Called on every state or progress change. */
   onChange?: (status: InstallStatus) => void;
   findPython?: () => PythonInfo | null;
   freeBytes?: (dir: string) => number;
+}
+
+interface Marker {
+  version?: number;
+  device?: string;
+  python?: string;
+  /** The speech-to-text models downloaded so far; a marker from before there were several holds only the default. */
+  sttModels?: string[];
+  installedAt?: string;
 }
 
 export class SpeechInstaller {
@@ -173,6 +238,10 @@ export class SpeechInstaller {
 
   constructor(private readonly options: InstallerOptions) {
     this.paths = voicePaths(options.home);
+  }
+
+  private model(): LocalSttModelId {
+    return this.options.sttModel?.() ?? DEFAULT_LOCAL_STT_MODEL;
   }
 
   /** What an `install` object in `GET /api/voice/config` says right now. */
@@ -195,13 +264,22 @@ export class SpeechInstaller {
     killLiveChildren();
   }
 
-  private markerMatches(): boolean {
+  private readMarker(): Marker | null {
     try {
-      const marker = JSON.parse(fs.readFileSync(this.paths.marker, "utf8")) as { version?: number; device?: string };
-      return marker.version === INSTALL_VERSION && marker.device === this.options.device() && fs.existsSync(this.paths.python);
+      return JSON.parse(fs.readFileSync(this.paths.marker, "utf8")) as Marker;
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  /** The Python environment and the packages are in place for this device (whatever speech-to-text models are downloaded). */
+  private environmentReady(marker: Marker | null): marker is Marker {
+    return marker !== null && marker.version === INSTALL_VERSION && marker.device === this.options.device() && fs.existsSync(this.paths.python);
+  }
+
+  private markerMatches(): boolean {
+    const marker = this.readMarker();
+    return this.environmentReady(marker) && (marker.sttModels ?? [DEFAULT_LOCAL_STT_MODEL]).includes(this.model());
   }
 
   private set(status: InstallStatus): InstallStatus {
@@ -212,15 +290,25 @@ export class SpeechInstaller {
 
   private async install(): Promise<InstallStatus> {
     const device = this.options.device();
+    const model = this.model();
     try {
       this.set({ state: "installing", progress: 0 });
-      const python = (this.options.findPython ?? (() => findPython()))();
-      if (!python) throw new Error("Python 3.10+ with venv and pip not found; install it first (see docs/voice.md)");
-      this.checkDisk(device);
-      await this.buildVenv(python);
-      await this.installPackages(device);
-      await this.downloadModels(device);
-      fs.writeFileSync(this.paths.marker, JSON.stringify({ version: INSTALL_VERSION, device, python: python.version, installedAt: new Date().toISOString() }));
+      const marker = this.readMarker();
+      // A new model on an install that works: fetch the model, keep the environment.
+      const modelOnly = this.environmentReady(marker);
+      if (!modelOnly) {
+        const python = (this.options.findPython ?? (() => findPython()))();
+        if (!python) throw new Error("Python 3.10+ with venv and pip not found; install it first (see docs/voice.md)");
+        this.checkDisk(REQUIRED_BYTES[device]);
+        await this.buildVenv(python);
+        await this.installPackages(device);
+        await this.downloadModels(device, model, false);
+        this.writeMarker(device, [model], python.version);
+      } else {
+        this.checkDisk(MODEL_ONLY_REQUIRED_BYTES[device]);
+        await this.downloadModels(device, model, true);
+        this.writeMarker(device, [...new Set([...(marker.sttModels ?? [DEFAULT_LOCAL_STT_MODEL]), model])], marker.python);
+      }
       return this.set({ state: "ready", progress: 1 });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -229,11 +317,16 @@ export class SpeechInstaller {
     }
   }
 
-  private checkDisk(device: VoiceDevice): void {
+  private writeMarker(device: VoiceDevice, sttModels: string[], python: string | undefined): void {
+    const marker: Marker = { version: INSTALL_VERSION, device, python, sttModels, installedAt: new Date().toISOString() };
+    fs.writeFileSync(this.paths.marker, JSON.stringify(marker));
+  }
+
+  private checkDisk(needed: number): void {
     fs.mkdirSync(this.paths.root, { recursive: true });
     const free = (this.options.freeBytes ?? freeBytesOf)(this.paths.root);
-    if (free < REQUIRED_BYTES[device]) {
-      throw new Error(`not enough disk space under the instance home: ${Math.ceil(REQUIRED_BYTES[device] / 1e9)} GB needed, ${(free / 1e9).toFixed(1)} GB free`);
+    if (free < needed) {
+      throw new Error(`not enough disk space under the instance home: ${Math.ceil(needed / 1e9)} GB needed, ${(free / 1e9).toFixed(1)} GB free`);
     }
   }
 
@@ -254,11 +347,18 @@ export class SpeechInstaller {
     this.set({ state: "installing", progress: STAGES.pip });
   }
 
-  private async downloadModels(device: VoiceDevice): Promise<void> {
-    const models = helloModels(this.paths, device);
+  /** `sttOnly` fetches just the speech-to-text model (the other models are already there). */
+  private async downloadModels(device: VoiceDevice, model: LocalSttModelId, sttOnly: boolean): Promise<void> {
+    const hello = helloModels(this.paths, device, model);
+    const download = sttDownload(model, device);
+    const models = { ...hello, stt: { ...(hello.stt as object), ...(download ? { download } : {}) }, ...(sttOnly ? { only: ["stt"] } : {}) };
+    // Progress is the bytes on disk against what is expected: the whole models folder, or just this model's.
+    const [watched, skipped, from, expected] = sttOnly
+      ? [this.paths.sttDir(device, model), "", 0, STT_MODEL_BYTES[model][device]]
+      : [this.paths.root, this.paths.venv, STAGES.pip, EXPECTED_MODEL_BYTES[device]];
     const watch = setInterval(() => {
-      const fraction = Math.min(1, dirBytes(this.paths.root, this.paths.venv) / EXPECTED_MODEL_BYTES[device]);
-      this.set({ state: "installing", progress: STAGES.pip + (STAGES.models - STAGES.pip) * 0.98 * fraction });
+      const fraction = Math.min(1, dirBytes(watched, skipped) / expected);
+      this.set({ state: "installing", progress: from + (STAGES.models - from) * 0.98 * fraction });
     }, 1000);
     try {
       await run(this.paths.python, [this.paths.script, "--download", JSON.stringify(models)], { label: "downloading the speech models" });

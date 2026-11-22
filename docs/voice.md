@@ -4,7 +4,7 @@ Voice mode is a spoken conversation with a chat. You talk, the gateway turns you
 
 Voice mode is **off by default**. With no `voice:` block, or `enabled: false`, the chat shows no voice control, the gateway accepts no voice connection and contacts no speech provider.
 
-The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.
+The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, in one of two versions you can choose between, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.
 
 Voice mode is for the operator. Board members cannot message sessions yet, so they have no chat to speak into: the voice routes answer them "Not available to board members", and a member sees no voice control. It will be offered to members when they can chat with sessions.
 
@@ -47,6 +47,28 @@ The speech process starts when voice is first used, stays warm for 10 minutes af
 
 Changing `local.device` between `cpu` and `gpu` needs a new install (a different runtime package and a different Parakeet model); the config reply says `not_installed` until you run it again.
 
+### Choosing the speech-to-text model
+
+The local provider runs one of two Parakeet models, chosen with `stt.model`:
+
+| `stt.model` | What it is | Size on disk | Notes |
+|---|---|---|---|
+| `parakeet-tdt-0.6b-v2` (default) | NVIDIA Parakeet TDT 0.6B v2, English | 2.4 GB (GPU), 0.65 GB (CPU) | The model every earlier version used. |
+| `parakeet-unified-en-0.6b` | NVIDIA Parakeet Unified 0.6B, English; one transducer model for offline and streaming recognition | 2.5 GB (GPU), 0.66 GB (CPU) | NVIDIA reports better accuracy than its earlier transducer models, and on the sample below it made fewer errors; its final decode takes longer on long utterances. The gateway uses its offline mode. NVIDIA Open Model License (see below). |
+
+```yaml
+voice:
+  enabled: true
+  stt:
+    model: parakeet-unified-en-0.6b
+```
+
+Any other value is refused when the configuration loads, with the list of choices. Leaving `stt.model` out keeps the default, so existing configurations are unchanged.
+
+Changing the model needs the new model's files, not a new install of everything. Reload the configuration, then ask for the install again (the voice control's "Install", or `POST /api/voice/install`): the Python environment is kept and only the model is downloaded (a few minutes; it refuses to start with less than 3.5 GB free for the GPU path, 1 GB for the CPU path). Both models can stay installed, and switching back is instant. Each downloaded file of the unified model is pinned to a commit and its SHA-256, and a file that does not match fails the install.
+
+Measured on one workstation with a 16 GB NVIDIA GPU while its CPU was heavily loaded (load average about 60), over 73 clean LibriSpeech clips (8 minutes of read speech, 1,150 words): word error rate 2.87% for `parakeet-tdt-0.6b-v2` and 2.35% for `parakeet-unified-en-0.6b` (33 and 27 word errors, mostly proper names). The gap is six words, so read it as "no worse", not as proof of better. Warm decode took a median of 0.45 to 0.60 s for both; it is dominated by a Python decoding loop that the loaded CPU slows, and the unified model's grows faster with the length of the utterance (about 0.85 s against 0.5 to 0.65 s for 10 to 15 seconds of speech). Your numbers on an idle machine will be several times lower.
+
 ### Speed
 
 Measured on a workstation with a 16 GB NVIDIA GPU (and a heavily loaded CPU): Parakeet fp32 on the GPU decodes a few seconds of speech in 50 to 100 ms warm, and Kokoro on the GPU speaks a sentence in well under a second. On a CPU, Parakeet's int8 model took several seconds per decode on that loaded machine, and Kokoro about as long as the speech it makes. Expect voice mode on CPU to feel slow; use the GPU, or a hosted provider, for a conversation that flows.
@@ -61,7 +83,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `mode` | `hands-free` | `hands-free` ends an utterance on your pause; `push-to-talk` ends it when you release the control. |
 | `language` | `en` | Language code. The local providers speak English only (`en`, `en-GB`, …). |
 | `stt.provider` | `local` | `local`, `openai` or `openai-compatible`. |
-| `stt.model` | per provider | `local`: `parakeet-tdt-0.6b-v2`; `openai`: `gpt-live-transcribe`; `openai-compatible`: `whisper-1`. |
+| `stt.model` | per provider | `local`: `parakeet-tdt-0.6b-v2` (default) or `parakeet-unified-en-0.6b`, and nothing else; `openai`: `gpt-live-transcribe`; `openai-compatible`: `whisper-1`, or whatever name the server uses. |
 | `stt.baseUrl` | — | Required for `openai-compatible`: the server's root, without `/v1`. http or https. |
 | `stt.apiKey` | — | A `${VAR}` reference to an environment variable. A literal key is refused. |
 | `tts.provider` | `local` | As for `stt.provider`. |
@@ -133,6 +155,7 @@ The local voices are Kokoro's: `af_*` and `am_*` are American English female and
 The gateway does not ship the models; it downloads them on first use.
 
 - **Parakeet TDT 0.6B v2** (speech-to-text): NVIDIA's model, converted to ONNX by a third party under CC-BY-4.0; see NVIDIA's model card for its community model licence.
+- **Parakeet Unified 0.6B (English)** (speech-to-text, opt-in): NVIDIA's model, governed by the [NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/): commercial use is allowed, and NVIDIA claims no rights in what it transcribes. Passing the model on to others requires a copy of that agreement and the notice "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"; the gateway does not do that, because it does not ship the model: the install fetches the third-party ONNX conversions ([the encoder and decoder](https://huggingface.co/eschmidbauer/parakeet-unified-en-0.6b-onnx) and [the vocabulary](https://huggingface.co/mrfakename/parakeet-unified-ONNX), both marked with that licence) from Hugging Face straight onto your machine, so the agreement is between you and NVIDIA. One of the conversions the install does not use is labelled CC-BY-4.0 on its page, which is not what NVIDIA's own model card says; the agreement is the one that applies. You must not bypass or disable the model's guardrails without an equivalent of your own, and your licence ends if you sue anyone claiming the model infringes a patent or copyright.
 - **Kokoro-82M v1.0** (text-to-speech): Apache-2.0.
 - **Silero VAD**: MIT.
 
