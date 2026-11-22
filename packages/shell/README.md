@@ -254,8 +254,12 @@ Until the gateway's voice hub is available, `emulator/fake-voice-server.mjs` sta
 in for it. It speaks the socket contract (pairing, `hello`/`ready`, a level-based
 VAD, a canned transcript, a spoken reply split into segments, `barge_in`, `played`,
 `stop_playback`, `bye`) with no speech recognition: the transcript is a placeholder.
-To run it against a real gateway instead, drop the fake and point
-`drive-shell.mjs` at that origin.
+The same run works against a real gateway and its voice hub (checked with the
+locked screen, a barge-in and Stop from the notification): start a gateway with
+`gateway.authRequired: true` and `voice.enabled: true` (OpenAI-compatible fake speech
+servers do for STT and TTS), `adb reverse` its port, mint a pairing code with
+`hundredfold pair`, and give the shell that origin, the code and an existing session id
+in place of the fake's pairing step.
 
 ## Retained desktop behavior
 
