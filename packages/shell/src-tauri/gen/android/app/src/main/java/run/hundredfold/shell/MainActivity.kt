@@ -14,9 +14,11 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     // Native voice mode: Rust drives audio through this bridge (see src/android.rs).
     voiceBridge = VoiceBridge(this).also { VoiceNative.nativeRegister(it) }
-    // BACK at the app root, once the page has no history left, goes here. While voice
-    // runs the session outlives the UI: move the task to the background instead of
-    // finishing the activity. Otherwise behave as before.
+    // This callback is registered last, so it sees BACK before the webview's own
+    // handling, whatever the page history holds. While voice runs the session outlives
+    // the UI: move the task to the background instead of navigating back or finishing
+    // the activity. Otherwise hand BACK to the default onBackPressed (page history,
+    // then finish) by switching this callback off for the call.
     onBackPressedDispatcher.addCallback(
       this,
       object : OnBackPressedCallback(true) {

@@ -119,9 +119,31 @@ adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
 sleep 1
 
 say "removing the task from recents: the session must end cleanly (bye, close 1000)"
-adb shell input keyevent 187
-sleep 2
-adb shell input swipe 540 1100 540 100 60
+# On a loaded host the recents UI can take longer than a fixed sleep to come up, and a
+# swipe sent before it is shown does nothing. Open it, wait until it has focus (the
+# app no longer does), swipe, and check the task is gone; retry from the home screen
+# a bounded number of times (the recents key toggles, so never press it twice in a row).
+task_listed() { adb shell dumpsys activity recents 2>/dev/null | grep -q 'A=[0-9]*:run.hundredfold.shell\|packageName=run.hundredfold.shell'; }
+app_focused() { adb shell dumpsys window 2>/dev/null | grep -m1 mCurrentFocus | grep -q run.hundredfold.shell; }
+dismissed=
+for attempt in 1 2 3 4; do
+  adb shell input keyevent 3 # home: a known starting point for every attempt
+  sleep 1
+  adb shell input keyevent 187
+  for _ in $(seq 1 20); do
+    app_focused || break
+    sleep 0.5
+  done
+  sleep 1 # the focus moves before the task cards are laid out
+  adb shell input swipe 540 1100 540 100 60
+  for _ in $(seq 1 10); do
+    task_listed || { dismissed=1; break; }
+    sleep 0.5
+  done
+  [ -z "$dismissed" ] || break
+  say "recents swipe attempt $attempt did not remove the task; retrying"
+done
+[ -n "$dismissed" ] || { say "FAIL: the task is still in recents after 4 swipes"; exit 1; }
 wait_count bye 1 10
 sleep 1
 say "after recents removal: $(grep -E '"event":"(bye|socket_close)"' "$SERVER_LOG" | tr '\n' ' ')"
