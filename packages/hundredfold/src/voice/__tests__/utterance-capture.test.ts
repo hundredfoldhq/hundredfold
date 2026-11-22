@@ -243,6 +243,34 @@ describe("UtteranceCapture, speech spoken while the models load", () => {
     expect(stt.streams[0].ended).toBe(true);
   });
 
+  it("a catch-up start and end delivered together still hold the length limit", () => {
+    const { stt, vad, frames, log } = loaded({ maxUtteranceMs: 5000 });
+    frames(750); // 15 s
+    vad.start(0);
+    vad.end(10_000); // a 10 s span, back to back with its start
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
+    expect(given(stt.streams[0])).toEqual(range(1, ms(5000) + 1)); // the first 5 s of it, no more
+    expect(stt.streams[0].ended).toBe(true);
+    vad.start(11_000); // the end was delivered, so the next speech is a new utterance
+    vad.end(12_000);
+    expect(stt.streams).toHaveLength(2);
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
+  });
+
+  it("a start older than the whole buffer (offsets restarted by a respawned sidecar) is live, seeded from the recent window", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(3000); // a minute in: the ring has been trimmed
+    vad.start(1000); // offsets restarted at 0 when the sidecar came back
+    frames(100);
+    vad.end(2800);
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
+    // preroll 100 + lag 1500 = 1600 ms back from where the start arrived, then the live frames.
+    expect(given(stt.streams[0])).toEqual(range(3000 - ms(1600) + 1, 3101));
+    expect(stt.streams[0].ended).toBe(true);
+    vad.start(500);
+    expect(stt.streams).toHaveLength(2); // the next utterance is not dropped either
+  });
+
   it("a live start behaves as before: seeded from its start, then the live frames, nothing twice", () => {
     const { stt, vad, frames } = loaded();
     frames(100); // 2 s

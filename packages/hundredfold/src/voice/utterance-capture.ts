@@ -150,15 +150,37 @@ export class UtteranceCapture {
     if (this.closed || this.options.pushToTalk) return;
     if (kind === "end") {
       this.options.events.onVad(false);
-      this.ignoringUntilEnd = false;
-      this.endSpeech(this.capturing?.catchUp ? this.catchUpEnd(atMs) : this.written);
+      this.onVadEnd(atMs);
       return;
     }
     this.options.events.onVad(true);
     if (this.capturing || this.ignoringUntilEnd) return;
-    const fromByte = Math.max(0, atMs * BYTES_PER_MS);
-    const lateByMs = (this.written - fromByte) / BYTES_PER_MS;
-    this.begin(fromByte, lateByMs > this.options.prerollMs + VAD_LAG_MS);
+    this.onVadStart(Math.max(0, atMs * BYTES_PER_MS));
+  }
+
+  private onVadEnd(atMs: number): void {
+    const open = this.capturing;
+    if (!open?.catchUp) {
+      this.ignoringUntilEnd = false;
+      this.endSpeech(this.written);
+      return;
+    }
+    // A start and its end can arrive together, between two frames: the length limit holds for that span too.
+    const toByte = this.catchUpEnd(atMs);
+    if (toByte - open.catchUp.fromByte >= this.options.maxUtteranceMs * BYTES_PER_MS) this.cutForLength(open);
+    else this.endSpeech(toByte);
+    this.ignoringUntilEnd = false;
+  }
+
+  /**
+   * A start behind the live frames by more than the VAD's own lag is a catch-up: its audio is cut when its end arrives.
+   * A start older than the whole buffer cannot be a held one (the sidecar restarts its offsets at 0 when it is
+   * respawned), so it is treated as live and seeded from the most recent window instead.
+   */
+  private onVadStart(fromByte: number): void {
+    const windowBytes = (this.options.prerollMs + VAD_LAG_MS) * BYTES_PER_MS;
+    if (fromByte < this.written - this.ringBytes) return this.begin(Math.max(fromByte, this.written - windowBytes));
+    this.begin(fromByte, this.written - fromByte > windowBytes);
   }
 
   /** Where a catch-up utterance's audio stops: the end of speech and the VAD's trailing silence, never past what was written. */
