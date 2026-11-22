@@ -46,6 +46,8 @@ vi.mock('@/lib/voice/native', async () => {
   }
   return { NativeVoiceSession, nativeVoiceBridge: () => nativeState.bridge }
 })
+const principal = vi.hoisted(() => ({ member: null as unknown }))
+vi.mock('@/hooks/use-principal', () => ({ useMember: () => principal.member }))
 vi.mock('@/platform/native-bridge', () => ({ nativeBridge: () => undefined }))
 vi.mock('@/lib/gateway-transport', () => ({ gatewayTransport: () => ({ profile: { origin: 'https://gw.example.test' } }) }))
 
@@ -65,6 +67,7 @@ beforeEach(() => {
   installVoice.mockReset()
   controllers.length = 0
   nativeState.bridge = null
+  principal.member = null
   resetVoiceConfigCache()
   stubBrowserAudio()
 })
@@ -81,6 +84,38 @@ describe('useVoice', () => {
     await waitFor(() => expect(getVoiceConfig).toHaveBeenCalled())
     expect(result.current.enabled).toBe(false)
     expect(controllers).toHaveLength(0)
+  })
+
+  it('a board member never requests the voice config and gets no control, no error, no note', async () => {
+    principal.member = { user: { id: 'u1' }, boards: [] }
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result } = renderHook(() => useVoice('s1', null))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(getVoiceConfig).not.toHaveBeenCalled()
+    expect(result.current.enabled).toBe(false)
+    expect(result.current.unavailable).toBeNull()
+    expect(result.current.state.error).toBeNull()
+    expect(result.current.note).toBeNull()
+    expect(controllers).toHaveLength(0)
+  })
+
+  it('a member who signs in after an operator does not inherit the operator\'s cached config', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const first = renderHook(() => useVoice('s1', null))
+    await waitFor(() => expect(first.result.current.enabled).toBe(true))
+    first.unmount()
+    principal.member = { user: { id: 'u1' }, boards: [] }
+    getVoiceConfig.mockClear()
+    const second = renderHook(() => useVoice('s1', null))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(second.result.current.enabled).toBe(false)
+    expect(getVoiceConfig).not.toHaveBeenCalled()
+  })
+
+  it('an operator still asks', async () => {
+    getVoiceConfig.mockResolvedValue({ enabled: false })
+    renderHook(() => useVoice('s1', null))
+    await waitFor(() => expect(getVoiceConfig).toHaveBeenCalledTimes(1))
   })
 
   it('stays disabled when the config call fails (no route, no access, an older gateway)', async () => {
