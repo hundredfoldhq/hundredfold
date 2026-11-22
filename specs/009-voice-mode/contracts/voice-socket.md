@@ -26,7 +26,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 | scoped caller outside reach (`sessionIsWithinReach`) | 403 |
 | session missing, deleted, or a terminal | 404 |
 | a different principal holds the session's attachment | accepted then closed `4409` with reason `in_use` |
-| `limits.maxConcurrentAttachments` reached | accepted then closed `4429` with reason `limit` |
+| `limits.maxConcurrentAttachments` reached | accepted then closed `4429` with reason `limit`, unless an attachment is suspended (its client dropped): the longest-suspended is ended to make room |
 
 ## Audio
 
@@ -54,7 +54,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 | `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `cues? {enabled, volume}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
 | `vad` | `speaking: boolean` | the gateway's VAD state (UI only) |
 | `transcript` | `utteranceId`, `text`, `final` | partial or final |
-| `stop_playback` | `reason: "speech"` | the gateway's VAD heard speech over playback before the client's onset did |
+| `stop_playback` | `reason: "speech" \| "new_reply"` | stop playing and drop what is buffered: the gateway's VAD heard speech over playback before the client's onset did (`speech`), or a newer reply is about to be spoken and the older one is abandoned (`new_reply`) |
 | `turn` | `state`, `tool?` | `idle` / `thinking` / `working` / `speaking` |
 | `segment_start` | `segmentId`, `messageId`, `text` | before that segment's audio |
 | `segment_end` | `segmentId` | after its last audio frame |

@@ -147,6 +147,11 @@ export class SpeechPipeline {
     this.held = true;
   }
 
+  /** Whether segments are being held back, as after a barge-in cut that is waiting for the words that follow it. */
+  isHeld(): boolean {
+    return this.held;
+  }
+
   release(): void {
     this.held = false;
     this.kick();

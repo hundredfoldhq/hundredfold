@@ -96,6 +96,11 @@ export class VoiceAttachment {
     return this.suspendedAt !== null;
   }
 
+  /** When the client went away, or null while it is attached. */
+  get suspendedSince(): number | null {
+    return this.suspendedAt;
+  }
+
   // ── socket in ──────────────────────────────────────────────────────────────
 
   /** A JSON text frame from the client. */
