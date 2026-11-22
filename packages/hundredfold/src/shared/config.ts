@@ -7,11 +7,11 @@ import { warnDuplicates, type DuplicateTolerance } from "./fallback-chain-load.j
 import { opencodeSubscriptionProblems, opencodeUsageLimitsProblems } from "./opencode-usage-limits-config.js";
 import { validateOpencodeAccounts, stagedOpencodeAccounts } from "./opencode-accounts-config.js";
 import { configEnvReferences } from "./config-env-references.js";
-import { setOpencodeAccountKeyEnv } from "./child-env.js";
+import { setOpencodeAccountKeyEnv, setVoiceKeyEnv } from "./child-env.js";
 import { rememberOpencodeAccounts } from "./opencode-subscription.js";
 import { autoCompactProblems } from "./auto-compact-config.js";
 import { contextConfigProblems } from "./context-config.js";
-import { voiceConfigProblems } from "./voice-config.js";
+import { voiceKeyEnvNames, warnAboutVoiceProblems } from "./voice-config.js";
 import { sessionFallbackConfigProblems } from "./session-fallback-config.js";
 import type { HundredfoldConfig } from "./types.js";
 import { todoRecoveryProblems } from "./todo-recovery-config.js";
@@ -105,7 +105,8 @@ export function validateConfigShape(config: unknown, options: { tolerateDuplicat
     problems.push(...opencodeUsageLimitsProblems(c.engines), ...opencodeSubscriptionProblems(c.engines), ...validateOpencodeAccounts(c.engines, configEnvReferences(c)), ...autoCompactProblems(c.engines));
   }
 
-  problems.push(...validateRealtime(c.realtime), ...voiceConfigProblems(c.voice));
+  // `voice` is deliberately not checked here: its problems keep voice off, they do not fail the config (FR-025).
+  problems.push(...validateRealtime(c.realtime));
 
   return problems;
 }
@@ -202,6 +203,7 @@ export function loadConfig(): HundredfoldConfig {
   }
   const config = parsed as HundredfoldConfig;
   warnAboutHookProblems(config.hooks);
+  warnAboutVoiceProblems(config.voice);
   warnAboutRemovedEngineBlocks(config);
   config.engines.claude = normalizeClaudeEngineConfig(config.engines.claude);
   applyLegacyFallbackMigration(config);
@@ -209,7 +211,28 @@ export function loadConfig(): HundredfoldConfig {
   // Every other process the gateway starts drops these variables (child-env.ts).
   setOpencodeAccountKeyEnv(stagedOpencodeAccounts(config).map((account) => account.keyEnv!));
   rememberOpencodeAccounts(config);
+  // Likewise the voice provider keys: the gateway resolves them itself (voiceKeyEnvironment), no child gets them.
+  const voiceKeyNames = voiceKeyEnvNames(config.voice);
+  setVoiceKeyEnv(voiceKeyNames);
+  warnAboutSharedVoiceKeys(config, voiceKeyNames);
   return config;
+}
+
+// Warn once per variable, for the same reason as above: loadConfig() is polled.
+const warnedSharedVoiceKeys = new Set<string>();
+
+/**
+ * A voice key variable that something else in config.yaml also expands from reads as unset there, because the
+ * gateway withholds it from every other process. The fix is a variable of its own for voice.
+ */
+function warnAboutSharedVoiceKeys(config: HundredfoldConfig, names: readonly string[]): void {
+  if (names.length === 0) return;
+  const references = configEnvReferences({ ...(config as unknown as Record<string, unknown>), voice: undefined });
+  for (const name of names) {
+    if (!references.has(name) || warnedSharedVoiceKeys.has(name)) continue;
+    warnedSharedVoiceKeys.add(name);
+    console.warn(`voice.*.apiKey names ${name}, which config.yaml also expands elsewhere: the gateway keeps it from every other process, so it will be unset there. Give voice its own variable.`);
+  }
 }
 
 // Warn once per removed engine block: loadConfig() runs again on every config

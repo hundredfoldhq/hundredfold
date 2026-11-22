@@ -65,6 +65,8 @@ function refusedCaller(req: IncomingMessage, socket: Duplex, session: Session, d
   if (identity.kind === "session" && !sessionIsWithinReach(session, identity.callerId)) {
     return refuse(socket, "403 Forbidden", "That session is outside your reach.");
   }
+  // Someone with no credential at all learns only that one is needed, not what the endpoint is for.
+  if (identity.kind === "unauthenticated") return refuse(socket, "403 Forbidden", "Authentication is required.");
   return refuse(socket, "403 Forbidden", "/ws/voice is for the operator; sessions cannot speak into other sessions.");
 }
 
