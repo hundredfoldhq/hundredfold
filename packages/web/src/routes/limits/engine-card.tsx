@@ -172,13 +172,13 @@ function CardBody({ engine, account, now, emptyNote }: { engine: EngineLimitEngi
   if (isOpencodeAccount(account)) {
     return (
       <>
-        <OpencodeUsageBody usage={account.providerUsage} buckets={account.buckets} provider={account.provider} covered={account.provider} now={now} />
+        <OpencodeUsageBody usage={account.providerUsage} buckets={account.buckets} provider={account.provider} covered={account.providerUsage?.provider ?? account.provider} now={now} />
         <AccountFacts account={account} now={now} />
       </>
     )
   }
   if (engine.name === "opencode" && (engine.providerUsage || hasBucketWindows(engine))) {
-    return <OpencodeUsageBody usage={engine.providerUsage} buckets={engine.buckets} covered={engine.defaultModel?.split("/")[0]} now={now} />
+    return <OpencodeUsageBody usage={engine.providerUsage} buckets={engine.buckets} covered={engine.providerUsage?.provider} now={now} />
   }
   return <Windows engine={engine} now={now} emptyNote={emptyNote} />
 }

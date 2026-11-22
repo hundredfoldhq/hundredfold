@@ -5,6 +5,8 @@ import type { EngineLimitEngineSnapshot, EngineLimitWindow } from "@/lib/api"
  * its own turn ledger. `unavailable` carries fixed copy saying why there is no reading: the card shows it instead of a zero.
  */
 export interface ProviderUsage {
+  /** The provider id the reading is for. */
+  provider?: string
   source: string
   status: "ok" | "unavailable"
   fetchedAt: string

@@ -10,6 +10,7 @@ import type {
   EngineLimitWindow,
   EngineLimitsResponse,
   HundredfoldConfig,
+  ProviderUsage,
 } from "./types.js";
 import { noteLimitReading, recordExhaustedWindows } from "./engine-health.js";
 import { collectClaudeAccounts } from "./engine-limits-accounts.js";
@@ -336,8 +337,9 @@ export async function collectEngineLimits(
   const generatedAt = nowIso();
   const engines: Record<string, EngineLimitEngineSnapshot> = {};
   // OpenCode Go's own usage, asked for alongside the other engines' reads: its request is the slowest thing here.
-  const goUsage = names.includes("opencode") && goProvidersInUse(config).length > 0
-    ? (opts.goUsage ?? collectGoUsage)(config, { fresh: opts.fresh === true })
+  const defaultModel = registry.opencode?.defaultModel;
+  const goUsage: Promise<Map<string, ProviderUsage>> = names.includes("opencode") && goProvidersInUse(config, { defaultModel }).length > 0
+    ? (opts.goUsage ?? collectGoUsage)(config, { fresh: opts.fresh === true, defaultModel }).catch(() => new Map())
     : Promise.resolve(new Map());
 
   for (const name of names) {

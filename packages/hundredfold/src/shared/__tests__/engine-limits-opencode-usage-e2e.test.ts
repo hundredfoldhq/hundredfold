@@ -66,6 +66,19 @@ describe("collectEngineLimits: opencode's provider-reported usage", () => {
     expect(readEngineHealth()["opencode/opencode-go"]).toBeUndefined();
   });
 
+  it("reads the provider of a Go model the registry alone names as the default, with no model pinned", async () => {
+    const config = cfg({ model: undefined });
+    (config as unknown as { models: unknown }).models = { opencode: { default: "opencode-go/flash", models: [{ id: "opencode-go/flash", label: "Flash" }] } };
+    const asked: (string | undefined)[] = [];
+    const out = await collect(config, {
+      engine: "opencode",
+      goUsage: async (_config, deps) => { asked.push(deps?.defaultModel); return new Map([["opencode-go", usage(40, false)]]); },
+    });
+    expect(asked).toEqual(["opencode-go/flash"]);
+    expect(out.engines.opencode?.providerUsage).toMatchObject({ status: "ok" });
+    expect(out.engines.opencode?.status).toBe("snapshot");
+  });
+
   it("holds the provider out until the reset the provider reports for a spent window", async () => {
     await collect(cfg({}), { engine: "opencode", goUsage: async () => new Map([["opencode-go", usage(100, true)]]) });
     const { readEngineHealth, isEngineExhausted } = await import("../engine-health.js");

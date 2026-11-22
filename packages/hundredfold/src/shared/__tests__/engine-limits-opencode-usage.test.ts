@@ -13,6 +13,7 @@ import type { Employee, EngineLimitEngineSnapshot, HundredfoldConfig, ProviderUs
 import { readEngineHealth } from "../engine-health.js";
 import { recordMeteredExhaustion } from "../engine-health-meter.js";
 import { collectOpencodeAccounts } from "../engine-limits-opencode-accounts.js";
+import { OPENCODE_UNMETERED_REASON } from "../engine-limits-opencode.js";
 import { collectGoUsage, goProvidersInUse, providerHealthBuckets, withEngineUsage } from "../engine-limits-opencode-usage.js";
 import { forgetGoUsageCacheForTest, parseGoUsage, unavailableUsage } from "../opencode-go-usage.js";
 
@@ -79,6 +80,23 @@ describe("collectGoUsage", () => {
   });
 });
 
+describe("dollar figures", () => {
+  it("are left out when no allowance is configured for the provider, whatever percentage the provider reports", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ usage: { monthly: { status: "ok", percent: 25, resetsAt: "2026-12-01T00:00:00Z" } } }), { status: 200 })) as unknown as typeof fetch;
+    const usage = await collectGoUsage(cfg({ accounts: { other: { provider: "go-other", base: "opencode-go", keyEnv: "GO_OTHER_KEY" } } }), { employees: [], env: { GO_OTHER_KEY: "other-key" }, processEnv: { XDG_DATA_HOME: path.join(TEST_HOME, "none") }, fetchImpl });
+    const reading = usage.get("go-other")!;
+    expect(reading.status).toBe("ok");
+    expect(reading).not.toHaveProperty("monthlyLimitUsd");
+    expect(reading).not.toHaveProperty("consumedUsd");
+    expect(reading).not.toHaveProperty("remainingUsd");
+  });
+
+  it("name the provider each reading is for", async () => {
+    const usage = await collectGoUsage(cfg({ accounts: ACCOUNTS }), { employees: [], env: {}, processEnv: { XDG_DATA_HOME: path.join(TEST_HOME, "none") } });
+    expect([...usage].map(([provider, reading]) => [provider, reading.provider])).toEqual([["go-second", "go-second"], ["opencode-go", "opencode-go"]]);
+  });
+});
+
 describe("the provider's reading on the snapshots", () => {
   const unmetered = (): EngineLimitEngineSnapshot => ({
     name: "opencode", available: true, status: "unsupported", source: "model-registry", refreshedAt: NOW.toISOString(), defaultModel: "opencode-go/flash", models: [],
@@ -96,6 +114,15 @@ describe("the provider's reading on the snapshots", () => {
     const snap = withEngineUsage(unmetered(), cfg(), new Map([["opencode-go", unavailableUsage("forbidden", NOW)]]));
     expect(snap.status).toBe("unsupported");
     expect(snap.providerUsage?.unavailable?.code).toBe("forbidden");
+  });
+
+  it("no longer says there is no quota endpoint once a reading exists, still points at the allowance setting, and keeps any other reason", () => {
+    const generic = { ...unmetered(), unsupportedReason: OPENCODE_UNMETERED_REASON };
+    const unavailable = new Map([["opencode-go", unavailableUsage("no-key", NOW)]]);
+    const note = withEngineUsage(generic, cfg(), unavailable).unsupportedReason;
+    expect(note).not.toContain("no account quota endpoint");
+    expect(note).toContain("engines.opencode.usageLimits.monthlyUsd");
+    expect(withEngineUsage(unmetered(), cfg(), unavailable).unsupportedReason).toBe("OpenCode exposes no account quota endpoint");
   });
 
   it("leaves a provider a declared account covers to that account's card", () => {

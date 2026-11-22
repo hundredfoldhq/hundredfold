@@ -25,10 +25,12 @@ const account = (over: Partial<EngineLimitAccountSnapshot> = {}): EngineLimitAcc
 })
 const win = (name: string, mins: number, pct: number, over: object = {}) => ({ name, windowDurationMins: mins, usedPercent: pct, resetsAtIso: iso(2 * HOUR), ...over })
 const OK: ProviderUsage = {
+  provider: "opencode-go",
   source: "OpenCode Go usage API", status: "ok", fetchedAt: iso(0),
   windows: [win("5h", 300, 30), win("7d", 10080, 100, { limited: true }), win("30d", 43200, 50)],
 }
 const UNAVAILABLE: ProviderUsage = {
+  provider: "opencode-go",
   source: "OpenCode Go usage API", status: "unavailable", fetchedAt: iso(0),
   unavailable: { code: "forbidden", message: "OpenCode Go refused the request (403): the key is not covered or the region is restricted." },
 }
@@ -92,6 +94,13 @@ describe("LimitsPage — provider-reported opencode usage", () => {
     expect(within(c).getByTestId("provider-usage").textContent).toContain("30%")
     const buckets = Array.from(c.querySelectorAll("[data-bucket]")).map((el) => el.getAttribute("data-bucket"))
     expect(buckets).toEqual(["openrouter/x"])
+  })
+
+  it("badges the card as usage unavailable, and drops the engine's own not-metered copy, when the reading failed", () => {
+    show({ status: "unsupported", defaultModel: "opencode-go/flash", providerUsage: UNAVAILABLE, unsupportedReason: "No allowance is configured to meter this." })
+    const c = card("opencode")
+    expect(within(c).getAllByText("Usage unavailable")).toHaveLength(1)
+    expect(within(c).queryByText(/No allowance is configured/)).toBeNull()
   })
 
   it("keeps showing the ledger buckets of a card with no provider reading at all", () => {

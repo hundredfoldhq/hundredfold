@@ -75,6 +75,11 @@ export interface GoKeyDeps {
   processEnv?: NodeJS.ProcessEnv;
 }
 
+/** The credential store lookup, with the process environment as a parameter default so the one place it is read is named. */
+function storedKey(provider: string, processEnv: NodeJS.ProcessEnv = process.env): string | undefined {
+  return keyFromDatabase(provider, processEnv) ?? keyFromAuthFile(provider, processEnv);
+}
+
 /** The key that signs `provider` in to OpenCode Go, or undefined when none can be found. */
 export function goKeyFor(config: Pick<HundredfoldConfig, "engines">, provider: string, deps: GoKeyDeps = {}): string | undefined {
   const account = opencodeAccountByProvider(config, provider);
@@ -82,6 +87,5 @@ export function goKeyFor(config: Pick<HundredfoldConfig, "engines">, provider: s
     const key = account.keyEnv === undefined ? undefined : (deps.env ?? opencodeAccountKeyEnvironment())[account.keyEnv]?.trim();
     return key ? key : undefined;
   }
-  const processEnv = deps.processEnv ?? process.env;
-  return keyFromDatabase(provider, processEnv) ?? keyFromAuthFile(provider, processEnv);
+  return storedKey(provider, deps.processEnv);
 }

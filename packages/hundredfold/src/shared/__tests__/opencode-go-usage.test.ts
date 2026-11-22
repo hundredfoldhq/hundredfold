@@ -97,6 +97,11 @@ describe("fetchGoUsage", () => {
 });
 
 describe("readGoUsage", () => {
+  it("keeps a reading for a minute and a failure for half of that", () => {
+    expect(GO_USAGE_TTL_MS).toBe(60_000);
+    expect(GO_USAGE_FAILURE_TTL_MS).toBe(30_000);
+  });
+
   it("reuses a reading inside its ttl, and asks again after it", async () => {
     const fetchImpl = reply(200, BODY);
     let now = 1_000_000;

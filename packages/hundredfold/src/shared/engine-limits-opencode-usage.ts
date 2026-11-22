@@ -1,7 +1,7 @@
 import type { Employee, EngineLimitBucket, EngineLimitEngineSnapshot, HundredfoldConfig, ProviderUsage } from "./types.js";
 import { goKeyFor, declaredGoProviders, isGoProvider, type GoKeyDeps } from "./opencode-go-key.js";
 import { readGoUsage, unavailableUsage, type ReadGoUsageOptions } from "./opencode-go-usage.js";
-import { meteredLimitFor } from "./engine-limits-opencode.js";
+import { meteredLimitFor, OPENCODE_UNMETERED_FALLBACK_REASON, OPENCODE_UNMETERED_REASON } from "./engine-limits-opencode.js";
 import { rosterEmployees } from "./engine-limits-accounts.js";
 
 /**
@@ -55,9 +55,15 @@ export async function collectGoUsage(config: HundredfoldConfig, deps: GoUsageDep
   const readings = await Promise.all(providers.map(async (provider): Promise<[string, ProviderUsage]> => {
     const key = goKeyFor(config, provider, deps);
     const usage = key === undefined ? unavailableUsage("no-key", deps.now) : await readGoUsage(key, deps);
-    return [provider, withDollars(config, provider, usage)];
+    return [provider, { ...withDollars(config, provider, usage), provider }];
   }));
   return new Map(readings);
+}
+
+/** The engine's not-metered note, reworded for a provider that has a usage endpoint (the generic one says there is none). */
+function reasonFields(reason: string | undefined): { unsupportedReason?: string } {
+  if (reason === undefined) return {};
+  return { unsupportedReason: reason === OPENCODE_UNMETERED_REASON ? OPENCODE_UNMETERED_FALLBACK_REASON : reason };
 }
 
 /**
@@ -73,9 +79,10 @@ export function withEngineUsage(
   const provider = providerOf(config.engines.opencode?.model ?? snap.defaultModel);
   const reading = provider === undefined ? undefined : usage.get(provider);
   if (provider === undefined || reading === undefined || declaredGoProviders(config).includes(provider)) return snap;
-  if (reading.status !== "ok" || !snap.available) return { ...snap, providerUsage: reading };
-  const { unsupportedReason: _reason, ...rest } = snap;
-  return { ...rest, status: "snapshot", providerUsage: reading };
+  const { unsupportedReason, ...rest } = snap;
+  if (reading.status === "ok" && snap.available) return { ...rest, status: "snapshot", providerUsage: reading };
+  // "No quota endpoint" is untrue of a provider that has one; the reading says why it could not be had.
+  return { ...rest, ...reasonFields(unsupportedReason), providerUsage: reading };
 }
 
 /** The window a provider reading puts into health: spent when the provider says rate-limited, whatever its rounded percentage. */

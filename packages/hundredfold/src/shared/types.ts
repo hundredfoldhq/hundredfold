@@ -866,6 +866,8 @@ export type ProviderUsageReasonCode =
  * `unavailable` there are none, and the card says why instead of showing a zero nobody measured.
  */
 export interface ProviderUsage {
+  /** The provider id this reading is for; its ledger buckets are the ones it replaces. */
+  provider?: string;
   source: string;
   status: "ok" | "unavailable";
   fetchedAt: string;
