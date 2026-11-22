@@ -5,7 +5,10 @@
 // --strict fails the run on it). A connection the network guard refused fails any scenario.
 import fs from "node:fs";
 import { Harness, parseArgs } from "./lib.mjs";
-import { SCENARIOS } from "./scenario-defs.mjs";
+import { GROUP_SCENARIOS } from "./group-scenarios.mjs";
+import { SCENARIOS as BASE_SCENARIOS } from "./scenario-defs.mjs";
+
+const SCENARIOS = [...BASE_SCENARIOS, ...GROUP_SCENARIOS];
 
 const args = parseArgs(process.argv.slice(2));
 const csv = (value) => new Set(String(value ?? "").split(",").map((id) => id.trim()).filter(Boolean));

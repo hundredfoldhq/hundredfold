@@ -1,5 +1,6 @@
 // What the scenarios share: the gateway's HTTP API, the fake providers' scenario file and
 // ledger, and the helpers that put the instance back to a known state between scenarios.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -11,6 +12,7 @@ export function parseArgs(argv) {
     else if (flag.startsWith("--")) out[flag.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i];
     else throw new Error(`unexpected argument ${flag}`);
   }
+  // Optional: how a scenario restarts the gateway (the sandbox helper and the instance name).
   for (const required of ["baseUrl", "home", "layout", "scenarioFile", "ledger", "netLog", "results"]) {
     if (!out[required]) throw new Error(`--${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} is required`);
   }
@@ -122,6 +124,42 @@ export class Harness {
     }, { timeoutMs });
   }
 
+  /**
+   * Seeds one Claude account's usage the way the gateway reads it (`latestAccountReading`): one fresh sample in the
+   * account's own usage history file, under the instance's engine-limits directory. `usedPercent` is the tightest
+   * window's use, so the account's headroom is 100 minus it. No provider is called.
+   */
+  seedUsage(accountKey, usedPercent, { ageMs = 0, windowName = "5h" } = {}) {
+    const dir = path.join(this.args.home, "tmp", "engine-limits");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = accountKey === "claude" ? "claude-usage-history.json" : `claude-usage-history.${encodeURIComponent(accountKey)}.json`;
+    const resetsAt = Math.floor(Date.now() / 1000) + 3 * 3600;
+    const staged = path.join(dir, `${file}.tmp`);
+    fs.writeFileSync(staged, JSON.stringify([{ at: Date.now() - ageMs, windows: [{ name: windowName, usedPercent, resetsAt }] }]));
+    fs.renameSync(staged, path.join(dir, file));
+  }
+
+  /**
+   * Puts `employees.onA`'s chain on the account group [A, B] followed by `tail`, and returns the accounts' store keys
+   * (the gateway names them by profile directory) as the chains API reports them, so usage can be seeded under them.
+   */
+  async useGroup(tail = [this.links().opencodeX]) {
+    const group = { group: [{ engine: "claude", profile: "A" }, { engine: "claude", profile: "B" }] };
+    await this.putConfig({ engines: { claude: { accounts: { A: { fallback: [group, ...tail] } } } } });
+    const view = await this.api("GET", `/api/fallback-chains?employee=${this.layout.employees.onA}`);
+    return groupAccounts(view.body, this.layout.employees.onA);
+  }
+
+  /** Stops the gateway and starts it again on the same home and port; reads the token again (it is minted per start). */
+  async restartGateway() {
+    const { helper, instance } = this.args;
+    if (!helper || !instance) throw new Error("this run was not given --helper and --instance, so it cannot restart the gateway");
+    execFileSync(helper, ["stop", instance], { stdio: "ignore" });
+    execFileSync(helper, ["start", instance], { stdio: "ignore" });
+    this.token = JSON.parse(fs.readFileSync(path.join(this.args.home, "gateway.json"), "utf8")).token;
+    await waitFor("the gateway to answer", async () => (await this.api("GET", "/api/status").catch(() => ({ status: 0 }))).status === 200, { timeoutMs: 60_000 });
+  }
+
   /** Back to a known state: no sessions, no engine health, no chains, a clean scenario. */
   async reset() {
     for (const id of this.sessions.splice(0)) {
@@ -130,6 +168,7 @@ export class Harness {
     }
     fs.mkdirSync(path.join(this.args.home, "tmp"), { recursive: true });
     fs.writeFileSync(path.join(this.args.home, "tmp", "engine-health.json"), "{}\n");
+    fs.rmSync(path.join(this.args.home, "tmp", "engine-limits"), { recursive: true, force: true });
     await this.putConfig({
       engines: {
         claude: { fallback: null, fallbackModelMap: null, accounts: { A: { fallback: null }, B: { fallback: null } } },
@@ -152,6 +191,14 @@ export class Harness {
       profileDirs: profiles,
     };
   }
+}
+
+/** The store keys of the group's accounts A and B, from the chains API's view of the employee that runs as A. */
+function groupAccounts(view, employee) {
+  const subject = view?.subjects?.find((entry) => entry.kind === "employee" && entry.id === employee);
+  const keys = { A: subject?.primary?.account, B: subject?.effective?.find((link) => link.profile === "B")?.account };
+  if (!keys.A || !keys.B) throw new Error(`the chains API named no accounts for the group: ${JSON.stringify(view)}`);
+  return keys;
 }
 
 /** Counts of ledger rows by `profile|model` or `model`, for "each target tried exactly once". */

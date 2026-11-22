@@ -12,9 +12,9 @@ import { expectEqual, expectTrue, sleep, triesBy, waitFor, walkOf } from "./lib.
 
 const RATE_LIMITS = ["rate-limit", "quota"];
 const WALK_A = "claude/profile-a/opus:rate-limit -> claude/profile-b/sonnet:rate-limit -> opencode/x-provider/model-x:rate-limit -> opencode/y-provider/model-y:ok";
-const linkKey = (link) => `${link.engine}|${link.profile ?? ""}|${link.model ?? ""}`;
+export const linkKey = (link) => `${link.engine}|${link.profile ?? ""}|${link.model ?? ""}`;
 /** The hops the session API reports (`fallback.chain.hops`, most recent first), oldest first. */
-const chainHops = (session) => [...(session.fallback?.chain?.hops ?? [])].reverse();
+export const chainHops = (session) => [...(session.fallback?.chain?.hops ?? [])].reverse();
 const hopTargets = (session) => chainHops(session).map((hop) => hop.to);
 
 /** The session API's own account of where a session was served and how it got there. */
@@ -161,7 +161,7 @@ async function opencodeProviderHop(h) {
 }
 
 /** A limit that reopens `seconds` from now, in the form the fake provider takes. */
-const limitedFor = (seconds) => ({ outcome: "rate-limit", resetsAt: Math.floor(Date.now() / 1000) + seconds });
+export const limitedFor = (seconds) => ({ outcome: "rate-limit", resetsAt: Math.floor(Date.now() / 1000) + seconds });
 
 /** The session's own target serves again from the first turn after its limit reopens, not before. */
 async function returnAfterReset(h) {
@@ -219,7 +219,7 @@ async function stillLimitedAtReset(h) {
   expectEqual("the stand-in served", rows[rows.length - 1].profile, "profile-b");
 }
 
-const healthOf = (h) => JSON.parse(fs.readFileSync(path.join(h.args.home, "tmp", "engine-health.json"), "utf8"));
+export const healthOf = (h) => JSON.parse(fs.readFileSync(path.join(h.args.home, "tmp", "engine-health.json"), "utf8"));
 /** The health key profile A's limit was recorded under, read while it is the only exhausted record. */
 function keyOfA(h) {
   const keys = Object.entries(healthOf(h)).filter(([, record]) => record.state === "exhausted").map(([key]) => key);
@@ -227,7 +227,7 @@ function keyOfA(h) {
   return keys[0];
 }
 /** The operator's clear, through the real CLI against the instance home. */
-function cliClear(h, key) {
+export function cliClear(h, key) {
   const out = execFileSync(process.execPath, [path.join(process.env.HUNDREDFOLD_REPO, "packages/hundredfold/dist/bin/hundredfold.js"), "limits", "--clear", key],
     { env: { ...process.env, HUNDREDFOLD_HOME: h.args.home }, encoding: "utf8" });
   console.log(`         cli: ${out.trim().split("\n")[0]}`);

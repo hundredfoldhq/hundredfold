@@ -21,7 +21,8 @@
 #   --mode        which opencode mode the instance runs in: run, server, or both (default)
 #   --only        scenario ids to run, e.g. a,f (default: all)
 #   --pending     scenarios that wait on runtime work not yet merged: their result is
-#                 reported, never failed (default: none); a pending scenario that
+#                 reported, never failed (default: p,q,s,t,u,v, the account group scenarios
+#                 that need start-path pinning; --pending "" runs everything for real); a pending scenario that
 #                 passes is reported as such, and --strict fails the run on it
 #   --port        gateway port, 8060 or above (default: HUNDREDFOLD_VERIFY_PORT, else a free one)
 #   --keep        leave the last instance up for screenshots and print how to tear it down
@@ -45,7 +46,10 @@ GATEWAY_REPO="$(cd "${HUNDREDFOLD_VERIFY_GATEWAY_REPO:-$REPO}" && pwd -P)"
 HELPER="$REPO/scripts/hundredfold-sandbox.sh"
 DRIVER_DIR="$REPO/scripts/verify-fallback-chains"
 INSTANCE="fallback-chains"
-MODE="both"; ONLY=""; PENDING=""; PORT="${HUNDREDFOLD_VERIFY_PORT:-}"; KEEP=0; RETAIN=""; SKIP_BUILD=0; STRICT=0; TEARDOWN=""
+# Waiting on part B of the account group work (start-path pinning at creation): they assert the pick a
+# session records. Drop each id from this list when that work is merged into the branch under test.
+DEFAULT_PENDING="p,q,s,t,u,v"
+MODE="both"; ONLY=""; PENDING="$DEFAULT_PENDING"; PORT="${HUNDREDFOLD_VERIFY_PORT:-}"; KEEP=0; RETAIN=""; SKIP_BUILD=0; STRICT=0; TEARDOWN=""
 
 die() { echo "verify-fallback-chains: $1" >&2; exit "${2:-2}"; }
 
@@ -205,7 +209,7 @@ run_mode() {
   instance_env "$NODE_BIN" "$DRIVER_DIR/scenarios.mjs" \
     --base-url "http://127.0.0.1:$PORT" --home "$SANDBOX_HOME" --layout "$VERIFY_ROOT/layout-$mode.json" \
     --scenario-file "$VERIFY_ROOT/scenario.json" --ledger "$VERIFY_ROOT/ledger.jsonl" --net-log "$VERIFY_ROOT/network-refusals.jsonl" \
-    --results "$VERIFY_ROOT/artifacts/results-$mode.json" --pending "$PENDING" ${ONLY:+--only "$ONLY"} $( ((STRICT)) && echo --strict ) \
+    --results "$VERIFY_ROOT/artifacts/results-$mode.json" --helper "$HELPER" --instance "$INSTANCE" --pending "$PENDING" ${ONLY:+--only "$ONLY"} $( ((STRICT)) && echo --strict ) \
     || driver_status=$?
   mkdir -p "$VERIFY_ROOT/artifacts/gateway-logs-$mode"
   cp -R "$SANDBOX_HOME/logs/." "$VERIFY_ROOT/artifacts/gateway-logs-$mode"/ 2>/dev/null || true
