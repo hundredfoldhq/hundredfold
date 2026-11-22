@@ -82,7 +82,13 @@ export function isSoftInterruptibleEngine(engine: Engine): engine is SoftInterru
 ```
 
 Implementer: `InteractiveClaudeEngine`: Ctrl+B when a foreground Bash is running, then Esc;
-never kill or release (verified live, research R8). `preserves = true`; `backgroundable`
+never kill or release (verified live, research R8).
+Claude ignores Ctrl+B until a Bash has run about 4 s, so the engine repeats it every
+700 ms for up to 6 s, waiting for the `PostToolUse` that carries `backgroundTaskId`. **If
+no acknowledgement arrives, it does not press Esc** (Esc would SIGTERM the command). It
+returns `{ ended: false, reason: "unsupported" }` and leaves the turn running, and the
+hub falls back to `steer_with_holding`. A soft interrupt can therefore take up to about
+6 s. The hub keeps the holding line and the UI's `working` state up while it waits. `preserves = true`; `backgroundable`
 is true only for a running Bash. Consumer: the voice hub's barge-in policy.
 
 `foregroundWork` is also needed for the steer branch's holding-line rule. OpenCode 2.x
@@ -105,4 +111,7 @@ steerable }`, where "preserving" below means `soft && longWork.backgroundable`. 
 | yes | none | — | no | yes | `steer` |
 | yes | none | — | no | no | `interrupt_now` (existing `delivery: "now"`) |
 
-Invariant: no output calls `kill` while long work is running.
+If `soft_then_turn`'s soft interrupt returns `ended: false`, the hub re-runs the decision
+with `soft` treated as false (so steer or queue, with the holding line).
+
+Invariant: no output calls `kill` while long work is running. No soft interrupt aborts running foreground work.
