@@ -406,7 +406,7 @@ class OnnxAsrStreamEngine(StreamEngine):
 
     _NEEDED = ("_preprocessor", "_encode", "_create_state", "_decode", "_decode_tokens", "_blank_idx", "_max_tokens_per_step")
 
-    def __init__(self, asr: Any, np: Any) -> None:
+    def __init__(self, asr: Any, np: Any, pad_windows: bool) -> None:
         missing = [name for name in self._NEEDED if not hasattr(asr, name)]
         if missing:
             raise RuntimeError(f"the installed onnx-asr has no {', '.join(missing)}; streaming speech-to-text needs the pinned version")
@@ -419,15 +419,23 @@ class OnnxAsrStreamEngine(StreamEngine):
         self.chunk_frames = int(meta["chunk_feature_frames"])
         self.right_frames = int(meta["right_feature_frames"])
         self.subsampling = int(meta["subsampling_factor"])
+        # The longest window, when every window is to be padded to it (see `encode`); 0 leaves them as they are.
+        self._pad_to = (self.left_frames + self.chunk_frames + self.right_frames) * STREAM_HOP if pad_windows else 0
         self.blank = asr._blank_idx
         self.max_tokens = asr._max_tokens_per_step
 
     def encode(self, window: bytes) -> tuple[Any, int]:
         np = self._np
         samples = np.frombuffer(window, dtype="<i2").astype(np.float32) / 32768.0
-        if samples.size < MIN_STT_SAMPLES:
-            samples = np.pad(samples, (0, MIN_STT_SAMPLES - samples.size))
-        features, lengths = self._asr._preprocessor(samples[None, :], np.array([samples.size], dtype=np.int64))
+        real = max(samples.size, MIN_STT_SAMPLES)
+        if self._pad_to:
+            # CUDA re-plans the graph (about 250 ms, against about 30 ms for the run itself) whenever the input length differs
+            # from the last few it saw, and a window grows by a chunk at a time. So on the GPU every window is padded with
+            # silence to the longest one and `length` says how much of it is real, as in a padded batch: one shape, the same transcript.
+            samples = np.pad(samples, (0, self._pad_to - samples.size))
+        elif samples.size < real:
+            samples = np.pad(samples, (0, real - samples.size))
+        features, lengths = self._asr._preprocessor(samples[None, :], np.array([real], dtype=np.int64))
         encoded, encoded_lengths = self._asr._encode(features, lengths)
         return encoded[0], int(encoded_lengths[0])
 
@@ -483,7 +491,7 @@ class ParakeetStreamingOnnx(StreamingStt):
 
     def __init__(self, spec: dict[str, Any], providers: list[str]) -> None:
         loaded = ParakeetOnnx(spec, providers)
-        super().__init__(OnnxAsrStreamEngine(loaded._asr.asr, loaded._np))
+        super().__init__(OnnxAsrStreamEngine(loaded._asr.asr, loaded._np, pad_windows="CUDAExecutionProvider" in providers))
 
 
 def kokoro_language(voice: str, lang: str) -> str:

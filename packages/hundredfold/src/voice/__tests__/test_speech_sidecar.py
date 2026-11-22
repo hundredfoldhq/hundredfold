@@ -574,6 +574,89 @@ class StreamingSttTests(unittest.TestCase):
         h.finish()
 
 
+try:
+    import numpy as np
+except ImportError:  # the stubs above need no packages; this one fake does
+    np = None
+
+
+class FakeOnnxAsr:
+    """The corners of an `onnx-asr` NeMo RNN-T model that the streaming engine reaches into."""
+
+    _blank_idx = 1024
+    _max_tokens_per_step = 10
+
+    def __init__(self, meta=None) -> None:
+        self.calls: list[tuple[int, int]] = []
+        metadata = meta if meta is not None else {
+            "streaming_model_type": "nemo_parakeet_unified_streaming", "left_feature_frames": "560", "chunk_feature_frames": "56",
+            "right_feature_frames": "56", "subsampling_factor": "8",
+        }
+        self._encoder = types.SimpleNamespace(get_modelmeta=lambda: types.SimpleNamespace(custom_metadata_map=metadata))
+
+    def _preprocessor(self, waveforms, lengths):
+        self.calls.append((waveforms.shape[1], int(lengths[0])))
+        return waveforms, lengths
+
+    def _encode(self, features, lengths):
+        return features.reshape(1, -1, 1), lengths // 160 // 8
+
+    def _create_state(self):
+        return None
+
+    def _decode(self, tokens, state, frame):
+        return np.zeros(1025), -1, state
+
+    def _decode_tokens(self, ids, indices, logprobs):
+        return types.SimpleNamespace(text=" ".join(str(i) for i in ids))
+
+
+@unittest.skipIf(np is None, "numpy is not installed")
+class OnnxAsrStreamEngineTests(unittest.TestCase):
+    WINDOW = (560 + 56 + 56) * 160
+
+    def pcm(self, samples: int) -> bytes:
+        return bytes(samples * 2)
+
+    def test_it_reads_the_window_geometry_from_the_encoder(self):
+        engine = sc.OnnxAsrStreamEngine(FakeOnnxAsr(), np, True)
+        self.assertEqual((engine.left_frames, engine.chunk_frames, engine.right_frames, engine.subsampling), (560, 56, 56, 8))
+        self.assertEqual((engine.blank, engine.max_tokens), (1024, 10))
+
+    def test_on_the_gpu_every_window_has_one_shape_and_the_real_length(self):
+        asr = FakeOnnxAsr()
+        engine = sc.OnnxAsrStreamEngine(asr, np, True)
+        for samples in (17920, 26880, 93680, self.WINDOW, 100):
+            engine.encode(self.pcm(samples))
+        self.assertEqual([shape for shape, _ in asr.calls], [self.WINDOW] * 5, "one input shape, so the graph is planned once")
+        self.assertEqual([length for _, length in asr.calls], [17920, 26880, 93680, self.WINDOW, sc.MIN_STT_SAMPLES], "the real length, never below the minimum")
+
+    def test_on_the_cpu_windows_keep_their_length(self):
+        asr = FakeOnnxAsr()
+        engine = sc.OnnxAsrStreamEngine(asr, np, False)
+        engine.encode(self.pcm(17920))
+        engine.encode(self.pcm(100))
+        self.assertEqual(asr.calls, [(17920, 17920), (sc.MIN_STT_SAMPLES, sc.MIN_STT_SAMPLES)])
+
+    def test_an_encoder_that_is_not_a_streaming_export_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "not a Parakeet Unified streaming export"):
+            sc.OnnxAsrStreamEngine(FakeOnnxAsr({}), np, True)
+
+    def test_a_model_object_without_the_expected_internals_is_refused_by_name(self):
+        asr = FakeOnnxAsr()
+        del FakeOnnxAsr._decode_tokens
+        try:
+            with self.assertRaisesRegex(RuntimeError, "no _decode_tokens"):
+                sc.OnnxAsrStreamEngine(asr, np, True)
+        finally:
+            FakeOnnxAsr._decode_tokens = lambda self, ids, indices, logprobs: types.SimpleNamespace(text=" ".join(str(i) for i in ids))
+
+    def test_a_token_step_and_the_text_go_through_the_model(self):
+        engine = sc.OnnxAsrStreamEngine(FakeOnnxAsr(), np, True)
+        self.assertEqual(engine.step([], None, None), (0, None))
+        self.assertEqual(engine.text([3, 4]), "3 4")
+
+
 class LanguageTests(unittest.TestCase):
     def test_kokoro_language_follows_the_voice_for_english(self):
         self.assertEqual(sc.kokoro_language("af_heart", "en"), "en-us")
