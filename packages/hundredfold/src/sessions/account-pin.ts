@@ -153,9 +153,9 @@ export function chargeAccountStart(pin: Pick<AccountPin, "accountPick"> | undefi
   if (pin?.accountPick) recordAccountStart(pin.accountPick);
 }
 
-/** The groups a config writes in the chains it holds (the engine's and each declared account's), as one comparable string. */
+/** The groups a config writes in the chains it holds (the Claude engine's, each declared Claude account's and the opencode engine's), as one comparable string. */
 function accountGroupsOf(config: HundredfoldConfig): string {
-  const chains = [config.engines.claude?.fallback, ...declaredClaudeAccounts(config).map((account) => account.fallback)];
+  const chains = [config.engines.claude?.fallback, ...declaredClaudeAccounts(config).map((account) => account.fallback), config.engines.opencode?.fallback];
   return JSON.stringify(chains.map((chain) => (chain ?? []).flatMap((entry) => fallbackGroupOf(entry) ?? [])));
 }
 

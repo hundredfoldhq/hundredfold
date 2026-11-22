@@ -8,6 +8,7 @@ import { resolveSubstituteModel } from "./engine-fallback.js";
 import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type FallbackExpansionMode } from "./fallback-chain-expand.js";
 import { linkHealth } from "./fallback-chain-health.js";
 import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
+import { opencodeMemberTarget, opencodeOwnModel } from "./fallback-chain-opencode-group.js";
 import {
   fallbackGroupOf, fallbackLinkKey, fallbackLinkLabel,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
@@ -145,15 +146,44 @@ function withModel(env: FallbackChainEnv, subject: FallbackChainSpec, link: Fall
   return { engine: link.engine, ...(link.profile === undefined ? {} : { profile: link.profile }), ...(model === undefined ? {} : { model }) };
 }
 
+/**
+ * The target an expanded link runs and whether it can serve at all. A member of an opencode group is an
+ * account, so it runs the subject's own model key on its provider; any other link gets the model rules above.
+ */
+function targetOf(env: FallbackChainEnv, subject: FallbackChainSpec, link: FallbackLink, group: ExpandedFallbackLink["group"]): { target: FallbackLink; unserved: boolean } {
+  if (group && link.engine === "opencode") return opencodeMemberTarget(env.config, link, opencodeOwnModel(env.config, subject.own.model));
+  return { target: withModel(env, subject, link), unserved: false };
+}
+
 /** An expanded link with the group it came from, and why the subject cannot use it, when it cannot. */
 function annotated(
-  env: FallbackChainEnv, subject: FallbackChainSpec, expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"] },
+  env: FallbackChainEnv, subject: FallbackChainSpec,
+  expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"]; unserved?: boolean },
 ): ResolvedFallbackLink {
-  const { resolved, target, group } = expanded;
-  const skip = skipReason(env, subject, target);
+  const { resolved, target, group, unserved } = expanded;
+  const skip = skipReason(env, subject, target) ?? (unserved ? "model-not-served" : undefined);
   const detail = skip ? skipDetail(env.config, subject.scope, target, skip) : undefined;
   const member = group ? { ...resolved, group: { index: group.index, written: group.written } } : resolved;
   return skip ? { ...member, skip, ...(detail ? { skipDetail: detail } : {}) } : member;
+}
+
+/** The keys that stand for the subject's own target: its own link, and a remote subject's unprofiled spelling of it (a link naming no profile runs the account it has). */
+function ownTargetKeys(subject: FallbackChainSpec, own: ResolvedFallbackLink): string[] {
+  const keys = [own.key];
+  // Not for a session pinned to another account than its employee's login: the unprofiled link is that login, a link of its own.
+  const unprofiledIsOwn = subject.claudeAccount === undefined || subject.claudeAccount === own.account;
+  if (subject.scope.remote && own.profile !== undefined && unprofiledIsOwn) keys.push(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  return keys;
+}
+
+/**
+ * The key a member of an opencode group has when it is the subject's own account while the subject names no model
+ * (it runs the engine's configured one, so the own link's key, `opencode||`, does not spell it). Only a group member is
+ * dropped for it: a link a chain names outright stays, as it always has.
+ */
+function ownMemberKey(config: HundredfoldConfig, own: ResolvedFallbackLink): string | undefined {
+  const effective = own.engine === "opencode" && own.model === undefined ? opencodeOwnModel(config, undefined) : undefined;
+  return effective === undefined ? undefined : fallbackLinkKey({ engine: "opencode", model: effective });
 }
 
 /**
@@ -168,21 +198,20 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   // An account chain names its Claude accounts itself; an engine chain's unprofiled Claude link is the subject's own login.
   const claudeAccount = subject.mode === "engine" ? subject.claudeAccount : undefined;
   const own = resolvedLink(env, subject.own, "config", subject.own, { claudeAccount, healthProvider: unpinnedHealthProvider(env.config, subject.own) });
-  const seen = new Set<string>([own.key]);
-  // A remote subject on a declared account is also its own target when a link names no profile: that runs the account it has.
-  // A session pinned to another account than its employee's login is not: the unprofiled link is its employee's own login, a link of its own.
-  const unprofiledIsOwn = subject.claudeAccount === undefined || subject.claudeAccount === own.account;
-  if (subject.scope.remote && own.profile !== undefined && unprofiledIsOwn) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  const seen = new Set<string>(ownTargetKeys(subject, own));
+  const ownMember = ownMemberKey(env.config, own);
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {
-    const target = withModel(env, subject, link);
+    const { target, unserved } = targetOf(env, subject, link, group);
     const resolved = resolvedLink(env, target, origin, link, { claudeAccount });
-    if (seen.has(resolved.key)) continue;
+    if (seen.has(resolved.key) || (group && resolved.key === ownMember)) continue;
     seen.add(resolved.key);
-    links.push(annotated(env, subject, { resolved, target, group }));
+    links.push(annotated(env, subject, { resolved, target, group, unserved }));
   }
-  return links.some((link) => link.group) ? orderGroupLinks(env, links, own.model) : links;
+  // An opencode subject naming no model runs the engine's configured one, which is the model its group is ranked for.
+  const rankModel = own.engine === "opencode" ? opencodeOwnModel(env.config, own.model) : own.model;
+  return links.some((link) => link.group) ? orderGroupLinks(env, links, rankModel) : links;
 }
 
 /**

@@ -6,7 +6,8 @@ import {
   inheritedChain, ownTargetLink, resolveFallbackLinks,
   type FallbackChainEnv, type FallbackChainSpec,
 } from "./fallback-chain.js";
-import { homeGroupOf, startPickOf } from "./fallback-chain-group.js";
+import { homeGroupOf, opencodeHomeGroupOf, startPickOf } from "./fallback-chain-group.js";
+import { opencodeOwnModel } from "./fallback-chain-opencode-group.js";
 import {
   fallbackGroupOf, fallbackLinkOf,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackChainSubject, type FallbackChainsResponse, type FallbackProfileOption, type ResolvedFallbackLink,
@@ -64,10 +65,20 @@ function subjectOf(
   };
 }
 
-/** What a new session of this subject would be balanced onto now, when its chain opens with a group holding its own account (a local Claude subject only). */
+/** The pick for an opencode subject: its chain opens with an opencode group holding the declared account its own model's provider names (no such account: no home group, no pick). */
+function opencodeStartPick(
+  env: FallbackChainEnv, spec: FallbackChainSpec, effective: readonly ResolvedFallbackLink[], source: Exclude<FallbackChainSource, "session">, model: string | undefined,
+): AccountPick | undefined {
+  const ownModel = opencodeOwnModel(env.config, model);
+  const home = opencodeHomeGroupOf(env.config, spec.entries, ownModel);
+  return home ? startPickOf(env, home, effective, { source, ownAccount: home.ownAccount, model: ownModel }) : undefined;
+}
+
+/** What a new session of this subject would be balanced onto now, when its chain opens with a group holding its own account (a local Claude subject, or an opencode one). */
 function subjectStartPick(
   env: FallbackChainEnv, spec: FallbackChainSpec, effective: readonly ResolvedFallbackLink[], source: Exclude<FallbackChainSource, "session">, model: string | undefined,
 ): AccountPick | undefined {
+  if (spec.own.engine === "opencode") return opencodeStartPick(env, spec, effective, source, model);
   if (spec.mode !== "account" || spec.scope.remote || spec.own.engine !== "claude") return undefined;
   const home = homeGroupOf(env.config, spec.entries, spec.ownAccount);
   return home ? startPickOf(env, home, effective, { source, ownAccount: spec.ownAccount, model }) : undefined;

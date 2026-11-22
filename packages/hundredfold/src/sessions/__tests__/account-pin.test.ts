@@ -172,6 +172,28 @@ describe("the rotation moves only when a start is charged", () => {
     resetCreditsOnGroupChange(config(), config([{ group: [{ engine: "claude" }, { engine: "claude", profile: "A" }] }, TAIL]));
     expect(pin().accountPick!.picked).toBe(fresh[0]);
   });
+
+  it("also forgets them when engines.opencode.fallback gains, loses or changes a group", () => {
+    const group = (...profiles: string[]) => [{ group: profiles.map((profile) => ({ engine: "opencode", profile })) }];
+    const withOpencode = (fallback?: unknown[]) => config(undefined, { opencode: { bin: "opencode", model: "opencode-go/glm-5", ...(fallback ? { fallback } : {}) } });
+    const startThree = (): string => {
+      resetAccountCredits();
+      const fresh = pin().accountPick!.picked;
+      for (let i = 0; i < 3; i++) chargeAccountStart(pin());
+      return fresh;
+    };
+    const fresh = startThree();
+    const midway = pin().accountPick!.picked;
+    expect(midway).not.toBe(fresh);
+    // A reload that leaves every chain as it was keeps the rotation going.
+    resetCreditsOnGroupChange(withOpencode(group("a", "b")), withOpencode(group("a", "b")));
+    expect(pin().accountPick!.picked).toBe(midway);
+    for (const [before, after] of [[undefined, group("a", "b")], [group("a", "b"), group("a", "b", "c")], [group("a", "b"), undefined]] as const) {
+      startThree();
+      resetCreditsOnGroupChange(withOpencode(before as unknown[] | undefined), withOpencode(after as unknown[] | undefined));
+      expect(pin().accountPick!.picked).toBe(fresh);
+    }
+  });
 });
 
 describe("metaWithAccountPick", () => {
