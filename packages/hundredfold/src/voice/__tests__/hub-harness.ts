@@ -30,6 +30,8 @@ export interface HarnessOptions {
   config?: Partial<ResolvedVoiceConfig>;
   /** Extra engine members (a background-tasks source, say). */
   decorate?: (engine: FakeEngine) => void;
+  /** Run the hub against this engine instead of a fake: a real engine class, for its real capability detection. */
+  realEngine?: import("../../shared/types.js").Engine;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -55,7 +57,7 @@ export function createHarness(options: HarnessOptions = {}) {
     config: () => state.config,
     providers: () => ({ stt, tts, createVad: () => { const vad = new FakeVad(); vads.push(vad); return vad; } }),
     getSession: (id) => (state.sessionExists ? { id, engine: state.engineName } : undefined),
-    getEngine: () => engine,
+    getEngine: () => options.realEngine ?? engine,
     turnRunning: () => state.turnRunning,
     deliver: async (delivery) => {
       if (state.deliverFails) throw new Error("boom with secret detail");
