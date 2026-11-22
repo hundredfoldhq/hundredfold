@@ -205,8 +205,25 @@ describe("no-auth same-origin trust on a WebSocket handshake without fetch metad
     expect(trusted({ ...handshake, "sec-fetch-site": "cross-site", "sec-fetch-mode": "websocket", "sec-fetch-dest": "empty" })).toBe(false);
     expect(trusted({ ...handshake, "sec-fetch-mode": "websocket" })).toBe(false);
     expect(trusted({ ...handshake, "sec-fetch-dest": "empty" })).toBe(false);
-    // The complete same-origin set is still trusted.
+    expect(trusted({ ...handshake, "sec-fetch-site": "cross-site", "sec-fetch-mode": "websocket", "sec-fetch-dest": "websocket" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-site", "sec-fetch-mode": "websocket", "sec-fetch-dest": "websocket" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-origin", "sec-fetch-mode": "websocket", "sec-fetch-dest": "document" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-origin", "sec-fetch-mode": "websocket", "sec-fetch-dest": "websocket", origin: "http://evil.example" })).toBe(false);
+    // The complete same-origin set is still trusted, with either destination a browser sends.
     expect(trusted({ ...handshake, "sec-fetch-site": "same-origin", "sec-fetch-mode": "websocket", "sec-fetch-dest": "empty" })).toBe(true);
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-origin", "sec-fetch-mode": "websocket", "sec-fetch-dest": "websocket" })).toBe(true);
+  });
+
+  it("accepts a websocket destination only on a WebSocket handshake", () => {
+    const fetchReq = (dest: string) => Object.assign(req({
+      host: "127.0.0.1:7801",
+      origin: "http://127.0.0.1:7801",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": dest,
+    }), { method: "POST" });
+    expect(isSameOriginBrowserRequest(fetchReq("empty"), config)).toBe(true);
+    expect(isSameOriginBrowserRequest(fetchReq("websocket"), config)).toBe(false);
   });
 
   it("keeps requiring fetch metadata off the upgrade handshake", () => {

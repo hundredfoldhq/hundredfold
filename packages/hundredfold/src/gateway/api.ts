@@ -854,7 +854,8 @@ const FETCH_METADATA_HEADERS = ["sec-fetch-site", "sec-fetch-mode", "sec-fetch-d
  * through the server's upgrade handler (`options.upgradeHandshake`) may carry
  * none: Chromium sends no Sec-Fetch-* on a WebSocket, so there the exact Origin
  * match, which every browser sends and no page can forge, is the cross-site
- * defence. Fetch metadata that is present must still say same-origin.
+ * defence. Fetch metadata that is present must still say same-origin; on a
+ * WebSocket its destination may be "empty" (Firefox) or "websocket" (WebKit).
  */
 export function isSameOriginBrowserRequest(
   req: Pick<HttpRequest, "headers" | "rawHeaders" | "socket" | "method">,
@@ -880,7 +881,9 @@ export function isSameOriginBrowserRequest(
     const fetchMode = singleRequestHeader(req, "sec-fetch-mode");
     const fetchDest = singleRequestHeader(req, "sec-fetch-dest");
     const expectedMode = upgrade === "websocket" ? "websocket" : "cors";
-    if (fetchSite !== "same-origin" || fetchMode !== expectedMode || fetchDest !== "empty") return false;
+    // WebKit labels a WebSocket handshake's destination "websocket"; Firefox uses "empty".
+    const destOk = fetchDest === "empty" || (expectedMode === "websocket" && fetchDest === "websocket");
+    if (fetchSite !== "same-origin" || fetchMode !== expectedMode || !destOk) return false;
   }
 
   const origins = requestHeaderValues(req, "origin");
