@@ -97,6 +97,13 @@ const pickOf = (session: Session) => (session.transportMeta as { accountPick?: {
 const emit = () => undefined;
 
 describe("resolveSwitchTarget onto opencode", () => {
+  it("keeps the Claude profile the row names, so a later switch back lands on the same login", () => {
+    const profileDir = path.join(home, "claude-spare");
+    const session = codexSession("web:s-profile", { claudeConfigDir: profileDir });
+    const resolved = resolveSwitchTarget(config, session, { engine: "opencode" }, { caller: "operator" });
+    expect(resolved).toMatchObject({ ok: true, target: { engine: "opencode", model: OTHER_MODEL, balanced: true, claudeConfigDir: profileDir }, accountPick: { picked: OTHER } });
+  });
+
   it("balances an engine-only switch and lands on the model its pick names", () => {
     const resolved = resolveSwitchTarget(config, codexSession("web:s1"), { engine: "opencode" }, { caller: "operator" });
     expect(resolved).toMatchObject({ ok: true, target: { engine: "opencode", model: OTHER_MODEL, balanced: true }, accountPick: { trigger: "switch", picked: OTHER } });

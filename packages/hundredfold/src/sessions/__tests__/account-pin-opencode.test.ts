@@ -8,6 +8,11 @@ vi.mock("../../shared/models.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../shared/models.js")>()),
   engineAvailable: () => true,
 }));
+const installed = vi.hoisted(() => ({ on: (_host: string, _engine: string): boolean | undefined => undefined }));
+vi.mock("../../engines/remote-stage.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../engines/remote-stage.js")>()),
+  remoteEngineAvailable: (host: string, engine: string) => installed.on(host, engine),
+}));
 const { chargeAccountStart, metaWithAccountPick, pinAccountAtCreation } = await import("../account-pin.js");
 
 /**
@@ -63,7 +68,10 @@ const pin = (over: Partial<Parameters<typeof pinAccountAtCreation>[0]> = {}) =>
   pinAccountAtCreation({ config: config(), employee: employee(), engine: "opencode", model: "opencode-go/glm-5", now: NOW, inputs: { health: {}, limits: LIMITS }, ...over });
 
 beforeEach(() => resetAccountCredits());
-afterEach(() => resetAccountCredits());
+afterEach(() => {
+  resetAccountCredits();
+  installed.on = () => undefined;
+});
 
 describe("pinAccountAtCreation for opencode: when it balances", () => {
   it("picks the member with the most headroom and re-spells the model on its provider", () => {
@@ -193,6 +201,23 @@ describe("pinAccountAtCreation for opencode: a remote employee", () => {
     // The same record for its own host does count.
     const own = pin({ employee: remote, inputs: { health: { [B]: { ...spent(4), host: "build-host" } }, limits: LIMITS } });
     expect(own.accountPick).toMatchObject({ picked: C });
+  });
+
+  it("offers only the members its host serves: a host without opencode leaves the own account, one without another engine still balances", () => {
+    installed.on = (host, engine) => (host.endsWith("build-host") ? engine !== "opencode" : undefined);
+    const none = pin({ employee: remote });
+    expect(none.accountPick).toMatchObject({ picked: A, reason: "only-candidate" });
+    expect(none.accountPick!.candidates.map((candidate) => candidate.account)).toEqual([A]);
+    expect(none).not.toHaveProperty("model");
+
+    installed.on = (host, engine) => (host.endsWith("build-host") ? engine !== "claude" : undefined);
+    const served = pin({ employee: remote });
+    expect(served.accountPick).toMatchObject({ picked: B });
+    expect(served.model).toBe("opencode-go-b/glm-5");
+
+    // A gateway session is judged by this gateway's engines, whatever a host says.
+    installed.on = () => false;
+    expect(pin().accountPick).toMatchObject({ picked: B });
   });
 });
 
