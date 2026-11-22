@@ -11,6 +11,7 @@ import { setOpencodeAccountKeyEnv } from "./child-env.js";
 import { rememberOpencodeAccounts } from "./opencode-subscription.js";
 import { autoCompactProblems } from "./auto-compact-config.js";
 import { contextConfigProblems } from "./context-config.js";
+import { voiceConfigProblems } from "./voice-config.js";
 import { sessionFallbackConfigProblems } from "./session-fallback-config.js";
 import type { HundredfoldConfig } from "./types.js";
 import { todoRecoveryProblems } from "./todo-recovery-config.js";
@@ -104,7 +105,7 @@ export function validateConfigShape(config: unknown, options: { tolerateDuplicat
     problems.push(...opencodeUsageLimitsProblems(c.engines), ...opencodeSubscriptionProblems(c.engines), ...validateOpencodeAccounts(c.engines, configEnvReferences(c)), ...autoCompactProblems(c.engines));
   }
 
-  problems.push(...validateRealtime(c.realtime));
+  problems.push(...validateRealtime(c.realtime), ...voiceConfigProblems(c.voice));
 
   return problems;
 }
