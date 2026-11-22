@@ -102,7 +102,7 @@ Web (Part D):
 
 ## Phase 8: Integration and polish (Part F)
 
-- [ ] T056 [F] Merge A to E into `feat/voice-mode` in dependency order; resolve; full suite with a clean environment (`env -i`, built `dist/`), typecheck, lint, `check-footguns --diff origin/main`, web build and perf budget.
+- [x] T056 [F] Merge A to E into `feat/voice-mode` in dependency order; resolve; full suite with a clean environment (`env -i`, built `dist/`), typecheck, lint, `check-footguns --diff origin/main`, web build and perf budget.
 - [ ] T057 [F] Functional run on an ephemeral gateway per quickstart §1 to §7, including the local sidecar's real first-run install on the build machine. Record TTFA (gateway and end-to-end medians over ten questions) in the PR.
 - [ ] T058 [F] Recorded demo with sound (quickstart §9): spoken round trip, barge-in, backgrounded long command whose result is spoken later; attach to the PR.
 - [ ] T059 [F] CHANGELOG entry; README feature line; privacy scan of the diff, commits and PR body; top-tier QA review (spec conformance across contracts/), fix, ready.
