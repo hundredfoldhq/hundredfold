@@ -67,7 +67,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `tts.provider` | `local` | As for `stt.provider`. |
 | `tts.model` | per provider | `local`: `kokoro-v1.0`; `openai`: `gpt-4o-mini-tts`; `openai-compatible`: `tts-1`. |
 | `tts.voice` | `local`: `af_heart`; `openai`, `openai-compatible`: `marin`, `alloy` | The voice. |
-| `tts.speed` | `1.0` | 0.5 to 2. |
+| `tts.speed` | `1.0` | How fast the assistant speaks its replies, as a multiplier of the voice's natural pace: 0.5 to 2. A change applies to the next sentence spoken, with no restart. See [Speaking speed](#speaking-speed). |
 | `tts.baseUrl`, `tts.apiKey` | — | As for `stt`. |
 | `vad.threshold` | `0.5` | Speech probability that counts as speech, 0 to 1. |
 | `vad.minSpeechMs` | `250` | Speech must last this long to start an utterance, 50 to 2000. |
@@ -122,6 +122,30 @@ voice:
 ### Voice activity detection with a hosted provider
 
 The gateway decides when you have stopped speaking. With the local models installed it uses Silero, even when speech-to-text is hosted. Without them it falls back to a simple in-process loudness detector, which is less accurate: a fan or a keyboard can start an utterance. Install the local models if you use a hosted provider with a noisy room.
+
+## Speaking speed
+
+`voice.tts.speed` sets how fast the assistant speaks its replies; it is not how soon a reply starts. `1.0` is the voice's natural pace, `1.5` is half as fast again, `0.8` is slower. Any number from 0.5 to 2 is accepted; anything else (`3`, `fast`, `0`) stops the configuration loading, with a message naming `voice.tts.speed`, the range, and what it got. Leave the key out for the natural pace.
+
+```yaml
+voice:
+  enabled: true
+  tts: { speed: 1.25 }
+```
+
+In the web app, **Settings → Voice → Voice mode → Speaking speed** writes the same key. It offers Slower (0.8×), Normal (1×), Faster (1.25×) and Fastest (1.5×); a value you put in the file that is none of these shows as "Custom" and is left alone until you pick another. Both write `voice.tts.speed`, so the file and the control never disagree.
+
+The gateway reads the setting for every sentence it speaks, so a change made while voice mode is open (in the settings, or in the file when the configuration reloads) is heard from the next sentence; a sentence already being made or played keeps the speed it had. The web and the mobile app speak at the speed the gateway sends, so nothing in either needs setting or restarting.
+
+Where the pace is applied:
+
+| Voice | How |
+|---|---|
+| Local (Kokoro) | Kokoro is asked to speak at the speed, which changes the pace of the voice itself. |
+| OpenAI `tts-1`, `tts-1-hd`, and OpenAI-compatible servers | The speed goes in the speech request's `speed` field, which these apply. |
+| OpenAI `gpt-4o-mini-tts` (the OpenAI default) | OpenAI accepts `speed` for this model and ignores it. The gateway asks for the natural pace and speeds the audio up itself, keeping the pitch (a time stretch), so the voice does not turn chipmunk. It sounds a little less natural than a voice made at that speed, more so past 1.5. |
+
+The pace is applied on the gateway rather than as a playback rate in each client because everything that depends on how much of a reply was heard is measured on the audio the client plays: the words recorded as spoken, what is read out again after you interrupt, and when you speak over the assistant. That audio is the sped-up audio, so those stay right at any speed. A playback rate in the client would make the time played differ from the audio sent, and each client would have to correct for it. An OpenAI-compatible server is assumed to apply `speed` (Kokoro and Speaches do); if yours ignores it, point `tts.model` at one that does.
 
 ## Voices
 

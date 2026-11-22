@@ -121,6 +121,8 @@ export class FakeTts implements TtsProvider {
   defaultVoice: string | null = "fake-voice";
   available = true;
   calls: string[] = [];
+  /** The `speed` each sentence was asked for. */
+  speeds: Array<number | undefined> = [];
   signals: AbortSignal[] = [];
   failOn: string | null = null;
   /** PCM bytes yielded per chunk, and chunks per sentence. */
@@ -130,6 +132,7 @@ export class FakeTts implements TtsProvider {
   gate: Promise<void> | null = null;
   async *synthesize(text: string, options: TtsSynthesisOptions): AsyncIterable<Buffer> {
     this.calls.push(text);
+    this.speeds.push(options.speed);
     this.signals.push(options.signal);
     if (this.gate) await this.gate;
     if (this.failOn !== null && text.includes(this.failOn)) throw new Error("synthesis failed with secret-ish detail");

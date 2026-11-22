@@ -250,6 +250,16 @@ describe("OpenAI TTS", () => {
     expect(JSON.parse(request.body.toString())).toEqual({ model: "gpt-4o-mini-tts", input: "Hello there.", voice: "marin", speed: 1, response_format: "pcm" });
   });
 
+  it.each([
+    ["gpt-4o-mini-tts", false],
+    ["gpt-4o-mini-tts-2025-12-15", false],
+    ["tts-1", true],
+    ["tts-1-hd", true],
+  ])("%s: honoursSpeed is %s", (model, honours) => {
+    const provider = new OpenAiTtsProvider({ ...tts(), model } as never, { env: ENV });
+    expect(provider.honoursSpeed).toBe(honours);
+  });
+
   it("uses the voice and speed it is given over its defaults", async () => {
     const server = await httpServer((_request, res) => res.end(Buffer.alloc(4)));
     const provider = new OpenAiTtsProvider(tts(), { env: ENV, endpoints: { http: server.url, ws: "" } });

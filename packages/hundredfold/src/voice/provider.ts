@@ -59,6 +59,12 @@ export interface TtsProvider {
   readonly id: string;
   /** Sample rate of the PCM16LE mono chunks `synthesize` yields. */
   readonly sampleRate: number;
+  /**
+   * Whether the provider's `speed` request changes how fast it speaks. False for a model that accepts the
+   * field and ignores it (OpenAI's `gpt-4o-mini-tts`); the pipeline then changes the pace of the audio itself.
+   * Absent means true.
+   */
+  readonly honoursSpeed?: boolean;
   /** The voice used when none is configured, or null when the provider has no notion of one. */
   readonly defaultVoice: string | null;
   /** Speak one sentence, yielding PCM16LE mono chunks as they are produced. */

@@ -217,6 +217,11 @@ export class OpenAiTtsProvider implements TtsProvider {
     return this.side.voice;
   }
 
+  /** The `gpt-…-tts` models accept `speed` and ignore it; `tts-1` and `tts-1-hd` apply it. */
+  get honoursSpeed(): boolean {
+    return !/^gpt-.*tts/i.test(this.side.model);
+  }
+
   status(): VoiceProviderStatus {
     return keyStatus(this.side, this.#key);
   }

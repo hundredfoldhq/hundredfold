@@ -10,7 +10,7 @@
  */
 import type { TtsProvider } from "./provider.js";
 import { VOICE_OUTPUT_SAMPLE_RATE, type VoiceServerFrame } from "../shared/gateway-events.js";
-import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, pcmPieces } from "./pcm.js";
+import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, Pcm16TimeStretcher, pcmPieces } from "./pcm.js";
 import { SpeakableSplitter, speakableSentence } from "./speakable-splitter.js";
 
 export interface SpeechSink {
@@ -39,7 +39,8 @@ export interface PipelineOptions {
   tts: TtsProvider;
   sink: SpeechSink;
   voice: string | null;
-  speed: number;
+  /** Speaking-rate multiplier; a function is asked for each sentence, so a change applies to the next one. */
+  speed: number | (() => number);
   language: string;
   /** The first audio frame of a segment went out. */
   onAudio?: (segment: Segment) => void;
@@ -307,14 +308,20 @@ export class SpeechPipeline {
   private async synthesise(segment: Segment, job: Job, signal: AbortSignal): Promise<void> {
     const { tts, voice, speed, language } = this.options;
     const resampler = new Pcm16Resampler(tts.sampleRate, VOICE_OUTPUT_SAMPLE_RATE);
+    const wanted = typeof speed === "function" ? speed() : speed;
+    // The provider is asked for the pace when it applies one; otherwise the audio is stretched here, so every provider speaks at the pace.
+    const stretcher = tts.honoursSpeed === false && wanted !== 1 ? new Pcm16TimeStretcher(wanted) : null;
     try {
-      const request = { ...(voice ? { voice } : {}), speed, language, signal };
+      const request = { ...(voice ? { voice } : {}), speed: stretcher ? 1 : wanted, language, signal };
       for await (const chunk of tts.synthesize(segment.text, request)) {
         if (signal.aborted) return;
-        const pcm = resampler.push(chunk);
+        const resampled = resampler.push(chunk);
+        const pcm = stretcher ? stretcher.push(resampled) : resampled;
         if (pcm.length > 0) job.chunks.push(pcm);
         this.wake(job);
       }
+      const rest = stretcher && !signal.aborted ? stretcher.flush() : null;
+      if (rest && rest.length > 0) job.chunks.push(rest);
     } catch (error) {
       if (!signal.aborted) job.error = error;
     } finally {
