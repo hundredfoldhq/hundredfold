@@ -22,12 +22,30 @@ export type NativeStreamEvent =
   | { event: "closed"; streamId: string; code?: number; reason: string }
   | { event: "failed"; streamId: string; code: string; message: string }
 
+/** Why `voice_start` refused. The shell answers with one of these codes, as a string or `{ code }`. */
+export type NativeVoiceErrorCode = "permission_denied" | "not_paired" | "unsupported"
+export interface NativeVoiceStartInput {
+  target: NativeGatewayTarget
+  sessionId: string
+  mode: "hands-free" | "push-to-talk"
+}
+
 export interface HundredfoldNativeBridge {
   readonly runtime: "tauri"
   pair(input: { target: NativeGatewayTarget; code: string }): Promise<{ origin: string; device: { id: string; name: string } }>
   request(input: NativeRequestInput): Promise<NativeResponsePayload>
   stream(input: NativeStreamInput, onEvent: (event: NativeStreamEvent) => void): Promise<{ streamId: string }>
   forget(input: { target: NativeGatewayTarget }): Promise<{ localRemoved: boolean; remoteRevoked: boolean }>
+  /**
+   * Native voice mode (the mobile shell only; absent elsewhere, where the web
+   * client handles audio itself). Capture and playback run in native code, so
+   * audio never passes through JavaScript; the gateway's JSON frames come back
+   * to `onFrame` as they were sent. Contract: contracts/native-voice.md.
+   */
+  voiceStart?(input: NativeVoiceStartInput, onFrame: (frame: unknown) => void): Promise<{ ok: boolean }>
+  voiceStop?(): Promise<{ ok: boolean }>
+  voicePtt?(input: { down: boolean }): Promise<{ ok: boolean }>
+  voiceStatus?(): Promise<{ running: boolean; state: string }>
 }
 
 declare global {

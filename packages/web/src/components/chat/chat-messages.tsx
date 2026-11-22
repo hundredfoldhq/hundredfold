@@ -20,6 +20,7 @@ import type { FoldSummaryData } from './fold-summary'
 import type { CommsPeekData } from './thread-peek'
 import { TodoActivityBurst } from './todo-activity-burst'
 import { formatMessage } from './message-markdown'
+import { SpokenReplyContent, TtfaReadout, useVoiceFacts } from './spoken-reply'
 import { useStreamingFormat } from './streaming-format'
 import { UserMessageSlot } from './user-message-slot'
 import { commsArrivalDelayMs, useMessageArrivals } from './message-arrival'
@@ -646,6 +647,9 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
     [textContent, isUser],
   )
 
+  // Voice facts (`meta.voice`): the mic mark, the unheard tail of an interrupted reply, time to first audio.
+  const voiceFacts = useVoiceFacts(msg, textContent)
+
   // Memoize timestamp formatting — avoids Date allocations on every parent re-render
   const formattedTimestamp = useMemo(() => formatTimestamp(msg.timestamp), [msg.timestamp])
 
@@ -707,6 +711,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
           messageId={msg.id || `idx-${i}`}
           text={textContent}
           content={formattedContent}
+          spoken={voiceFacts.spoken}
           media={media}
           entering={entering}
           onRetry={onRetry}
@@ -715,7 +720,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
 
       {/* Assistant message — same shell as the streaming container. */}
       {!isUser && !isNotification && (
-        <AssistantRowShell transcript={textContent ? formattedContent : undefined} entering={entering}>
+        <AssistantRowShell transcript={textContent ? (voiceFacts.unheard ? <SpokenReplyContent split={voiceFacts.unheard} /> : formattedContent) : undefined} entering={entering}>
           {blocks.length > 0 && (
             <div className="mt-1.5 flex min-w-0 max-w-full flex-col items-start gap-1.5">
               {blocks.map((block) => (
@@ -731,6 +736,8 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
 
           {/* Media attachments */}
           {media.length > 0 && <MessageMedia media={media} isUser={false} />}
+
+          {voiceFacts.ttfaMs !== null && <TtfaReadout ms={voiceFacts.ttfaMs} />}
 
           {/* Copy / read aloud / retry, once per COMPLETED turn: the answer the
               reader acts on carries it, and the interim prose the fold puts

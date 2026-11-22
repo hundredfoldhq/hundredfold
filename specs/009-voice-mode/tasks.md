@@ -57,20 +57,20 @@ Gateway hub (Part B):
 
 Web (Part D):
 
-- [ ] T026 [P] [D] [US1] `W/lib/voice/socket.ts`: opens `/ws/voice/:id` through `gateway-transport.ts` `openSocket`, typed frames from `E/voice-protocol.ts`, reconnect only on a user gesture.
-- [ ] T027 [P] [D] [US1] `W/lib/voice/capture-worklet.ts`: AudioWorklet capture with echo cancellation, noise suppression and auto gain, resampled to 16 kHz PCM16 in 20 ms frames.
-- [ ] T028 [P] [D] [US1] `W/lib/voice/player.ts`: one AudioContext, a segment queue that can be flushed within a frame, `played` reports, a playback position for `barge_in.playedMs`.
-- [ ] T029 [D] [US1] `W/components/chat/voice-control.tsx` in the composer (`W/components/chat/chat-input.tsx:184`, beside the mic) and the mobile composer: one tap starts capture and playback; states listening, hearing (live partial), thinking, working (tool), speaking, unavailable (reason from `GET /api/voice/config`), installing (progress); hidden when voice is disabled.
-- [ ] T030 [D] [US1] Chat rendering: mic mark on messages with `meta.voice.utteranceId`; TTFA readout on the reply.
-- [ ] T031 [P] [D] [US1] Web tests: control hidden when disabled; state transitions from scripted frames; player flush; worklet resampling maths; mic mark; reconnect needs a gesture.
+- [x] T026 [P] [D] [US1] `W/lib/voice/socket.ts`: opens `/ws/voice/:id` through `gateway-transport.ts` `openSocket`, typed frames from `E/voice-protocol.ts`, reconnect only on a user gesture.
+- [x] T027 [P] [D] [US1] `W/lib/voice/capture-worklet.ts`: AudioWorklet capture with echo cancellation, noise suppression and auto gain, resampled to 16 kHz PCM16 in 20 ms frames.
+- [x] T028 [P] [D] [US1] `W/lib/voice/player.ts`: one AudioContext, a segment queue that can be flushed within a frame, `played` reports, a playback position for `barge_in.playedMs`.
+- [x] T029 [D] [US1] `W/components/chat/voice-control.tsx` in the composer (`W/components/chat/chat-input.tsx:184`, beside the mic) and the mobile composer: one tap starts capture and playback; states listening, hearing (live partial), thinking, working (tool), speaking, unavailable (reason from `GET /api/voice/config`), installing (progress); hidden when voice is disabled.
+- [x] T030 [D] [US1] Chat rendering: mic mark on messages with `meta.voice.utteranceId`; TTFA readout on the reply.
+- [x] T031 [P] [D] [US1] Web tests: control hidden when disabled; state transitions from scripted frames; player flush; worklet resampling maths; mic mark; reconnect needs a gesture.
 
 ## Phase 4: US2 barge-in (P1)
 
-- [ ] T032 [P] [D] [US2] `W/lib/voice/onset.ts`: RMS onset held for `onset.minSpeechMs` over playback → flush player, send `barge_in`; also flush on `stop_playback`. Tests with synthetic frames (onset, sub-threshold noise, echo-level playback does not fire).
+- [x] T032 [P] [D] [US2] `W/lib/voice/onset.ts`: RMS onset held for `onset.minSpeechMs` over playback → flush player, send `barge_in`; also flush on `stop_playback`. Tests with synthetic frames (onset, sub-threshold noise, echo-level playback does not fire).
 - [ ] T033 [B] [US2] Hub barge-in: on `barge_in` or VAD start during playback, abort synthesis and drop queued segments, record heard text; on the final, empty → resume from the first unheard sentence, words → `mergeMessageMeta` `{spokenText, interrupted: true}`, interrupted line in the envelope, then deliver per the policy (T034).
 - [ ] T034 [B] [US2] `G/voice/barge-in-policy.ts`: the pure decision table in contracts/providers.md, the clock injected; the hub executes `soft_then_turn`, `steer`, `steer_with_holding`, `queue_with_holding`, `interrupt_now` (existing `delivery: "now"` via `G/gateway/message-interrupt.ts`) and `wait_then_decide`.
 - [ ] T035 [P] [B] [US2] Tests: every row of the policy table; `wait_then_decide` with a young call finishing in time and one that does not; empty final resumes from the right segment; no audio for the interrupted reply after `barge_in`; a spy proves `kill` is never called while long work runs, on every branch.
-- [ ] T036 [D] [US2] Unheard tail: dim and label "not spoken" the part of an interrupted reply after `meta.voice.spokenText`. Test.
+- [x] T036 [D] [US2] Unheard tail: dim and label "not spoken" the part of an interrupted reply after `meta.voice.spokenText`. Test.
 
 ## Phase 5: US3 long work (P2)
 
@@ -79,7 +79,7 @@ Web (Part D):
 - [ ] T039 [P] [C] [US3] Tests: unit tests with the fake PTY for `foregroundWork` and the soft-interrupt settle (no `releaseSession`, no kill, the turn settles once); a live test gated like the existing steer live tests, proving a `sleep` survives the soft interrupt and its notification arrives.
 - [ ] T040 [C] [US3] OpenCode 2.x engine: `foregroundWork` from its event stream (running tool step and its start), so the hub can pick `steer_with_holding`. Tests with the fake opencode-v2 server's TOOL/SLOW directives.
 - [ ] T041 [B] [US3] Hub: `background` frames from the soft interrupt's result and from the background-tasks source while attached; the holding line spoken as a segment without a model turn; `ready.backgrounding` from capabilities. Tests.
-- [ ] T042 [D] [US3] Web chip for backgrounded work (running / finished) from `background` frames and the session's existing background activity. Test.
+- [x] T042 [D] [US3] Web chip for backgrounded work (running / finished) from `background` frames and the session's existing background activity. Test.
 
 ## Phase 6: US4 configuration and other providers (P2)
 
@@ -90,13 +90,13 @@ Web (Part D):
 
 ## Phase 7: US5 phone and locked screen (P2)
 
-- [ ] T047 [D] [US5] `W/lib/voice/suspend.ts`: detect suspension (`visibilitychange`, track `mute`/`ended`, socket close while hidden); on return send `resume`, show "voice mode was suspended by the device", play what `missed` announces, ask for a tap only if the AudioContext needs a gesture. Media Session handler with a stop action. Tests with a fake document and tracks.
+- [x] T047 [D] [US5] `W/lib/voice/suspend.ts`: detect suspension (`visibilitychange`, track `mute`/`ended`, socket close while hidden); on return send `resume`, show "voice mode was suspended by the device", play what `missed` announces, ask for a tap only if the AudioContext needs a gesture. Media Session handler with a stop action. Tests with a fake document and tracks.
 - [ ] T048 [B] [US5] Hub: keep an attachment's replies during a client suspension (socket closed with a `resume` window of 10 minutes keyed by principal and session); on `resume` send `missed` and speak the finished replies. Tests.
 - [ ] T049 [E] [US5] Install the Android toolchain on the build machine in the work area (JDK 17, Android SDK and NDK, Rust stable, `cargo-tauri`, Android targets) and the Docker emulator image; record the exact steps in `packages/shell/README.md`.
 - [ ] T050 [E] [US5] `S/src/voice.rs`: the native voice session per contracts/native-voice.md (commands, confinement, socket through the `stream` machinery, PCM bridge to the platform audio, frames forwarded to the web channel). Rust unit tests for the frame bridge and confinement.
 - [ ] T051 [E] [US5] Android: Kotlin foreground service (type `microphone`), `AudioRecord` `VOICE_COMMUNICATION` + `AcousticEchoCanceler`, flushable `AudioTrack`, onset detector, notification with Stop; manifest permissions in `S/gen/android`. Build an APK.
 - [ ] T052 [E] [US5] iOS: Swift `AVAudioSession` `.playAndRecord`/`.voiceChat`, `AVAudioEngine` capture and flushable playback, onset detector, Now Playing stop command, interruption handling; `UIBackgroundModes: audio` and `NSMicrophoneUsageDescription` in `S/gen/apple`. Written to the contract; built and run only on a Mac (pending access).
-- [ ] T053 [D] [US5] Web: when running in the shell, `voice-control.tsx` uses `voice_start`/`voice_stop`/`voice_ptt` and renders from forwarded frames; the browser path otherwise.
+- [x] T053 [D] [US5] Web: when running in the shell, `voice-control.tsx` uses `voice_start`/`voice_stop`/`voice_ptt` and renders from forwarded frames; the browser path otherwise.
 - [ ] T054 [E] [US5] Android emulator run under Docker per quickstart §8: lock, wait, spoken exchange with a barge-in while locked, Stop from the notification. Screen recording attached to the child PR.
 - [ ] T055 [B] [US5] Member path: `memberMayUpgrade` (`G/accounts/member-router.ts:21`) admits `/ws/voice/:id` when the "may send messages to this session" predicate holds (false for members today); voice member sockets join `startMemberSocketSweep` (`G/accounts/member-upgrade.ts:63`) and close `4401` on access loss. Update the "exactly `/ws`" doc comments and `docs/design/board-members.md`. Tests: member refused today; with the predicate stubbed true, accepted and closed on grant removal within one sweep.
 
