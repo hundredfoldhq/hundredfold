@@ -31,6 +31,8 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `bargeIn.onsetThreshold` | number | `0.02` | 0 to 1, RMS of the client's onset detector |
 | `autoBackground.enabled` | boolean | `true` | |
 | `autoBackground.afterSeconds` | number | `5` | 1 to 600 |
+| `cues.enabled` | boolean | `true` | soft sound cues while the assistant thinks and runs a tool (see voice-socket.md `ready.cues`) |
+| `cues.volume` | number | `0.3` | 0 to 1 |
 | `prompt` | string | built-in voice prompt (below) | ≤ 8000 chars |
 | `promptFile` | instance-relative path | — | must stay inside the instance home; `prompt` wins if both |
 | `holdingLine` | string | "Still working on the last thing. I'll come to that as soon as it's done." | ≤ 300 chars |
@@ -75,6 +77,7 @@ Enabled:
   "tts": { "provider": "local", "voice": "af_heart", "voices": ["af_heart", "..."], "status": { "available": true } },
   "onset": { "threshold": 0.02, "minSpeechMs": 250 },
   "bargeIn": { "enabled": true },
+  "cues": { "enabled": true, "volume": 0.3 },
   "autoBackground": { "enabled": true, "afterSeconds": 5 },
   "limits": { "maxUtteranceSeconds": 60 },
   "install": { "state": "ready", "progress": 1 }

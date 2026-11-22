@@ -268,6 +268,7 @@ export class VoiceAttachment {
       stt: { provider: stt.id, partials: stt.partials },
       tts: { provider: tts.id, voice: this.config.tts.voice ?? tts.defaultVoice },
       onset: { threshold: this.config.bargeIn.onsetThreshold, minSpeechMs: this.config.bargeIn.minSpeechMs },
+      cues: { enabled: this.config.cues.enabled, volume: this.config.cues.volume },
       backgrounding: this.backgrounding(),
       limits: { maxUtteranceSeconds: this.config.limits.maxUtteranceSeconds },
     };

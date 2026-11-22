@@ -3,6 +3,7 @@
 //! Mirrors `packages/gateway-events/src/voice-protocol.ts`; that file is the
 //! source of truth and the constants below must match it.
 
+use crate::cues::{CueSettings, Turn};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -76,9 +77,27 @@ impl ClientFrame {
 pub enum GatewayFrame {
     Ready(Ready),
     StopPlayback,
-    SegmentStart { segment_id: u32 },
-    SegmentEnd { segment_id: u32 },
-    Detached { reason: String },
+    SegmentStart {
+        segment_id: u32,
+    },
+    SegmentEnd {
+        segment_id: u32,
+    },
+    /// `turn`: what the assistant is doing.
+    Turn(Turn),
+    /// `vad`: the gateway hears the user speaking, or no longer does.
+    Vad {
+        speaking: bool,
+    },
+    /// `transcript`: `live` for a partial that is still showing, false once final.
+    Transcript {
+        live: bool,
+    },
+    /// `background`: a task was moved to the background.
+    Background,
+    Detached {
+        reason: String,
+    },
     Other,
 }
 
@@ -88,6 +107,8 @@ pub struct Ready {
     pub input_ok: bool,
     pub output_ok: bool,
     pub onset: Onset,
+    /// `ready.cues`; the defaults when the gateway sent none.
+    pub cues: CueSettings,
 }
 
 /// Parameters of the client's playback-stopping onset detector (`ready.onset`).
@@ -137,6 +158,20 @@ impl GatewayFrame {
                     .and_then(|t| u32::try_from(t).ok())
                     .filter(|t| (20..=5_000).contains(t))
                     .unwrap_or(defaults.min_speech_ms);
+                let cue_defaults = CueSettings::default();
+                let cues = value.get("cues");
+                let cues = CueSettings {
+                    enabled: cues
+                        .and_then(|c| c.get("enabled"))
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(cue_defaults.enabled),
+                    volume: cues
+                        .and_then(|c| c.get("volume"))
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as f32)
+                        .filter(|v| v.is_finite())
+                        .map_or(cue_defaults.volume, |v| v.clamp(0.0, 1.0)),
+                };
                 Self::Ready(Ready {
                     protocol: value
                         .get("protocol")
@@ -149,6 +184,7 @@ impl GatewayFrame {
                         threshold,
                         min_speech_ms,
                     },
+                    cues,
                 })
             }
             "stop_playback" => Self::StopPlayback,
@@ -158,6 +194,26 @@ impl GatewayFrame {
             "segment_end" => segment_id_of(&value)
                 .map(|segment_id| Self::SegmentEnd { segment_id })
                 .unwrap_or(Self::Other),
+            "turn" => value
+                .get("state")
+                .and_then(|s| s.as_str())
+                .and_then(Turn::parse)
+                .map(Self::Turn)
+                .unwrap_or(Self::Other),
+            "vad" => Self::Vad {
+                speaking: value
+                    .get("speaking")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false),
+            },
+            "transcript" => Self::Transcript {
+                live: value.get("final").and_then(|f| f.as_bool()) == Some(false)
+                    && value
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| !t.is_empty()),
+            },
+            "background" => Self::Background,
             "detached" => Self::Detached {
                 reason: value
                     .get("reason")

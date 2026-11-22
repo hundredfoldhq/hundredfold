@@ -12,5 +12,6 @@
 //! `specs/009-voice-mode/contracts/native-voice.md`.
 
 pub mod audio;
+pub mod cues;
 pub mod protocol;
 pub mod session;

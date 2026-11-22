@@ -1,9 +1,10 @@
 import type { VoiceClientFrame, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { startCapture, requestMicrophone } from "./capture-worklet"
+import { DEFAULT_CUE_SETTINGS, VoiceCuePlayer, wantedCue, type CueAudioContext, type VoiceCuePlayerLike } from "./cues"
 import { VoiceStore, type VoiceController } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
-import { VoicePlayer, type PlayerAudioContext } from "./player"
+import { VoicePlayer } from "./player"
 import { VoiceSocket, type VoiceAudioChunk, type VoiceSocketClose, type VoiceSocketHandlers } from "./socket"
 import {
   installMediaSession,
@@ -13,9 +14,9 @@ import {
   type SuspendDocument,
   type SuspendTrack,
 } from "./suspend"
-import type { VoiceUiState } from "./state"
+import type { VoiceAction, VoiceUiState } from "./state"
 
-export interface VoiceAudioContext extends PlayerAudioContext, SuspendContext {
+export interface VoiceAudioContext extends CueAudioContext, SuspendContext {
   resume(): Promise<void>
   close(): Promise<void>
 }
@@ -52,6 +53,7 @@ export interface BrowserVoiceDeps {
   requestMicrophone(): Promise<MediaStream>
   startCapture(ctx: VoiceAudioContext, stream: MediaStream, onFrame: (pcm: Int16Array) => void): Promise<VoiceCaptureHandle>
   createPlayer(ctx: VoiceAudioContext, onPlayed: (segmentId: number) => void): VoicePlayerLike
+  createCuePlayer(ctx: VoiceAudioContext): VoiceCuePlayerLike
   doc: SuspendDocument
   mediaSession?: MediaSessionLike
   createMediaMetadata?: () => unknown
@@ -75,6 +77,7 @@ export function defaultBrowserDeps(): BrowserVoiceDeps {
     requestMicrophone: () => requestMicrophone(),
     startCapture: (ctx, stream, onFrame) => startCapture(ctx as unknown as AudioContext, stream, onFrame),
     createPlayer: (ctx, onPlayed) => new VoicePlayer(ctx, { onPlayed }),
+    createCuePlayer: (ctx) => new VoiceCuePlayer(ctx),
     doc: document,
     mediaSession: typeof navigator !== "undefined" && "mediaSession" in navigator ? (navigator.mediaSession as unknown as MediaSessionLike) : undefined,
     createMediaMetadata: () => new MediaMetadata({ title: "Voice mode is on", artist: "Hundredfold" }),
@@ -102,6 +105,7 @@ export class BrowserVoiceSession implements VoiceController {
   private capture: VoiceCaptureHandle | null = null
   private watcher: SuspendWatcher | null = null
   private detector: OnsetDetector | null = null
+  private cuePlayer: VoiceCuePlayerLike | null = null
   private removeMediaSession: (() => void) | null = null
   private closing = false
   private talking = false
@@ -117,7 +121,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   start(): Promise<void> {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
-    this.store.dispatch({ type: "connecting", mode: this.options.mode })
+    this.apply({ type: "connecting", mode: this.options.mode })
     this.closing = false
     // The three calls iOS requires inside the tap, before any await.
     const ctx = this.deps.createContext()
@@ -134,7 +138,7 @@ export class BrowserVoiceSession implements VoiceController {
     this.socket?.send({ type: "bye" })
     this.socket?.close(1000, "bye")
     this.teardown()
-    this.store.dispatch({ type: "stopped" })
+    this.apply({ type: "stopped" })
   }
 
   dispose(): void {
@@ -145,20 +149,22 @@ export class BrowserVoiceSession implements VoiceController {
     if (this.options.mode !== "push-to-talk" || this.store.snapshot.status !== "on" || this.talking) return
     this.talking = true
     this.socket?.send({ type: "ptt_down" })
+    this.syncCue()
   }
 
   pttUp(): void {
     if (!this.talking) return
     this.talking = false
     this.socket?.send({ type: "ptt_up" })
+    this.syncCue()
   }
 
   dismissNotice(): void {
-    this.store.dispatch({ type: "dismiss-notice" })
+    this.apply({ type: "dismiss-notice" })
   }
 
   clearBackground(): void {
-    this.store.dispatch({ type: "background-cleared" })
+    this.apply({ type: "background-cleared" })
   }
 
   resumeFromTap(): Promise<void> {
@@ -169,11 +175,11 @@ export class BrowserVoiceSession implements VoiceController {
     const microphone = trackLive ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
     if (this.socket?.isOpen) {
-      this.store.dispatch({ type: "resumed" })
+      this.apply({ type: "resumed" })
       this.sendResume()
     } else {
       // A new attachment: it is `ready` again before audio goes up, and the `resume` follows then.
-      this.store.dispatch({ type: "connecting", mode: this.options.mode })
+      this.apply({ type: "connecting", mode: this.options.mode })
       this.openSocket()
     }
     return microphone ? this.replaceMicrophone(microphone) : Promise.resolve()
@@ -192,6 +198,33 @@ export class BrowserVoiceSession implements VoiceController {
   private onFrame(frame: VoiceServerFrame): void {
     this.store.dispatch({ type: "frame", frame, now: this.deps.now() })
     this.applyToAudio(frame)
+    this.syncCue()
+  }
+
+  /** Every state change goes through here, so the cue is re-decided from the state it leaves. */
+  private apply(action: VoiceAction): void {
+    this.store.dispatch(action)
+    this.syncCue()
+  }
+
+  /**
+   * Plays the cue the gateway's state calls for, or none. The cue never plays while speech is audible (the player
+   * has an open segment, which starts at `segment_start`, before its first audio) or while the user is heard.
+   */
+  private syncCue(): void {
+    const state = this.store.snapshot
+    const settings = state.ready?.cues ?? DEFAULT_CUE_SETTINGS
+    const cue = wantedCue({
+      settings,
+      running: state.status === "on",
+      turn: state.turn,
+      hearing: state.vadSpeaking || state.partial !== "" || this.talking,
+      speechAudible: this.player?.isActive() === true,
+      toolBackgrounded: state.toolBackgrounded,
+    })
+    if (!cue && !this.cuePlayer) return
+    this.cuePlayer ??= this.ctx ? this.deps.createCuePlayer(this.ctx) : null
+    this.cuePlayer?.set(cue, settings.volume)
   }
 
   private applyToAudio(frame: VoiceServerFrame): void {
@@ -232,7 +265,7 @@ export class BrowserVoiceSession implements VoiceController {
     this.socket = null
     if (this.closing) return
     const suspended = this.watcher?.socketClosed() ?? false
-    this.store.dispatch({ type: "closed", code: close.code, reason: close.reason, requested: false })
+    this.apply({ type: "closed", code: close.code, reason: close.reason, requested: false })
     if (!suspended && this.store.snapshot.status === "off") this.teardown()
   }
 
@@ -260,7 +293,10 @@ export class BrowserVoiceSession implements VoiceController {
   private async beginCapture(stream: MediaStream): Promise<void> {
     const ctx = this.ctx
     if (!ctx) return
-    this.player ??= this.deps.createPlayer(ctx, (segmentId) => this.socket?.send({ type: "played", segmentId }))
+    this.player ??= this.deps.createPlayer(ctx, (segmentId) => {
+      this.socket?.send({ type: "played", segmentId })
+      this.syncCue()
+    })
     this.capture = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
     this.watchForSuspension(ctx)
   }
@@ -268,7 +304,7 @@ export class BrowserVoiceSession implements VoiceController {
   private watchForSuspension(ctx: VoiceAudioContext): void {
     this.watcher?.stop()
     const watcher = new SuspendWatcher(this.deps.doc, {
-      onSuspended: () => this.store.dispatch({ type: "suspended" }),
+      onSuspended: () => this.apply({ type: "suspended" }),
       onReturn: ({ suspendedMs }) => { void this.handleReturn(suspendedMs) },
     }, this.deps.now)
     const track = this.capture?.track
@@ -289,6 +325,7 @@ export class BrowserVoiceSession implements VoiceController {
   private bargeIn(player: VoicePlayerLike): void {
     const cut = player.flush()
     this.socket?.send({ type: "barge_in", segmentId: cut?.segmentId ?? null, playedMs: cut?.playedMs ?? 0 })
+    this.syncCue()
   }
 
   // ── suspension ────────────────────────────────────────────────────────────
@@ -299,11 +336,11 @@ export class BrowserVoiceSession implements VoiceController {
     if (!ctx || this.closing) return
     if (ctx.state !== "running") await this.tryResumeContext(ctx)
     if (!this.recovered(ctx)) {
-      this.store.dispatch({ type: "needs-tap" })
+      this.apply({ type: "needs-tap" })
       return
     }
     this.watcher?.clear()
-    this.store.dispatch({ type: "resumed" })
+    this.apply({ type: "resumed" })
     this.sendResume()
   }
 
@@ -323,7 +360,7 @@ export class BrowserVoiceSession implements VoiceController {
     this.closing = true
     this.socket?.close(1000, "bye")
     this.teardown()
-    this.store.dispatch({ type: "failed", message })
+    this.apply({ type: "failed", message })
   }
 
   private teardown(): void {
@@ -331,6 +368,8 @@ export class BrowserVoiceSession implements VoiceController {
     this.pendingResumeMs = null
     this.capture?.stop()
     this.capture = null
+    this.cuePlayer?.dispose()
+    this.cuePlayer = null
     this.player?.dispose()
     this.player = null
     this.watcher?.stop()

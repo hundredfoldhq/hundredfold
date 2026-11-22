@@ -88,6 +88,7 @@ export function voiceConfigResponse(config: { voice?: unknown }, deps: VoiceApiD
     tts: { provider: tts.id, voice: resolved.tts.voice, voices, status: ttsState },
     onset: { threshold: resolved.bargeIn.onsetThreshold, minSpeechMs: resolved.bargeIn.minSpeechMs },
     bargeIn: { enabled: resolved.bargeIn.enabled },
+    cues: { enabled: resolved.cues.enabled, volume: resolved.cues.volume },
     autoBackground: { enabled: resolved.autoBackground.enabled, afterSeconds: resolved.autoBackground.afterSeconds },
     limits: { maxUtteranceSeconds: resolved.limits.maxUtteranceSeconds },
     install: installView(resolved, local),

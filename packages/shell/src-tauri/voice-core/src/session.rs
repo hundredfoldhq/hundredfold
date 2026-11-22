@@ -9,8 +9,11 @@
 //! captures, sends, plays, and stops playing on its own onset or on
 //! `stop_playback` (contracts/native-voice.md).
 
+use std::collections::HashSet;
+
 use crate::{
     audio::{parse_down_frame, FrameChunker},
+    cues::{wanted, Cue, CueInputs, CueRequest, CueSettings, Turn},
     protocol::{ClientFrame, GatewayFrame, Mode, Onset, PROTOCOL_VERSION},
 };
 
@@ -160,6 +163,9 @@ pub enum Action {
     /// The gateway's last audio frame for the segment has been handed over.
     SegmentEnd(u32),
     FlushPlayback,
+    /// Play this cue on its own channel, looping, until the next `SetCue`; `None` stops it. The
+    /// session only asks when the cue changes. Never routed through the speech player.
+    SetCue(Option<CueRequest>),
     PausePlayback,
     ResumePlayback,
     CloseSocket,
@@ -175,6 +181,36 @@ pub struct Session {
     drop_through: Option<u32>,
     guard_until_ms: u64,
     chunker: FrameChunker,
+    cues: CueState,
+}
+
+/// What the cue decision depends on besides the phase, kept from the gateway's frames.
+struct CueState {
+    settings: CueSettings,
+    turn: Turn,
+    tool_backgrounded: bool,
+    vad_speaking: bool,
+    partial: bool,
+    /// Segments announced and not yet played out: speech is audible or about to be.
+    speech: HashSet<u32>,
+    /// What the platform was last told to play.
+    playing: Option<Cue>,
+    volume: f32,
+}
+
+impl CueState {
+    fn new() -> Self {
+        Self {
+            settings: CueSettings::default(),
+            turn: Turn::Idle,
+            tool_backgrounded: false,
+            vad_speaking: false,
+            partial: false,
+            speech: HashSet::new(),
+            playing: None,
+            volume: 0.0,
+        }
+    }
 }
 
 impl Session {
@@ -188,6 +224,7 @@ impl Session {
             drop_through: None,
             guard_until_ms: 0,
             chunker: FrameChunker::default(),
+            cues: CueState::new(),
         }
     }
 
@@ -250,6 +287,44 @@ impl Session {
         if self.phase == Phase::Stopped {
             return Vec::new();
         }
+        if let Input::SegmentPlayed(id) = &input {
+            self.cues.speech.remove(id);
+        }
+        if matches!(input, Input::Onset { .. }) {
+            self.cues.speech.clear();
+        }
+        let mut actions = self.handle_input(input, now_ms);
+        match self.cue_change() {
+            // Silence first: before anything else the same input asks of the platform.
+            Some(None) => actions.insert(0, Action::SetCue(None)),
+            Some(request) => actions.push(Action::SetCue(request)),
+            None => {}
+        }
+        actions
+    }
+
+    /// The cue to start, switch or stop, when it differs from what the platform was last told.
+    fn cue_change(&mut self) -> Option<Option<CueRequest>> {
+        let wanted = wanted(&CueInputs {
+            settings: self.cues.settings,
+            running: self.phase == Phase::Running && !self.paused,
+            turn: self.cues.turn,
+            hearing: self.cues.vad_speaking
+                || self.cues.partial
+                || (self.mode == Mode::PushToTalk && self.ptt_down),
+            speech_audible: !self.cues.speech.is_empty(),
+            tool_backgrounded: self.cues.tool_backgrounded,
+        });
+        let volume = self.cues.settings.volume;
+        if wanted == self.cues.playing && (wanted.is_none() || volume == self.cues.volume) {
+            return None;
+        }
+        self.cues.playing = wanted;
+        self.cues.volume = volume;
+        Some(wanted.map(|cue| CueRequest { cue, volume }))
+    }
+
+    fn handle_input(&mut self, input: Input, now_ms: u64) -> Vec<Action> {
         match input {
             Input::SocketOpened => {
                 if self.phase != Phase::AwaitingSocket {
@@ -422,12 +497,19 @@ impl Session {
                     return actions;
                 }
                 self.phase = Phase::Running;
+                self.cues = CueState {
+                    settings: ready.cues,
+                    playing: self.cues.playing,
+                    volume: self.cues.volume,
+                    ..CueState::new()
+                };
                 actions.push(Action::ConfigureOnset(ready.onset));
                 actions.push(state(self.state(), None));
             }
             GatewayFrame::StopPlayback => {
                 if self.phase == Phase::Running {
                     self.interrupt(now_ms);
+                    self.cues.speech.clear();
                     actions.push(Action::FlushPlayback);
                 }
             }
@@ -437,6 +519,25 @@ impl Session {
                         self.highest_segment
                             .map_or(segment_id, |h| h.max(segment_id)),
                     );
+                    self.cues.speech.insert(segment_id);
+                }
+            }
+            GatewayFrame::Turn(turn) => {
+                // A new turn state is new work: only the tool running when the task was announced counts as moved.
+                self.cues.turn = turn;
+                self.cues.tool_backgrounded = false;
+                if turn == Turn::Idle {
+                    self.cues.speech.clear();
+                }
+                if turn == Turn::Thinking {
+                    self.cues.partial = false;
+                }
+            }
+            GatewayFrame::Vad { speaking } => self.cues.vad_speaking = speaking,
+            GatewayFrame::Transcript { live } => self.cues.partial = live,
+            GatewayFrame::Background => {
+                if self.cues.turn == Turn::Working {
+                    self.cues.tool_backgrounded = true;
                 }
             }
             GatewayFrame::SegmentEnd { segment_id } => {
@@ -1023,5 +1124,289 @@ mod tests {
         }
         .to_json();
         assert_eq!(bare, r#"{"state":"running","type":"native_state"}"#);
+    }
+
+    // ── sound cues ──────────────────────────────────────────────────────────
+
+    fn cue_actions(actions: &[Action]) -> Vec<Option<Cue>> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::SetCue(request) => Some(request.map(|r| r.cue)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Feeds a gateway frame and returns the cue changes it caused.
+    fn frame(session: &mut Session, json: &str) -> Vec<Option<Cue>> {
+        cue_actions(&session.handle(Input::GatewayText(json.into()), 1))
+    }
+
+    fn turn(session: &mut Session, state: &str) -> Vec<Option<Cue>> {
+        frame(session, &format!(r#"{{"type":"turn","state":"{state}"}}"#))
+    }
+
+    fn ready_with(cues: &str) -> String {
+        READY.replace(
+            r#""backgrounding""#,
+            &format!(r#""cues":{cues},"backgrounding""#),
+        )
+    }
+
+    fn running_with(cues: &str) -> Session {
+        let mut session = Session::new(Mode::HandsFree);
+        session.handle(Input::SocketOpened, 0);
+        session.handle(Input::GatewayText(ready_with(cues)), 0);
+        session
+    }
+
+    fn start_speech(session: &mut Session, id: u32) -> Vec<Option<Cue>> {
+        frame(
+            session,
+            &format!(
+                r#"{{"type":"segment_start","segmentId":{id},"messageId":null,"text":"Hi."}}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_ready_with_cue_settings_is_read_and_one_without_means_the_defaults() {
+        let loud = GatewayFrame::parse(&ready_with(r#"{"enabled":false,"volume":0.8}"#));
+        let Some(GatewayFrame::Ready(loud)) = loud else {
+            panic!("not ready")
+        };
+        assert_eq!(
+            loud.cues,
+            CueSettings {
+                enabled: false,
+                volume: 0.8
+            }
+        );
+        let Some(GatewayFrame::Ready(plain)) = GatewayFrame::parse(READY) else {
+            panic!("not ready")
+        };
+        assert_eq!(plain.cues, CueSettings::default());
+        let Some(GatewayFrame::Ready(odd)) =
+            GatewayFrame::parse(&ready_with(r#"{"enabled":"no","volume":9}"#))
+        else {
+            panic!("not ready")
+        };
+        assert_eq!(
+            odd.cues,
+            CueSettings {
+                enabled: true,
+                volume: 1.0
+            }
+        );
+    }
+
+    #[test]
+    fn thinking_starts_the_cue_a_tool_switches_it_and_speech_stops_it() {
+        let mut session = running(Mode::HandsFree);
+        assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+        assert_eq!(turn(&mut session, "working"), vec![Some(Cue::Tool)]);
+        assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+        assert_eq!(turn(&mut session, "speaking"), vec![None]);
+        assert!(start_speech(&mut session, 1).is_empty());
+    }
+
+    #[test]
+    fn the_request_carries_the_configured_volume() {
+        let mut session = running_with(r#"{"enabled":true,"volume":0.45}"#);
+        let actions = session.handle(
+            Input::GatewayText(r#"{"type":"turn","state":"thinking"}"#.into()),
+            1,
+        );
+        assert!(actions.contains(&Action::SetCue(Some(CueRequest {
+            cue: Cue::Thinking,
+            volume: 0.45
+        }))));
+    }
+
+    #[test]
+    fn the_cue_is_asked_for_once_not_on_every_frame() {
+        let mut session = running(Mode::HandsFree);
+        assert_eq!(turn(&mut session, "thinking").len(), 1);
+        assert!(frame(
+            &mut session,
+            r#"{"type":"metrics","utteranceId":"u","sttMs":1,"ttfaMs":null}"#
+        )
+        .is_empty());
+        assert!(frame(&mut session, r#"{"type":"holding","text":"x"}"#).is_empty());
+    }
+
+    #[test]
+    fn nothing_sounds_when_cues_are_off_or_silent() {
+        for cues in [
+            r#"{"enabled":false,"volume":0.3}"#,
+            r#"{"enabled":true,"volume":0}"#,
+        ] {
+            let mut session = running_with(cues);
+            assert!(turn(&mut session, "thinking").is_empty());
+            assert!(turn(&mut session, "working").is_empty());
+            start_speech(&mut session, 1);
+            assert!(turn(&mut session, "idle").is_empty());
+        }
+    }
+
+    #[test]
+    fn a_gateway_without_cue_settings_gets_the_defaults() {
+        let mut session = running(Mode::HandsFree);
+        let actions = session.handle(
+            Input::GatewayText(r#"{"type":"turn","state":"working"}"#.into()),
+            1,
+        );
+        assert!(actions.contains(&Action::SetCue(Some(CueRequest {
+            cue: Cue::Tool,
+            volume: 0.3
+        }))));
+    }
+
+    #[test]
+    fn the_cue_is_silent_while_the_user_is_heard_and_returns_after() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "thinking");
+        assert_eq!(
+            frame(&mut session, r#"{"type":"vad","speaking":true}"#),
+            vec![None]
+        );
+        assert_eq!(
+            frame(&mut session, r#"{"type":"vad","speaking":false}"#),
+            vec![Some(Cue::Thinking)]
+        );
+        assert_eq!(
+            frame(
+                &mut session,
+                r#"{"type":"transcript","utteranceId":"u","text":"wait","final":false}"#
+            ),
+            vec![None]
+        );
+        assert_eq!(
+            frame(
+                &mut session,
+                r#"{"type":"transcript","utteranceId":"u","text":"wait","final":true}"#
+            ),
+            vec![Some(Cue::Thinking)]
+        );
+    }
+
+    #[test]
+    fn push_to_talk_held_silences_the_cue() {
+        let mut session = running(Mode::PushToTalk);
+        turn(&mut session, "thinking");
+        assert_eq!(
+            cue_actions(&session.handle(Input::Ptt { down: true }, 2)),
+            vec![None]
+        );
+        assert_eq!(
+            cue_actions(&session.handle(Input::Ptt { down: false }, 3)),
+            vec![Some(Cue::Thinking)]
+        );
+    }
+
+    #[test]
+    fn a_holding_line_over_long_work_silences_the_tool_cue_until_it_has_played() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "working");
+        assert_eq!(start_speech(&mut session, 4), vec![None]);
+        session.handle(Input::GatewayBinary(down(4, &[1, 0, 2, 0])), 2);
+        frame(&mut session, r#"{"type":"segment_end","segmentId":4}"#);
+        assert_eq!(
+            cue_actions(&session.handle(Input::SegmentPlayed(4), 3)),
+            vec![Some(Cue::Tool)]
+        );
+    }
+
+    #[test]
+    fn a_barge_in_clears_the_speech_that_was_cut() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "thinking");
+        start_speech(&mut session, 1);
+        turn(&mut session, "speaking");
+        let cut = session.handle(
+            Input::Onset {
+                segment_id: Some(1),
+                played_ms: 100,
+            },
+            4,
+        );
+        assert!(cue_actions(&cut).is_empty());
+        // The gateway then runs a new turn that is thinking: the cue is not held back by the cut speech.
+        assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+    }
+
+    #[test]
+    fn a_tool_moved_to_the_background_hands_over_to_thinking_and_the_turn_ending_stops_it() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "working");
+        assert_eq!(
+            frame(
+                &mut session,
+                r#"{"type":"background","taskId":"t","description":"build"}"#
+            ),
+            vec![Some(Cue::Thinking)]
+        );
+        assert!(turn(&mut session, "thinking").is_empty());
+        assert_eq!(turn(&mut session, "idle"), vec![None]);
+        // Background work outliving the turn is silent, and a background frame while idle changes nothing.
+        assert!(frame(
+            &mut session,
+            r#"{"type":"background","taskId":"u","description":null}"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_new_tool_after_a_backgrounded_one_gets_the_tool_cue_again() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "working");
+        frame(
+            &mut session,
+            r#"{"type":"background","taskId":"t","description":null}"#,
+        );
+        turn(&mut session, "thinking");
+        assert_eq!(turn(&mut session, "working"), vec![Some(Cue::Tool)]);
+    }
+
+    #[test]
+    fn a_call_pauses_the_cue_and_the_end_of_the_call_brings_it_back() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "thinking");
+        let paused = session.handle(Input::InterruptionBegan, 2);
+        assert_eq!(cue_actions(&paused), vec![None]);
+        let resumed = session.handle(Input::InterruptionEnded { suspended_ms: 500 }, 3);
+        assert_eq!(cue_actions(&resumed), vec![Some(Cue::Thinking)]);
+    }
+
+    #[test]
+    fn stopping_silences_the_cue_before_the_platform_is_stopped() {
+        for end in [
+            Input::Stop {
+                reason: "user".into(),
+            },
+            Input::SocketClosed {
+                code: Some(1006),
+                reason: String::new(),
+            },
+        ] {
+            let mut session = running(Mode::HandsFree);
+            turn(&mut session, "working");
+            let actions = session.handle(end, 5);
+            let silence = actions.iter().position(|a| *a == Action::SetCue(None));
+            let stop = actions.iter().position(|a| *a == Action::StopPlatform);
+            assert!(
+                silence.is_some() && stop.is_some() && silence < stop,
+                "{actions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cue_frames_are_still_forwarded_to_the_web_ui() {
+        let mut session = running(Mode::HandsFree);
+        let json = r#"{"type":"turn","state":"thinking"}"#;
+        let actions = session.handle(Input::GatewayText(json.into()), 1);
+        assert_eq!(actions[0], Action::Forward(json.into()));
     }
 }

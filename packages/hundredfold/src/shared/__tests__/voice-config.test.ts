@@ -21,6 +21,7 @@ describe("voiceConfigProblems", () => {
       vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, prerollMs: 1000 },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
+      cues: { enabled: false, volume: 1 },
       prompt: "x".repeat(8000), holdingLine: "y".repeat(300),
       limits: { maxUtteranceSeconds: 120, maxConcurrentAttachments: 64 }, local: { device: "gpu" },
     })).toEqual([]);
@@ -49,6 +50,11 @@ describe("voiceConfigProblems", () => {
     ["voice.autoBackground.enabled", { autoBackground: { enabled: "on" } }, "voice.autoBackground.enabled"],
     ["voice.autoBackground.afterSeconds", { autoBackground: { afterSeconds: 0.5 } }, "voice.autoBackground.afterSeconds"],
     ["voice.autoBackground.afterSeconds", { autoBackground: { afterSeconds: 601 } }, "voice.autoBackground.afterSeconds"],
+    ["voice.cues.enabled", { cues: { enabled: "on" } }, "voice.cues.enabled"],
+    ["voice.cues.volume", { cues: { volume: -0.1 } }, "voice.cues.volume"],
+    ["voice.cues.volume", { cues: { volume: 1.5 } }, "voice.cues.volume"],
+    ["voice.cues.volume", { cues: { volume: "loud" } }, "voice.cues.volume"],
+    ["voice.cues", { cues: true }, "voice.cues must be a mapping"],
     ["voice.prompt", { prompt: "x".repeat(8001) }, "voice.prompt"],
     ["voice.prompt", { prompt: 4 }, "voice.prompt"],
     ["voice.holdingLine", { holdingLine: "y".repeat(301) }, "voice.holdingLine"],
@@ -159,9 +165,18 @@ describe("resolveVoiceConfig", () => {
       vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
+      cues: { enabled: true, volume: 0.3 },
       prompt: DEFAULT_VOICE_PROMPT, promptFile: null, holdingLine: DEFAULT_HOLDING_LINE,
       limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 }, local: { device: "auto" },
     });
+  });
+
+  it("loads a config with no cues block, a partial one, or a null one, at the defaults", () => {
+    expect(resolve({ enabled: true })?.cues).toEqual({ enabled: true, volume: 0.3 });
+    expect(resolve({ enabled: true, cues: {} })?.cues).toEqual({ enabled: true, volume: 0.3 });
+    expect(resolve({ enabled: true, cues: null })?.cues).toEqual({ enabled: true, volume: 0.3 });
+    expect(resolve({ enabled: true, cues: { volume: 0.7 } })?.cues).toEqual({ enabled: true, volume: 0.7 });
+    expect(resolve({ enabled: true, cues: { enabled: false } })?.cues).toEqual({ enabled: false, volume: 0.3 });
   });
 
   it("keeps what the operator set and fills the rest around it", () => {

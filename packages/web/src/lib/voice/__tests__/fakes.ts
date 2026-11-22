@@ -1,7 +1,9 @@
-import type { PlayerAudioContext, PlayerBuffer, PlayerSource } from "../player"
+import type { CueAudioContext, CueGain, CueSource } from "../cues"
+import type { PlayerBuffer } from "../player"
 
-export class FakeSource implements PlayerSource {
+export class FakeSource implements CueSource {
   buffer: unknown = null
+  loop = false
   onended: (() => void) | null = null
   startedAt: number | null = null
   stoppedAt: number | null = null
@@ -14,18 +16,37 @@ export class FakeSource implements PlayerSource {
   finish() { this.onended?.() }
 }
 
-export class FakeAudioContext implements PlayerAudioContext {
+export class FakeGain implements CueGain {
+  /** Every call made on the gain parameter, in order. */
+  readonly calls: string[] = []
+  disconnected = false
+  readonly gain = {
+    value: 1,
+    setValueAtTime: (value: number, time: number) => { this.calls.push(`set ${value} @${time}`) },
+    linearRampToValueAtTime: (value: number, time: number) => { this.calls.push(`ramp ${value} @${time}`) },
+  }
+  connect() { return undefined }
+  disconnect() { this.disconnected = true }
+}
+
+export class FakeAudioContext implements CueAudioContext {
   currentTime = 0
   destination = {}
   sources: FakeSource[] = []
+  gains: FakeGain[] = []
   createBuffer(_channels: number, length: number, sampleRate: number): PlayerBuffer {
     const data = new Float32Array(length)
     return { duration: length / sampleRate, getChannelData: () => data }
   }
-  createBufferSource(): PlayerSource {
+  createBufferSource(): FakeSource {
     const source = new FakeSource()
     this.sources.push(source)
     return source
+  }
+  createGain(): FakeGain {
+    const gain = new FakeGain()
+    this.gains.push(gain)
+    return gain
   }
 }
 

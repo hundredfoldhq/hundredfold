@@ -89,6 +89,11 @@ export interface Config {
     turnDetection?: string | { type?: string; [key: string]: unknown }
     noiseReduction?: string
   }
+  /** Voice mode. Only `cues` is edited here; the rest of the block is config.yaml's. */
+  voice?: {
+    cues?: { enabled?: boolean; volume?: number }
+    [key: string]: unknown
+  }
   portal?: {
     companyName?: string
     companyPrefix?: string

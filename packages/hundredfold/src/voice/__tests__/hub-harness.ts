@@ -18,6 +18,7 @@ export function baseConfig(over: Partial<ResolvedVoiceConfig> = {}): ResolvedVoi
     vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
     bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
     autoBackground: { enabled: true, afterSeconds: 5 },
+    cues: { enabled: true, volume: 0.3 },
     prompt: DEFAULT_VOICE_PROMPT, promptFile: null, holdingLine: DEFAULT_HOLDING_LINE,
     limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 },
     local: { device: "auto" },

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
+import type { VoiceCuePlayerLike } from "../cues"
 import { floatToInt16 } from "../pcm"
 import { VoicePlayer } from "../player"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
@@ -76,6 +77,8 @@ interface Rig {
   micError: { value: unknown }
   clock: { now: number }
   captureStops: ReturnType<typeof vi.fn>
+  /** What the cue player was told, in order: `thinking@0.3`, `tool@0.3`, `stop`. */
+  cues: string[]
 }
 
 function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean }> = {}): Rig {
@@ -89,6 +92,11 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
   const captureStops = vi.fn()
   let sink: (p: Int16Array) => void = () => {}
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
+  const cues: string[] = []
+  const cuePlayer: VoiceCuePlayerLike = {
+    set: (cue, volume) => { const call = cue ? `${cue}@${volume}` : "stop"; if (cues.at(-1) !== call) cues.push(call) },
+    dispose: () => { if (cues.at(-1) !== "stop") cues.push("stop") },
+  }
   const deps: BrowserVoiceDeps = {
     openSocket: (_id, handlers) => { calls.push("socket"); const s = new FakeSocket(handlers); sockets.push(s); return s },
     createContext: () => { calls.push("context"); const c = new FakeSessionContext(); contexts.push(c); const resume = c.resume; c.resume = vi.fn(async () => { calls.push("resume"); return resume() }); return c },
@@ -104,13 +112,14 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
       return { track, stop: () => { captureStops(); track.stop() } }
     },
     createPlayer: (ctx, onPlayed) => new VoicePlayer(ctx, { onPlayed }),
+    createCuePlayer: () => cuePlayer,
     doc,
     mediaSession,
     createMediaMetadata: () => ({ title: "Voice mode is on" }),
     now: () => clock.now,
   }
   const session = new BrowserVoiceSession({ sessionId: "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops }
+  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -470,5 +479,152 @@ describe("reconnecting", () => {
     await r.session.start()
     expect(r.sockets).toHaveLength(2)
     expect(r.contexts).toHaveLength(2)
+  })
+})
+
+describe("sound cues", () => {
+  const turn = (r: Rig, state: "idle" | "thinking" | "working" | "speaking", tool?: string) =>
+    r.sockets[0].serverFrame({ type: "turn", state, ...(tool ? { tool } : {}) })
+  const withCues = async (cues?: { enabled: boolean; volume: number }) => {
+    const r = rig()
+    await r.session.start()
+    r.sockets[0].serverFrame({ ...READY, ...(cues ? { cues } : {}) })
+    return r
+  }
+  const speak = (r: Rig, id = 1) => {
+    turn(r, "speaking")
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: id, messageId: null, text: "Done." })
+    r.sockets[0].serverAudio(id, 12_000)
+  }
+
+  it("starts on thinking, switches on the first tool call, and stops on speech", async () => {
+    const r = await withCues({ enabled: true, volume: 0.4 })
+    expect(r.cues).toEqual([])
+    turn(r, "thinking")
+    turn(r, "working", "Bash")
+    turn(r, "thinking")
+    speak(r)
+    expect(r.cues).toEqual(["thinking@0.4", "tool@0.4", "thinking@0.4", "stop"])
+  })
+
+  it("stops when voice stops", async () => {
+    const r = await withCues()
+    turn(r, "working", "Read")
+    r.session.stop()
+    expect(r.cues).toEqual(["tool@0.3", "stop"])
+  })
+
+  it("stops when the gateway detaches voice mode", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    r.sockets[0].serverFrame({ type: "detached", reason: "disabled" })
+    expect(r.cues).toEqual(["thinking@0.3", "stop"])
+  })
+
+  it("stops when the turn ends with nothing to say", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    turn(r, "idle")
+    expect(r.cues).toEqual(["thinking@0.3", "stop"])
+  })
+
+  it("never plays when cues are disabled, or at volume zero", async () => {
+    for (const cues of [{ enabled: false, volume: 0.3 }, { enabled: true, volume: 0 }]) {
+      const r = await withCues(cues)
+      turn(r, "thinking")
+      turn(r, "working", "Bash")
+      speak(r)
+      r.session.stop()
+      expect(r.cues).toEqual([])
+    }
+  })
+
+  it("plays at the defaults when the gateway sent no cue settings", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    expect(r.cues).toEqual(["thinking@0.3"])
+  })
+
+  it("is silent while the user is heard and comes back when they stop", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    r.sockets[0].serverFrame({ type: "vad", speaking: true })
+    r.sockets[0].serverFrame({ type: "vad", speaking: false })
+    expect(r.cues).toEqual(["thinking@0.3", "stop", "thinking@0.3"])
+  })
+
+  it("is silent while a live partial transcript is showing", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    r.sockets[0].serverFrame({ type: "transcript", utteranceId: "u", text: "wait", final: false })
+    expect(r.cues.at(-1)).toBe("stop")
+  })
+
+  it("is silent while push-to-talk is held", async () => {
+    const r = rig({ mode: "push-to-talk" })
+    await r.session.start()
+    r.sockets[0].serverFrame(READY)
+    turn(r, "thinking")
+    r.session.pttDown()
+    r.session.pttUp()
+    expect(r.cues).toEqual(["thinking@0.3", "stop", "thinking@0.3"])
+  })
+
+  it("a holding line spoken over long work silences the tool cue, which resumes when it has played", async () => {
+    const r = await withCues()
+    turn(r, "working", "Bash")
+    r.sockets[0].serverFrame({ type: "holding", text: "Still working." })
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: 4, messageId: null, text: "Still working." })
+    r.sockets[0].serverAudio(4, 12_000)
+    r.sockets[0].serverFrame({ type: "segment_end", segmentId: 4 })
+    expect(r.cues).toEqual(["tool@0.3", "stop"])
+    r.contexts[0].sources.at(-1)?.finish()
+    expect(r.cues).toEqual(["tool@0.3", "stop", "tool@0.3"])
+  })
+
+  it("a tool moved to the background hands over to the thinking cue, and background work after the turn is silent", async () => {
+    const r = await withCues()
+    turn(r, "working", "Bash")
+    r.sockets[0].serverFrame({ type: "background", taskId: "t1", description: "build" })
+    expect(r.cues).toEqual(["tool@0.3", "thinking@0.3"])
+    turn(r, "thinking")
+    turn(r, "idle")
+    expect(r.cues).toEqual(["tool@0.3", "thinking@0.3", "stop"])
+  })
+
+  it("a new tool call after a backgrounded one gets the tool cue again", async () => {
+    const r = await withCues()
+    turn(r, "working", "Bash")
+    r.sockets[0].serverFrame({ type: "background", taskId: "t1", description: "build" })
+    turn(r, "thinking")
+    turn(r, "working", "Read")
+    expect(r.cues).toEqual(["tool@0.3", "thinking@0.3", "tool@0.3"])
+  })
+
+  it("is silent while the device has suspended voice mode", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    r.doc.set("hidden")
+    r.contexts[0].setState("suspended")
+    r.doc.set("visible")
+    expect(r.session.getSnapshot().status).toBe("suspended")
+    expect(r.cues.at(-1)).toBe("stop")
+  })
+
+  it("does not arm the barge-in detector: a loud microphone while a cue plays sends no barge_in", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    for (let i = 0; i < 100; i++) r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].types()).not.toContain("barge_in")
+    expect(r.sockets[0].audio).toHaveLength(100)
+  })
+
+  it("a barge-in over speech does not bring a cue back before the turn asks for one", async () => {
+    const r = await withCues()
+    turn(r, "thinking")
+    speak(r)
+    for (let i = 0; i < 15; i++) r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].types()).toContain("barge_in")
+    expect(r.cues).toEqual(["thinking@0.3", "stop"])
   })
 })
