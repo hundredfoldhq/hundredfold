@@ -12,7 +12,7 @@ import { createSttApi } from "@/lib/api-stt"
 import { createTodoCaptureApi } from "@/lib/api-todo-capture"
 import type { EngineLimitsResponse } from "@/lib/api-engine-limits"
 import type { SessionWaitsResponse } from "@/lib/session-waits"
-export type { EngineLimitAccountSnapshot, EngineLimitsResponse } from "@/lib/api-engine-limits"
+export type { EngineLimitAccountSnapshot, EngineLimitsResponse, ProviderUsage } from "@/lib/api-engine-limits"
 export type { TodoCaptureWire, TodoCaptureStageWire, TodoCaptureRouteWire } from "@/lib/api-todo-capture"
 import type { StaleChatPolicy } from "@/lib/stale-chat"
 import type { EnginesResponse, ModelInfo } from "@/lib/engine-registry"
@@ -351,6 +351,8 @@ export interface EngineLimitEngineSnapshot {
   unsupportedReason?: string;
   error?: string;
   stale?: boolean;
+  /** The provider's own usage for opencode's default provider, when no account covers it (api-engine-limits.ts). */
+  providerUsage?: import("./api-engine-limits").ProviderUsage;
 }
 
 export type WorkItemStatusWire =

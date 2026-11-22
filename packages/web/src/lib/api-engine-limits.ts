@@ -1,4 +1,21 @@
-import type { EngineLimitEngineSnapshot } from "@/lib/api"
+import type { EngineLimitEngineSnapshot, EngineLimitWindow } from "@/lib/api"
+
+/**
+ * What the provider itself reports of a plan's usage (OpenCode Go's usage API), beside the figures hundredfold meters from
+ * its own turn ledger. `unavailable` carries fixed copy saying why there is no reading: the card shows it instead of a zero.
+ */
+export interface ProviderUsage {
+  source: string
+  status: "ok" | "unavailable"
+  fetchedAt: string
+  /** 5h / 7d / 30d with the provider's percentages; `limited` is its own rate-limited flag. */
+  windows?: (EngineLimitWindow & { limited?: boolean })[]
+  /** Only when a monthly allowance is configured: the provider reports percentages, not dollars. */
+  monthlyLimitUsd?: number
+  consumedUsd?: number
+  remainingUsd?: number
+  unavailable?: { code: string; message: string }
+}
 
 /**
  * One account's snapshot on the Limits page, for an engine with more than one

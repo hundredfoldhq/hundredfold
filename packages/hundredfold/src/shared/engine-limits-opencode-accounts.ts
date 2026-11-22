@@ -1,4 +1,4 @@
-import type { Employee, EngineLimitBucket, EngineLimitEngineSnapshot, HundredfoldConfig } from "./types.js";
+import type { Employee, EngineLimitBucket, EngineLimitEngineSnapshot, HundredfoldConfig, ProviderUsage } from "./types.js";
 import { engineHealthForTarget, isEngineExhausted, readEngineHealth, type EngineHealth, type EngineHealthReading } from "./engine-health.js";
 import { rosterEmployees, type EngineLimitAccountSnapshot } from "./engine-limits-accounts.js";
 import { providerHealthKey } from "./engine-health-meter.js";
@@ -32,9 +32,13 @@ export interface OpencodeAccountLimitSnapshot extends EngineLimitAccountSnapshot
   /** What the standing hold on the provider (or one of its models) is: its class, when it was seen and why. Never the credential's identity. */
   lastFailure?: { class: "quota" | "auth" | "model-access"; at: string; reason?: string };
   problems?: string[];
+  /** What the provider itself reports of the account's plan usage; absent for a provider with no usage endpoint. */
+  providerUsage?: ProviderUsage;
 }
 
 export interface OpencodeAccountsDeps {
+  /** The provider's own usage by provider id (engine-limits-opencode-usage.ts). */
+  providerUsage?: ReadonlyMap<string, ProviderUsage>;
   /** The roster; default: the one the gateway registered at boot. */
   employees?: Iterable<Employee>;
   /** The gateway's environment, for `keySet`; default: the one the gateway holds its account keys in (child-env.ts). */
@@ -122,7 +126,7 @@ function declarationFields(account: OpencodeAccount, env: Resolved["env"]): Pick
   };
 }
 
-function snapshotOf(account: OpencodeAccount, config: HundredfoldConfig, engine: EngineLimitEngineSnapshot, resolved: Resolved): OpencodeAccountLimitSnapshot {
+function snapshotOf(account: OpencodeAccount, config: HundredfoldConfig, engine: EngineLimitEngineSnapshot, resolved: Resolved, usage: ProviderUsage | undefined): OpencodeAccountLimitSnapshot {
   const prefix = `${account.provider}/`;
   const buckets = (engine.buckets ?? []).filter((bucket) => bucket.id.startsWith(prefix));
   const problems = problemsOf(account, resolved.env);
@@ -130,7 +134,7 @@ function snapshotOf(account: OpencodeAccount, config: HundredfoldConfig, engine:
   return {
     name: engine.name,
     available: engine.available,
-    status: engine.available ? (buckets.length > 0 ? "snapshot" : "unsupported") : "unavailable",
+    status: engine.available ? (buckets.length > 0 || usage?.status === "ok" ? "snapshot" : "unsupported") : "unavailable",
     source: engine.source,
     refreshedAt: engine.refreshedAt,
     models: engine.models.filter((model) => model.id.startsWith(prefix)),
@@ -144,6 +148,7 @@ function snapshotOf(account: OpencodeAccount, config: HundredfoldConfig, engine:
     ...holdFields(account, resolved),
     ...(failure ? { lastFailure: failure } : {}),
     ...(problems.length > 0 ? { problems } : {}),
+    ...(usage ? { providerUsage: usage } : {}),
   };
 }
 
@@ -164,5 +169,5 @@ export function collectOpencodeAccounts(
     health: engineHealthForTarget(deps.health ?? readEngineHealth(now), undefined),
     now,
   };
-  return accounts.map((account) => snapshotOf(account, config, engine, resolved));
+  return accounts.map((account) => snapshotOf(account, config, engine, resolved, deps.providerUsage?.get(account.provider)));
 }

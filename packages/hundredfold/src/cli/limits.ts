@@ -3,7 +3,7 @@ import { loadConfig } from "../shared/config.js";
 import { HUNDREDFOLD_HOME } from "../shared/paths.js";
 import { collectEngineLimits } from "../shared/engine-limits.js";
 import { refreshGrokModels, refreshPiModels, refreshHermesModels, refreshOpencodeModels, refreshMusecodeModels } from "../shared/models.js";
-import type { EngineLimitBucket, EngineLimitEngineSnapshot, EngineLimitWindow } from "../shared/types.js";
+import type { EngineLimitBucket, EngineLimitEngineSnapshot, EngineLimitWindow, ProviderUsage } from "../shared/types.js";
 import type { EngineLimitAccountSnapshot } from "../shared/engine-limits-accounts.js";
 import type { OpencodeAccountLimitSnapshot } from "../shared/engine-limits-opencode-accounts.js";
 import { opencodeDiscoveryEnv } from "../engines/opencode-launch.js";
@@ -47,6 +47,19 @@ function printBuckets(buckets: readonly EngineLimitBucket[]): void {
   }
 }
 
+/** What the provider itself reports of the plan's usage, or why it cannot. */
+function printProviderUsage(usage: ProviderUsage): void {
+  if (usage.status !== "ok") {
+    console.log(`  Provider usage: unavailable (${usage.unavailable?.message ?? "no reading"})`);
+    return;
+  }
+  console.log(`  Provider usage (${usage.source}):`);
+  for (const window of usage.windows ?? []) console.log(`    - ${formatWindow(window)}${window.limited ? " (rate limited)" : ""}`);
+  if (usage.monthlyLimitUsd !== undefined && usage.consumedUsd !== undefined && usage.remainingUsd !== undefined) {
+    console.log(`    - month: $${usage.consumedUsd} of $${usage.monthlyLimitUsd} used, $${usage.remainingUsd} left`);
+  }
+}
+
 function printEngine(engine: EngineLimitEngineSnapshot): void {
   const badge = engine.available ? engine.status : "missing";
   console.log(`${engine.name} (${badge})`);
@@ -58,6 +71,7 @@ function printEngine(engine: EngineLimitEngineSnapshot): void {
     console.log("  Limits:");
     for (const window of engine.windows) console.log(`    - ${formatWindow(window)}`);
   }
+  if (engine.providerUsage) printProviderUsage(engine.providerUsage);
 
   // A lone bucket is worth printing when the top-level windows are not its own.
   if (engine.buckets?.length && (engine.buckets.length > 1 || !engine.windows?.length)) printBuckets(engine.buckets);
@@ -109,6 +123,7 @@ function printAccount(engineName: string, account: EngineLimitAccountSnapshot): 
     console.log("  Limits:");
     for (const window of account.windows) console.log(`    - ${formatWindow(window)}`);
   }
+  if (isOpencodeAccount(account) && account.providerUsage) printProviderUsage(account.providerUsage);
   if (account.buckets?.length) printBuckets(account.buckets);
   if (account.exhausted) console.log(`  Exhausted${account.exhausted.until ? ` until ${formatTime(account.exhausted.until)}` : ""}`);
   if (isOpencodeAccount(account) && account.lastFailure) {

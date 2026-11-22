@@ -19,7 +19,7 @@ function modelOf(bucket: EngineLimitBucket, provider: string | undefined): strin
   return model === "*" ? "All models" : model
 }
 
-function WindowRow({ window, now }: { window: EngineLimitWindow; now: number }) {
+export function WindowRow({ window, now }: { window: EngineLimitWindow; now: number }) {
   const observed = window.usedPercent !== undefined
   const reset = resetLabel(window.resetsAtIso, now)
   return (

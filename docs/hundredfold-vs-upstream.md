@@ -40,7 +40,7 @@ This page lists the headline features Hundredfold has that upstream does not, an
 | Claude, Codex, Grok, Hermes, Antigravity, Pi | ✅ | ✅ | Same adapters. |
 | opencode engine | ✅ | ❌ | `engines/opencode*.ts`; models are in the model registry. Local or on a remote host. See [`engines-opencode.md`](engines-opencode.md). |
 | opencode server mode with live terminal | ✅ | ❌ | `engines.opencode.mode: server` gives each session its own password-protected `opencode serve`. The CLI toggle opens opencode's TUI as an `opencode attach` client on it. The default `mode: run` spawns per turn. |
-| opencode usage limits | ✅ | ❌ | opencode publishes no quota, so Hundredfold meters spend from its own per-turn ledger (`shared/engine-limits-opencode.ts`, `sessions/engine-spend.ts`) and shows it beside the other engines' limits. Upstream's limits page covers its own engines only. |
+| opencode usage limits | ✅ | ❌ | OpenCode Go's own usage reading (`shared/opencode-go-usage.ts`) is shown per account and feeds engine health; for any other provider opencode publishes no quota, so Hundredfold meters spend from its own per-turn ledger (`shared/engine-limits-opencode.ts`, `sessions/engine-spend.ts`) and shows it beside the other engines' limits. Upstream's limits page covers its own engines only. |
 
 ## Remote
 
