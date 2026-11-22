@@ -1,7 +1,7 @@
 import { withRemoteAttachments } from "../shared/remote-attachments.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult, SteerableEngine, SteerOutcome, StreamDelta } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, ForegroundWork, SteerableEngine, SteerOutcome, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
@@ -198,6 +198,16 @@ export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
    */
   canSteer(sessionId: string): boolean {
     return this.steerableTurn(sessionId)?.canSteer() ?? false;
+  }
+
+  /**
+   * The tool call running in the foreground of the session's 2.x turn, from its event stream. This engine
+   * has no soft interrupt, so it offers this as a plain method (see specs/009-voice-mode/contracts/providers.md):
+   * the voice hub reads it to choose a steer with a holding line over a plain steer. Null for a 1.x turn,
+   * a `run`-mode process, a compaction, or a session with no turn.
+   */
+  foregroundWork(sessionId: string): ForegroundWork | null {
+    return this.steerableTurn(sessionId)?.foregroundWork() ?? null;
   }
 
   /** Hand `prompt` to the session's running 2.x turn; `"withdrawn"` at once when there is none. */
