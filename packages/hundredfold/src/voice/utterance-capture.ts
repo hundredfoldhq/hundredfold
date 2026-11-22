@@ -150,32 +150,35 @@ export class UtteranceCapture {
     if (this.closed || this.options.pushToTalk) return;
     if (kind === "end") {
       this.options.events.onVad(false);
-      this.onVadEnd(atMs);
+      this.closeOpen(this.capturing?.catchUp ? this.catchUpEnd(atMs) : this.written);
+      this.ignoringUntilEnd = false;
       return;
+    }
+    const fromByte = Math.max(0, atMs * BYTES_PER_MS);
+    // The VAD does not start twice without an end between, unless the sidecar behind it was replaced: what was open then
+    // lost its end, so it stops where this speech begins (never past what was written).
+    if (this.capturing) {
+      this.options.events.onVad(false);
+      this.closeOpen(Math.min(this.written, fromByte));
+      this.ignoringUntilEnd = false;
     }
     this.options.events.onVad(true);
-    if (this.capturing || this.ignoringUntilEnd) return;
-    this.onVadStart(Math.max(0, atMs * BYTES_PER_MS));
+    if (!this.ignoringUntilEnd) this.onVadStart(fromByte);
   }
 
-  private onVadEnd(atMs: number): void {
+  /** End the open utterance. A live one has had its audio as it came; a catch-up one is cut from the ring, to `toByte`. */
+  private closeOpen(toByte: number): void {
     const open = this.capturing;
-    if (!open?.catchUp) {
-      this.ignoringUntilEnd = false;
-      this.endSpeech(this.written);
-      return;
-    }
+    if (!open) return;
     // A start and its end can arrive together, between two frames: the length limit holds for that span too.
-    const toByte = this.catchUpEnd(atMs);
-    if (toByte - open.catchUp.fromByte >= this.options.maxUtteranceMs * BYTES_PER_MS) this.cutForLength(open);
+    if (open.catchUp && toByte - open.catchUp.fromByte >= this.options.maxUtteranceMs * BYTES_PER_MS) this.cutForLength(open);
     else this.endSpeech(toByte);
-    this.ignoringUntilEnd = false;
   }
 
   /**
    * A start behind the live frames by more than the VAD's own lag is a catch-up: its audio is cut when its end arrives.
-   * A start older than the whole buffer cannot be a held one (the sidecar restarts its offsets at 0 when it is
-   * respawned), so it is treated as live and seeded from the most recent window instead.
+   * A start older than the whole buffer cannot be cut from it (the VAD is further behind than the sidecar holds), so it
+   * is treated as live and seeded from the most recent window instead.
    */
   private onVadStart(fromByte: number): void {
     const windowBytes = (this.options.prerollMs + VAD_LAG_MS) * BYTES_PER_MS;

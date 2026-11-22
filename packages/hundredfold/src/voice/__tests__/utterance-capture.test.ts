@@ -226,9 +226,8 @@ describe("UtteranceCapture, speech spoken while the models load", () => {
     expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
     expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, ms(4000) + 1)); // the first 3 s of it
     expect(stt.streams[0].ended).toBe(true);
-    vad.start(7000); // the rest of that speech is ignored until it ends
+    vad.end(8000); // the rest of that speech is ignored until it ends
     expect(stt.streams).toHaveLength(1);
-    vad.end(8000);
     vad.start(8500);
     expect(stt.streams).toHaveLength(2);
   });
@@ -257,10 +256,10 @@ describe("UtteranceCapture, speech spoken while the models load", () => {
     expect(log.filter((l) => l.startsWith("toolong"))).toEqual(["toolong:u1"]);
   });
 
-  it("a start older than the whole buffer (offsets restarted by a respawned sidecar) is live, seeded from the recent window", () => {
+  it("a start older than the whole buffer cannot be cut from it: it is live, seeded from the recent window", () => {
     const { stt, vad, frames, log } = loaded();
     frames(3000); // a minute in: the ring has been trimmed
-    vad.start(1000); // offsets restarted at 0 when the sidecar came back
+    vad.start(1000); // far behind: the buffer no longer holds it
     frames(100);
     vad.end(2800);
     expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
@@ -269,6 +268,42 @@ describe("UtteranceCapture, speech spoken while the models load", () => {
     expect(stt.streams[0].ended).toBe(true);
     vad.start(500);
     expect(stt.streams).toHaveLength(2); // the next utterance is not dropped either
+  });
+
+  it("a start that arrives while a catch-up utterance is open ends that one where the new speech begins", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(400);
+    vad.start(1000); // catch-up; the sidecar that would have ended it died and was replaced
+    vad.start(5000); // the new sidecar's first speech
+    expect(given(stt.streams[0])).toEqual(range(ms(1000) + 1, ms(5000) + 1));
+    expect(stt.streams[0].ended).toBe(true);
+    expect(stt.streams).toHaveLength(2);
+    vad.end(6000);
+    expect(given(stt.streams[1])).toEqual(range(ms(5000) + 1, ms(6100) + 1));
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
+  });
+
+  it("a start that arrives while a live utterance is open ends it and opens the next", () => {
+    const { stt, vad, frames, log } = loaded();
+    frames(100);
+    vad.start(1840); // live
+    frames(10);
+    vad.start(2100); // the sidecar was replaced before it ended the first
+    expect(stt.streams[0].ended).toBe(true);
+    expect(given(stt.streams[0])).toEqual(range(ms(1840) + 1, 111));
+    expect(stt.streams).toHaveLength(2);
+    expect(given(stt.streams[1])).toEqual(range(ms(2100) + 1, 111));
+    expect(log.slice(-3)).toEqual(["vad:false", "vad:true", "start:u2"]);
+  });
+
+  it("a catch-up utterance closed by the next start is held to the length limit too", () => {
+    const { stt, vad, frames } = loaded({ maxUtteranceMs: 5000 });
+    frames(750);
+    vad.start(0);
+    vad.start(11_000); // closes the first by the same length rule: its span to here is over the limit
+    expect(stt.streams[0].ended).toBe(true);
+    expect(given(stt.streams[0])).toEqual(range(1, ms(5000) + 1));
+    expect(stt.streams).toHaveLength(2);
   });
 
   it("a live start behaves as before: seeded from its start, then the live frames, nothing twice", () => {

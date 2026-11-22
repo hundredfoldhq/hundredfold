@@ -1,5 +1,5 @@
 // A stand-in for speech_sidecar.py that speaks the same stdio framing. Behaviour is chosen
-// with FAKE (nopong, nostt, partial-error, die-on-tts, badframe, nohello, error-hello, marker-vad); FAKE_LOG names a file that
+// with FAKE (nopong, nostt, partial-error, die-on-tts, badframe, nohello, error-hello, marker-vad); FAKE_MARKER=1 turns the marker VAD on in any mode; FAKE_LOG names a file that
 // receives one line per request, so a test can see what the sidecar was sent.
 import fs from "node:fs";
 
@@ -11,6 +11,7 @@ const cancelled = new Set();
 // (start moved back by prerollMs, end after silenceMs of quiet, end.atMs at the last loud frame). Offsets count every byte.
 const LOUD = 1000;
 const vads = new Map();
+const marker = mode === "marker-vad" || process.env.FAKE_MARKER === "1";
 
 function markerVad(header, body) {
   const v = vads.get(header.stream) ?? { offset: 0, preroll: 0, silence: 700, speaking: false, quiet: 0, lastLoudEnd: 0 };
@@ -50,10 +51,10 @@ function handle(header, body) {
       if (mode !== "nopong") send({ op: "pong", n: header.n });
       return;
     case "vad.open":
-      if (mode === "marker-vad") vads.set(header.stream, { offset: 0, preroll: header.prerollMs, silence: header.silenceMs, speaking: false, quiet: 0, lastLoudEnd: 0 });
+      if (marker) vads.set(header.stream, { offset: 0, preroll: header.prerollMs, silence: header.silenceMs, speaking: false, quiet: 0, lastLoudEnd: 0 });
       return;
     case "vad.audio":
-      if (mode === "marker-vad") return markerVad(header, body);
+      if (marker) return markerVad(header, body);
       return send({ op: "vad.event", stream: header.stream, kind: body.length === 2 ? "end" : "start", atMs: body.length });
     case "stt.partial":
     case "stt.final":

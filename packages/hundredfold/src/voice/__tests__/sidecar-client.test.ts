@@ -262,6 +262,27 @@ describe("speech sidecar client: recovery and abort", () => {
     vad.close();
   });
 
+  it("keeps event offsets on the caller's byte positions across a respawn, with held and dropped audio", async () => {
+    const sidecar = client("die-on-tts", { respawnMinMs: 150 }, { FAKE_MARKER: "1" });
+    const vad = sidecar.vad("v1", VAD);
+    const events: Array<{ kind: string; atMs: number }> = [];
+    vad.on((event) => events.push(event));
+    const quiet = Buffer.alloc(640);
+    const loud = Buffer.alloc(640);
+    for (let i = 0; i < 320; i += 1) loud.writeInt16LE(5000, i * 2);
+    await sidecar.ensureReady();
+    for (let i = 0; i < 10; i += 1) vad.write(quiet);
+    await until(() => logged().filter((line) => line === "vad.audio").length >= 10);
+    await collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal)).catch(() => undefined); // the sidecar dies
+    await sleep(200); // the respawn hold passes
+    // The first write brings the new sidecar up; the rest are held, and the oldest 100 frames are dropped to silence.
+    for (let i = 0; i < MAX_VAD_QUEUE + 100; i += 1) vad.write(quiet);
+    vad.write(loud); // frame 1610 of the caller's stream, though the new sidecar sees it far earlier
+    await until(() => events.some((event) => event.kind === "start"));
+    expect(events.find((event) => event.kind === "start")!.atMs).toBe((10 + MAX_VAD_QUEUE + 100) * 20 - VAD.prerollMs);
+    vad.close();
+  });
+
   it("reports unavailable once closed, rather than available after the respawn hold", async () => {
     const sidecar = client("", { respawnMinMs: 50 });
     await sidecar.ensureReady();

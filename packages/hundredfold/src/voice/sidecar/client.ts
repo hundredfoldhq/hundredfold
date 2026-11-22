@@ -66,6 +66,8 @@ export class SidecarUnavailableError extends Error {}
 
 /** How long a VAD stream's audio is held while the sidecar is not ready, in ms of audio. */
 export const VAD_HOLD_MS = 30_000;
+/** Bytes of PCM16 mono audio per ms at the sidecar's input rate (16 kHz). */
+const VAD_BYTES_PER_MS = 32;
 /** One audio frame, as the gateway sends it. */
 const VAD_FRAME_MS = 20;
 /**
@@ -86,6 +88,10 @@ interface VadStreamState {
   queue: Buffer[];
   /** Bytes of audio dropped from a full queue; sent as silence so offsets keep counting every byte written. */
   dropped: number;
+  /** Every byte the caller has passed to `write`, including those dropped. */
+  written: number;
+  /** Where the current generation's first byte sits in the caller's stream; its event offsets are relative to it. */
+  baseBytes: number;
   closed: boolean;
   warned: boolean;
 }
@@ -265,12 +271,13 @@ export class SpeechSidecarClient {
   /**
    * A VAD stream. Audio written while the sidecar is not ready is held (bounded), and a stream that
    * outlives a crash is opened again on the respawn, with its handlers, so it does not go quiet.
-   * Offsets count from 0 again on each reopen: a caller must not compare offsets from before a respawn with
-   * offsets after it. Audio dropped from a full queue still counts, as silence.
+   * Event offsets are positions in everything written to this stream since it was opened, across respawns: the
+   * sidecar's own offsets restart at 0 on each reopen, and are shifted by where that reopen began. Audio dropped from a
+   * full queue still counts, as silence; audio the sidecar had taken before it died is not sent again.
    */
   vad(stream: string, params: VadParams): SidecarVad {
     const release = this.lease();
-    const state: VadStreamState = { params, handlers: [], openedGeneration: -1, queue: [], dropped: 0, closed: false, warned: false };
+    const state: VadStreamState = { params, handlers: [], openedGeneration: -1, queue: [], dropped: 0, written: 0, baseBytes: 0, closed: false, warned: false };
     this.vadStreams.set(stream, state);
     const start = (): void => {
       void this.ensureReady().then(
@@ -287,6 +294,7 @@ export class SpeechSidecarClient {
       write: (pcm) => {
         if (state.closed) return;
         state.queue.push(pcm);
+        state.written += pcm.length;
         if (state.queue.length > MAX_VAD_QUEUE) state.dropped += state.queue.shift()!.length;
         if (this.phase.kind === "ready") this.sendVad(stream, state);
         else if (this.phase.kind !== "starting") start();
@@ -305,6 +313,8 @@ export class SpeechSidecarClient {
   private sendVad(stream: string, state: VadStreamState): void {
     if (state.closed || this.phase.kind !== "ready") return;
     if (state.openedGeneration !== this.generation) {
+      // This generation's VAD counts from its first byte: the dropped silence, then what is queued.
+      state.baseBytes = state.written - state.queue.reduce((sum, pcm) => sum + pcm.length, 0) - state.dropped;
       this.write({ op: "vad.open", stream, ...state.params });
       state.openedGeneration = this.generation;
       state.warned = false;
@@ -397,8 +407,12 @@ export class SpeechSidecarClient {
   }
 
   private onVadEvent(header: SidecarFrame["header"]): void {
-    const event = { kind: header.kind === "end" ? ("end" as const) : ("start" as const), atMs: Number(header.atMs) };
-    for (const handler of this.vadStreams.get(String(header.stream))?.handlers ?? []) handler(event);
+    const state = this.vadStreams.get(String(header.stream));
+    if (!state) return;
+    // The sidecar counts from the first byte of the generation that sent this; the caller counts from the stream's first.
+    const atMs = state.baseBytes / VAD_BYTES_PER_MS + Number(header.atMs);
+    const event = { kind: header.kind === "end" ? ("end" as const) : ("start" as const), atMs };
+    for (const handler of state.handlers) handler(event);
   }
 
   private onSttText(header: SidecarFrame["header"]): void {
