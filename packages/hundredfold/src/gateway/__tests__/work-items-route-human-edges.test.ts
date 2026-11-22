@@ -66,6 +66,7 @@ describe("PUT /api/work-items/:id/status — the operator human-surface lane (To
     );
     expect(cap.status).toBe(400);
     for (const message of messages) expect(cap.body.error).toMatch(message);
+    expect(cap.body.error).not.toMatch(/human surface/);
     expect(store.getWorkItem(item.id)?.status).toBe(from);
   });
 
