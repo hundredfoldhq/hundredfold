@@ -71,7 +71,8 @@ expect zero hits.
 ## 7. Board members (SC-011)
 
 With accounts on: a member's upgrade to `/ws/voice/<id>` is refused (403) while members
-cannot message sessions. Once member chat lets a member message a session, the same
+cannot message sessions. `GET /api/voice/config` as a member is refused (403, "Not available to
+board members"). Once member chat lets a member message a session, the same
 upgrade is accepted; removing their grant closes it with `4401` within one sweep.
 
 ## 8. Locked screen (US5, SC-010)
