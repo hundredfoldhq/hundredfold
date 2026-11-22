@@ -1,4 +1,13 @@
 import { findStreamedCopy, isGrownStreamedCopy, reconcileCompletedTurnMessages } from './completed-turn-messages'
+import {
+  addPlacedText,
+  deltaPlace,
+  endedBlock,
+  joinLiveRead,
+  readLiveStreamBlock,
+  type LiveStreamBlock,
+  type StreamPosition,
+} from './live-stream-join'
 export { reconcileCompletedTurnMessages } from './completed-turn-messages'
 /**
  * useLiveSession — the live read pipeline for one gateway session.
@@ -76,6 +85,8 @@ export function loadRetryDelayMs(attempt: number): number {
  *  the server to clear a stuck spinner. */
 export const COMPLETION_WATCHDOG_MS = 8000
 const INITIAL_MESSAGE_PAGE_SIZE = 150
+// How many times a read overtaken by a tool call or block is sent again before it is applied as it is.
+const MAX_OVERTAKEN_REREADS = 2
 const OLDER_MESSAGE_PAGE_SIZE = 100
 
 /** Decide whether the post-reconnect watchdog should treat the turn as stuck
@@ -552,6 +563,9 @@ export function useLiveSession(
   const lastDeltaAtRef = useRef<number>(0)
   const turnStartsRef = useRef(0) // bumped by every turn start, so a late refetch can tell it was overtaken
   const completionsRef = useRef(0) // bumped by every completion, so a read sent before one can tell it was overtaken
+  // Bumped by every main tool call and block frame: a read sent before one holds none of the rows
+  // it added, nor the end of the text block it closed, so it is read again rather than applied.
+  const rowFramesRef = useRef(0)
   const streamingTextRef = useRef(initialSnapshot?.streamingText ?? '')
   const [streamingText, setStreamingText] = useState(initialSnapshot?.streamingText ?? '')
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(initialSnapshot?.liveContextTokens ?? null)
@@ -562,14 +576,16 @@ export function useLiveSession(
   const intermediateStartRef = useRef<number>(-1)
   // The id of the stored copy of the text block still streaming, from a re-read that landed mid-turn.
   const streamedCopyIdRef = useRef<string | null>(null)
-  // The same stored copy (id and text), from a read that opened the chat mid-turn with no streamed
-  // text in hand: the live deltas that follow carry only the tail of that text. Taken from the read
-  // itself, not from what is rendered, so a frame that lands before React renders sees it.
-  const storedStreamTailRef = useRef<{ id: string; text: string } | null>(null)
-  // Bumped by every frame that ends or extends the text block being streamed. A read compares it
-  // with its value from before the fetch: if it moved, the stored copy in the read is older than
-  // the view, whatever React has rendered yet, and it seeds nothing.
-  const streamBlockMovesRef = useRef(0)
+  // Where the streaming text sits in the gateway's text block, from the stamps on its deltas.
+  const streamPosRef = useRef<StreamPosition | null>(null)
+  // The highest block a frame ended in this turn: a read reporting it or an older one is older than
+  // this view, whatever React has rendered yet, and seeds nothing. Reset at every turn boundary, as
+  // block ids start again when the gateway does.
+  const endedBlockRef = useRef(0)
+  // The block a gap in the streamed text was re-read for in this turn, so one gap reads once.
+  const gapReadBlockRef = useRef(0)
+  const readsOutRef = useRef(0)
+  const loadSessionRef = useRef<((id: string) => Promise<void>) | null>(null)
   const statusMessageIdRef = useRef<string | null>(null)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(initialSnapshot?.session ?? null)
   const [loadError, setLoadError] = useState<Error | null>(null)
@@ -724,23 +740,57 @@ export function useLiveSession(
   }, [])
 
 
-  // The text block being streamed ended (or the turn did): a stored copy of it is final from here on.
-  const endStoredStreamTail = useCallback(() => {
-    streamBlockMovesRef.current += 1
-    storedStreamTailRef.current = null
+  // The streaming text was reset: the turn ended, or this view lost track of where it sits.
+  const forgetStreamPosition = useCallback(() => {
+    streamPosRef.current = null
+    endedBlockRef.current = 0
+    gapReadBlockRef.current = 0
   }, [])
 
-  // At live text of the block: takes the stored copy of it out of the transcript, once, and returns
-  // its text, which the caller puts in front of the tail the frame carries. The row is gone, and the
-  // row flushed in its place has a new id, so streamedCopyIdRef (matched by id) can drop neither.
-  const takeStoredStreamTail = useCallback((): string => {
-    streamBlockMovesRef.current += 1
-    const stored = storedStreamTailRef.current
-    if (!stored) return ''
-    storedStreamTailRef.current = null
-    setMessages((prev) => prev.filter((m) => m.id !== stored.id))
-    return stored.text
+  // A frame ended the text block being streamed.
+  const endStreamBlock = useCallback((payload: Record<string, unknown>) => {
+    const ended = endedBlock(payload)
+    if (ended !== null) endedBlockRef.current = Math.max(endedBlockRef.current, ended)
+    streamPosRef.current = null
   }, [])
+
+  // Read the chat again for the head of a block this view is missing, once per block, and only
+  // when no read is already out to bring it.
+  const readForGap = useCallback((block: number) => {
+    const id = sessionIdRef.current
+    if (!id || gapReadBlockRef.current === block) return
+    gapReadBlockRef.current = block
+    void loadSessionRef.current?.(id)
+  }, [])
+
+  // Join the streaming text of a block to a read's text of it, and take the read's stored row of
+  // the block out of the transcript: the streaming text shows that block whole from here on.
+  const joinReadText = useCallback((live: LiveStreamBlock): boolean => {
+    const pos = streamPosRef.current
+    if (!pos || pos.block !== live.block) return false
+    const joined = joinLiveRead(streamingTextRef.current, pos, live)
+    if (!joined) return false
+    streamingTextRef.current = joined.text
+    streamPosRef.current = joined.pos
+    if (live.messageId) setMessages((prev) => prev.filter((m) => m.id !== live.messageId))
+    return true
+  }, [])
+
+  // A text delta the gateway stamped with its block and offset.
+  const addStampedText = useCallback((place: { block: number; offset: number }, chunk: string) => {
+    const pos = streamPosRef.current
+    if (streamingTextRef.current && (!pos || pos.block !== place.block)) {
+      // Text this view cannot place (a cached view, an unstamped delta): append as it comes.
+      streamPosRef.current = null
+      streamingTextRef.current += chunk
+      return
+    }
+    const added = addPlacedText(streamingTextRef.current, pos, place, chunk)
+    streamingTextRef.current = added.text
+    streamPosRef.current = added.pos
+    // A head no read is out to bring: read again for it.
+    if (added.pos.missing > 0 && readsOutRef.current === 0) readForGap(place.block)
+  }, [readForGap])
 
   // Listen for session events via subscribe
   useEffect(() => {
@@ -755,7 +805,7 @@ export function useLiveSession(
 
       if (event === 'session:started') {
         turnStartsRef.current += 1
-        endStoredStreamTail()
+        forgetStreamPosition()
         setLoading(true)
         setTurnPending(true)
         setLiveFinalResponseId(null)
@@ -773,8 +823,13 @@ export function useLiveSession(
         if (deltaType === 'text') {
           clearStatusMessage()
           const chunk = String(p.content || '')
-          const storedText = takeStoredStreamTail()
-          streamingTextRef.current = storedText + streamingTextRef.current + chunk
+          const place = deltaPlace(p)
+          if (place) {
+            addStampedText(place, chunk)
+          } else {
+            forgetStreamPosition()
+            streamingTextRef.current += chunk
+          }
           setStreamingText(streamingTextRef.current)
         } else if (deltaType === 'text_snapshot') {
           clearStatusMessage()
@@ -783,7 +838,11 @@ export function useLiveSession(
           // redaction transform) must win; the old length gate left the
           // pre-redaction streamed text visible for the rest of the turn.
           const snapshot = String(p.content || '')
-          takeStoredStreamTail()
+          const place = deltaPlace(p)
+          forgetStreamPosition()
+          if (place) {
+            streamPosRef.current = { block: place.block, start: 0, missing: 0 }
+          }
           streamingTextRef.current = snapshot
           setStreamingText(snapshot)
         } else if (deltaType === 'tool_use') {
@@ -794,8 +853,9 @@ export function useLiveSession(
           // A main-thread call ends the text block, so a stored copy of it is final from here on.
           const streamedCopyId = sidechain ? null : streamedCopyIdRef.current
           if (!sidechain) {
+            rowFramesRef.current += 1
             streamedCopyIdRef.current = null
-            endStoredStreamTail()
+            endStreamBlock(p)
           }
           if (streamingTextRef.current && !sidechain) {
             const flushed = streamingTextRef.current
@@ -908,11 +968,17 @@ export function useLiveSession(
               }
             }
           }
-          // A block ends the text block too.
-          const streamedCopyId = streamedCopyIdRef.current
-          streamedCopyIdRef.current = null
-          endStoredStreamTail()
-          if (streamingTextRef.current) {
+          rowFramesRef.current += 1
+          // A block from the turn's stream ends the text block, at the gateway and here. One the
+          // gateway sent out of band (unstamped) leaves the gateway's text block whole, one row, so
+          // a stamped stream runs on past it here too; an unstamped stream is split as it always was.
+          const endsText = endedBlock(p) !== null || !streamPosRef.current
+          const streamedCopyId = endsText ? streamedCopyIdRef.current : null
+          if (endsText) {
+            streamedCopyIdRef.current = null
+            endStreamBlock(p)
+          }
+          if (endsText && streamingTextRef.current) {
             const flushed = streamingTextRef.current
             streamingTextRef.current = ''
             setStreamingText('')
@@ -986,14 +1052,14 @@ export function useLiveSession(
       }
 
       if (event === 'session:interrupted') {
-        endStoredStreamTail()
+        forgetStreamPosition()
         streamingTextRef.current = ''
         setStreamingText('')
         clearStatusMessage()
       }
 
       if (event === 'session:stopped') {
-        endStoredStreamTail()
+        forgetStreamPosition()
         setLoading(false)
         setStreamingText('')
         setLiveContextTokens(null)
@@ -1018,7 +1084,7 @@ export function useLiveSession(
         setLiveContextTokens(null)
         intermediateStartRef.current = -1
         streamedCopyIdRef.current = null
-        endStoredStreamTail()
+        forgetStreamPosition()
         justCompletedAtRef.current = Date.now()
 
         const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
@@ -1128,18 +1194,47 @@ export function useLiveSession(
     })
   }, [subscribe])
 
+  // A read of a running chat reports the block being streamed. It is joined to this view's text of
+  // the same block, streamed from its text when the view streams nothing, and ignored when it is
+  // older than what the view has seen. Called once the read's rows are merged.
+  const placeLiveRead = useCallback((live: LiveStreamBlock | null) => {
+    if (!live) return
+    if (live.block <= endedBlockRef.current) return
+    const pos = streamPosRef.current
+    if (pos && pos.block === live.block) {
+      if (joinReadText(live)) setStreamingText(streamingTextRef.current)
+      else if (pos.missing > 0) readForGap(live.block)
+      return
+    }
+    if (!pos && !streamingTextRef.current) {
+      // Nothing streaming here: the block streams from the read's text on, at once. Its stored row,
+      // if one was written yet, goes; a block not stored yet is shown although no row holds it.
+      streamingTextRef.current = live.text
+      streamPosRef.current = { block: live.block, start: 0, missing: 0 }
+      if (live.messageId) setMessages((prev) => prev.filter((m) => m.id !== live.messageId))
+      setStreamingText(live.text)
+    }
+    // Otherwise the view still streams an older block, the frame that ends it still on its way:
+    // the view's first delta of the read's block then finds its head missing and reads again.
+  }, [joinReadText, readForGap])
+
   // Load session data
-  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean; blockMovesAtRead?: number }): Promise<void> => {
+  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean; overtaken?: number }): Promise<void> => {
     const myToken = ++loadTokenRef.current
     const completionsAtStart = completionsRef.current
+    const rowFramesAtStart = rowFramesRef.current
     if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     // Whether the failure came from the fetch (transient, retried) or from
     // processing what it returned (deterministic, so not retried).
     let fetched = false
-    // A reissued read stands in for the first one, so it is judged from when that one began.
-    const blockMovesAtRead = options?.blockMovesAtRead ?? streamBlockMovesRef.current
     try {
-      const session = (await api.getSession(id, { last: INITIAL_MESSAGE_PAGE_SIZE })) as Record<string, unknown>
+      readsOutRef.current += 1
+      let session: Record<string, unknown>
+      try {
+        session = (await api.getSession(id, { last: INITIAL_MESSAGE_PAGE_SIZE })) as Record<string, unknown>
+      } finally {
+        readsOutRef.current -= 1
+      }
       fetched = true
       if (myToken !== loadTokenRef.current) {
         return
@@ -1149,7 +1244,15 @@ export function useLiveSession(
       // truncated reply back over the final one. Its other rows are real (the history on a first
       // load, a user row only reads carry), so read again, once, now that the turn is over.
       if (!options?.reissued && completionsRef.current !== completionsAtStart && turnInFlight(session)) {
-        return loadSession(id, { suppressHydrating: true, reissued: true, blockMovesAtRead })
+        return loadSession(id, { suppressHydrating: true, reissued: true, overtaken: options?.overtaken })
+      }
+      // A main tool call or a block landed while the read was out: the read lacks its rows and,
+      // when it closed a text block, that block's last text, while the view already shows them.
+      // Applied, it would put the older rows back over the view's. Read again, a bounded number of
+      // times: a read sent after a frame arrived is answered after the gateway stored it.
+      const overtaken = options?.overtaken ?? 0
+      if (overtaken < MAX_OVERTAKEN_REREADS && rowFramesRef.current !== rowFramesAtStart && turnInFlight(session)) {
+        return loadSession(id, { suppressHydrating: true, reissued: options?.reissued, overtaken: overtaken + 1 })
       }
       setHydrating(false)
       setLoadError(null)
@@ -1218,15 +1321,6 @@ export function useLiveSession(
         // must already see which stored row is the text still streaming.
         const streamedCopy = firstPartialIndex >= 0 ? findStreamedCopy(backendMessages.slice(firstPartialIndex)) : null
         streamedCopyIdRef.current = streamedCopy?.id ?? null
-        // Opened with no live text of this block in hand, the stored copy is the head the live deltas
-        // extend. It seeds nothing if a frame ended or extended the block while the read was out
-        // (its rows may not be rendered yet), or if the updater below keeps newer rows already shown.
-        const shown = messagesRef.current
-        const keepsLocalRows = backendMessages.length < shown.length && hasUnmergedLocalTail(shown, backendMessages)
-        storedStreamTailRef.current =
-          streamedCopy && !streamingTextRef.current && streamBlockMovesRef.current === blockMovesAtRead && !keepsLocalRows
-            ? { id: streamedCopy.id, text: streamedCopy.content }
-            : null
         setMessages((current) => {
           // If the tail snapshot is stale and misses newer live rows, keep current.
           // Older already-loaded rows are still preserved by mergePagedSnapshot.
@@ -1242,6 +1336,8 @@ export function useLiveSession(
           intermediateStartRef.current = anchorIdx >= 0 ? anchorIdx : merged.length
           return merged
         })
+        // After the merge, so a stored row the join takes out is not merged back in.
+        placeLiveRead(readLiveStreamBlock(session))
         // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
         // loadSession must NEVER set loading=true — a stale GET arriving after completion would
         // re-arm the spinner and stick (the WS completion event has already passed).
@@ -1258,7 +1354,7 @@ export function useLiveSession(
         if (!readOnlyRef.current) clearIntermediateMessages(id)
         intermediateStartRef.current = -1
         streamedCopyIdRef.current = null
-        storedStreamTailRef.current = null
+        forgetStreamPosition()
         setMessages((current) => {
           // If a stale tail misses locally-known newer rows, keep them; if the local
           // state was mid-turn, the idle backend snapshot is canonical collapse.
@@ -1290,11 +1386,12 @@ export function useLiveSession(
         setHasOlderMessages(false)
         intermediateStartRef.current = -1
         streamedCopyIdRef.current = null
-        storedStreamTailRef.current = null
+        forgetStreamPosition()
       }
       setLoadError(failure)
     }
-  }, [])
+  }, [placeLiveRead])
+  loadSessionRef.current = loadSession
 
   // Load on session change
   useEffect(() => {
@@ -1302,8 +1399,8 @@ export function useLiveSession(
     // must still invalidate any request started for the previous session.
     loadTokenRef.current += 1
     clearLiveBlockArrivalState()
-    // A stored copy belongs to the chat it was read from.
-    storedStreamTailRef.current = null
+    // Where the stream sits belongs to the chat it came from.
+    forgetStreamPosition()
     if (!sessionId) {
       setMessages([])
       setLoading(false)
@@ -1322,7 +1419,7 @@ export function useLiveSession(
       setStreamingText('')
       intermediateStartRef.current = -1
       streamedCopyIdRef.current = null
-      storedStreamTailRef.current = null
+      forgetStreamPosition()
       return
     }
     const cached = readLiveSessionSnapshot(sessionId)
@@ -1477,7 +1574,7 @@ export function useLiveSession(
           setLiveContextTokens(null)
           intermediateStartRef.current = -1
           streamedCopyIdRef.current = null
-          storedStreamTailRef.current = null
+          forgetStreamPosition()
           await loadSession(id)
         }
       } catch {
@@ -1507,7 +1604,7 @@ export function useLiveSession(
           setLiveContextTokens(null)
           intermediateStartRef.current = -1
           streamedCopyIdRef.current = null
-          storedStreamTailRef.current = null
+          forgetStreamPosition()
           await loadSession(currentId)
         }
       } catch {
@@ -1589,7 +1686,7 @@ export function useLiveSession(
     setStreamingText('')
     intermediateStartRef.current = -1
     streamedCopyIdRef.current = null
-    storedStreamTailRef.current = null
+    forgetStreamPosition()
   }, [])
 
   useEffect(() => {

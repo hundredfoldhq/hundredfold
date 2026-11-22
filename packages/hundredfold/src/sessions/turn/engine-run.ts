@@ -125,12 +125,16 @@ function handleStreamDelta(args: EngineAttemptArgs, delta: StreamDelta): void {
     }
   }
   args.heartbeat.beat();
-  args.surface.delta(outgoing);
+  // Persisted first: the writer stamps where a text delta sits in its block, which
+  // lets a view opened mid-block join the read's text to the deltas without a seam.
+  // If persisting fails the delta still goes out, unstamped.
+  let positioned = outgoing;
   try {
-    args.partialStream.persist(outgoing);
+    positioned = args.partialStream.persist(outgoing) ?? outgoing;
   } catch (err) {
     logger.warn(`Failed to persist partial block for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
   }
+  args.surface.delta(positioned);
 }
 
 /**

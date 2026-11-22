@@ -1,5 +1,5 @@
 import type { Connector, HundredfoldConfig, JsonObject, StreamDelta } from "../shared/types.js";
-import type { GatewayEmit } from "../shared/gateway-events.js";
+import type { GatewayEmit, GatewayEventMap } from "../shared/gateway-events.js";
 import type { CompactionStats } from "../shared/compaction-stats.js";
 import { logger } from "../shared/logger.js";
 import { getSession, insertMessage } from "../sessions/registry.js";
@@ -41,6 +41,24 @@ function emitCompacted(emit: GatewayEmit, sessionId: string, stats: CompactionSt
   }
 }
 
+/** One stream delta as the live view receives it. */
+function deltaPayload(sessionId: string, delta: StreamDelta): GatewayEventMap["session:delta"] {
+  return {
+    sessionId,
+    type: delta.type,
+    content: delta.content,
+    toolName: delta.toolName,
+    toolId: delta.toolId,
+    activityReceiptId: delta.activityReceiptId,
+    agentId: delta.agentId,
+    input: delta.input,
+    ...(delta.sidechain ? { sidechain: true } : {}),
+    block: delta.block,
+    streamBlock: delta.streamBlock,
+    offset: delta.offset,
+  };
+}
+
 /**
  * Carry a turn over the dashboard: stream deltas to the live view, keep
  * lifecycle prose in the transcript, and relay the answer onward to a chat
@@ -55,18 +73,7 @@ export function createWebTurnSurface(options: WebTurnSurfaceOptions): TurnSurfac
     },
     delta(delta: StreamDelta) {
       try {
-        emit("session:delta", {
-          sessionId,
-          type: delta.type,
-          content: delta.content,
-          toolName: delta.toolName,
-          toolId: delta.toolId,
-          activityReceiptId: delta.activityReceiptId,
-          agentId: delta.agentId,
-          input: delta.input,
-          ...(delta.sidechain ? { sidechain: true } : {}),
-          block: delta.block,
-        });
+        emit("session:delta", deltaPayload(sessionId, delta));
       } catch (err) {
         logger.warn(`Failed to emit stream delta for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
       }

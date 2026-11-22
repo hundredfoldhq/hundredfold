@@ -105,6 +105,23 @@ export interface StreamDelta {
   sidechain?: boolean;
   /** Structured chat-view UI update. CLI and connector transports may ignore it. */
   block?: ChatBlockEnvelope;
+  /** The text block this delta belongs to (on `text`/`text_snapshot`) or ends (on a
+   *  main-agent `tool_use` and on `block`), as the turn's partial writer numbers it.
+   *  Ids rise through a gateway's lifetime, so a later block has a larger id. */
+  streamBlock?: number;
+  /** On `text`/`text_snapshot`: how much of the block's text came before this chunk
+   *  (0 for a snapshot, which replaces the block). With `streamBlock`, a view that
+   *  joined mid-block can line the chunk up against a read's `liveStream` text. */
+  offset?: number;
+}
+
+/** The text block a turn is streaming, as `GET /api/sessions/:id` reports it while
+ *  the turn runs: its id, its whole text so far (ahead of the debounced stored row)
+ *  and the id of that stored row, if one was written yet. */
+export interface LiveStreamBlock {
+  block: number;
+  text: string;
+  messageId: string | null;
 }
 
 export interface Engine {

@@ -1,4 +1,4 @@
-import type { ChatBlockEnvelope, StreamDelta } from "../shared/types.js";
+import type { ChatBlockEnvelope, LiveStreamBlock, StreamDelta } from "../shared/types.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
 import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
 import {
@@ -60,15 +60,55 @@ export function foldPartialText(curText: string, delta: StreamDelta): string {
 }
 
 export interface PartialStreamWriter {
-  persist(delta: StreamDelta): void;
+  /** Persist the delta and return it as it should go out: a text delta carries
+   *  its block and offset, and a delta that ends a block carries that block. */
+  persist(delta: StreamDelta): StreamDelta;
   finish(): void;
 }
 
+// Block ids rise across every writer in this process, so a view can tell an older
+// block from a newer one without knowing which turn either came from.
+let lastStreamBlock = 0;
+
+// The writer of each session's running turn, while its engine runs. A read of the
+// session takes the block being streamed from here rather than from the stored row,
+// which trails the stream by up to one flush interval.
+const liveWriters = new Map<string, { attemptToken: string; live(): LiveStreamBlock }>();
+
+/**
+ * The text block the session's turn is streaming, or null between engine runs. Only
+ * the writer of the attempt the session is on now answers, so a stray delta from a
+ * finished turn cannot pass that turn's text off as the current one's.
+ */
+export function getLiveStreamBlock(sessionId: string, attemptToken: string | null | undefined): LiveStreamBlock | null {
+  const writer = liveWriters.get(sessionId);
+  return writer && attemptToken && writer.attemptToken === attemptToken ? writer.live() : null;
+}
+
 /** Persist one engine turn's live stream as coalesced partial transcript rows. */
-export function createPartialStreamWriter(sessionId: string): PartialStreamWriter {
+export function createPartialStreamWriter(sessionId: string, attemptToken = ""): PartialStreamWriter {
   let partialSeq = 0;
   let curTextId: string | null = null;
   let curText = "";
+  let curBlock = ++lastStreamBlock;
+  const registration = {
+    attemptToken,
+    live: (): LiveStreamBlock => ({ block: curBlock, text: curText, messageId: curTextId }),
+  };
+  const startBlock = () => {
+    curTextId = null;
+    curText = "";
+    curBlock = ++lastStreamBlock;
+  };
+  // Where the delta sits in the block, read before it is folded in.
+  const positioned = (delta: StreamDelta): StreamDelta => {
+    if (delta.type === "text") return { ...delta, streamBlock: curBlock, offset: curText.length };
+    if (delta.type === "text_snapshot") return { ...delta, streamBlock: curBlock, offset: 0 };
+    if ((delta.type === "tool_use" && delta.sidechain !== true) || (delta.type === "block" && delta.block)) {
+      return { ...delta, streamBlock: curBlock };
+    }
+    return delta;
+  };
   const openPartialTools: Array<{
     messageId: string;
     toolName: string;
@@ -90,8 +130,10 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
 
   return {
     persist(delta) {
+      liveWriters.set(sessionId, registration);
+      const outgoing = positioned(delta);
       if (delta.type === "text" || delta.type === "text_snapshot") {
-        if (typeof delta.content !== "string") return;
+        if (typeof delta.content !== "string") return delta;
         curText = foldPartialText(curText, delta);
         if (delta.type === "text_snapshot") {
           clearScheduledFlush();
@@ -99,7 +141,7 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
         } else if (!partialFlushTimer) {
           partialFlushTimer = setTimeout(flushPartialText, 600);
         }
-        return;
+        return outgoing;
       }
 
       if (delta.type === "tool_use") {
@@ -127,11 +169,8 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
           toolName: tool,
           ...(delta.toolId ? { toolId: delta.toolId } : {}),
         });
-        if (!sidechain) {
-          curTextId = null;
-          curText = "";
-        }
-        return;
+        if (!sidechain) startBlock();
+        return outgoing;
       }
 
       if (delta.type === "tool_result") {
@@ -144,9 +183,9 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
               }
               return -1;
             })();
-        if (matchIndex < 0) return;
+        if (matchIndex < 0) return outgoing;
         const [match] = openPartialTools.splice(matchIndex, 1);
-        if (!match) return;
+        if (!match) return outgoing;
         const activityReceiptId = extractActivityReceiptId({
           activityReceiptId: delta.activityReceiptId,
         });
@@ -156,7 +195,7 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
           activityReceiptId,
           delta.agentId,
         );
-        return;
+        return outgoing;
       }
 
       if (delta.type === "block" && delta.block) {
@@ -166,13 +205,14 @@ export function createPartialStreamWriter(sessionId: string): PartialStreamWrite
           partial: true,
           seq: partialSeq++,
         });
-        curTextId = null;
-        curText = "";
+        startBlock();
       }
+      return outgoing;
     },
     finish() {
       clearScheduledFlush();
       flushPartialText();
+      if (liveWriters.get(sessionId) === registration) liveWriters.delete(sessionId);
     },
   };
 }
