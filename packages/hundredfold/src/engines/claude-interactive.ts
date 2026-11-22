@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import * as pty from "node-pty";
-import type { CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, SteerableEngine, SteerOutcome, StreamDelta, TurnProgress } from "../shared/types.js";
+import type { BackgroundedWork, CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, ForegroundWork, SoftInterruptibleEngine, SoftInterruptOutcome, SteerableEngine, SteerOutcome, StreamDelta, TurnProgress } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { ENGINE_SWITCHED_REASON, type LostBackgroundCause } from "../shared/engine-switch.js";
 import { HUNDREDFOLD_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
@@ -21,6 +21,10 @@ import { readRemoteContextTokens } from "./remote-transcript-context.js";
 import { SsePtyProxy, MAIN_AGENT_SENTINEL, type SseDataEvent, type UpstreamActivityInfo } from "./sse-pty-proxy.js";
 import { BackgroundTaskStore, launchedBackgroundTask, launchedSubagentId } from "./background-tasks.js";
 import { finishedTaskNotificationIds } from "./task-notifications.js";
+import {
+  BACKGROUND_ACK_MS, BACKGROUND_KEY, BACKGROUND_RETRY_MS, INTERRUPT_KEY, INTERRUPT_SETTLE_MS, SOFT_INTERRUPT_POLL_MS,
+  ForegroundCalls, backgroundedByPostToolUse, composerClearKeys, viewportShowsTurnRunning,
+} from "./claude-soft-interrupt.js";
 import type { BackgroundTaskWait, BackgroundTasksReport, BackgroundTasksSource } from "../shared/session-waits.js";
 import { isCompactCommand, isNativeClaudeCommand, neutralizeForPaste } from "../shared/skill-commands.js";
 import { buildPromptWithPlatformContext } from "./platform-context.js";
@@ -1489,6 +1493,12 @@ interface ActiveTurn {
   transcriptPath?: string;
   /** The session runs on another host: its transcript is not readable here. */
   remote?: boolean;
+  /** The tool calls this turn has running in the foreground. */
+  foreground: ForegroundCalls;
+  /** Foreground calls Claude Code moved to the background, by tool call id: what a soft interrupt reports. */
+  movedToBackground: Map<string, BackgroundedWork>;
+  /** Lines the turn's prompt takes in the composer, for emptying it should Esc put the prompt back there. */
+  promptLines: number;
   /** Inputs handed to this turn with steer() whose fate is not yet known. */
   steers?: SteerInFlight[];
   /** Watches this turn's transcript for the entries that show it took a steered input in. */
@@ -1701,7 +1711,12 @@ export function pasteAndSubmit(
   };
 }
 
-export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEngine, PtyViewEngine, BackgroundTasksSource {
+/** The Claude Code a local session runs, for what its build is asked; none for a remote session, which builds its own settings on its host. */
+function localClaudeBin(opts: Pick<EngineRunOpts, "bin"> & Parameters<typeof isRemoteTarget>[0]): string | undefined {
+  return isRemoteTarget(opts) ? undefined : resolveBin("claude", opts.bin);
+}
+
+export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEngine, SoftInterruptibleEngine, PtyViewEngine, BackgroundTasksSource {
   name = "claude" as const;
   /** Active turn resolvers keyed by Hundredfold session id. `boundProc` is the specific
    *  PTY serving this turn (captured at spawn / warm-reuse). A PTY's onExit only
@@ -1737,6 +1752,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
   /** Inputs handed to a turn that ended before their submit was acknowledged, by session: their
    *  acknowledgement may still arrive (see settleSteers). */
   private lateSteers = new Map<string, SteerInFlight[]>();
+  /** Soft interrupts in progress, so a second call joins the first instead of sending Esc twice (Esc Esc opens Rewind). */
+  private softInterrupts = new Map<string, Promise<SoftInterruptOutcome>>();
   /** Gateway turns waiting for a terminal turn to finish; calling it aborts. */
   private terminalWaits = new Map<string, (reason: string) => void>();
   /** Sessions whose daemon-held background session is being stopped before the
@@ -2275,7 +2292,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
 
     let handle: PtyHandle | undefined;
     try {
-      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
       if (opts.resolvedMcp && !isRemoteTarget(opts)) {
         opts.mcpConfigPath = writeMcpConfigFile(opts.resolvedMcp, hundredfoldSessionId);
       }
@@ -2597,7 +2614,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     // view showed "Settings file not found". The settings file carries HOOKS only; the
     // system prompt + main-agent sentinel go via the --append-system-prompt CLI flag at
     // spawn() (the settings-file appendSystemPrompt KEY is ignored by claude ≥2.1.x).
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
     // A cold-respawn release cleans the per-session MCP file. Materialize the
     // already-resolved config again at the boundary where Claude will read it.
     // A remote session gets its MCP config staged on the other host instead
@@ -2637,6 +2654,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       activeTools: 0,
       startedAt: turnStartedAt,
       lastHookAt: turnStartedAt,
+      foreground: new ForegroundCalls(),
+      movedToBackground: new Map(),
+      promptLines: neutralizeForPaste(spawnPrompt(opts)).split("\n").length,
       gated: gateOnPromptSubmit,
       native: nativeCommand,
       remote: isRemoteTarget(opts),
@@ -2697,6 +2717,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
         // the tool_use of every call the proxy does not see (see claudeHookToDeltas).
         if (h.hook_event_name === "PreToolUse") {
           entry.activeTools += 1;
+        }
+        // The turn's own tool calls only: a replayed hook predates it, a foreign or held one is another turn's.
+        if (!replaying && !foreign && !held) {
+          entry.foreground.onHook(h);
+          const moved = backgroundedByPostToolUse(h);
+          if (moved?.toolUseId) entry.movedToBackground.set(moved.toolUseId, { taskId: moved.taskId, description: moved.description });
         }
         if (h.hook_event_name === "PostToolUse") {
           entry.activeTools = Math.max(0, entry.activeTools - 1);
@@ -3436,7 +3462,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     // cleanup path (`cleanupSessionSettings`) is keyed on it, and leaving a
     // dangling entry there would be a second, subtler divergence. The REMOTE
     // path is what actually reaches `--settings`.
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
     const baseArgs = (settings: string): string[] => {
       const args: string[] = [
         "--chrome",
@@ -3787,6 +3813,112 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     if (!entry.steerWatch || entry.steers?.some((s) => !s.done)) return;
     clearInterval(entry.steerWatch.timer);
     entry.steerWatch = undefined;
+  }
+
+  /**
+   * Moving a running Bash to the background is what Ctrl+B does, so a soft interrupt keeps the command: Esc
+   * alone SIGTERMs it. Claude Code 2.1.330 never backgrounds on Esc, and pasting a message into a turn that
+   * is running a command only queues it until the command ends (claude-soft-interrupt.ts has the findings).
+   */
+  readonly softInterruptPreservesForegroundWork = true;
+
+  /** The tool call that has run longest in the foreground of this session's turn, from the hook stream. */
+  foregroundWork(sessionId: string): ForegroundWork | null {
+    const entry = this.active.get(sessionId);
+    // A call waiting on a permission dialog is not running yet; a held paste means the hooks are another turn's.
+    if (!entry || entry.resolver.isSettled || entry.holdingPaste || entry.blockedOnPermissionAt !== undefined) return null;
+    return entry.foreground.oldest();
+  }
+
+  /**
+   * End the running turn and keep the process, and with it the work the turn started: a running Bash is
+   * moved to a background task first (Ctrl+B), then Esc ends the turn. A `<task-notification>` wakes the
+   * session when the command ends, as for any background task. Never releases the PTY.
+   *
+   * Esc never reaches work it would abort. With a running call Ctrl+B cannot move (an MCP call, a
+   * sub-agent), or a Bash that was not reported moved within BACKGROUND_ACK_MS, the turn is left running
+   * and the outcome is `unsupported`: the caller steers instead.
+   *
+   * Esc fires no Stop hook, so this settles the turn itself as interrupted. Before that it waits for the
+   * TUI to stop running and empties the composer: with nothing produced yet, Esc puts the turn's prompt
+   * back there, and the next turn's paste would land behind it. That is done before settling because the
+   * next turn can start the moment this one settles.
+   */
+  softInterrupt(sessionId: string, reason: string): Promise<SoftInterruptOutcome> {
+    const running = this.softInterrupts.get(sessionId);
+    if (running) return running;
+    const done = this.performSoftInterrupt(sessionId, reason).catch((err): SoftInterruptOutcome => {
+      logger.warn(`InteractiveClaudeEngine: soft interrupt of ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { ended: false, reason: "unsupported" };
+    }).finally(() => { this.softInterrupts.delete(sessionId); });
+    this.softInterrupts.set(sessionId, done);
+    return done;
+  }
+
+  private async performSoftInterrupt(sessionId: string, reason: string): Promise<SoftInterruptOutcome> {
+    const entry = this.active.get(sessionId);
+    const proc = entry ? this.steerTarget(sessionId, entry) : undefined;
+    if (!entry || !proc || entry.native || entry.holdingPaste || entry.resolver.isSettled) return { ended: false, reason: "no_turn" };
+    // The Rewind menu owns the keyboard: Esc would close it and end nothing.
+    if (await this.screenShowsRewindMenu(sessionId)) return { ended: false, reason: "unsupported" };
+    const turnOver = () => this.active.get(sessionId) !== entry || entry.resolver.isSettled;
+    if (turnOver()) return { ended: false, reason: "no_turn" };
+    // Ctrl+B cannot move an MCP call or a sub-agent, and Esc would abort it: leave the turn running.
+    if (entry.foreground.hasUnbackgroundable()) return { ended: false, reason: "unsupported" };
+
+    const moving = entry.foreground.backgroundable();
+    const backgrounded: BackgroundedWork[] = [];
+    if (moving.length) {
+      logger.info(`InteractiveClaudeEngine: moving ${moving.length} running command(s) of ${sessionId} to the background`);
+      // Claude Code ignores Ctrl+B for the first few seconds of a command, so press it again until it takes.
+      // Esc straight after a Ctrl+B that took still keeps the command, but its task id then reaches no hook.
+      let pressedAt = Date.now();
+      proc.write(BACKGROUND_KEY);
+      await this.pollUntil(() => {
+        if (turnOver() || moving.every((id) => entry.movedToBackground.has(id))) return true;
+        if (Date.now() - pressedAt >= BACKGROUND_RETRY_MS) {
+          pressedAt = Date.now();
+          proc.write(BACKGROUND_KEY);
+        }
+        return false;
+      }, BACKGROUND_ACK_MS);
+      // Esc over a command that was not moved would SIGTERM it: leave the turn running, and let the caller steer.
+      if (!turnOver() && !moving.every((id) => entry.movedToBackground.has(id))) {
+        logger.warn(`InteractiveClaudeEngine: ${sessionId}'s running command was not reported moved to the background after ${BACKGROUND_ACK_MS} ms; leaving its turn running`);
+        return { ended: false, reason: "unsupported" };
+      }
+      for (const id of moving) {
+        const moved = entry.movedToBackground.get(id);
+        if (moved) backgrounded.push(moved);
+      }
+    }
+    // The turn ended by itself meanwhile: nothing left to interrupt, and Esc would hit whatever runs next.
+    if (turnOver()) return { ended: true, backgrounded };
+
+    logger.info(`InteractiveClaudeEngine: soft-interrupting ${sessionId}'s turn (${reason})`);
+    proc.write(INTERRUPT_KEY);
+    await this.pollUntil(async () => turnOver() || !(await this.screenShowsTurnRunning(sessionId)), INTERRUPT_SETTLE_MS);
+    if (!turnOver()) {
+      proc.write(composerClearKeys(entry.promptLines));
+      entry.resolver.interrupt(reason.startsWith("Interrupted") ? reason : `Interrupted: ${reason}`);
+      // The next turn must not start until this one has torn down.
+      await this.pollUntil(() => this.active.get(sessionId) !== entry, INTERRUPT_SETTLE_MS);
+    }
+    return { ended: true, backgrounded };
+  }
+
+  /** Whether the TUI's footer still says a turn is running. Fails open, like the other screen reads. */
+  private async screenShowsTurnRunning(sessionId: string): Promise<boolean> {
+    return this.screenMatches(sessionId, viewportShowsTurnRunning);
+  }
+
+  private async pollUntil(done: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await done()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, SOFT_INTERRUPT_POLL_MS); t.unref?.(); });
+    }
   }
 
   /** Empty the TUI's composer of an unsent paste. Ctrl+U deletes one line, and each line break takes another. */
