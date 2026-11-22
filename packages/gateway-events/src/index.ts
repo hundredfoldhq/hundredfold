@@ -3,6 +3,7 @@
  *  and the per-event payload guards in ./payload-guards.js. */
 import type { CompanyChangedEvent, JsonObject, JsonValue, MessageMediaWire, TalkProactiveCuePayload } from "./payloads.js"
 export type * from "./payloads.js"
+export * from "./voice-protocol.js"
 
 export interface GatewayEventMap {
   "session:started": { sessionId: string }

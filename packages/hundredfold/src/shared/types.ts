@@ -186,6 +186,53 @@ export function isSteerableEngine(engine: Engine): engine is SteerableEngine {
   return typeof candidate.canSteer === "function" && typeof candidate.steer === "function";
 }
 
+/** A tool call running in the foreground of a session's turn. */
+export interface ForegroundWork {
+  tool: string;
+  /** Epoch ms the call started. */
+  startedAt: number;
+  description: string | null;
+}
+
+/** Work an engine moved to the background while ending a turn softly. */
+export interface BackgroundedWork {
+  taskId: string;
+  description: string | null;
+}
+
+/** What {@link SoftInterruptibleEngine.softInterrupt} did. */
+export type SoftInterruptOutcome =
+  | { ended: true; backgrounded: BackgroundedWork[] }
+  /** No turn was running. */
+  | { ended: false; reason: "no_turn" | "unsupported" };
+
+/**
+ * An engine that can end a running turn without ending its process, so a
+ * voice barge-in does not cost a respawn or kill the turn's background work.
+ * Contract: specs/009-voice-mode/contracts/providers.md.
+ */
+export interface SoftInterruptibleEngine extends Engine {
+  /**
+   * Whether a soft interrupt keeps a running foreground tool call alive by
+   * moving it to the background (Claude Code), rather than aborting it.
+   */
+  readonly softInterruptPreservesForegroundWork: boolean;
+  /** The tool call running in the foreground of this session's turn, if any. */
+  foregroundWork(sessionId: string): ForegroundWork | null;
+  /**
+   * Stop the running turn now, keeping the engine process (and, where
+   * `softInterruptPreservesForegroundWork`, its foreground work, moved to the
+   * background). Resolves once the engine is ready for the next turn. Never
+   * rejects.
+   */
+  softInterrupt(sessionId: string, reason: string): Promise<SoftInterruptOutcome>;
+}
+
+export function isSoftInterruptibleEngine(engine: Engine): engine is SoftInterruptibleEngine {
+  const candidate = engine as Partial<SoftInterruptibleEngine>;
+  return typeof candidate.softInterrupt === "function" && typeof candidate.foregroundWork === "function";
+}
+
 /**
  * Where an engine session actually executes. Absent on every field = the gateway
  * host, which is every employee today. When `remoteHost` is set the session is

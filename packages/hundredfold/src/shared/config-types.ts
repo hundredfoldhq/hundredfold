@@ -16,6 +16,7 @@ import type { FallbackChainEntry } from "./fallback-chain-wire.js";
 import type { EngineName } from "./models.js";
 import type { MusecodeEngineConfig } from "./musecode-config.js";
 import type { RealtimeConfig, SttConfig, TalkConfig } from "./voice.js";
+import type { VoiceConfig } from "./voice-config.js";
 import type {
   ConnectorInstance,
   CronDelivery,
@@ -289,6 +290,8 @@ export interface HundredfoldConfig {
    * slated for removal.
    */
   realtime?: RealtimeConfig;
+  /** Voice mode: spoken conversation with a chat session (STT, the session's engine, TTS). Off unless enabled. */
+  voice?: VoiceConfig;
   /**
    * Remote (SSH) execution for employees that declare `remoteHost`. Absent means
    * remote employees refuse to load at all — the fail-closed default, because

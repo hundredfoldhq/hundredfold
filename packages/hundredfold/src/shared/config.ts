@@ -323,7 +323,7 @@ const CONFIG_TOP_LEVEL_KEY_SET: Record<keyof HundredfoldConfig, true> = {
   hundredfold: true, gateway: true, engines: true, models: true, connectors: true,
   logging: true, mcp: true, plugins: true, budgets: true, sessions: true,
   cron: true, notifications: true, workflows: true, portal: true, context: true, knowledge: true,
-  stt: true, talk: true, realtime: true, remote: true, terminal: true, hooks: true,
+  stt: true, talk: true, realtime: true, voice: true, remote: true, terminal: true, hooks: true,
 };
 export const CONFIG_TOP_LEVEL_KEYS = [...new Set([...Object.keys(CONFIG_TOP_LEVEL_KEY_SET), ...nameAliases((n) => n.codename)])]; // the instance block under either codename: a save must not drop an older file's
 
