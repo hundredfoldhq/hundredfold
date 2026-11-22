@@ -14,3 +14,39 @@ export type {
   TalkProactiveCuePayload,
   TalkProactiveUiEffect,
 } from "@hundredfold/gateway-events";
+
+// Voice mode wire protocol (specs/009-voice-mode/contracts/voice-socket.md). The
+// constants are runtime values: in the published build this module is replaced by
+// the embedded protocol runtime, which exports them too.
+export {
+  VOICE_AUDIO_HEADER_BYTES,
+  VOICE_AUDIO_KIND,
+  VOICE_CLOSE,
+  VOICE_INPUT_SAMPLE_RATE,
+  VOICE_MAX_INPUT_FRAME_BYTES,
+  VOICE_OUTPUT_SAMPLE_RATE,
+  VOICE_PROTOCOL_VERSION,
+} from "@hundredfold/gateway-events";
+export type {
+  VoiceBackgrounding,
+  VoiceBackgroundFrame,
+  VoiceClientFrame,
+  VoiceDetachReason,
+  VoiceDetachedFrame,
+  VoiceErrorCode,
+  VoiceErrorFrame,
+  VoiceHoldingFrame,
+  VoiceMessageMeta,
+  VoiceMetricsFrame,
+  VoiceMissedFrame,
+  VoiceMode,
+  VoiceReadyFrame,
+  VoiceSegmentEndFrame,
+  VoiceSegmentStartFrame,
+  VoiceServerFrame,
+  VoiceStopPlaybackFrame,
+  VoiceTranscriptFrame,
+  VoiceTurnFrame,
+  VoiceTurnState,
+  VoiceVadFrame,
+} from "@hundredfold/gateway-events";

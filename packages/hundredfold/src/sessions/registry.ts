@@ -2400,6 +2400,37 @@ export function insertMessageAfter(
   return id;
 }
 
+/**
+ * Merge `patch` into a stored message's `meta`, keeping every key it does not
+ * name. One statement (RFC 7396 merge patch), so two writers of different keys
+ * never lose each other's update. Objects merge recursively, so `{voice: {a}}`
+ * leaves a stored `voice.b` alone; a `null` value removes its key. Creates the
+ * meta when the row has none. An unknown id changes nothing. Returns whether a
+ * row was updated.
+ */
+export function mergeMessageMeta(messageId: string, patch: JsonObject): boolean {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE messages SET meta = json_patch(COALESCE(meta, '{}'), ?) WHERE id = ?",
+  ).run(JSON.stringify(patch), messageId);
+  return result.changes > 0;
+}
+
+/**
+ * The newest assistant text row of a session written at or after `sinceMs`:
+ * the stored message a reply that just finished became. Tool-call rows are not
+ * replies. Undefined when none exists yet.
+ */
+export function latestAssistantMessageId(sessionId: string, sinceMs: number): string | undefined {
+  const db = initDb();
+  const row = db.prepare(
+    `SELECT id FROM messages
+     WHERE session_id = ? AND role = 'assistant' AND tool_call IS NULL AND timestamp >= ?
+     ORDER BY timestamp DESC, rowid DESC LIMIT 1`,
+  ).get(sessionId, sinceMs) as { id: string } | undefined;
+  return row?.id;
+}
+
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   const rows = db

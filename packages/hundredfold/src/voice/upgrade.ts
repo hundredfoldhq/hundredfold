@@ -1,0 +1,132 @@
+/**
+ * The `/ws/voice/:sessionId` upgrade, mirroring `/ws/pty/:sessionId`: an
+ * operator, from the gateway's own origin, on a session that exists and takes
+ * messages (contracts/voice-socket.md, Upgrade). The members' path comes in
+ * through `upgradeMember`, from the accounts router.
+ */
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
+import type { RawData, WebSocket, WebSocketServer } from "ws";
+import type { MemberPrincipal } from "../accounts/runtime.js";
+import { rejectCrossOriginUpgrade } from "../gateway/upgrade-guards.js";
+import { sessionIsWithinReach } from "../gateway/session-reach-guard.js";
+import { resolveCallerIdentity } from "../gateway/session-comm-guards.js";
+import { trackHeartbeat } from "../gateway/ws-heartbeat.js";
+import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
+import { getSession } from "../sessions/registry.js";
+import type { Session } from "../shared/types.js";
+import { adoptLegacyHeaders } from "../shared/wire-names.js";
+import { isTerminalSession } from "../terminals/session.js";
+import type { VoiceHub } from "./hub.js";
+import type { VoicePrincipal, VoiceSocket } from "./hub-types.js";
+import { voiceSessionId } from "./paths.js";
+
+export { voiceSessionId };
+
+/** Frames are small: JSON control and at most 4096 bytes of audio. */
+export const VOICE_MAX_PAYLOAD_BYTES = 16 * 1024;
+
+function refuse(socket: Duplex, status: string, error: string): true {
+  socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ error })}`);
+  socket.destroy();
+  return true;
+}
+
+export interface VoiceUpgradeDeps {
+  hub: VoiceHub;
+  wss: WebSocketServer;
+  /** Voice is on now: read live, so a reload that turns it off closes the door. */
+  enabled(): boolean;
+  /** The operator's own credential, or a same-origin browser where auth is not required (the `/ws/pty` rule). */
+  operatorAuthenticated(req: IncomingMessage): boolean;
+}
+
+/** The session a voice socket may attach to, or the refusal. */
+function attachableSession(sessionId: string): Session | "missing" {
+  const session = getSession(sessionId);
+  return !session || isTerminalSession(session) ? "missing" : session;
+}
+
+/**
+ * Who is asking, for an operator upgrade. An agent session is never admitted
+ * (as for `/ws/pty`): outside its reach it is told so, inside it is told voice
+ * is the operator's. True when the upgrade was refused.
+ */
+function refusedCaller(req: IncomingMessage, socket: Duplex, session: Session, deps: VoiceUpgradeDeps): boolean {
+  adoptLegacyHeaders(req.headers);
+  const identity = resolveCallerIdentity(req.headers, {
+    sessionExists: (id) => !!getSession(id),
+    verifySessionCapability,
+    requireCapability: true,
+    operatorAuthenticated: deps.operatorAuthenticated(req),
+  });
+  if (identity.kind === "operator") return false;
+  if (identity.kind === "unidentified-tool") return refuse(socket, "403 Forbidden", UNIDENTIFIED_TOOL_CALL_ERROR);
+  if (identity.kind === "session" && !sessionIsWithinReach(session, identity.callerId)) {
+    return refuse(socket, "403 Forbidden", "That session is outside your reach.");
+  }
+  return refuse(socket, "403 Forbidden", "/ws/voice is for the operator; sessions cannot speak into other sessions.");
+}
+
+/**
+ * The operator's voice upgrade. False when the path is not a voice path or voice
+ * is off, so the caller treats it as it does any unknown path (the socket is
+ * destroyed). True once it answered.
+ */
+export function handleVoiceUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deps: VoiceUpgradeDeps): boolean {
+  const sessionId = voiceSessionId(req.url || "");
+  if (sessionId === null || !deps.enabled()) return false;
+  if (rejectCrossOriginUpgrade(req, socket)) return true;
+  const session = attachableSession(sessionId);
+  if (session === "missing") return refuse(socket, "404 Not Found", "No such session.");
+  if (refusedCaller(req, socket, session, deps)) return true;
+  acceptSocket(req, socket, head, deps, { sessionId, principal: { kind: "operator" } });
+  return true;
+}
+
+/**
+ * A member's voice upgrade, reached only once the accounts router has found the
+ * member may send messages to this session. Same session checks; the socket is
+ * returned to the router so it can tie it to the member sweep.
+ */
+export function upgradeMember(
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  deps: VoiceUpgradeDeps,
+  member: { principal: MemberPrincipal; sessionId: string; onSocket(ws: WebSocket): void },
+): boolean {
+  if (!deps.enabled()) return false;
+  if (attachableSession(member.sessionId) === "missing") return refuse(socket, "404 Not Found", "No such session.");
+  const principal: VoicePrincipal = { kind: "member", userId: member.principal.userId, userSessionId: member.principal.sessionId };
+  acceptSocket(req, socket, head, deps, { sessionId: member.sessionId, principal, onSocket: member.onSocket });
+  return true;
+}
+
+interface Accept {
+  sessionId: string;
+  principal: VoicePrincipal;
+  onSocket?: (ws: WebSocket) => void;
+}
+
+function acceptSocket(req: IncomingMessage, socket: Duplex, head: Buffer, deps: VoiceUpgradeDeps, accept: Accept): void {
+  deps.wss.handleUpgrade(req, socket, head, (ws) => {
+    trackHeartbeat(ws);
+    accept.onSocket?.(ws);
+    const attachment = deps.hub.attach(ws as unknown as VoiceSocket, { sessionId: accept.sessionId, principal: accept.principal });
+    if (!attachment) return;
+    ws.on("message", (data: RawData, isBinary: boolean) => {
+      if (!attachment.owns(ws as unknown as VoiceSocket)) return;
+      if (isBinary) attachment.onBinary(toBuffer(data));
+      else attachment.onText(toBuffer(data).toString("utf8"));
+    });
+    const gone = (code: number): void => deps.hub.socketClosed(attachment, ws as unknown as VoiceSocket, code);
+    ws.on("close", (code: number) => gone(code));
+    ws.on("error", () => gone(1006));
+  });
+}
+
+function toBuffer(data: RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  return Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+}

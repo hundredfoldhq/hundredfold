@@ -6,6 +6,8 @@ import { parseRequestAuthority } from "../gateway/request-authority.js";
 import { clearUserCookieHeader } from "./cookie.js";
 import { revokeUserSession } from "./user-sessions.js";
 import type { MemberPrincipal } from "./runtime.js";
+import type { MemberMessagePredicate } from "./member-chat-access.js";
+import { voiceSessionId } from "../voice/paths.js";
 import type { MemberRouterDeps } from "./member-context.js";
 import { runMemberRoutes } from "./member-routes.js";
 import { buildAuthState } from "./state.js";
@@ -14,12 +16,21 @@ export const NOT_AVAILABLE_TO_MEMBERS = "Not available to board members";
 
 const BODY_MAX_BYTES = 16 * 1024;
 
+/** What decides a member's voice socket: who they are, and whether they may message that session. */
+export interface MemberVoiceAccess {
+  principal: MemberPrincipal;
+  maySendMessages: MemberMessagePredicate;
+}
+
 /**
- * Whether a member may open this socket path. Exactly `/ws`: not `/ws/pty/*`, not a plugin's event stream,
- * not anything else.
+ * Whether a member may open this socket path. Exactly `/ws`, and `/ws/voice/:id` on a session they may send
+ * messages to (none today: see `member-chat-access.ts`). Not `/ws/pty/*`, not a plugin's event stream, not
+ * anything else.
  */
-export function memberMayUpgrade(requestUrl: string): boolean {
-  return requestUrl === "/ws";
+export function memberMayUpgrade(requestUrl: string, voice?: MemberVoiceAccess): boolean {
+  if (requestUrl === "/ws") return true;
+  const sessionId = voice ? voiceSessionId(requestUrl) : null;
+  return voice !== undefined && sessionId !== null && voice.maySendMessages(voice.principal, sessionId);
 }
 
 /** True when this request line is one the general dispatcher would take (the one place that rule lives). */
