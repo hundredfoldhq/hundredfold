@@ -8,6 +8,7 @@ import type { VoiceServerFrame } from "../shared/gateway-events.js";
 import { isSoftInterruptibleEngine, isSteerableEngine, type BackgroundedWork, type Engine } from "../shared/types.js";
 import type { BargeInState } from "./barge-in.js";
 import { decideBargeIn, foregroundWorkOf, type BargeInDecision, type BargeInInput } from "./barge-in-policy.js";
+import type { ForegroundWork } from "../shared/types.js";
 import { backgroundedNote, buildVoiceEnvelope, interruptedNote } from "./envelope.js";
 import type { VoiceDeliveryMode, VoiceHubDeps } from "./hub-types.js";
 import type { ReplyVoice } from "./reply-voice.js";
@@ -41,6 +42,8 @@ interface Plan {
   decision: BargeInDecision;
   engine: Engine;
   engineName: string;
+  /** The foreground call running when the decision was made, if any. */
+  longWork: ForegroundWork | null;
 }
 
 /** How a plan reaches the session. */
@@ -50,6 +53,17 @@ interface Delivery {
   holding: boolean;
   /** The running turn's remaining text is the old thread. */
   suppress: boolean;
+}
+
+/** How a decision that does not end the turn softly reaches the session. */
+function deliveryFor(kind: BargeInDecision["kind"], notes: string[]): Delivery {
+  switch (kind) {
+    case "steer": return { mode: "steer", notes, holding: false, suppress: false };
+    case "steer_with_holding": return { mode: "steer", notes, holding: true, suppress: false };
+    case "queue_with_holding": return { mode: "queue", notes, holding: true, suppress: true };
+    case "interrupt_now": return { mode: "interrupt", notes, holding: false, suppress: true };
+    default: return { mode: "queue", notes, holding: false, suppress: false };
+  }
 }
 
 export class Dispatcher {
@@ -84,8 +98,9 @@ export class Dispatcher {
       const session = deps.getSession(sessionId);
       const engine = session ? deps.getEngine(session.engine) : undefined;
       if (!session || !engine) throw new Error("the session or its engine is gone");
-      const decision = decideBargeIn(this.policyInput(engine, round >= MAX_WAIT_ROUNDS));
-      if (decision.kind !== "wait_then_decide") return { decision, engine, engineName: session.engine };
+      const input = this.policyInput(engine, round >= MAX_WAIT_ROUNDS);
+      const decision = decideBargeIn(input);
+      if (decision.kind !== "wait_then_decide") return { decision, engine, engineName: session.engine, longWork: input.longWork };
       await new Promise<void>((resolve) => deps.clock.setTimeout(resolve, decision.waitMs));
     }
   }
@@ -98,9 +113,8 @@ export class Dispatcher {
       longWork: turnRunning ? foregroundWorkOf(engine, sessionId) : null,
       nowMs: deps.clock.now(),
       thresholdMs: treatAsLong ? 0 : config.autoBackground.afterSeconds * 1000,
-      soft: isSoftInterruptibleEngine(engine)
-        ? { preserves: config.autoBackground.enabled && engine.softInterruptPreservesForegroundWork }
-        : null,
+      soft: isSoftInterruptibleEngine(engine),
+      backgrounding: config.autoBackground.enabled,
       steerable: isSteerableEngine(engine) && engine.canSteer(sessionId),
     };
   }
@@ -130,30 +144,34 @@ export class Dispatcher {
   /** The mode, notes and spoken extras for the decision; a soft interrupt happens here. */
   private async prepare(plan: Plan, input: DispatchInput): Promise<Delivery> {
     const notes = input.interrupted ? [interruptedNote(input.interrupted.heard)] : [];
-    switch (plan.decision.kind) {
-      case "soft_then_turn": return this.soft(plan.engine, notes);
-      case "steer": return { mode: "steer", notes, holding: false, suppress: false };
-      case "steer_with_holding": return { mode: "steer", notes, holding: true, suppress: false };
-      case "queue_with_holding": return { mode: "queue", notes, holding: true, suppress: true };
-      case "interrupt_now": return { mode: "interrupt", notes, holding: false, suppress: true };
-      default: return { mode: "queue", notes, holding: false, suppress: false };
-    }
+    if (plan.decision.kind === "soft_then_turn") return this.soft(plan, notes);
+    return deliveryFor(plan.decision.kind, notes);
   }
 
-  /** End the running turn softly, never killing it; long work moves to the background. */
-  private async soft(engine: Engine, notes: string[]): Promise<Delivery> {
-    if (!isSoftInterruptibleEngine(engine)) return { mode: "queue", notes, holding: true, suppress: true };
+  /**
+   * End the running turn softly, never aborting what it is running: a Bash moves to the background, and the
+   * turn ends. It can take several seconds, so with long work running the holding line is spoken before it.
+   * When the engine cannot (`unsupported`: no acknowledgement came, so the call is still running) the decision is
+   * run again as if the engine had no soft interrupt: steer or queue, never a kill.
+   */
+  private async soft(plan: Plan, notes: string[]): Promise<Delivery> {
+    const { engine } = plan;
+    if (!isSoftInterruptibleEngine(engine)) return deliveryFor("queue_with_holding", notes);
+    const waiting = plan.longWork !== null;
+    if (waiting) this.options.voice.speakHolding(this.options.config.holdingLine);
     const outcome = await engine.softInterrupt(this.options.sessionId, "voice barge-in");
-    if (!outcome.ended) {
-      // Nothing was running to end, or the engine cannot: the message waits its turn, never a kill.
-      const steer = outcome.reason === "unsupported" && isSteerableEngine(engine) && engine.canSteer(this.options.sessionId);
-      return { mode: steer ? "steer" : "queue", notes, holding: outcome.reason === "unsupported", suppress: false };
+    if (outcome.ended) {
+      if (outcome.backgrounded.length > 0) {
+        this.options.onBackgrounded(outcome.backgrounded);
+        notes.push(backgroundedNote(outcome.backgrounded));
+      }
+      return { mode: "queue", notes, holding: false, suppress: true };
     }
-    if (outcome.backgrounded.length > 0) {
-      this.options.onBackgrounded(outcome.backgrounded);
-      notes.push(backgroundedNote(outcome.backgrounded));
-    }
-    return { mode: "queue", notes, holding: false, suppress: true };
+    // Nothing was running to end: the message waits its turn.
+    if (outcome.reason === "no_turn") return { mode: "queue", notes, holding: false, suppress: false };
+    const again = decideBargeIn({ ...this.policyInput(engine, true), soft: false });
+    const delivery = deliveryFor(again.kind, notes);
+    return waiting ? { ...delivery, holding: false } : delivery;
   }
 
   /** The envelope for this message: the full prompt first (or after a compaction or engine switch), a reminder after. */

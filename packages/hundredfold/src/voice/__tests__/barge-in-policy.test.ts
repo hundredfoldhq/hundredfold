@@ -4,50 +4,61 @@ import { decideBargeIn, foregroundWorkOf, isLongWork, type BargeInInput } from "
 const NOW = 100_000;
 const THRESHOLD = 5_000;
 
-const base: BargeInInput = { turnRunning: true, longWork: null, nowMs: NOW, thresholdMs: THRESHOLD, soft: null, steerable: false };
-const long = { tool: "Bash", startedAt: NOW - 8_000, description: "sleep 60" };
-const young = { tool: "Bash", startedAt: NOW - 1_200, description: "sleep 60" };
+const base: BargeInInput = { turnRunning: true, longWork: null, nowMs: NOW, thresholdMs: THRESHOLD, soft: false, backgrounding: true, steerable: false };
+/** A running Bash: a soft interrupt backgrounds it. */
+const long = { tool: "Bash", startedAt: NOW - 8_000, description: "sleep 60", backgroundable: true };
+/** A running MCP call: a soft interrupt would abort it, so it is not backgroundable. */
+const longMcp = { ...long, tool: "mcp__search", backgroundable: false };
+const young = { tool: "Bash", startedAt: NOW - 1_200, description: "sleep 60", backgroundable: true };
 
 describe("the barge-in decision table (contracts/providers.md)", () => {
   it("no turn running: a new turn, whatever the engine can do", () => {
-    for (const soft of [null, { preserves: true }, { preserves: false }]) {
+    for (const soft of [true, false]) {
       expect(decideBargeIn({ ...base, turnRunning: false, soft, steerable: true })).toEqual({ kind: "new_turn" });
     }
   });
 
   it("a tool call younger than the threshold: wait out the rest of it, then decide again", () => {
-    expect(decideBargeIn({ ...base, longWork: young, soft: { preserves: true } })).toEqual({ kind: "wait_then_decide", waitMs: THRESHOLD - 1_200 });
+    expect(decideBargeIn({ ...base, longWork: young, soft: true })).toEqual({ kind: "wait_then_decide", waitMs: THRESHOLD - 1_200 });
     expect(decideBargeIn({ ...base, longWork: young, steerable: true })).toEqual({ kind: "wait_then_decide", waitMs: THRESHOLD - 1_200 });
   });
 
   it("a call exactly at the threshold is long work", () => {
     const edge = { ...long, startedAt: NOW - THRESHOLD };
     expect(isLongWork(edge, NOW, THRESHOLD)).toBe(true);
-    expect(decideBargeIn({ ...base, longWork: edge, soft: { preserves: true } })).toEqual({ kind: "soft_then_turn" });
+    expect(decideBargeIn({ ...base, longWork: edge, soft: true })).toEqual({ kind: "soft_then_turn" });
   });
 
   it.each([
-    ["no work, soft that preserves", null, { preserves: true }, false, "soft_then_turn"],
-    ["no work, soft that does not preserve", null, { preserves: false }, true, "soft_then_turn"],
-    ["long work, soft that preserves", long, { preserves: true }, false, "soft_then_turn"],
-    ["long work, soft that preserves, steerable too", long, { preserves: true }, true, "soft_then_turn"],
-    ["long work, soft that does not preserve, steerable", long, { preserves: false }, true, "steer_with_holding"],
-    ["long work, soft that does not preserve, not steerable", long, { preserves: false }, false, "queue_with_holding"],
-    ["long work, no soft, steerable", long, null, true, "steer_with_holding"],
-    ["long work, no soft, not steerable", long, null, false, "queue_with_holding"],
-    ["no work, no soft, steerable", null, null, true, "steer"],
-    ["no work, no soft, not steerable", null, null, false, "interrupt_now"],
-  ] as const)("%s → %s", (_name, longWork, soft, steerable, kind) => {
-    expect(decideBargeIn({ ...base, longWork, soft, steerable }).kind).toBe(kind);
+    ["no work, soft interrupt", { longWork: null, soft: true, backgrounding: true, steerable: false }, "soft_then_turn"],
+    ["no work, soft interrupt, backgrounding off", { longWork: null, soft: true, backgrounding: false, steerable: false }, "soft_then_turn"],
+    ["long Bash, soft interrupt", { longWork: long, soft: true, backgrounding: true, steerable: false }, "soft_then_turn"],
+    ["long Bash, soft interrupt, also steerable", { longWork: long, soft: true, backgrounding: true, steerable: true }, "soft_then_turn"],
+    ["long MCP call, soft interrupt, steerable", { longWork: longMcp, soft: true, backgrounding: true, steerable: true }, "steer_with_holding"],
+    ["long MCP call, soft interrupt, not steerable", { longWork: longMcp, soft: true, backgrounding: true, steerable: false }, "queue_with_holding"],
+    ["long Bash, soft interrupt, backgrounding off, steerable", { longWork: long, soft: true, backgrounding: false, steerable: true }, "steer_with_holding"],
+    ["long Bash, soft interrupt, backgrounding off, not steerable", { longWork: long, soft: true, backgrounding: false, steerable: false }, "queue_with_holding"],
+    ["long work, no soft interrupt, steerable", { longWork: long, soft: false, backgrounding: true, steerable: true }, "steer_with_holding"],
+    ["long work, no soft interrupt, not steerable", { longWork: long, soft: false, backgrounding: true, steerable: false }, "queue_with_holding"],
+    ["no work, no soft interrupt, steerable", { longWork: null, soft: false, backgrounding: true, steerable: true }, "steer"],
+    ["no work, no soft interrupt, not steerable", { longWork: null, soft: false, backgrounding: true, steerable: false }, "interrupt_now"],
+  ] as const)("%s → %s", (_name, input, kind) => {
+    expect(decideBargeIn({ ...base, ...input }).kind).toBe(kind);
   });
 
   it("never picks interrupt_now while the engine reports a foreground call, in any combination", () => {
-    const softs = [null, { preserves: true }, { preserves: false }];
-    const combos = [young, long].flatMap((longWork) => softs.flatMap((soft) => [true, false].flatMap((steerable) => (
-      [NOW, NOW + 3_000, NOW + 60_000].map((nowMs) => ({ ...base, longWork, soft, steerable, nowMs }))
-    ))));
-    expect(combos).toHaveLength(36);
+    const works = [young, long, longMcp];
+    const combos = works.flatMap((longWork) => [true, false].flatMap((soft) => [true, false].flatMap((backgrounding) => [true, false].flatMap((steerable) => (
+      [NOW, NOW + 3_000, NOW + 60_000].map((nowMs) => ({ ...base, longWork, soft, backgrounding, steerable, nowMs }))
+    )))));
+    expect(combos).toHaveLength(72);
     for (const input of combos) expect(decideBargeIn(input).kind).not.toBe("interrupt_now");
+  });
+
+  it("never soft-interrupts a call that would be aborted rather than backgrounded", () => {
+    for (const steerable of [true, false]) {
+      expect(decideBargeIn({ ...base, longWork: longMcp, soft: true, steerable }).kind).not.toBe("soft_then_turn");
+    }
   });
 
   it("with the threshold at zero a young call is long at once", () => {

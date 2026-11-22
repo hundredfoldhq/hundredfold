@@ -24,8 +24,9 @@ export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come 
 export interface ResolvedVoiceConfig {
   mode: "hands-free" | "push-to-talk";
   language: string;
-  stt: { provider: string; model: string | null };
-  tts: { provider: string; model: string | null; voice: string | null; speed: number };
+  /** A key appears only as the `${VAR}` reference it was given by; it is resolved inside the provider. */
+  stt: { provider: string; model: string | null; baseUrl: string | null; apiKeyRef: string | null };
+  tts: { provider: string; model: string | null; baseUrl: string | null; apiKeyRef: string | null; voice: string | null; speed: number };
   vad: { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
@@ -36,8 +37,8 @@ export interface ResolvedVoiceConfig {
 }
 
 const DEFAULTS = {
-  stt: { provider: "local", model: null as string | null },
-  tts: { provider: "local", model: null as string | null, voice: null as string | null, speed: 1 },
+  stt: { provider: "local", model: null as string | null, baseUrl: null as string | null, apiKeyRef: null as string | null },
+  tts: { provider: "local", model: null as string | null, baseUrl: null as string | null, apiKeyRef: null as string | null, voice: null as string | null, speed: 1 },
   vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
   bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
   autoBackground: { enabled: true, afterSeconds: 5 },
@@ -58,8 +59,8 @@ export function resolveVoiceConfig(config: Pick<HundredfoldConfig, "voice">): Re
   return {
     mode: voice.mode ?? "hands-free",
     language: voice.language ?? "en",
-    stt: section(DEFAULTS.stt, voice.stt),
-    tts: section(DEFAULTS.tts, voice.tts),
+    stt: section(DEFAULTS.stt, { ...voice.stt, apiKeyRef: voice.stt?.apiKey }),
+    tts: section(DEFAULTS.tts, { ...voice.tts, apiKeyRef: voice.tts?.apiKey }),
     vad: section(DEFAULTS.vad, voice.vad),
     bargeIn: section(DEFAULTS.bargeIn, voice.bargeIn),
     autoBackground: section(DEFAULTS.autoBackground, voice.autoBackground),

@@ -13,7 +13,8 @@ export const FRAME = Buffer.alloc(640, 3);
 export function baseConfig(over: Partial<ResolvedVoiceConfig> = {}): ResolvedVoiceConfig {
   return {
     mode: "hands-free", language: "en",
-    stt: { provider: "local", model: null }, tts: { provider: "local", model: null, voice: "af_test", speed: 1 },
+    stt: { provider: "local", model: null, baseUrl: null, apiKeyRef: null },
+    tts: { provider: "local", model: null, baseUrl: null, apiKeyRef: null, voice: "af_test", speed: 1 },
     vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
     bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
     autoBackground: { enabled: true, afterSeconds: 5 },

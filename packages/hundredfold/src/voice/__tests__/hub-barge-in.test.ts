@@ -151,6 +151,8 @@ async function speakDuringWork(opts: {
   engine: FakeEngineOptions;
   work?: "long" | "young" | "none";
   autoBackground?: boolean;
+  /** Whether a soft interrupt would background the running call (a Bash can be, an MCP call cannot). */
+  backgroundable?: boolean;
 }) {
   const h = createHarness({
     engine: opts.engine,
@@ -158,7 +160,7 @@ async function speakDuringWork(opts: {
   });
   h.state.turnRunning = true;
   if (opts.work !== "none") {
-    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - (opts.work === "young" ? 1_000 : 8_000), description: "sleep 60" };
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - (opts.work === "young" ? 1_000 : 8_000), description: "sleep 60", backgroundable: opts.backgroundable ?? true };
   }
   const { socket, attachment } = h.connect();
   await h.say(attachment, "what is two plus two");
@@ -176,23 +178,29 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
   });
 
   describe("long work, on every kind of engine, is never killed", () => {
-    const engines: Array<[string, FakeEngineOptions, string]> = [
-      ["soft interrupt that keeps work running", { soft: { preserves: true } }, "queue"],
-      ["soft interrupt that keeps it running, also steerable", { soft: { preserves: true }, steerable: true }, "queue"],
-      ["soft interrupt that does not keep it, steerable", { soft: { preserves: false }, steerable: true }, "steer"],
-      ["soft interrupt that does not keep it, not steerable", { soft: { preserves: false } }, "queue"],
-      ["steerable only", { steerable: true }, "steer"],
-      ["reports work but can do nothing about it", { reportsWork: true }, "queue"],
+    const engines: Array<[string, FakeEngineOptions, boolean, string]> = [
+      ["soft interrupt, a Bash that can be backgrounded", { soft: { preserves: true } }, true, "queue"],
+      ["soft interrupt and steerable, a Bash that can be backgrounded", { soft: { preserves: true }, steerable: true }, true, "queue"],
+      ["soft interrupt and steerable, a call that cannot be backgrounded", { soft: { preserves: true }, steerable: true }, false, "steer"],
+      ["soft interrupt only, a call that cannot be backgrounded", { soft: { preserves: true } }, false, "queue"],
+      ["steerable only", { steerable: true }, true, "steer"],
+      ["reports work but can do nothing about it", { reportsWork: true }, true, "queue"],
     ];
-    it.each(engines)("%s", async (_name, engine, mode) => {
-      const { h } = await speakDuringWork({ engine });
+    it.each(engines)("%s", async (_name, engine, backgroundable, mode) => {
+      const { h } = await speakDuringWork({ engine, backgroundable });
       expect(h.engine.kills).toEqual([]);
       expect(h.delivered).toHaveLength(1);
       expect(h.delivered[0].mode).toBe(mode);
       expect(h.delivered[0].mode).not.toBe("interrupt");
     });
 
-    it("with backgrounding turned off, a soft interrupt engine is treated as one that cannot keep work running", async () => {
+    it("a call that cannot be backgrounded is never soft-interrupted, which would abort it", async () => {
+      const { h, socket } = await speakDuringWork({ engine: { soft: { preserves: true }, steerable: true }, backgroundable: false });
+      expect(h.engine.softCalls).toEqual([]);
+      expect(socket.ofType("holding")).toHaveLength(1);
+    });
+
+    it("with backgrounding turned off, a soft interrupt engine is treated as one that cannot background", async () => {
       const { h } = await speakDuringWork({ engine: { soft: { preserves: true }, steerable: true }, autoBackground: false });
       expect(h.engine.softCalls).toEqual([]);
       expect(h.engine.kills).toEqual([]);
@@ -206,7 +214,7 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
     expect(h.engine.softCalls).toHaveLength(1);
     const h2 = createHarness({ engine: { soft: { preserves: true } } });
     h2.state.turnRunning = true;
-    h2.engine.work = { tool: "Bash", startedAt: h2.clock.now() - 9_000, description: "sleep 60" };
+    h2.engine.work = { tool: "Bash", startedAt: h2.clock.now() - 9_000, description: "sleep 60", backgroundable: true };
     h2.engine.softOutcome = { ended: true, backgrounded: [{ taskId: "bg-1", description: "sleep 60 && echo done" }] };
     const second = h2.connect();
     await h2.say(second.attachment, "what is two plus two");
@@ -215,7 +223,8 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
     expect(h2.delivered[0].envelope).toContain("sleep 60 && echo done");
     expect(h2.delivered[0].mode).toBe("queue");
     expect(h2.engine.kills).toEqual([]);
-    expect(socket.ofType("holding")).toHaveLength(0);
+    // A soft interrupt can take seconds: the holding line covers the wait.
+    expect(socket.ofType("holding")).toHaveLength(1);
   });
 
   it("steer_with_holding speaks the holding line at once, then steers the message in", async () => {
@@ -277,7 +286,7 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
     it("a call that restarts as a new one each time is not waited on forever", async () => {
       const { h } = await speakDuringWork({ engine: { steerable: true }, work: "young" });
       for (let i = 0; i < 6; i += 1) {
-        h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 500, description: "next" };
+        h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 500, description: "next", backgroundable: true };
         h.clock.advance(4_600);
         await settle();
       }
@@ -298,13 +307,32 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
       expect(h.engine.kills).toEqual([]);
     });
 
-    it("an engine that cannot do it steers where it can, else queues with a holding line, never kills", async () => {
-      for (const [engine, mode] of [[{ soft: { preserves: true }, steerable: true }, "steer"], [{ soft: { preserves: true } }, "queue"]] as const) {
+    it("no acknowledgement came and nothing long runs: the decision is run again as if the engine had no soft interrupt", async () => {
+      for (const [engine, mode] of [[{ soft: { preserves: true }, steerable: true }, "steer"], [{ soft: { preserves: true } }, "interrupt"]] as const) {
         const h = createHarness({ engine });
         h.state.turnRunning = true;
         h.engine.softOutcome = { ended: false, reason: "unsupported" };
         const { attachment, socket } = h.connect();
         await h.say(attachment, "hello");
+        expect(h.engine.softCalls).toHaveLength(1);
+        expect(h.delivered.map((d) => d.mode)).toEqual([mode]);
+        expect(socket.ofType("holding")).toHaveLength(0);
+        expect(h.engine.kills).toEqual([]);
+      }
+    });
+
+    it("no acknowledgement for a long Bash (it is still running): steer or queue behind it with one holding line, never a kill", async () => {
+      for (const [steerable, mode] of [[true, "steer"], [false, "queue"]] as const) {
+        const { h, socket } = await (async () => {
+          const h = createHarness({ engine: { soft: { preserves: true }, steerable } });
+          h.state.turnRunning = true;
+          h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 60", backgroundable: true };
+          h.engine.softOutcome = { ended: false, reason: "unsupported" };
+          const { socket, attachment } = h.connect();
+          await h.say(attachment, "what is two plus two");
+          return { h, socket };
+        })();
+        expect(h.engine.softCalls).toHaveLength(1);
         expect(h.delivered.map((d) => d.mode)).toEqual([mode]);
         expect(socket.ofType("holding")).toHaveLength(1);
         expect(h.engine.kills).toEqual([]);
@@ -346,7 +374,7 @@ describe("the old thread's tail is not spoken over the new answer", () => {
   it("a queued message waits behind the old turn: its tail is dropped, and the completion of that turn is the boundary", async () => {
     const h = createHarness({ engine: { reportsWork: true } });
     h.state.turnRunning = true;
-    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "tests" };
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "tests", backgroundable: true };
     const { socket, attachment } = h.connect();
     h.event("session:started");
     await h.say(attachment, "what time is it");

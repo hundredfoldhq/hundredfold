@@ -39,11 +39,11 @@ describe("UtteranceCapture, hands-free", () => {
   it("opens an STT stream on speech start, seeded with the pre-roll, then streams live audio without repeating a frame", () => {
     const { vad, stt, feed, log } = make({ prerollMs: 100 });
     feed(50); // 1000 ms of quiet
-    vad.start(1000); // the VAD says speech began at 1000 ms, as of this frame
+    vad.start(900); // speech began at 1000 ms; the VAD reports where to cut from, pre-roll already taken off
     feed(0);
     expect(log).toContain("vad:true");
     expect(log).toContain("start:u1");
-    // Pre-roll 100 ms (5 frames) + the audio from 1000 ms on (none yet): the stream holds 100 ms.
+    // From 900 ms to now (1000 ms): the stream holds 100 ms, and the pre-roll is not taken off a second time.
     expect(stt.last().bytes()).toBe(5 * 640);
     feed(10);
     expect(stt.last().bytes()).toBe(15 * 640);

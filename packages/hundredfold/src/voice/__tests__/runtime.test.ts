@@ -51,21 +51,23 @@ describe("the emit tee", () => {
 });
 
 describe("the resolved configuration (a stand-in for the config work)", () => {
-  it("fills every default, and carries neither a key nor an address", () => {
+  it("fills every default; a key is carried only as the reference it was given by, never its value", () => {
+    process.env.SECRET_NAME_FOR_TEST = "sk-resolved-value-1234567";
     const resolved = resolveVoiceConfig(config({
-      enabled: true, stt: { provider: "openai", apiKey: "${SECRET_NAME}", baseUrl: "https://example.test" }, tts: { voice: "af_x" },
+      enabled: true, stt: { provider: "openai", apiKey: "${SECRET_NAME_FOR_TEST}", baseUrl: "https://example.test" }, tts: { voice: "af_x" },
     }));
     expect(resolved).toMatchObject({
       mode: "hands-free", language: "en", prompt: DEFAULT_VOICE_PROMPT, holdingLine: DEFAULT_HOLDING_LINE,
-      stt: { provider: "openai", model: null }, tts: { provider: "local", voice: "af_x", speed: 1 },
+      stt: { provider: "openai", model: null, baseUrl: "https://example.test", apiKeyRef: "${SECRET_NAME_FOR_TEST}" },
+      tts: { provider: "local", voice: "af_x", speed: 1, apiKeyRef: null },
       vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
       limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 }, local: { device: "auto" },
     });
     const text = JSON.stringify(resolved);
-    expect(text).not.toContain("SECRET_NAME");
-    expect(text).not.toContain("example.test");
+    expect(text).not.toContain("sk-resolved-value");
+    expect(text).not.toContain('"apiKey"');
   });
 
   it("takes what is set over the default, section by section, and ignores what is unset", () => {

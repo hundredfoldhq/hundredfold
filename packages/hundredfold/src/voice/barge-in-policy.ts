@@ -33,8 +33,10 @@ export interface BargeInInput {
   nowMs: number;
   /** A tool call older than this is long work, in ms. */
   thresholdMs: number;
-  /** The engine's soft interrupt, or null when it has none (or backgrounding is off). */
-  soft: { preserves: boolean } | null;
+  /** The engine has a soft interrupt. */
+  soft: boolean;
+  /** Backgrounding long work is turned on (`autoBackground.enabled`). */
+  backgrounding: boolean;
   /** The engine can take an input into the running turn. */
   steerable: boolean;
 }
@@ -44,8 +46,13 @@ export function isLongWork(work: ForegroundWork, nowMs: number, thresholdMs: num
   return nowMs - work.startedAt >= thresholdMs;
 }
 
-function decideWithLongWork(input: BargeInInput): BargeInDecision {
-  if (input.soft?.preserves) return { kind: "soft_then_turn" };
+/** A soft interrupt now would move this call to the background, which is per call: a Bash can be, an MCP call cannot. */
+function backgroundsThisCall(input: BargeInInput, work: ForegroundWork): boolean {
+  return input.soft && input.backgrounding && work.backgroundable;
+}
+
+function decideWithLongWork(input: BargeInInput, work: ForegroundWork): BargeInDecision {
+  if (backgroundsThisCall(input, work)) return { kind: "soft_then_turn" };
   return input.steerable ? { kind: "steer_with_holding" } : { kind: "queue_with_holding" };
 }
 
@@ -61,7 +68,7 @@ export function decideBargeIn(input: BargeInInput): BargeInDecision {
   if (!isLongWork(work, input.nowMs, input.thresholdMs)) {
     return { kind: "wait_then_decide", waitMs: Math.max(1, input.thresholdMs - (input.nowMs - work.startedAt)) };
   }
-  return decideWithLongWork(input);
+  return decideWithLongWork(input, work);
 }
 
 /**

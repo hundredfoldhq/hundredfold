@@ -169,7 +169,7 @@ describe("long work moved to the background (FR-015, FR-016)", () => {
       },
     });
     h.state.turnRunning = true;
-    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 90" };
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 90", backgroundable: true };
     h.engine.softOutcome = { ended: true, backgrounded: [{ taskId: "bg-1", description: "sleep 90" }] };
     const { socket, attachment } = h.connect();
     await h.say(attachment, "two plus two");
@@ -180,7 +180,7 @@ describe("long work moved to the background (FR-015, FR-016)", () => {
   it("when the command finishes the session wakes itself and its reply about it is spoken (FR-016)", async () => {
     const h = createHarness({ engine: { soft: { preserves: true } } });
     h.state.turnRunning = true;
-    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 90" };
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 90", backgroundable: true };
     h.engine.softOutcome = { ended: true, backgrounded: [{ taskId: "bg-1", description: "sleep 90" }] };
     const { socket, attachment } = h.connect();
     await h.say(attachment, "two plus two");
@@ -193,7 +193,8 @@ describe("long work moved to the background (FR-015, FR-016)", () => {
     h.delta("text", "The command finished with done-marker. ");
     h.event("session:completed", { result: "", error: null });
     await settle();
-    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Two plus two is four.", "The command finished with done-marker."]);
+    // The holding line covered the wait for the soft interrupt; then both replies, the second one unprompted.
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual([h.state.config!.holdingLine, "Two plus two is four.", "The command finished with done-marker."]);
     expect(h.engine.kills).toEqual([]);
   });
 });

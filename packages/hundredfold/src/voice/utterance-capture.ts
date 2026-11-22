@@ -4,8 +4,10 @@
  * speech began; the pause that ends speech asks the stream for its final. In
  * push-to-talk the person marks the boundaries and the VAD does not endpoint.
  *
- * `VadStream` events carry `atMs`, the position in the audio written to the
- * stream where speech began or ended.
+ * `VadStream` events carry `atMs`, a position in the audio written to the
+ * stream. `start.atMs` is where to cut from, with the pre-roll ALREADY taken off
+ * (never below 0), so it is not taken off again here; `end.atMs` is where speech
+ * stopped, before the trailing silence (speech-sidecar.md, VAD offsets).
  */
 import { VOICE_INPUT_SAMPLE_RATE } from "../shared/gateway-events.js";
 import type { SttProvider, SttStream, VadStream } from "./provider.js";
@@ -140,7 +142,7 @@ export class UtteranceCapture {
     }
     this.options.events.onVad(true);
     if (this.capturing || this.ignoringUntilEnd) return;
-    this.begin(Math.max(0, atMs * BYTES_PER_MS - this.options.prerollMs * BYTES_PER_MS));
+    this.begin(Math.max(0, atMs * BYTES_PER_MS));
   }
 
   /** Open an STT stream and give it the audio from `fromByte` on. */
