@@ -106,4 +106,45 @@ describe("the voice provider key", () => {
     loadConfig();
     expect(buildEngineChildEnv()[VAR]).toBe(KEY);
   });
+
+  it("is still found by an explicit ${VAR} elsewhere in config.yaml, while every engine child lacks it", async () => {
+    process.env[VAR] = KEY;
+    writeConfig({ enabled: true, stt: { provider: "openai", apiKey: `\${${VAR}}` }, tts: { provider: "openai", apiKey: `\${${VAR}}` } });
+    const { loadConfig } = await import("../config.js");
+    const { buildEngineChildEnv } = await import("../child-env.js");
+    const { resolveEnvVar } = await import("../env-ref.js");
+    const { createRealtimeProvider } = await import("../../talk/realtime/index.js");
+    const { resolveMcpServers } = await import("../../mcp/resolver.js");
+    loadConfig();
+
+    expect(process.env[VAR]).toBeUndefined();
+    expect(buildEngineChildEnv()).not.toHaveProperty(VAR);
+    expect(resolveEnvVar(`\${${VAR}}`)).toBe(KEY);
+    expect(resolveEnvVar(`$${VAR}`)).toBe(KEY);
+    // The realtime factory resolves it...
+    expect(() => createRealtimeProvider({ provider: "openai", apiKey: `\${${VAR}}` })).not.toThrow();
+    // ...and so does an MCP server's env (it is the operator's explicit choice), not the literal reference.
+    const { mcpServers } = resolveMcpServers({ browser: { enabled: false }, custom: { demo: { command: "run", env: { TOKEN: `\${${VAR}}` } } } });
+    expect((mcpServers.demo as { env: Record<string, string> }).env.TOKEN).toBe(KEY);
+  });
+
+  it("survives voice being turned off by a reload and back on, and still reaches the successor", async () => {
+    process.env[VAR] = KEY;
+    writeConfig({ enabled: true, stt: { provider: "openai", apiKey: `\${${VAR}}` } });
+    const { loadConfig } = await import("../config.js");
+    const { buildEngineChildEnv, withOpencodeAccountKeys } = await import("../child-env.js");
+    const { resolveEnvVar } = await import("../env-ref.js");
+    loadConfig();
+    expect(process.env[VAR]).toBeUndefined();
+
+    writeConfig({ enabled: false, stt: { provider: "openai", apiKey: `\${${VAR}}` } });
+    loadConfig();
+    expect(resolveEnvVar(`\${${VAR}}`)).toBe(KEY);
+    expect(withOpencodeAccountKeys({ ...process.env })[VAR]).toBe(KEY);
+    expect(buildEngineChildEnv()[VAR]).toBe(KEY);
+
+    writeConfig({ enabled: true, stt: { provider: "openai", apiKey: `\${${VAR}}` } });
+    loadConfig();
+    expect(withOpencodeAccountKeys({ ...process.env })[VAR]).toBe(KEY);
+  });
 });

@@ -58,7 +58,8 @@ export function setOpencodeAccountKeyEnv(names: Iterable<string>, env: NodeJS.Pr
 }
 
 /** The variables the `voice.*.apiKey` settings name (`${VAR}`). Withheld from every child built here exactly as the opencode
- *  account keys are: the gateway resolves a voice key itself, so no engine process, and no shell a model runs, has it. */
+ *  account keys are: the gateway resolves a voice key itself, so no engine process, and no shell a model runs, has it.
+ *  An explicit `${VAR}` elsewhere in config.yaml still resolves it ({@link voiceKeyEnvironment}): only inheritance is cut. */
 let voiceKeyEnv: ReadonlySet<string> = new Set();
 
 /** The voice keys themselves, taken out of the gateway's own environment when the config loads. */
@@ -71,8 +72,11 @@ const voiceKeys = new Map<string, string>();
  */
 export function setVoiceKeyEnv(names: Iterable<string>, env: NodeJS.ProcessEnv = process.env): void {
   voiceKeyEnv = new Set(names);
-  for (const name of [...voiceKeys.keys()]) {
-    if (!voiceKeyEnv.has(name)) voiceKeys.delete(name);
+  for (const [name, value] of [...voiceKeys]) {
+    if (voiceKeyEnv.has(name)) continue;
+    // A name voice no longer uses is the operator's ordinary variable again: readable, and passed to a successor.
+    voiceKeys.delete(name);
+    if (env[name] === undefined) env[name] = value;
   }
   for (const name of voiceKeyEnv) {
     const value = env[name];

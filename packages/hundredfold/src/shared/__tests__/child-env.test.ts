@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect } from "vitest";
 import path from "node:path";
-import { buildEngineChildEnv, isScopedSessionEnvName, setOpencodeAccountKeyEnv, setVoiceKeyEnv, voiceKeyEnvironment, withOpencodeAccountKeys } from "../child-env.js";
+import { buildEngineChildEnv, isScopedSessionEnvName, resetOpencodeAccountKeysForTest, setOpencodeAccountKeyEnv, setVoiceKeyEnv, voiceKeyEnvironment, withOpencodeAccountKeys } from "../child-env.js";
 
 describe("buildEngineChildEnv", () => {
   // The gateway resolves CLAUDE_CONFIG_DIR against its own cwd; the engine is spawned
@@ -124,7 +124,7 @@ describe("opencode account keys", () => {
 describe("voice provider keys", () => {
   const gatewayEnv = (): NodeJS.ProcessEnv => ({ PATH: "/usr/bin", VOICE_KEY: "sk-voice-secret", KEEP: "yes" });
 
-  afterEach(() => setVoiceKeyEnv([]));
+  afterEach(() => resetOpencodeAccountKeysForTest());
 
   it("keeps a named voice key out of every engine child, scoped sessions included", () => {
     setVoiceKeyEnv(["VOICE_KEY"], {});
@@ -151,11 +151,23 @@ describe("voice provider keys", () => {
     expect(withOpencodeAccountKeys({ PATH: "/usr/bin" }).VOICE_KEY).toBe("sk-voice-secret");
   });
 
-  it("forgets a key the config no longer names, without putting it back", () => {
+  it("puts a key back in the environment when the config stops naming it, so it is readable and reaches a successor", () => {
     const env = gatewayEnv();
     setVoiceKeyEnv(["VOICE_KEY"], env);
-    setVoiceKeyEnv([], env);
     expect(env).not.toHaveProperty("VOICE_KEY");
-    expect(voiceKeyEnvironment(env).VOICE_KEY).toBeUndefined();
+    setVoiceKeyEnv([], env);
+    expect(env.VOICE_KEY).toBe("sk-voice-secret");
+    expect(voiceKeyEnvironment(env).VOICE_KEY).toBe("sk-voice-secret");
+    expect(withOpencodeAccountKeys(env).VOICE_KEY).toBe("sk-voice-secret");
+    // No longer named, so no longer withheld from children.
+    expect(buildEngineChildEnv(env).VOICE_KEY).toBe("sk-voice-secret");
+  });
+
+  it("does not overwrite a value the environment has been given since", () => {
+    const env = gatewayEnv();
+    setVoiceKeyEnv(["VOICE_KEY"], env);
+    env.VOICE_KEY = "sk-newer";
+    setVoiceKeyEnv([], env);
+    expect(env.VOICE_KEY).toBe("sk-newer");
   });
 });

@@ -85,7 +85,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
 
-Provider keys are never sent to a browser, in any response, message or error. The gateway takes each variable an `apiKey` names out of its own environment when the configuration loads and keeps it only inside the gateway: no engine process, tool or shell a model runs inherits it. Use a variable that only voice needs, such as `VOICE_OPENAI_API_KEY`: another tool or `config.yaml` setting that expects the same variable would see it unset.
+Provider keys are never sent to a browser, in any response, message or error. The gateway takes each variable an `apiKey` names out of its own environment when the configuration loads and keeps it only inside the gateway: no engine process, tool or shell a model runs inherits it. A variable that only voice needs, such as `VOICE_OPENAI_API_KEY`, is the clearest choice: another tool the gateway starts that expects the same variable will not find it. A `${VAR}` you write elsewhere in `config.yaml` (a realtime key, an MCP server's environment) still resolves it.
 
 ## Providers
 

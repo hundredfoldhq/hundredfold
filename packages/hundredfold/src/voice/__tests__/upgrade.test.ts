@@ -254,6 +254,26 @@ describe("the /ws/voice/:id upgrade", () => {
     expect((await got.closed).code).toBe(1009);
   });
 
+  it("an oversize frame ends the attachment, so its slot is free for the next socket (ws raises an error before the 1009 close)", async () => {
+    const r = await start({ enabled: true, limits: { maxConcurrentAttachments: 1 } });
+    const session = newSession();
+    const ws = keep(await open(r.url(session.id)));
+    const got = collect(ws);
+    ws.send(hello());
+    await waitFor(() => got.text.some((f) => f.type === "ready"));
+    ws.send(Buffer.alloc(64 * 1024));
+    expect((await got.closed).code).toBe(1009);
+    await waitFor(() => r.runtime.hub.size() === 0);
+    expect(r.runtime.hub.get(session.id)).toBeUndefined();
+
+    const next = keep(await open(r.url(newSession().id)));
+    const nextGot = collect(next);
+    next.send(hello());
+    await waitFor(() => nextGot.text.some((f) => f.type === "ready"));
+    expect(nextGot.text.some((f) => f.type === "error" && (f as { code?: string }).code === "limit")).toBe(false);
+    expect(r.runtime.hub.size()).toBe(1);
+  });
+
   it("audio and speech run through a real socket: the final becomes the reply's speech as binary frames", async () => {
     const r = await start();
     const session = newSession();

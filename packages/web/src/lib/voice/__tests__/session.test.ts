@@ -241,6 +241,8 @@ describe("start, stop, start while the first prompt is pending", () => {
     await first
     expect(r.tracks[0].stopped).toBe(true)
     expect(r.tracks[0].listenerCount()).toBe(0)
+    // The stale stream is dropped before the worklet: it is never wired into the new run's context.
+    expect(r.captureStops).not.toHaveBeenCalled()
     expect(r.tracks[1].stopped).toBe(false)
     r.micGates[1].open({} as MediaStream)
     await second

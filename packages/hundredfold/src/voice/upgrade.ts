@@ -123,8 +123,14 @@ function acceptSocket(req: IncomingMessage, socket: Duplex, head: Buffer, deps: 
       else attachment.onText(toBuffer(data).toString("utf8"));
     });
     const gone = (code: number): void => deps.hub.socketClosed(attachment, ws as unknown as VoiceSocket, code);
-    ws.on("close", (code: number) => gone(code));
-    ws.on("error", () => gone(1006));
+    // ws raises `error` first and then `close`, and on the server side that close reports 1006 even when ws itself ended the
+    // connection with 1009 (a frame over the size limit). The error is the only place the real code shows: keep it, and
+    // let `close` report it, so an oversize frame ends the attachment instead of reading as a dropped network.
+    let endedBy: number | null = null;
+    ws.on("error", (error: Error & { code?: string }) => {
+      if (error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") endedBy = 1009;
+    });
+    ws.on("close", (code: number) => gone(endedBy ?? code));
   });
 }
 

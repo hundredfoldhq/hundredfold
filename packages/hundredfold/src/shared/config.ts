@@ -212,27 +212,8 @@ export function loadConfig(): HundredfoldConfig {
   setOpencodeAccountKeyEnv(stagedOpencodeAccounts(config).map((account) => account.keyEnv!));
   rememberOpencodeAccounts(config);
   // Likewise the voice provider keys: the gateway resolves them itself (voiceKeyEnvironment), no child gets them.
-  const voiceKeyNames = voiceKeyEnvNames(config.voice);
-  setVoiceKeyEnv(voiceKeyNames);
-  warnAboutSharedVoiceKeys(config, voiceKeyNames);
+  setVoiceKeyEnv(voiceKeyEnvNames(config.voice));
   return config;
-}
-
-// Warn once per variable, for the same reason as above: loadConfig() is polled.
-const warnedSharedVoiceKeys = new Set<string>();
-
-/**
- * A voice key variable that something else in config.yaml also expands from reads as unset there, because the
- * gateway withholds it from every other process. The fix is a variable of its own for voice.
- */
-function warnAboutSharedVoiceKeys(config: HundredfoldConfig, names: readonly string[]): void {
-  if (names.length === 0) return;
-  const references = configEnvReferences({ ...(config as unknown as Record<string, unknown>), voice: undefined });
-  for (const name of names) {
-    if (!references.has(name) || warnedSharedVoiceKeys.has(name)) continue;
-    warnedSharedVoiceKeys.add(name);
-    console.warn(`voice.*.apiKey names ${name}, which config.yaml also expands elsewhere: the gateway keeps it from every other process, so it will be unset there. Give voice its own variable.`);
-  }
 }
 
 // Warn once per removed engine block: loadConfig() runs again on every config
