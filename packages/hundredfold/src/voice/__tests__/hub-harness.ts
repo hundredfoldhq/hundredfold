@@ -135,4 +135,9 @@ export function createHarness(options: HarnessOptions = {}) {
   return h;
 }
 
+/** The client plays everything it has been sent to the end and says so: nothing of an earlier reply is left to cut. */
+export function playedAll(socket: FakeSocket, attachment: VoiceAttachment): void {
+  for (const start of socket.ofType("segment_start")) attachment.onText(JSON.stringify({ type: "played", segmentId: start.segmentId }));
+}
+
 export type Harness = ReturnType<typeof createHarness>;
