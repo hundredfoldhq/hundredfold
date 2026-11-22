@@ -4,7 +4,7 @@ import { resolveRemoteClaudeConfigDir } from "../shared/remote-target.js";
 import type { ResolvedFallbackLink } from "../shared/fallback-chain-wire.js";
 import type { ChooseSubstituteInput, SubstituteChoice } from "./rate-limit-substitute.js";
 import { rateLimitAccount } from "./rate-limit-account.js";
-import { accountOverride, ownClaudeAccountOf, ownClaudeProfile } from "./session-account.js";
+import { accountOverride, ownClaudeAccountOf, ownClaudeProfile, withoutAccountOverride, withStandingRemoteAccount } from "./session-account.js";
 import { fallbackModelMapOf } from "./substitute-filters.js";
 
 /**
@@ -47,21 +47,33 @@ function engineLaunch(input: ChooseSubstituteInput, link: ResolvedFallbackLink):
 }
 
 /**
+ * The directory on the host of a login that is the session's or its employee's own: the session's own account
+ * (its employee's, or the remote account the balancer pinned it to) runs on the directory it was started with,
+ * the employee's own login on the employee's. null is the host's default profile; undefined, an account that
+ * is neither. Read off the session's launch target with no override standing, never off the employee alone.
+ */
+function ownLoginDir(input: ChooseSubstituteInput, account: string): string | null | undefined {
+  const { config, remoteTarget } = input;
+  if (account === ownClaudeAccountOf(input.session, input.employee)) {
+    return resolveRemoteClaudeConfigDir(withStandingRemoteAccount(remoteTarget, withoutAccountOverride(input.session)), config.remote) ?? null;
+  }
+  return account === accountForEmployee(input.employee, "claude") ? resolveRemoteClaudeConfigDir(remoteTarget, config.remote) ?? null : undefined;
+}
+
+/**
  * A remote session's Claude link. The account it stands on keeps the swap it holds. Any other account
  * it can run as on its host is a swap onto that account's directory there: a declared remote account,
- * or, from a substitute, back onto the employee's own login (its own directory, null for the host's
- * default profile). That way the override always names the account the turn runs as, so the thread it
- * resumes is that account's and never another's.
+ * or, from a substitute, back onto its own login (the directory it started on: its employee's, or the one
+ * the balancer pinned; null for the host's default profile). That way the override always names the account
+ * the turn runs as, so the thread it resumes is that account's and never another's.
  */
 function remoteLaunch(input: ChooseSubstituteInput, link: ResolvedFallbackLink): Launch {
   if (link.account === input.account) {
     const standing = standingAccountSwap(input);
     return { claudeProfile: null, ...(standing ? { accounts: standing } : {}) };
   }
-  const own = accountForEmployee(input.employee, "claude");
-  const dir = link.account === own
-    ? resolveRemoteClaudeConfigDir(input.remoteTarget, input.config.remote) ?? null
-    : declaredRemoteAccountByKey(input.config, link.account)?.configDir;
+  const own = ownLoginDir(input, link.account);
+  const dir = own === undefined ? declaredRemoteAccountByKey(input.config, link.account)?.configDir : own;
   if (dir === undefined) return { claudeProfile: null };
   return { claudeProfile: null, accounts: { original: input.account, substitute: link.account, substituteConfigDir: dir } };
 }

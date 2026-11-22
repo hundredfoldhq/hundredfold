@@ -18,6 +18,7 @@ import { validateNewSessionSelection } from "./session-patch.js";
 import { pinAccountAtCreation, type AccountPin } from "./account-pin.js";
 import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { getEngineSessionRef } from "./registry.js";
+import { metaWithRemoteAccountPin, readRemoteAccountPin, type RemoteAccountPin } from "./remote-account-pin.js";
 
 /**
  * Who may switch a session to what: the one resolver behind the operator's selector and a
@@ -49,6 +50,8 @@ export interface SwitchTargetView {
   effortLevel: string | null;
   /** The account balancer chose the profile (an engine-only switch onto Claude): applying the switch picks again, then. */
   balanced?: boolean;
+  /** A remote session pinned to another account than its employee's login, which this target keeps: the apply names no profile, so the pin is not read as a request for the own login. */
+  keepsRemotePin?: boolean;
 }
 
 /** What a caller asks for. `profile` null or "" is the session's own login; every field is optional. */
@@ -64,6 +67,8 @@ export type SwitchResolution =
     ok: true; target: SwitchTargetView; own: SwitchTargetView; sameTarget: boolean;
     /** What the switch writes of the balancer's record: the pick (an engine-only switch onto Claude whose chain opens with a group), null to clear it (the switch names a profile), absent to leave it. */
     accountPick?: AccountPick | null;
+    /** The same for a remote employee's session: the declared remote account it is pinned to, null to remove an earlier pin, absent to leave it. */
+    remoteAccountPin?: RemoteAccountPin | null;
   }
   | { ok: false; code: SwitchRefusalCode; status: 400 | 403 | 409; error: string; until?: string; listEngine?: string };
 
@@ -123,14 +128,20 @@ export function claudeAccountFor(config: HundredfoldConfig, session: Session, di
   return ownClaudeAccountOf({ ...session, claudeConfigDir: dir }, employeeOf(config, session));
 }
 
+/** The session as it reads once the switch has written its remote pin (`undefined`: no change to the pin), so the target's account is judged as it will run. */
+function sessionAfterPin(session: Session, pin: RemoteAccountPin | null | undefined): Session {
+  if (pin === undefined) return session;
+  return { ...session, transportMeta: metaWithRemoteAccountPin(session.transportMeta ?? undefined, pin) ?? null };
+}
+
 function effectiveModel(config: HundredfoldConfig, view: SwitchTargetView): string | null {
   return view.model ?? getModelRegistry(config)[view.engine]?.defaultModel ?? null;
 }
 
 /** Whether `target` is where the session already runs: same engine, same account (profiles compare by account key) and same model, null read as the engine's default. */
-function isOwnTarget(config: HundredfoldConfig, session: Session, own: SwitchTargetView, target: SwitchTargetView): boolean {
+function isOwnTarget(config: HundredfoldConfig, session: Session, own: SwitchTargetView, target: SwitchTargetView, after: Session = session): boolean {
   if (target.engine !== own.engine || effectiveModel(config, target) !== effectiveModel(config, own)) return false;
-  return target.engine !== "claude" || claudeAccountFor(config, session, target.claudeConfigDir) === claudeAccountFor(config, session, own.claudeConfigDir);
+  return target.engine !== "claude" || claudeAccountFor(config, after, target.claudeConfigDir) === claudeAccountFor(config, session, own.claudeConfigDir);
 }
 
 function engineRefusal(config: HundredfoldConfig, session: Session, engine: string, opts: ResolveOptions): SwitchResolution | undefined {
@@ -201,20 +212,20 @@ function requestedEngine(own: SwitchTargetView, request: SwitchRequest): { ok: t
 }
 
 /** The refusals only a session asking for itself meets: its own target, and a target whose allowance is spent. */
-function selfRefusal(config: HundredfoldConfig, session: Session, own: SwitchTargetView, target: SwitchTargetView, now: Date): SwitchResolution | undefined {
-  if (isOwnTarget(config, session, own, target)) {
+function selfRefusal(config: HundredfoldConfig, sessions: { session: Session; after: Session }, own: SwitchTargetView, target: SwitchTargetView, now: Date): SwitchResolution | undefined {
+  if (isOwnTarget(config, sessions.session, own, target, sessions.after)) {
     return refusal("same-target", `this session already runs on ${describeSwitchTarget(config, own)} — call compact_session without a target to compact in place`);
   }
-  return exhaustedRefusal(config, session, target, now);
+  return exhaustedRefusal(config, sessions.after, target, now);
 }
 
 /** Whether the target is another Claude account than the row's own: its slot then needs a pinned model to be recorded under. */
-function movesAccount(config: HundredfoldConfig, session: Session, chosen: { engine: string; dir: string | null }): boolean {
-  return chosen.engine === "claude" && claudeAccountFor(config, session, chosen.dir) !== claudeAccountFor(config, session, session.claudeConfigDir);
+function movesAccount(config: HundredfoldConfig, session: Session, chosen: ChosenTarget): boolean {
+  return chosen.engine === "claude" && claudeAccountFor(config, chosen.after, chosen.dir) !== claudeAccountFor(config, session, session.claudeConfigDir);
 }
 
 /** The engine's default model for a move to another Claude account, whose slot needs one recorded; otherwise none (the target's own). */
-function pinnedModel(config: HundredfoldConfig, session: Session, chosen: { engine: string; dir: string | null }): string | null {
+function pinnedModel(config: HundredfoldConfig, session: Session, chosen: ChosenTarget): string | null {
   return movesAccount(config, session, chosen) ? getModelRegistry(config)[chosen.engine]?.defaultModel ?? null : null;
 }
 
@@ -233,12 +244,19 @@ function modelRefusal(config: HundredfoldConfig, engine: string, model: unknown,
   return listed.length > 0 && !listed.some((entry) => entry.id === id) ? refused(`unknown model "${id}" for engine "${engine}"`) : undefined;
 }
 
+/** The engine and profile directory a switch lands on, and the session as it reads once the switch has written its remote pin. */
+interface ChosenTarget {
+  engine: string;
+  dir: string | null;
+  after: Session;
+}
+
 /** The target for an engine and profile directory already cleared, with the model and effort checked against the engine. */
 function buildTarget(
   config: HundredfoldConfig,
   session: Session,
   own: SwitchTargetView,
-  chosen: { engine: string; dir: string | null },
+  chosen: ChosenTarget,
   request: SwitchRequest,
 ): { ok: true; target: SwitchTargetView } | Extract<SwitchResolution, { ok: false }> {
   const kept = inheritedSelection(session, own, chosen.engine, chosen.dir);
@@ -278,6 +296,8 @@ function balancedSwitch(config: HundredfoldConfig, session: Session, own: Switch
 function switchProfile(
   config: HundredfoldConfig, session: Session, engine: string, request: SwitchRequest, balanced: AccountPin | undefined,
 ): { ok: true; dir: string | null } | Extract<SwitchResolution, { ok: false }> {
+  // A remote employee's pick lives in its transport meta: the profile column, a directory on the gateway, is left as the row has it.
+  if (balanced?.remoteAccountPin !== undefined) return { ok: true, dir: session.claudeConfigDir };
   return balanced ? { ok: true, dir: balanced.claudeConfigDir ?? null } : resolveProfile(config, session, engine, request.profile);
 }
 
@@ -285,6 +305,17 @@ function switchProfile(
 function pickWrite(engine: string, request: SwitchRequest, balanced: AccountPin | undefined): Pick<Extract<SwitchResolution, { ok: true }>, "accountPick"> {
   const accountPick = balanced?.accountPick ?? (engine === "claude" && request.profile !== undefined ? null : undefined);
   return accountPick === undefined ? {} : { accountPick };
+}
+
+/**
+ * What the switch writes of a remote employee's account pin: the balancer's own (a pick, or null when it picked the employee's login),
+ * or null when a session holding a pin is told to run as its own login (a profile named on Claude), else nothing. A session with no pin
+ * to remove is never written to.
+ */
+function remotePinWrite(session: Session, engine: string, request: SwitchRequest, balanced: AccountPin | undefined): RemoteAccountPin | null | undefined {
+  const held = readRemoteAccountPin(session.transportMeta) !== undefined;
+  if (balanced) return balanced.remoteAccountPin ?? (held ? null : undefined);
+  return held && engine === "claude" && request.profile !== undefined ? null : undefined;
 }
 
 /** The target `request` asks for on `session`, or the rule that refuses it. */
@@ -299,12 +330,35 @@ export function resolveSwitchTarget(config: HundredfoldConfig, session: Session,
   if (!profile.ok) return profile;
   const modelProblem = modelRefusal(config, named.engine, request.model, opts);
   if (modelProblem) return modelProblem;
-  const built = buildTarget(config, session, own, { engine: named.engine, dir: profile.dir }, request);
+  return finishSwitch(config, { session, own, engine: named.engine, dir: profile.dir }, { request, balanced, caller: opts });
+}
+
+/** The target, marked when applying it picks again (a balanced target) or keeps the remote pin the session holds (it names no profile then). */
+function markedTarget(target: SwitchTargetView, session: Session, how: { balanced: boolean; remoteAccountPin: RemoteAccountPin | null | undefined }): SwitchTargetView {
+  if (how.balanced) return { ...target, balanced: true };
+  const keepsPin = how.remoteAccountPin === undefined && target.engine === "claude" && readRemoteAccountPin(session.transportMeta) !== undefined;
+  return keepsPin ? { ...target, keepsRemotePin: true } : target;
+}
+
+/** The target built and judged for the caller: what the balancer's picks write, the refusals a session asking meets, and whether it is where the session already runs. */
+function finishSwitch(
+  config: HundredfoldConfig,
+  from: { session: Session; own: SwitchTargetView; engine: string; dir: string | null },
+  asked: { request: SwitchRequest; balanced: AccountPin | undefined; caller: ResolveOptions },
+): SwitchResolution {
+  const { session, own, engine, dir } = from;
+  const { request, balanced } = asked;
+  const remoteAccountPin = remotePinWrite(session, engine, request, balanced);
+  const after = sessionAfterPin(session, remoteAccountPin);
+  const built = buildTarget(config, session, own, { engine, dir, after }, request);
   if (!built.ok) return built;
-  const target = balanced ? { ...built.target, balanced: true } : built.target;
-  const refused = opts.caller === "session" ? selfRefusal(config, session, own, target, opts.now ?? new Date()) : undefined;
+  const target = markedTarget(built.target, session, { balanced: Boolean(balanced), remoteAccountPin });
+  const refused = asked.caller.caller === "session" ? selfRefusal(config, { session, after }, own, target, asked.caller.now ?? new Date()) : undefined;
   if (refused) return refused;
-  return { ok: true, target, own, sameTarget: isOwnTarget(config, session, own, target), ...pickWrite(named.engine, request, balanced) };
+  return {
+    ok: true, target, own, sameTarget: isOwnTarget(config, session, own, target, after),
+    ...pickWrite(engine, request, balanced), ...(remoteAccountPin === undefined ? {} : { remoteAccountPin }),
+  };
 }
 
 /** What a target reads as to its allowance: `ok`, or `exhausted` with the end of the window. */
@@ -389,7 +443,7 @@ export function listSwitchTargets(config: HundredfoldConfig, session: Session, n
 }
 
 /** Whether the target leaves the session in the conversation slot it is in: the same engine, and for Claude the same account. */
-export function staysInSlot(config: HundredfoldConfig, session: Session, target: SwitchTargetView): boolean {
+export function staysInSlot(config: HundredfoldConfig, session: Session, target: SwitchTargetView, remoteAccountPin?: RemoteAccountPin | null): boolean {
   if (target.engine !== session.engine) return false;
-  return target.engine !== "claude" || claudeAccountFor(config, session, target.claudeConfigDir) === claudeAccountFor(config, session, session.claudeConfigDir);
+  return target.engine !== "claude" || claudeAccountFor(config, sessionAfterPin(session, remoteAccountPin), target.claudeConfigDir) === claudeAccountFor(config, session, session.claudeConfigDir);
 }
