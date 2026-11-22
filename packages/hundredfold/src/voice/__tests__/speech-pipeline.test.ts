@@ -147,6 +147,17 @@ describe("SpeechPipeline", () => {
     expect(json.filter((f) => f.type === "segment_start").slice(2).map((f) => f.text)).toEqual(["Cut two was mid.", "Arrived while held."]);
   });
 
+  it("a resume with other sentences than the cut left does not stand in for what was cut", async () => {
+    const { pipeline } = make();
+    pipeline.markReply(1);
+    pipeline.feed("Alpha one two three. Beta one two three four. Gamma ends it. ");
+    await settle();
+    pipeline.cut(2, 0);
+    pipeline.resumeWith(["Something else."]);
+    await settle();
+    expect(pipeline.spokenFor(1)).toBe("Alpha one two three. Beta one two three four. Gamma ends it. Something else.");
+  });
+
   it("discarding what was held drops it, so the new turn's reply is the only thing spoken", async () => {
     const { pipeline, tts } = make();
     pipeline.cut(null, 0);
