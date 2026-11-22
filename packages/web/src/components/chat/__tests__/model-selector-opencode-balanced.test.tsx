@@ -71,9 +71,9 @@ function renderUi(ui: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
 }
-function Harness({ mode = 'new', initial }: { mode?: 'new' | 'existing'; initial: SelectorValue }) {
+function Harness({ mode = 'new', initial, employee }: { mode?: 'new' | 'existing'; initial: SelectorValue; employee?: string }) {
   const [val, setVal] = useState(initial)
-  return <ModelSelectorRow mode={mode} allowProfiles value={val} onChange={setVal} />
+  return <ModelSelectorRow mode={mode} allowProfiles value={val} onChange={setVal} employee={employee} />
 }
 const chip = () => screen.getByRole('button', { name: /model and effort/i })
 async function openEnginePanel() {
@@ -102,6 +102,24 @@ describe('the new-chat picker on a balanced opencode chain', () => {
 
     await openEnginePanel()
     expect(rows().some((r) => /claude.*balanced/i.test(r))).toBe(false)
+  })
+
+  it('does not call an opencode employee\'s Claude login balanced either', async () => {
+    // The employee's own chain opens with an opencode group, so its start pick is an opencode pick.
+    state.subjects = [subject('employee', 'oc-emp', 'opencode-go/glm-5.3', PICK)]
+    renderUi(<Harness employee="oc-emp" initial={{ engine: 'claude', model: 'opus' }} />)
+    await waitFor(() => expect(apiMocks.getEngineLimits).toHaveBeenCalled())
+
+    await waitFor(() => expect(chip().getAttribute('aria-label')).toMatch(/Model and effort: .*Opus/))
+    expect(chip().getAttribute('aria-label')).not.toMatch(/balanced/i)
+    await openEnginePanel()
+    expect(rows().some((r) => /claude.*balanced/i.test(r))).toBe(false)
+  })
+
+  it('still marks the opencode account balanced for that employee', async () => {
+    state.subjects = [subject('employee', 'oc-emp', 'opencode-go/glm-5.3', PICK)]
+    renderUi(<Harness employee="oc-emp" initial={{ engine: 'opencode', model: 'opencode-go/glm-5.3' }} />)
+    await waitFor(() => expect(chip().getAttribute('aria-label')).toBe('Model and effort: opencode · go-a · balanced by headroom · glm-5.3'))
   })
 
   it('names nothing balanced when the chain has no group, or an existing chat is open', async () => {

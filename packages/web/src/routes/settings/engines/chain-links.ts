@@ -241,9 +241,13 @@ export function opencodeGroupAccountOptions(names: readonly string[]): GroupAcco
   return names.map((name) => ({ engine: "opencode", value: name, label: name }))
 }
 
-/** Whether an opencode group may be offered in this chain: only where the chain's own target runs on opencode, which is where the gateway accepts one. */
-export function offersOpencodeGroup(ownEngine: string | undefined): boolean {
-  return ownEngine === "opencode"
+/**
+ * Whether an opencode group may be offered in this chain: only where the chain's own target runs on
+ * opencode (which is where the gateway accepts one) and at least two declared opencode accounts are not
+ * already listed elsewhere in the chain, since a group needs two members to balance between.
+ */
+export function offersOpencodeGroup(ownEngine: string | undefined, ctx: ChainContext, items: ChainItem[]): boolean {
+  return ownEngine === "opencode" && blankGroup(ctx, items, "opencode").group.length >= 2
 }
 
 /**

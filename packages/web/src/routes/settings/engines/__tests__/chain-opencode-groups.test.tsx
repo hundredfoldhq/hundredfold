@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { FallbackWrittenEntry } from '@hundredfold/fallback-chain-wire'
 import type { EnginesResponse } from '@/lib/api'
 import { ChainEditor } from '../chain-editor'
-import { blankGroup, groupEngineOf, itemLabel, offersOpencodeGroup, withMember } from '../chain-links'
+import { blankGroup, groupEngineOf, itemLabel, withMember } from '../chain-links'
 
 /* A group of opencode accounts is ticked from the declared opencode accounts, names its members with
  * `profile`, and is only offered where the chain's own target runs on opencode. The sentences about a
@@ -45,8 +45,38 @@ describe('offering an opencode group', () => {
 
     render(<Harness initial={[]} ownEngine="claude" />)
     expect(screen.queryByRole('button', { name: /balanced opencode group/ })).toBeNull()
-    expect(offersOpencodeGroup('claude')).toBe(false)
-    expect(offersOpencodeGroup(undefined)).toBe(false)
+  })
+
+  const BUTTON = { name: 'Add a balanced opencode group to the opencode chain' }
+  const listed = (name: string): FallbackWrittenEntry => ({ engine: 'opencode', profile: name })
+
+  it('does not offer the button when no opencode account is declared', () => {
+    render(<Harness initial={[]} opencodeAccounts={[]} />)
+    expect(screen.queryByRole('button', BUTTON)).toBeNull()
+  })
+
+  it('does not offer the button when fewer than two declared accounts are free', () => {
+    const { unmount } = render(<Harness initial={[]} opencodeAccounts={[ACCOUNTS[0]]} />)
+    expect(screen.queryByRole('button', BUTTON)).toBeNull()
+    unmount()
+
+    // Both declared accounts are already links of the chain, so a group would repeat them.
+    render(<Harness initial={[listed('go-a'), listed('go-b')]} opencodeAccounts={ACCOUNTS.slice(0, 2)} />)
+    expect(screen.queryByRole('button', BUTTON)).toBeNull()
+  })
+
+  it('offers the button while two declared accounts are still free', () => {
+    render(<Harness initial={[listed('go-a')]} />)
+    fireEvent.click(screen.getByRole('button', BUTTON))
+    expect(latest[1]).toEqual({ group: [listed('go-b'), listed('go-c')] })
+  })
+
+  it('never leaves a Claude-looking row behind an opencode add button', () => {
+    // The button is only offered with two free accounts, so the row it adds is always an opencode group.
+    render(<Harness initial={[]} opencodeAccounts={ACCOUNTS.slice(0, 2)} />)
+    fireEvent.click(screen.getByRole('button', BUTTON))
+    expect(document.querySelector('[data-chain-group="claude"]')).toBeNull()
+    expect(document.querySelector('[data-chain-group="opencode"]')).toBeTruthy()
   })
 
   it('adds a group of the first two declared opencode accounts, written with profile', () => {

@@ -163,7 +163,7 @@ export function ChainEditor(props: ChainEditorProps) {
         </div>
       )}
       <GeneralProblems problems={unshownProblems(problems, serverProblems)} />
-      <AddButtons chainName={chainName} onAddLink={() => onChange([...links, blankLink(ctx, links, selves)])} onAddGroup={() => onChange([...links, blankGroup(ctx, links)])} onAddOpencodeGroup={offersOpencodeGroup(ownEngine) ? () => onChange([...links, blankGroup(ctx, links, "opencode")]) : undefined} />
+      <AddButtons chainName={chainName} onAddLink={() => onChange([...links, blankLink(ctx, links, selves)])} onAddGroup={() => onChange([...links, blankGroup(ctx, links)])} onAddOpencodeGroup={offersOpencodeGroup(ownEngine, ctx, links) ? () => onChange([...links, blankGroup(ctx, links, "opencode")]) : undefined} />
     </div>
   )
 }
