@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountHeadroom, AccountPick } from '@hundredfold/fallback-chain-wire'
-import { headroomLine, pickReasonText, pickTriggerText, startPickText } from '../account-pick-format'
+import { headroomLine, roomLine, pickReasonText, pickTriggerText, startPickText } from '../account-pick-format'
 
 const room = (account: string, label: string, over: Partial<AccountHeadroom> = {}): AccountHeadroom =>
   ({ account, label, state: 'fresh', headroomPercent: 60, weight: 60, sharePercent: 60, ...over })
@@ -55,6 +55,14 @@ describe('pickReasonText', () => {
 
   it('falls back to the account key when the pick does not list the account', () => {
     expect(pickReasonText(pick({ candidates: [] }))).toBe('Picked claude:spare, weighted by headroom')
+  })
+})
+
+describe('roomLine', () => {
+  it('stops at the headroom and the state, with no weight or share', () => {
+    expect(roomLine(room('a', 'a', { sharePercent: 100 }))).toBe('headroom 60%')
+    expect(roomLine(room('a', 'a', { state: 'stale', weight: 30, sharePercent: 100 }))).toBe('headroom 60% · stale reading')
+    expect(roomLine(room('a', 'a', { state: 'exhausted', headroomPercent: 0, weight: 0, sharePercent: 0 }))).toBe('at its limit')
   })
 })
 

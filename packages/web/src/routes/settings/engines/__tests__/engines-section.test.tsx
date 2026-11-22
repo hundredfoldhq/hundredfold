@@ -378,7 +378,7 @@ describe('Engine Fallbacks section, balanced groups', () => {
     expect((await save()).engines.claude.fallback).toEqual([{ engine: 'codex' }, { group: [{ engine: 'claude' }, { engine: 'claude', profile: 'spare' }] }])
   })
 
-  it('draws the group as one node of members with their headroom and share, and says where new sessions start', async () => {
+  it('draws the group as one node of members with their headroom, and the shares of new sessions on the start node', async () => {
     await renderSettings()
     fireEvent.click(within(document.querySelector('[data-engine-card="claude"]') as HTMLElement).getByRole('button', { name: 'Diagram' }))
 
@@ -388,8 +388,9 @@ describe('Engine Fallbacks section, balanced groups', () => {
       return node
     })
     expect(Array.from(group.querySelectorAll('[data-chain-flow-member]')).map((m) => m.getAttribute('data-chain-flow-member'))).toEqual(['claude · work · opus', 'claude · spare · opus'])
-    expect(group.textContent).toContain('headroom 70% · share 70%')
-    expect(group.textContent).toContain('headroom 30% · share 30%')
+    expect(group.textContent).toContain('headroom 70%')
+    expect(group.textContent).toContain('headroom 30%')
+    expect(group.textContent).not.toContain('share')
     expect(document.querySelector('[data-engine-card="claude"] [data-chain-flow-start-note]')?.textContent).toBe('New sessions start on claude · work (share 70%)')
   })
 })

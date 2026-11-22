@@ -35,11 +35,12 @@ export type FallbackChainEntry = string | FallbackLink | FallbackGroupEntry;
 export type FallbackWrittenEntry = FallbackLink | FallbackGroupEntry;
 
 /**
- * A chain entry that is a set of Claude accounts rather than one target. When a
- * new session starts on an account in the group at the head of its chain, the
- * gateway picks the member with the most usage headroom; elsewhere the members
- * are ordinary fallback links ordered by headroom. Each member is an object link
- * with `engine: claude` and an optional `profile`, never a model.
+ * A chain entry that is a set of Claude accounts rather than one target. At the
+ * head of a chain whose group holds the session's own account, new sessions are
+ * spread across the members in proportion to their usage headroom (a weighted
+ * split, not the single best). As fallback, the members are tried most headroom
+ * first. Each member is an object link with `engine: claude` and an optional
+ * `profile`, never a model.
  */
 export interface FallbackGroupEntry {
   group: FallbackLink[];

@@ -26,23 +26,34 @@ function whole(value: number | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : null
 }
 
+/** What is known of one account's room: its headroom, at its limit, no reading, a stale reading. */
+function roomParts(candidate: AccountHeadroom): string[] {
+  const headroom = whole(candidate.headroomPercent)
+  if (candidate.state === "exhausted" || candidate.state === "unknown") return [stateText(candidate.state)]
+  if (headroom !== null) return [`headroom ${headroom}%`, ...(candidate.state === "stale" ? ["stale reading"] : [])]
+  return candidate.state !== "fresh" ? [stateText(candidate.state)] : []
+}
+
 /**
- * One account of a group, as a line: "headroom 60% · share 60%". An account at its limit says
- * so, one with no reading says that, and a stale reading is marked. A viewer that is not sent
- * the numbers gets the state alone.
+ * One account of a group as a fallback member: "headroom 60%", or what is known of it. No weight
+ * or share: the members are tried by headroom when a limit hits, so those mean nothing there.
+ */
+export function roomLine(candidate: AccountHeadroom): string {
+  return roomParts(candidate).join(" · ")
+}
+
+/**
+ * One candidate of a pick, as a line: "headroom 60% · share 60%". An account at its limit says
+ * so, one with no reading says that, and a stale reading is marked with the weight it earned. A
+ * viewer that is not sent the numbers gets the state alone.
  */
 export function headroomLine(candidate: AccountHeadroom): string {
   const headroom = whole(candidate.headroomPercent)
   const share = whole(candidate.sharePercent)
   const weight = whole(candidate.weight)
-  const parts: string[] = []
-  if (candidate.state === "exhausted" || candidate.state === "unknown") parts.push(stateText(candidate.state))
-  else if (headroom !== null) {
-    parts.push(`headroom ${headroom}%`)
-    // A stale reading counts for half: say so, with the weight it earned.
-    if (candidate.state === "stale") parts.push("stale reading", ...(weight !== null && weight !== headroom ? [`weight ${weight}`] : []))
-  }
-  else if (candidate.state !== "fresh") parts.push(stateText(candidate.state))
+  const parts = roomParts(candidate)
+  // A stale reading counts for half: say so, with the weight it earned.
+  if (candidate.state === "stale" && headroom !== null && weight !== null && weight !== headroom) parts.push(`weight ${weight}`)
   if (share !== null) parts.push(`share ${share}%`)
   return parts.join(" · ")
 }

@@ -169,10 +169,25 @@ describe('buildChainFlow, a balanced group', () => {
     expect(graph.edges.map((e) => [e.source, e.target])).toEqual([['0', '1'], ['1', '2']])
   })
 
-  it('gives each member its headroom and share, in the order the gateway ranked them', () => {
+  it('gives each member its headroom, in the order the gateway ranked them, and no share', () => {
     const { members } = buildChainFlow({ links: WITH_GROUP, now: NOW }, 'horizontal').nodes[1].data
 
-    expect(members?.map((m) => m.detail)).toEqual(['headroom 60% · share 60%', 'headroom 40% · share 40%'])
+    expect(members?.map((m) => m.detail)).toEqual(['headroom 60%', 'headroom 40%'])
+  })
+
+  it('shows no share in a home group, where the one other member counts for 100% of its link', () => {
+    // The shape the gateway sends for [{group: [own, spare]}, …]: the own account is index 0 and the
+    // group's block holds the other member alone, whose link share is over that block only.
+    const home = [
+      link('claude', { label: 'claude · own', key: 'own' }),
+      member('spare', 0, headroom('claude:spare', 'claude · spare', { headroomPercent: 40, weight: 40, sharePercent: 100 })),
+      link('opencode', { label: 'opencode · X', key: 'x' }),
+    ]
+    const { members } = buildChainFlow({ links: home, now: NOW }, 'horizontal').nodes[1].data
+    expect(members?.map((m) => m.detail)).toEqual(['headroom 40%'])
+
+    const stale = [home[0], member('spare', 0, headroom('claude:spare', 'claude · spare', { state: 'stale', headroomPercent: 40, weight: 20, sharePercent: 100 }))]
+    expect(buildChainFlow({ links: stale, now: NOW }, 'horizontal').nodes[1].data.members?.map((m) => m.detail)).toEqual(['headroom 40% · stale reading'])
   })
 
   it('keeps two groups apart, and never folds the own target into one', () => {
@@ -210,14 +225,15 @@ describe('buildChainFlow, a balanced group', () => {
 })
 
 describe('ChainFlow, a balanced group', () => {
-  it('lists each member in the group node with its headroom and share', async () => {
+  it('lists each member in the group node with its headroom and no share', async () => {
     render(<ChainFlow links={WITH_GROUP} now={NOW} />)
     await screen.findByText('claude · spare')
 
     const group = document.querySelector('[data-chain-flow-group]') as HTMLElement
     expect(group.querySelectorAll('[data-chain-flow-member]')).toHaveLength(2)
-    expect(group.textContent).toContain('headroom 60% · share 60%')
-    expect(group.textContent).toContain('headroom 40% · share 40%')
+    expect(group.textContent).toContain('headroom 60%')
+    expect(group.textContent).toContain('headroom 40%')
+    expect(group.textContent).not.toContain('share')
     expect(document.querySelectorAll('[data-chain-flow-node]')).toHaveLength(3)
   })
 

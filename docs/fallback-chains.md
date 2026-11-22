@@ -121,8 +121,8 @@ login and the declared accounts, and reorder or remove it like any link. A group
 saved as `{ group: [...] }` from the members as written, never the models the gateway
 resolved them to, and the gateway's validation sentences show under its row. The
 diagram draws a group as one node listing its accounts in the order a limit walks
-them, each with its headroom and its share of new sessions, and the start node says
-where a new session would start. A balanced session's fallback chip shows which account
+them, each with its headroom, and the start node says where a new session would start
+and with what share. A balanced session's fallback chip shows which account
 it was pinned to and why: each account's headroom and share (weighted by headroom, not
 "most headroom"), when it was picked and on what trigger. A department-scoped viewer is
 sent the pick without the numbers, and sees the accounts, their states and the reason.

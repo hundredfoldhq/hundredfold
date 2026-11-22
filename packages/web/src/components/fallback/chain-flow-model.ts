@@ -1,7 +1,7 @@
 import dagre from "@dagrejs/dagre"
 import type { Edge, Node } from "@xyflow/react"
 import type { AccountPick, FallbackLinkHealth, FallbackSkipReason, ResolvedFallbackLink } from "@hundredfold/fallback-chain-wire"
-import { headroomLine, startPickText } from "@/lib/account-pick-format"
+import { roomLine, startPickText } from "@/lib/account-pick-format"
 import { formatReset, formatUsed, skipText } from "@/lib/fallback-format"
 
 /* The chain diagram's data and layout, apart from the component that draws it. */
@@ -26,7 +26,12 @@ export type FlowOrientation = "horizontal" | "vertical"
 export interface FlowMember {
   label: string
   health: FallbackLinkHealth["state"]
-  /** Its headroom and its share of new sessions, or what is known of it: see `headroomLine`. */
+  /**
+   * Its headroom, or what is known of it: see `roomLine`. No share: the members of a group are
+   * tried by headroom when a limit hits, and the link's `sharePercent` counts only the members it
+   * lists, so in a home group the one other member would always read 100%. Shares of new sessions
+   * are on the start node (`startNote`).
+   */
   detail: string
   /** The member the session is on now. */
   current: boolean
@@ -100,7 +105,7 @@ function isGroup(item: FlowItem): boolean {
 }
 
 function memberOf(link: ResolvedFallbackLink, index: number, input: ChainFlowInput): FlowMember {
-  const detail = link.group?.headroom ? headroomLine(link.group.headroom) : (formatUsed(link.health?.usedPercent) ?? "")
+  const detail = link.group?.headroom ? roomLine(link.group.headroom) : (formatUsed(link.health?.usedPercent) ?? "")
   return {
     label: link.label,
     health: link.health?.state ?? "unknown",
