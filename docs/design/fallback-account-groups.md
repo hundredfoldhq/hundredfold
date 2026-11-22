@@ -148,7 +148,7 @@ refresh writes) and its engine-health record.
   highest credit wins (ties: the group's written order), and the winner's
   credit drops by the sum of the weights. Over any run of starts the counts
   follow the weights as closely as whole numbers allow (60/40 gives
-  A B A A B A B A A B ...), and a burst inside one reading interval splits by
+  A B A B A, repeating), and a burst inside one reading interval splits by
   construction, because each start is charged to its account at once: the
   credit is the record of starts the usage data has not seen yet. Credits
   start at 0 after a restart. No randomness, so tests assert exact counts.
@@ -239,8 +239,13 @@ interface AccountPick {
 - `FallbackChainSubject.startPick?: AccountPick`: for an employee or engine
   subject whose chain has a home group, what a new session would pick now.
 - A department-scoped caller reading its own session gets `pick` without
-  `headroomPercent`, `tightest` and `readingAt`, matching the existing rule that
-  strips `usedPercent`/`window`.
+  `headroomPercent`, `tightest`, `readingAt`, `weight` and `sharePercent`
+  (a fresh account's weight is its headroom), matching the existing rule that
+  strips `usedPercent`/`window`. It keeps each candidate's account, label and
+  state, and the reason.
+- `startPick` shares are over the whole home group, own account included; a
+  group link's member `headroom.sharePercent` is over the members the link
+  lists (the own account is index 0 of the chain, not a member there).
 
 ### 9. Out of scope in this release
 
