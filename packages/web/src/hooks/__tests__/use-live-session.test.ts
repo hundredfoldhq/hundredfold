@@ -2389,4 +2389,61 @@ describe("a read that answers after the turn completed", () => {
     expect(result.current.turnPending).toBe(true)
     expect(fullReadCount()).toBe(3)
   })
+
+  it("applies a read as it is when it answers idle, without a second read", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s4", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s4", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    // Overtaken by a completion, but the read itself already reports the finished turn.
+    const answerLate = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s4" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s4", result: "Final answer." }); await Promise.resolve() })
+    await act(async () => { answerLate({ id: "s4", status: "idle", messages: [u0, a0, u1, a1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+    ])
+    expect(result.current.session?.status).toBe("idle")
+    expect(result.current.turnPending).toBe(false)
+    expect(fullReadCount()).toBe(2)
+  })
+
+  it("applies the second read as it is when another completion overtakes it too, without a third read", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s5", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s5", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    const answerFirst = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s5" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s5", result: "Final answer." }); await Promise.resolve() })
+    // The first read answers mid-turn, so it is sent again; that second read is out when another completion lands.
+    const answerSecond = reads.expectRead()
+    await act(async () => { answerFirst({ id: "s5", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+    await act(async () => { emit("session:completed", { sessionId: "s5", result: "Another answer." }); await Promise.resolve() })
+    await act(async () => { answerSecond({ id: "s5", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+      { role: "assistant", content: "Another answer.", partial: false },
+    ])
+    // The second read was applied (status from its answer), not sent a third time.
+    expect(result.current.session?.status).toBe("running")
+    expect(fullReadCount()).toBe(3)
+  })
 })
