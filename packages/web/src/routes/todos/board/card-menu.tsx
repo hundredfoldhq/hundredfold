@@ -57,7 +57,7 @@ export interface BoardCardMenuOptions {
   onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
   onKeep?: (vars: { id: string; kept: boolean }) => void
   /** Dispatch the Todo, as the Todo page's button does. Absent = no Dispatch row. `pending` lists the Todos being dispatched. */
-  dispatch?: { run: (id: string, opts?: { refocus?: boolean }) => void; pending: ReadonlySet<string> }
+  dispatch?: { run: (id: string, opts?: { refocus?: boolean; scope?: () => ParentNode | null }) => void; pending: ReadonlySet<string> }
   /** Sprints to offer, when the board has them in reach (not on a phone). */
   sprints?: CardSprints
 }
@@ -151,7 +151,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
         <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-open" onSelect={() => onOpen(item.id, item)}>
           Open
         </ContextMenuItem>
-        {dispatch && <DispatchItem item={item} dispatch={dispatch} keyboard={target.point.keyboard === true} />}
+        {dispatch && <DispatchItem item={item} dispatch={dispatch} keyboard={target.point.keyboard === true} scope={options.scope} />}
         {onViewAsBoard && (options.subTodosOf?.(item.id) ?? 0) > 0 && <ViewAsBoardRow onSelect={() => onViewAsBoard(item.id)} />}
         {onKeep && (
           <ContextMenuItem className={MENU_ITEM_CLASS} data-testid="board-card-keep" onSelect={() => onKeep({ id: item.id, kept: item.kept !== true })}>
@@ -190,7 +190,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
 }
 
 /** Dispatch, from the card's menu: the Todo page's button, shown only where it can be pressed or explained (cardDispatchRow). */
-function DispatchItem({ item, dispatch, keyboard }: { item: WorkItemCompactWire; dispatch: NonNullable<BoardCardMenuOptions["dispatch"]>; keyboard: boolean }) {
+function DispatchItem({ item, dispatch, keyboard, scope }: { scope?: () => ParentNode | null; item: WorkItemCompactWire; dispatch: NonNullable<BoardCardMenuOptions["dispatch"]>; keyboard: boolean }) {
   const row = cardDispatchRow(item, dispatch.pending.has(item.id))
   if (!row) return null
   return (
@@ -198,7 +198,7 @@ function DispatchItem({ item, dispatch, keyboard }: { item: WorkItemCompactWire;
       className={`${MENU_ITEM_CLASS} ${row.reason ? "items-start py-2" : ""}`}
       disabled={row.disabled}
       data-testid="board-card-dispatch"
-      onSelect={() => dispatch.run(item.id, { refocus: keyboard })}
+      onSelect={() => dispatch.run(item.id, { refocus: keyboard, scope })}
     >
       <span className="flex flex-col items-start">
         Dispatch

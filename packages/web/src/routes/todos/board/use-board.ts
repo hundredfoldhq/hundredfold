@@ -293,7 +293,7 @@ export function useDispatchWorkItem(announce: (message: string) => void) {
   const qc = useQueryClient()
   const inFlight = useRef(new Set<string>())
   /** Todos whose menu was opened from the keyboard: their card gets the focus back once the board shows it where it went. */
-  const refocus = useRef(new Set<string>())
+  const refocus = useRef(new Map<string, (() => ParentNode | null) | undefined>())
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const mutation = useMutation({
     mutationKey: TODO_WRITE_KEY,
@@ -306,14 +306,14 @@ export function useDispatchWorkItem(announce: (message: string) => void) {
       void qc.invalidateQueries({ queryKey: ["work-item-sessions", id] })
       await qc.invalidateQueries({ queryKey: ["work-items"] })
       // The card was re-drawn in its new column by that read, taking the focus it had with it.
-      if (refocus.current.delete(id)) focusCardSoon(id)
+      if (refocus.current.has(id)) { const scope = refocus.current.get(id); refocus.current.delete(id); focusCardSoon(id, scope) }
     },
   })
   const { mutate } = mutation
-  const dispatch = useCallback((id: string, opts?: { refocus?: boolean }) => {
+  const dispatch = useCallback((id: string, opts?: { refocus?: boolean; scope?: () => ParentNode | null }) => {
     if (inFlight.current.has(id)) return
     inFlight.current.add(id)
-    if (opts?.refocus) refocus.current.add(id)
+    if (opts?.refocus) refocus.current.set(id, opts.scope)
     setPending(new Set(inFlight.current))
     mutate(id)
   }, [mutate])

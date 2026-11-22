@@ -596,6 +596,36 @@ describe("Dispatch on a card's menu", () => {
     expect(dispatchTodo).toHaveBeenCalledTimes(1)
   })
 
+  it("returns focus to the card on this board when the same Todo is also on another board earlier in the page", async () => {
+    dispatchTodo.mockImplementation(async (id: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      rows = { backlog: [], executing: [compact(id, "executing"), ...(rows.executing ?? [])] }
+      return dispatched
+    })
+    const other = document.createElement("div")
+    other.innerHTML = '<button data-board-card="TSK-1">other copy</button>'
+    document.body.prepend(other)
+    try {
+      renderBoard()
+      const card = await screen.findByTestId("board-card-TSK-1")
+      card.focus()
+      fireEvent.keyDown(card, { key: "F10", shiftKey: true })
+      const menu = await menuOf()
+      await waitFor(() => expect(menu.getByTestId("board-card-open")).toBe(document.activeElement))
+      fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" })
+      await waitFor(() => expect(menu.getByTestId("board-card-dispatch")).toBe(document.activeElement))
+      fireEvent.keyDown(document.activeElement!, { key: "Enter" })
+
+      await waitFor(() => {
+        const moved = screen.getByTestId("board-card-TSK-1")
+        expect(screen.getByTestId("board-column-executing").contains(moved)).toBe(true)
+        expect(document.activeElement).toBe(moved)
+      })
+    } finally {
+      other.remove()
+    }
+  })
+
   it("shows the row disabled while the Todo's dispatch is still in flight", async () => {
     let finish: (value: typeof dispatched) => void = () => {}
     dispatchTodo.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
