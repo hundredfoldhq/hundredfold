@@ -13,6 +13,12 @@ import { engineDisplayName } from "@/lib/engine-names"
 /* The chain editor's model: a chain is a list of object links, however config
  * spells it. Every function returns a new list and leaves its argument alone. */
 
+/** A declared opencode account (`engines.opencode.accounts`) as the editor and the diagram read it: its name, and the provider its models are served under. */
+export interface OpencodeAccountRef {
+  name: string
+  provider: string
+}
+
 /** What a link's engine select and model picker are drawn from, per engine. */
 export interface EngineChoice {
   name: string
@@ -26,6 +32,10 @@ export interface ChainContext {
   engines: EngineChoice[]
   /** Declared account names under `engines.claude.accounts`. */
   profiles: string[]
+  /** Declared account names under `engines.opencode.accounts`: what an opencode group member names with `profile`. Absent: not checked. */
+  opencodeProfiles?: string[]
+  /** The engine the chain falls back from, where the editor knows it: an opencode group is only valid where this is opencode. */
+  ownEngine?: string
 }
 
 /** One row of the editor: a target, or a balanced group of Claude accounts. */
@@ -159,9 +169,16 @@ export function rowLabel(link: FallbackLink): string {
   return [engineDisplayName(link.engine), link.profile, link.model].filter(Boolean).join(" · ")
 }
 
-/** A row as its controls name it: a link as {@link rowLabel}, a group as "Balanced group (default login, work)". */
+/** A group member as the row names it: a Claude account by its profile ("default login" when it names none), an opencode account by its name. */
+function memberLabel(member: FallbackLink): string {
+  return member.profile ?? (member.engine === "claude" ? "default login" : engineDisplayName(member.engine))
+}
+
+/** A row as its controls name it: a link as {@link rowLabel}, a group as "Balanced group (default login, work)", an opencode group as "Balanced opencode group (go-a, go-b)". */
 export function itemLabel(item: ChainItem): string {
-  return isGroupItem(item) ? `Balanced group (${item.group.map((m) => m.profile ?? "default login").join(", ")})` : rowLabel(item)
+  if (!isGroupItem(item)) return rowLabel(item)
+  const kind = groupEngineOf(item) === "opencode" ? "Balanced opencode group" : "Balanced group"
+  return `${kind} (${item.group.map(memberLabel).join(", ")})`
 }
 
 /**
@@ -185,9 +202,9 @@ export function membersOf(items: readonly ChainItem[]): FallbackLink[] {
   return items.flatMap((item) => (isGroupItem(item) ? item.group : [item]))
 }
 
-/** A Claude account as a group member: "" is the default login and writes no profile. */
-export function accountLink(profile: string): FallbackLink {
-  return profile ? { engine: "claude", profile } : { engine: "claude" }
+/** A Claude account as a group member: "" is the default login and writes no profile. An opencode account is named by `profile` alone. */
+export function accountLink(profile: string, engine: "claude" | "opencode" = "claude"): FallbackLink {
+  return profile ? { engine, profile } : { engine }
 }
 
 /** The account a group member names, "" for the default login. */
@@ -195,28 +212,58 @@ export function accountOf(link: FallbackLink): string {
   return link.profile ?? ""
 }
 
-/** Every account a group may hold: the default login first, then the declared profiles. */
-export function groupAccountOptions(profiles: string[], labels: Record<string, string> = {}): { value: string; label: string }[] {
-  return [{ value: "", label: "Default login" }, ...profiles.map((name) => ({ value: name, label: labels[name] ?? name }))]
+/**
+ * The engine a group's accounts run on: its members' engine, or `undefined` for a group that holds none
+ * or mixes engines (the gateway refuses that, and the row shows the accounts of both).
+ */
+export function groupEngineOf(group: FallbackGroupEntry): "claude" | "opencode" | undefined {
+  const engines = new Set(group.group.map((member) => member.engine))
+  if (engines.size !== 1) return undefined
+  const [engine] = engines
+  return engine === "claude" || engine === "opencode" ? engine : undefined
+}
+
+/** One account a group row offers as a tick box. */
+export interface GroupAccountOption {
+  engine: "claude" | "opencode"
+  /** The account's name; "" is the default Claude login. */
+  value: string
+  label: string
+}
+
+/** Every Claude account a group may hold: the default login first, then the declared profiles. */
+export function groupAccountOptions(profiles: string[], labels: Record<string, string> = {}): GroupAccountOption[] {
+  return [{ engine: "claude", value: "", label: "Default login" }, ...profiles.map((name): GroupAccountOption => ({ engine: "claude", value: name, label: labels[name] ?? name }))]
+}
+
+/** Every opencode account a group may hold: the declared accounts, by the name a group writes. */
+export function opencodeGroupAccountOptions(names: readonly string[]): GroupAccountOption[] {
+  return names.map((name) => ({ engine: "opencode", value: name, label: name }))
+}
+
+/** Whether an opencode group may be offered in this chain: only where the chain's own target runs on opencode, which is where the gateway accepts one. */
+export function offersOpencodeGroup(ownEngine: string | undefined): boolean {
+  return ownEngine === "opencode"
 }
 
 /**
- * A new group's members: the default login and the first declared account, skipping the accounts
- * the chain already lists elsewhere (a member repeating a standalone link is a duplicate). Fewer
- * than two free accounts yields what there is, and the validator says the group needs two.
+ * A new group's members: for Claude the default login and the first declared account, for opencode the
+ * first two declared accounts, skipping the accounts the chain already lists elsewhere (a member repeating a
+ * standalone link is a duplicate). Fewer than two free accounts yields what there is, and the validator says
+ * the group needs two.
  */
-export function blankGroup(ctx: ChainContext, items: ChainItem[]): FallbackGroupEntry {
+export function blankGroup(ctx: ChainContext, items: ChainItem[], engine: "claude" | "opencode" = "claude"): FallbackGroupEntry {
   const taken = new Set(membersOf(items).map(fallbackLinkKey))
-  const free = ["", ...ctx.profiles].map(accountLink).filter((link) => !taken.has(fallbackLinkKey(link)))
+  const names = engine === "opencode" ? (ctx.opencodeProfiles ?? []) : ["", ...ctx.profiles]
+  const free = names.map((name) => accountLink(name, engine)).filter((link) => !taken.has(fallbackLinkKey(link)))
   return { group: free.slice(0, 2) }
 }
 
-/** The group with `profile` added or removed. Members keep the order written; a new one goes last. */
-export function withMember(group: FallbackGroupEntry, profile: string, on: boolean): FallbackGroupEntry {
-  const link = accountLink(profile)
-  const key = fallbackLinkKey(link)
-  const without = group.group.filter((member) => fallbackLinkKey(member) !== key)
-  return { group: on ? [...without, link] : without }
+/** The group with `member` added or removed. Members keep the order written; a new one goes last. */
+export function withMember(group: FallbackGroupEntry, member: FallbackLink, on: boolean): FallbackGroupEntry {
+  const key = fallbackLinkKey(member)
+  const without = group.group.filter((existing) => fallbackLinkKey(existing) !== key)
+  return { group: on ? [...without, member] : without }
 }
 
 /** The target a chain falls back from, as every spelling a link may not repeat. */

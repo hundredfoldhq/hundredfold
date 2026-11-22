@@ -59,7 +59,7 @@ export function ChainBody(props: ChainBodyProps) {
         onChange={props.onChange}
       />
       {shown.links.length > 0 && (
-        <ChainFlowDisclosure links={resolveForFlow(props.self, shown.links, props.subject, shown.origins)} startPick={props.subject?.startPick} />
+        <ChainFlowDisclosure links={resolveForFlow(props.self, shown.links, props.subject, shown.origins, props.fields.opencodeAccounts)} startPick={props.subject?.startPick} />
       )}
     </>
   )
