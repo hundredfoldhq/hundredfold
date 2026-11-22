@@ -61,7 +61,11 @@ construction and live only in the provider's closure.
 ## `SoftInterruptibleEngine` (in `shared/types.ts`)
 
 ```ts
-export interface ForegroundWork { tool: string; startedAt: number; description: string | null }
+export interface ForegroundWork {
+  tool: string; startedAt: number; description: string | null;
+  /** A soft interrupt now would background this call rather than abort it (per call). */
+  backgroundable: boolean;
+}
 export interface BackgroundedWork { taskId: string; description: string | null }
 export type SoftInterruptOutcome =
   | { ended: true; backgrounded: BackgroundedWork[] }
@@ -77,16 +81,17 @@ export interface SoftInterruptibleEngine extends Engine {
 export function isSoftInterruptibleEngine(engine: Engine): engine is SoftInterruptibleEngine;
 ```
 
-Implementer: `InteractiveClaudeEngine` (Esc in the TUI, `preserves = true` once R8 is
-verified). Consumer: the voice hub's barge-in policy.
+Implementer: `InteractiveClaudeEngine`: Ctrl+B when a foreground Bash is running, then Esc;
+never kill or release (verified live, research R8). `preserves = true`; `backgroundable`
+is true only for a running Bash. Consumer: the voice hub's barge-in policy.
 
 `foregroundWork` is also needed for the steer branch's holding-line rule. OpenCode 2.x
 exposes it as a plain method on its engine, without the soft interrupt.
 
 ## Barge-in policy (`voice/barge-in-policy.ts`, pure)
 
-Input: `{ turnRunning, longWork: ForegroundWork | null, ageMs, threshold, soft:
-{preserves} | null, steerable, }`. Output: one of `new_turn`, `wait_then_decide(ms)`,
+Input: `{ turnRunning, longWork: ForegroundWork | null, ageMs, threshold, soft: boolean,
+steerable }`, where "preserving" below means `soft && longWork.backgroundable`. Output: one of `new_turn`, `wait_then_decide(ms)`,
 `soft_then_turn`, `steer`, `steer_with_holding`, `queue_with_holding`, `interrupt_now`.
 
 | turnRunning | foreground work | age vs threshold | soft (preserves) | steerable | → |
@@ -94,8 +99,8 @@ Input: `{ turnRunning, longWork: ForegroundWork | null, ageMs, threshold, soft:
 | no | — | — | — | — | `new_turn` |
 | yes | yes | younger | — | — | `wait_then_decide(threshold − age)`, then re-evaluate |
 | yes | none | — | yes (any) | — | `soft_then_turn` |
-| yes | long | — | yes (preserves) | — | `soft_then_turn` |
-| yes | long | — | no / not preserving | yes | `steer_with_holding` |
+| yes | long | — | yes and `longWork.backgroundable` | — | `soft_then_turn` |
+| yes | long | — | no, or the call is not backgroundable | yes | `steer_with_holding` |
 | yes | long | — | no | no | `queue_with_holding` |
 | yes | none | — | no | yes | `steer` |
 | yes | none | — | no | no | `interrupt_now` (existing `delivery: "now"`) |
