@@ -28,6 +28,11 @@ describe("claude-settings", () => {
     expect(s.hooks.PostCompact[0].hooks[0].command).toBe("node '/h/relay.mjs' 'hundredfold-abc'");
   });
 
+  it("registers PostToolUseFailure — a failed tool fires it and no PostToolUse, so a running call would never end", () => {
+    const s = buildSessionSettings({ sessionId: "hundredfold-abc", relayScript: "/h/relay.mjs" });
+    expect(s.hooks.PostToolUseFailure[0].hooks[0].command).toBe("node '/h/relay.mjs' 'hundredfold-abc'");
+  });
+
   it("shell-quotes hook relay paths and session ids", () => {
     const s = buildSessionSettings({ sessionId: "hundredfold ' tricky", relayScript: "/tmp/path with spaces/relay's.mjs" });
     const stop = s.hooks.Stop[0].hooks[0];

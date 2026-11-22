@@ -17,6 +17,9 @@ relayed to a log. Keys written straight to the PTY. Each row is one run.
 | 8 | Paste a message plus CR while the command runs (steer) | ran to its end | `UserPromptSubmit` at once (queued); delivered only when the command ended, about 40 s later; never backgrounded | Steer does not cut in on long work |
 | 9 | Esc before any output, then paste a new prompt | | The next `UserPromptSubmit` carries the interrupted prompt followed by the new one | Esc restores the prompt to the composer; clear it |
 
+A tool that fails (a Bash exiting non-zero) fires `PostToolUseFailure` and no `PostToolUse`
+(2.1.330), so the engine registers that hook to see a call end.
+
 `backgroundedByTurnAbort` and `backgroundedToDeliverMessage` appear in the binary but never
 showed in these runs; the schema describes the first as "a plugin's turn abort". No
 environment flag is needed for Ctrl+B.

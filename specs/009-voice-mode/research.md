@@ -164,34 +164,39 @@ capabilities:
 
 | Engine | Capability | Long work on barge-in |
 |---|---|---|
-| claude (interactive) | `SoftInterruptibleEngine` (new): Ctrl+B then Esc in the TUI (verified, see below) | Ctrl+B moves a running Bash to a background task; Esc then ends the turn. The command runs on, and Claude Code wakes itself with a task notification when it ends |
+| claude (interactive) | `SoftInterruptibleEngine` (new): Ctrl+B then Esc; also `SteerableEngine` | A running Bash is backgrounded by Ctrl+B and keeps running; Claude wakes itself with a task notification when it ends. A long MCP call or sub-agent cannot be backgrounded: the utterance is steered, lands after that call ends, and a holding line is spoken at once. A steer never cuts in on a running call (verified: a paste during a 45 s command was delivered when it ended) |
 | opencode 2.x | `SteerableEngine` (exists) | steer at the next step, plus a spoken holding line |
 | others | neither | queue behind the turn, plus a holding line; existing interrupt when nothing long runs |
 
-**Rationale**: the gateway already tracks Claude's background tasks
-(`engines/background-tasks.ts`) and their wake-ups. Today `InteractiveClaudeEngine.kill`
-releases the PTY, which ends its background shells, so the voice path must never call
-it during long work.
+**Rationale**: verified live on Claude Code 2.1.330 in a PTY with hooks relayed
+(Part C, T037):
 
-**Verified live (T037, Claude Code 2.1.330 in a PTY, evidence in
-`evidence/t037-claude-soft-interrupt.md`)**: the premise this section started from was
-wrong. Esc alone does not background a foreground Bash: it SIGTERMs it, the process
-stays up, nothing wakes the session, and `CLAUDE_AUTO_BACKGROUND_TASKS` changes none of
-that (it only arms the 120 s auto-background timer). `backgroundedByTurnAbort` is set
-only for a plugin's turn abort. What works is **Ctrl+B, then Esc**:
+- **Esc alone kills** a running foreground Bash (SIGTERM within about 1 s). The claude
+  process stays alive, no task notification follows, and Esc fires no Stop hook (the
+  turn ends with "[Request interrupted by user]"), so the engine settles the turn
+  itself. `CLAUDE_AUTO_BACKGROUND_TASKS=1` changes nothing here; it only arms the CLI's
+  own 120 s auto-background timer. `backgroundedByTurnAbort` applies to a plugin's turn
+  abort, not the TUI's Esc.
+- **Ctrl+B (0x02), then Esc, preserves the work.** Ctrl+B backgrounds the running Bash
+  (`PostToolUse` with `tool_response.backgroundTaskId`, `backgroundedByUser: true`, a
+  tool result saying it was manually backgrounded). The engine waits, bounded, for that
+  `PostToolUse` before Esc: an Esc in the same tick still keeps the command, but the id
+  then arrives only in the later notification. Esc then ends the turn. The command
+  runs to completion, claude stays alive, and a `<task-notification>` wakes a fresh turn
+  (`UserPromptSubmit` with the notification, then `Stop`).
 
-- Ctrl+B moves the running Bash to a background task (`PostToolUse` carries
-  `backgroundTaskId` and `backgroundedByUser`), but is ignored until the command has run
-  about four seconds. Pressing it again every 700 ms is harmless.
-- Esc then ends the turn. It fires no Stop hook, so the engine settles the turn itself.
-- The command runs on and a `<task-notification>` wakes a new turn when it ends.
-- Esc before the model has produced anything puts the turn's prompt back in the composer,
-  and the next paste lands behind it; the engine empties the composer first.
-- Pasting a message (steer) while a command runs does not background it: it is queued
-  until the command ends. So for Claude, steer is no way to cut in on long work.
+Ctrl+B with nothing running is harmless. An Esc before the model has produced output puts
+the turn's prompt back in the composer, so the engine clears the composer after Esc, or the
+next paste would be appended to the old prompt.
 
-`softInterrupt` therefore never kills or releases, and a soft interrupt of a command
-younger than about four seconds can take up to that long.
+So Claude's `softInterrupt` is Ctrl+B (when a foreground Bash is running) followed by
+Esc, and never `kill` or a PTY release. Today's `InteractiveClaudeEngine.kill` releases
+the PTY and would end background shells. Ctrl+B only backgrounds a Bash, so a long MCP
+call or sub-agent is **not backgroundable**. `ForegroundWork.backgroundable` reports
+this per call, and the policy steers instead (the steer lands at the next tool boundary,
+after that call ends), so it is never aborted. The CLI refuses a foreground
+`sleep N && …` (it points at Monitor or `run_in_background`), so live tests and the demo
+use a node timer command, as the existing steer tests do.
 
 ## R9. Voice instructions
 

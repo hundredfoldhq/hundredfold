@@ -158,7 +158,7 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       expect(engine.foregroundWork("s-fg")).toBeNull();
       vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"));
       preBash("s-fg");
-      expect(engine.foregroundWork("s-fg")).toEqual({ tool: "Bash", startedAt: Date.parse("2026-01-01T00:00:10.000Z"), description: "Build it" });
+      expect(engine.foregroundWork("s-fg")).toEqual({ tool: "Bash", startedAt: Date.parse("2026-01-01T00:00:10.000Z"), description: "Build it", backgroundable: true });
       deliver("s-fg", { hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: BASH_ID, tool_response: { stdout: "ok" } });
       expect(engine.foregroundWork("s-fg")).toBeNull();
       deliver("s-fg", { hook_event_name: "Stop", last_assistant_message: "done" });
@@ -171,10 +171,35 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       preBash("s-two", "t1", { command: "make all" });
       vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
       deliver("s-two", { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t2", tool_input: { file_path: "/x" } });
-      expect(engine.foregroundWork("s-two")).toMatchObject({ tool: "Bash", description: "make all" });
+      // The Read cannot be moved to the background, so an interrupt now would abort it: not backgroundable.
+      expect(engine.foregroundWork("s-two")).toMatchObject({ tool: "Bash", description: "make all", backgroundable: false });
       deliver("s-two", { hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "t1" });
-      expect(engine.foregroundWork("s-two")).toMatchObject({ tool: "Read" });
+      expect(engine.foregroundWork("s-two")).toMatchObject({ tool: "Read", backgroundable: false });
       deliver("s-two", { hook_event_name: "Stop", last_assistant_message: "done" });
+      await turn;
+    });
+
+    it("ends a call on its failure too: a Bash that exits non-zero fires PostToolUseFailure and no PostToolUse", async () => {
+      const { turn } = await runningTurn("s-failed");
+      preBash("s-failed");
+      expect(engine.foregroundWork("s-failed")).not.toBeNull();
+      deliver("s-failed", { hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_use_id: BASH_ID, error: "Exit code 3" });
+      expect(engine.foregroundWork("s-failed")).toBeNull();
+      deliver("s-failed", { hook_event_name: "Stop", last_assistant_message: "done" });
+      await turn;
+    });
+
+    it("reports a Bash backgroundable, and an MCP call or a sub-agent not", async () => {
+      const { turn } = await runningTurn("s-kinds");
+      deliver("s-kinds", { hook_event_name: "PreToolUse", tool_name: "mcp__docs__search", tool_use_id: "m1", tool_input: { query: "x" } });
+      expect(engine.foregroundWork("s-kinds")).toMatchObject({ tool: "mcp__docs__search", backgroundable: false });
+      deliver("s-kinds", { hook_event_name: "PostToolUse", tool_name: "mcp__docs__search", tool_use_id: "m1" });
+      deliver("s-kinds", { hook_event_name: "PreToolUse", tool_name: "Agent", tool_use_id: "a1", tool_input: { prompt: "x" } });
+      expect(engine.foregroundWork("s-kinds")).toMatchObject({ tool: "Agent", backgroundable: false });
+      deliver("s-kinds", { hook_event_name: "PostToolUse", tool_name: "Agent", tool_use_id: "a1" });
+      preBash("s-kinds");
+      expect(engine.foregroundWork("s-kinds")).toMatchObject({ tool: "Bash", backgroundable: true });
+      deliver("s-kinds", { hook_event_name: "Stop", last_assistant_message: "done" });
       await turn;
     });
 
@@ -238,6 +263,20 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       expect(engine.holdsTurn("s-soft")).toBe(false);
     });
 
+    it("settles the turn once: a late Stop of the interrupted turn changes nothing", async () => {
+      const { turn } = await runningTurn("s-once");
+      const results: Array<string | undefined> = [];
+      void turn.then((r) => results.push(r.error));
+      const done = engine.softInterrupt("s-once", "voice");
+      await vi.advanceTimersByTimeAsync(300);
+      await done;
+      expect(results).toEqual(["Interrupted: voice"]);
+      deliver("s-once", { hook_event_name: "Stop", last_assistant_message: "late" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(results).toEqual(["Interrupted: voice"]);
+      expect(engine.holdsTurn("s-once")).toBe(false);
+    });
+
     it("tracks the command it backgrounded as a background task of the session", async () => {
       const { turn } = await runningTurn("s-track");
       preBash("s-track");
@@ -265,23 +304,28 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       await turn;
     });
 
-    it("still ends the turn, reporting nothing, when Claude Code never says the command moved", async () => {
+    it("never presses Esc over a command it could not move: unsupported, and the turn keeps running", async () => {
       const { turn } = await runningTurn("s-silent");
       preBash("s-silent");
+      let settled = false;
+      void turn.then(() => { settled = true; });
       const done = engine.softInterrupt("s-silent", "voice");
-      await vi.advanceTimersByTimeAsync(BACKGROUND_ACK_MS + 200);
-      const pressed = keys();
-      expect(pressed[0]).toBe(CTRL_B);
-      expect(pressed.indexOf(ESC)).toBeGreaterThan(1);
-      expect(pressed.slice(0, pressed.indexOf(ESC)).every((k) => k === CTRL_B)).toBe(true);
-      expect(pressed[pressed.length - 1]).toMatch(/^\x15+$/);
-      await vi.advanceTimersByTimeAsync(200);
-      expect(await done).toEqual({ ended: true, backgrounded: [] });
-      expect((await turn).error).toBe("Interrupted: voice");
+      await vi.advanceTimersByTimeAsync(BACKGROUND_ACK_MS + 500);
+      expect(await done).toEqual({ ended: false, reason: "unsupported" });
+      // Only Ctrl+B was pressed, and repeatedly: no Esc, no composer clear.
+      expect(keys().length).toBeGreaterThan(1);
+      expect(keys().every((k) => k === CTRL_B)).toBe(true);
+      expect(settled).toBe(false);
+      expect(engine.holdsTurn("s-silent")).toBe(true);
+      // The turn goes on and finishes by itself.
+      deliver("s-silent", { hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: BASH_ID, tool_response: { stdout: "ok" } });
+      deliver("s-silent", { hook_event_name: "Stop", last_assistant_message: "finished" });
+      expect((await turn).result).toBe("finished");
       expect(released).toEqual([]);
+      expect(killed).toEqual([]);
     });
 
-    it("sends no Ctrl+B when no Bash is running: a thinking turn, or another tool", async () => {
+    it("with no tool running presses Esc only, no Ctrl+B", async () => {
       const { turn } = await runningTurn("s-think");
       const done = engine.softInterrupt("s-think", "voice");
       await vi.advanceTimersByTimeAsync(300);
@@ -289,18 +333,24 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       expect((await turn).error).toBe("Interrupted: voice");
       expect(keys()[0]).toBe(ESC);
       expect(keys()).not.toContain(CTRL_B);
+    });
 
-      const turn2 = engine.run({ sessionId: "s-think", prompt: "third", cwd: "/tmp", resumeSessionId: "c1" } as any);
-      await vi.advanceTimersByTimeAsync(300);
-      deliver("s-think", { hook_event_name: "UserPromptSubmit", prompt: "third" });
-      deliver("s-think", { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "r1", tool_input: { file_path: "/x" } });
-      const before = keys().length;
-      const done2 = engine.softInterrupt("s-think", "voice");
-      await vi.advanceTimersByTimeAsync(300);
-      expect(await done2).toEqual({ ended: true, backgrounded: [] });
-      expect(keys().slice(before)[0]).toBe(ESC);
-      expect(keys().slice(before)).not.toContain(CTRL_B);
-      await turn2;
+    it.each([
+      ["a non-Bash tool", [{ tool_name: "Read", tool_use_id: "r1", tool_input: { file_path: "/x" } }]],
+      ["an MCP call", [{ tool_name: "mcp__docs__search", tool_use_id: "m1", tool_input: { query: "x" } }]],
+      ["a sub-agent", [{ tool_name: "Agent", tool_use_id: "a1", tool_input: { prompt: "x" } }]],
+      ["a Bash running beside one", [{ tool_name: "Bash", tool_use_id: BASH_ID, tool_input: { command: "make" } }, { tool_name: "Read", tool_use_id: "r2", tool_input: { file_path: "/x" } }]],
+    ])("does not abort %s: unsupported, no key pressed, the turn runs on", async (_name, calls) => {
+      const { turn } = await runningTurn("s-nobg");
+      for (const call of calls) deliver("s-nobg", { hook_event_name: "PreToolUse", ...call });
+      expect(engine.foregroundWork("s-nobg")).toMatchObject({ backgroundable: false });
+      expect(await engine.softInterrupt("s-nobg", "voice")).toEqual({ ended: false, reason: "unsupported" });
+      expect(keys()).toEqual([]);
+      expect(engine.holdsTurn("s-nobg")).toBe(true);
+      for (const call of calls) deliver("s-nobg", { hook_event_name: "PostToolUse", tool_name: call.tool_name, tool_use_id: call.tool_use_id });
+      deliver("s-nobg", { hook_event_name: "Stop", last_assistant_message: "finished" });
+      expect((await turn).result).toBe("finished");
+      expect(released).toEqual([]);
     });
 
     it("does not give a command the Bash tool ran as a sub-agent's the Ctrl+B", async () => {

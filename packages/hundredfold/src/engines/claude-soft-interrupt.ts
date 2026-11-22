@@ -41,8 +41,12 @@ const BACKGROUNDABLE_TOOLS = new Set(["Bash"]);
 
 const DESCRIPTION_MAX = 200;
 
-interface ForegroundCall extends ForegroundWork {
+interface ForegroundCall extends Omit<ForegroundWork, "backgroundable"> {
   toolUseId: string;
+}
+
+function isBackgroundable(tool: string): boolean {
+  return BACKGROUNDABLE_TOOLS.has(tool);
 }
 
 function text(value: unknown): string | null {
@@ -74,7 +78,8 @@ export class ForegroundCalls {
   onHook(h: HookPayload, now: number = Date.now()): void {
     if (typeof h.agent_id === "string") return;
     if (h.hook_event_name === "PreToolUse") this.started(h, now);
-    else if (h.hook_event_name === "PostToolUse") this.ended(h);
+    // A tool that failed fires PostToolUseFailure, and no PostToolUse.
+    else if (h.hook_event_name === "PostToolUse" || h.hook_event_name === "PostToolUseFailure") this.ended(h);
   }
 
   private started(h: HookPayload, now: number): void {
@@ -92,18 +97,28 @@ export class ForegroundCalls {
     else this.dropOldestOf(typeof h.tool_name === "string" ? h.tool_name : undefined);
   }
 
-  /** The call that has run longest, as the contract reports it. */
+  /**
+   * The call that has run longest, as the contract reports it. `backgroundable` is true only when a soft
+   * interrupt would abort none of the running calls: every one of them is a Bash.
+   */
   oldest(): ForegroundWork | null {
     let oldest: ForegroundCall | undefined;
     for (const call of this.calls.values()) {
       if (!oldest || call.startedAt < oldest.startedAt) oldest = call;
     }
-    return oldest ? { tool: oldest.tool, startedAt: oldest.startedAt, description: oldest.description } : null;
+    return oldest
+      ? { tool: oldest.tool, startedAt: oldest.startedAt, description: oldest.description, backgroundable: !this.hasUnbackgroundable() }
+      : null;
   }
 
   /** Ids of the running calls Ctrl+B moves to the background. */
   backgroundable(): string[] {
-    return [...this.calls.values()].filter((c) => BACKGROUNDABLE_TOOLS.has(c.tool)).map((c) => c.toolUseId);
+    return [...this.calls.values()].filter((c) => isBackgroundable(c.tool)).map((c) => c.toolUseId);
+  }
+
+  /** A running call Ctrl+B cannot move (an MCP call, a sub-agent): Esc would abort it. */
+  hasUnbackgroundable(): boolean {
+    return [...this.calls.values()].some((c) => !isBackgroundable(c.tool));
   }
 
   clear(): void {

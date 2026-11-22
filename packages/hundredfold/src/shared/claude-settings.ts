@@ -35,13 +35,15 @@ interface HookMatcher { matcher?: string; hooks: HookCommand[]; }
 // permissionDecision:"allow" was tested and does NOT dismiss these — hooks
 // cannot pre-approve a circuit breaker — so detecting it here and answering the
 // TUI is the only route. See engines/claude-permission-prompt.ts.
+// A tool that fails (a Bash that exits non-zero, say) fires PostToolUseFailure and no
+// PostToolUse (verified on 2.1.330), so the engine's tracker of running tool calls needs it.
 // PostCompact is the only signal that a `/compact` has finished: it fires no
 // Stop. Verified on 2.1.283 — PreCompact, SessionStart{source:"compact"}, then
 // PostCompact{trigger:"manual"|"auto"}. The engine settles a `/compact` turn
 // on it (self-compaction queues its resume turn right behind) and treats it as
 // ordinary proof of life otherwise.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | "Notification" | "PostCompact", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "Notification" | "PostCompact", HookMatcher[]>;
   statusLine?: HookCommand;
   appendSystemPrompt?: string;
   attribution?: unknown;
@@ -89,6 +91,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
       StopFailure: [cmd()],
       PreToolUse: [cmd(), ...(opts.carry?.preToolUse ?? [])],
       PostToolUse: [cmd()],
+      PostToolUseFailure: [cmd()],
       Notification: [cmd()],
       PostCompact: [cmd()],
     },

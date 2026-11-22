@@ -225,7 +225,7 @@ function clipped(value: unknown): string | null {
  */
 export class V2ForegroundTools {
   private readonly names = new Map<string, string>();
-  private readonly running = new Map<string, ForegroundWork>();
+  private readonly running = new Map<string, Omit<ForegroundWork, "backgroundable">>();
   private readonly readers: Record<string, (id: string, data: Record<string, unknown>, now: number) => void> = {
     "session.tool.input.started": (id, data) => {
       const name = str(data.name);
@@ -252,11 +252,12 @@ export class V2ForegroundTools {
 
   /** The call that has run longest. */
   oldest(): ForegroundWork | null {
-    let oldest: ForegroundWork | null = null;
+    let oldest: Omit<ForegroundWork, "backgroundable"> | null = null;
     for (const call of this.running.values()) {
       if (!oldest || call.startedAt < oldest.startedAt) oldest = call;
     }
-    return oldest ? { ...oldest } : null;
+    // No soft interrupt here: nothing is backgrounded, so nothing is backgroundable.
+    return oldest ? { ...oldest, backgroundable: false } : null;
   }
 
   /** A step ended, failed or was aborted: no call of it is running any more. */

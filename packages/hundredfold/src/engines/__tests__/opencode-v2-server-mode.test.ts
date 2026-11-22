@@ -1411,7 +1411,8 @@ describe("the tool call a running turn is waiting on (foregroundWork)", { timeou
     await waitDelivered(h);
     let work = h.engine.foregroundWork("sess-1");
     await waitFor(() => (work = h.engine.foregroundWork("sess-1")) !== null);
-    expect(work).toMatchObject({ tool: "shell", description: "echo" });
+    // Nothing is ever backgrounded on this engine: the hub steers.
+    expect(work).toMatchObject({ tool: "shell", description: "echo", backgroundable: false });
     expect(work!.startedAt).toBeGreaterThanOrEqual(before);
     expect(work!.startedAt).toBeLessThanOrEqual(Date.now());
     // The tool takes 1.5 s: it is still the same call a moment later, with the same start.

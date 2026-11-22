@@ -3830,6 +3830,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
    * moved to a background task first (Ctrl+B), then Esc ends the turn. A `<task-notification>` wakes the
    * session when the command ends, as for any background task. Never releases the PTY.
    *
+   * Esc never reaches work it would abort. With a running call Ctrl+B cannot move (an MCP call, a
+   * sub-agent), or a Bash that was not reported moved within BACKGROUND_ACK_MS, the turn is left running
+   * and the outcome is `unsupported`: the caller steers instead.
+   *
    * Esc fires no Stop hook, so this settles the turn itself as interrupted. Before that it waits for the
    * TUI to stop running and empties the composer: with nothing produced yet, Esc puts the turn's prompt
    * back there, and the next turn's paste would land behind it. That is done before settling because the
@@ -3854,6 +3858,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     if (await this.screenShowsRewindMenu(sessionId)) return { ended: false, reason: "unsupported" };
     const turnOver = () => this.active.get(sessionId) !== entry || entry.resolver.isSettled;
     if (turnOver()) return { ended: false, reason: "no_turn" };
+    // Ctrl+B cannot move an MCP call or a sub-agent, and Esc would abort it: leave the turn running.
+    if (entry.foreground.hasUnbackgroundable()) return { ended: false, reason: "unsupported" };
 
     const moving = entry.foreground.backgroundable();
     const backgrounded: BackgroundedWork[] = [];
@@ -3871,8 +3877,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
         }
         return false;
       }, BACKGROUND_ACK_MS);
-      if (!moving.every((id) => entry.movedToBackground.has(id)) && !turnOver()) {
-        logger.warn(`InteractiveClaudeEngine: ${sessionId}'s running command was not reported moved to the background after ${BACKGROUND_ACK_MS} ms; ending the turn anyway`);
+      // Esc over a command that was not moved would SIGTERM it: leave the turn running, and let the caller steer.
+      if (!turnOver() && !moving.every((id) => entry.movedToBackground.has(id))) {
+        logger.warn(`InteractiveClaudeEngine: ${sessionId}'s running command was not reported moved to the background after ${BACKGROUND_ACK_MS} ms; leaving its turn running`);
+        return { ended: false, reason: "unsupported" };
       }
       for (const id of moving) {
         const moved = entry.movedToBackground.get(id);

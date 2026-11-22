@@ -326,7 +326,7 @@ describe("V2ForegroundTools", () => {
     // Streaming the input is the model talking: not yet running.
     expect(tools.oldest()).toBeNull();
     tools.onEvent(ev("session.tool.called", { id: CALL, input: { command: "make all", description: "Build" }, executed: false }), 2_000);
-    expect(tools.oldest()).toEqual({ tool: "bash", startedAt: 2_000, description: "Build" });
+    expect(tools.oldest()).toEqual({ tool: "bash", startedAt: 2_000, description: "Build", backgroundable: false });
     tools.onEvent(ev("session.tool.success", { id: CALL, content: [] }));
     expect(tools.oldest()).toBeNull();
   });
@@ -334,7 +334,7 @@ describe("V2ForegroundTools", () => {
   it("ends a tool on its failure too, and falls back to the command, then to a generic name", () => {
     const tools = new V2ForegroundTools();
     tools.onEvent(ev("session.tool.called", { id: "c1", input: { command: "make all" } }), 5);
-    expect(tools.oldest()).toEqual({ tool: "tool", startedAt: 5, description: "make all" });
+    expect(tools.oldest()).toEqual({ tool: "tool", startedAt: 5, description: "make all", backgroundable: false });
     tools.onEvent(ev("session.tool.failed", { id: "c1", error: { message: "boom" } }));
     expect(tools.oldest()).toBeNull();
   });
