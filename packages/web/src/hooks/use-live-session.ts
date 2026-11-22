@@ -1166,6 +1166,10 @@ export function useLiveSession(
         // remap it inside the updater against whichever array we return. Otherwise a
         // snapshot-space index truncates already-rendered history at turn completion.
         const turnStartAnchorId = firstPartialIndex >= 0 ? backendMessages[firstPartialIndex].id : null
+        // Set now, not in the updater: a frame that lands before React renders
+        // must already see which stored row is the text still streaming.
+        streamedCopyIdRef.current =
+          firstPartialIndex >= 0 ? findStreamedCopyId(backendMessages.slice(firstPartialIndex)) : null
         setMessages((current) => {
           // If the tail snapshot is stale and misses newer live rows, keep current.
           // Older already-loaded rows are still preserved by mergePagedSnapshot.
@@ -1179,7 +1183,6 @@ export function useLiveSession(
           const merged = mergePagedSnapshot(current, next, isPagedHistory)
           const anchorIdx = turnStartAnchorId ? merged.findIndex((m) => m.id === turnStartAnchorId) : -1
           intermediateStartRef.current = anchorIdx >= 0 ? anchorIdx : merged.length
-          streamedCopyIdRef.current = findStreamedCopyId(merged.slice(intermediateStartRef.current))
           return merged
         })
         // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).

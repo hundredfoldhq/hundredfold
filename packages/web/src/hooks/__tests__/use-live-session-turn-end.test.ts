@@ -145,6 +145,38 @@ describe("a turn that ends after a mid-turn re-read", () => {
       expect(rows(result)).toEqual(["q?", "Let me check the file first.", "[tool] Used Bash", "All fine."])
     })
 
+    it("is replaced even when the next frames land before the re-read renders", async () => {
+      const { emit, result } = await midTurn()
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "Let me check the fi" }) })
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Let me check the fi", timestamp: 2, partial: true }] })
+      await act(async () => {
+        await result.current.reload("s1")
+        emit("session:delta", { sessionId: "s1", type: "text", content: "le first." })
+        emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "Bash", toolId: "t1" })
+      })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "All fine." }) })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "All fine." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Let me check the file first.", "[tool] Used Bash", "All fine."])
+    })
+
+    it("is replaced by the full text when a delegation block ends the text block", async () => {
+      const { emit, result } = await midTurn()
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "Handing this" }) })
+      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Handing this", timestamp: 2, partial: true }] })
+      await act(async () => { await result.current.reload("s1") })
+      act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: " to a helper." }) })
+      act(() => {
+        emit("session:delta", {
+          sessionId: "s1",
+          type: "block",
+          content: "Delegated the check",
+          block: { op: "put", block: { id: "d1", type: "delegation", version: 1, payload: {} } },
+        })
+      })
+      await act(async () => { emit("session:completed", { sessionId: "s1", result: "Done." }); await Promise.resolve() })
+      expect(rows(result)).toEqual(["q?", "Handing this to a helper.", "Delegated the check", "Done."])
+    })
+
     it("is dropped at completion when a notification landed after it", async () => {
       const { emit, result } = await midTurn()
       getSession.mockResolvedValue({ status: "running", messages: [U, { id: "p1", role: "assistant", content: "Hello wor", timestamp: 2, partial: true }] })
