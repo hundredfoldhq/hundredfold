@@ -191,7 +191,9 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
     seen.add(resolved.key);
     links.push(annotated(env, subject, { resolved, target, group, unserved }));
   }
-  return links.some((link) => link.group) ? orderGroupLinks(env, links, own.model) : links;
+  // An opencode subject naming no model runs the engine's configured one, which is the model its group is ranked for.
+  const rankModel = own.engine === "opencode" ? opencodeOwnModel(env.config, own.model) : own.model;
+  return links.some((link) => link.group) ? orderGroupLinks(env, links, rankModel) : links;
 }
 
 /**
