@@ -2,7 +2,7 @@ import { accountNames, declaredRemoteAccountByName } from "./claude-accounts-con
 import { resolveEmployeeClaudeProfile } from "./claude-profile.js";
 import { claudeAccountKey, remoteClaudeAccountKey } from "./engine-account.js";
 import { ownTargetLink } from "./fallback-chain-links.js";
-import { fallbackChainProblems, fallbackGroupOf, fallbackLinkOf, employeeProfileHostProblem, type FallbackChainEntry, type FallbackLink } from "./fallback-chain-wire.js";
+import { fallbackChainProblems, fallbackGroupOf, fallbackLinkOf, employeeProfileHostProblem, type FallbackLink, type FallbackWrittenEntry } from "./fallback-chain-wire.js";
 import type { DuplicateTolerance } from "./fallback-chain-load.js";
 import { logger } from "./logger.js";
 import { ENGINE_NAMES } from "./models.js";
@@ -79,12 +79,12 @@ function hostProfileProblems(config: HundredfoldConfig, employee: EmployeeTarget
 }
 
 /** A valid chain as the entries it holds: links, and groups kept whole. */
-function entriesOf(chain: unknown[]): FallbackChainEntry[] {
+function entriesOf(chain: unknown[]): FallbackWrittenEntry[] {
   return chain.flatMap((entry) => fallbackGroupOf(entry) ?? fallbackLinkOf(entry) ?? []);
 }
 
 /** What changing an employee's engine or model does to the chain it already holds: the problems the new own target gives it, none when it holds no chain or the target stays. */
-export function storedFallbackProblems(config: HundredfoldConfig, current: EmployeeTarget & { fallback?: FallbackChainEntry[] }, next: EmployeeTarget): string[] {
+export function storedFallbackProblems(config: HundredfoldConfig, current: EmployeeTarget & { fallback?: FallbackWrittenEntry[] }, next: EmployeeTarget): string[] {
   if (!current.fallback || (current.engine === next.engine && current.model === next.model)) return [];
   return employeeFallbackProblems(config, next, current.fallback);
 }
@@ -92,7 +92,7 @@ export function storedFallbackProblems(config: HundredfoldConfig, current: Emplo
 /** A PATCH's `fallback`: null removes it (inherit), a valid list is written as links, anything else is refused with the reasons. */
 export function employeeFallbackUpdate(
   config: HundredfoldConfig, employee: EmployeeTarget, value: unknown,
-): { ok: true; value: FallbackChainEntry[] | null } | { ok: false; error: string } {
+): { ok: true; value: FallbackWrittenEntry[] | null } | { ok: false; error: string } {
   if (value === null) return { ok: true, value: null };
   const problems = employeeFallbackProblems(config, employee, value);
   return problems.length > 0 ? { ok: false, error: problems.join("; ") } : { ok: true, value: entriesOf(value as unknown[]) };
@@ -109,7 +109,7 @@ export function employeeFallbackUpdate(
  */
 export function loadEmployeeFallback(
   raw: unknown, employee: EmployeeTarget & { name: string }, config: HundredfoldConfig | undefined, source: string,
-): { fallback?: FallbackChainEntry[]; problems?: string[] } {
+): { fallback?: FallbackWrittenEntry[]; problems?: string[] } {
   if (raw === undefined || raw === null) return {};
   const seen = new Set<string>();
   const problems = employeeFallbackProblems(config, employee, raw, ({ problem }) => { seen.add(problem); return true; });

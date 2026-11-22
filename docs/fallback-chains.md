@@ -211,12 +211,28 @@ session's model is unknown. Accounts fall into tiers, best first:
 4. exhausted accounts (health says the account is at its limit).
 
 An account that cannot be read is never preferred over one that can. Within a
-tier the order is headroom, then the fewest sessions currently active on the
-account, then the order written. Among exhausted accounts the one that reopens
-first comes first. Members a session cannot use (an undeclared profile, or an
-account on another host) keep their written order after the usable ones and are
-passed over with their reason. Ordering reads only what is on disk and in
-engine health; nothing calls a provider.
+tier the order is headroom, highest first, then the order written; among
+exhausted accounts the one that reopens first comes first. This is the order a
+limit tries a group's other members in. Members a session cannot use (an
+undeclared profile, or an account on another host) keep their written order
+after the usable ones and are passed over with their reason. Ordering reads only
+what is on disk and in engine health; nothing calls a provider.
+
+New sessions are not all sent to the best account: they are **spread in
+proportion to headroom**, because usage readings lag and sessions start in
+bursts. Each account has a weight: its headroom for a fresh reading, half its
+headroom for a stale one, 0 with no reading while another account has one (1
+each when none has), and 0 at its limit or with no headroom. Its share of new
+sessions is its weight over the sum, so headroom 60 against 40 splits 60/40, 90
+against 10 splits 90/10, and an exhausted account gets none. A smooth weighted
+round-robin makes this deterministic: each candidate set keeps an in-memory credit
+per account; at each start every credit grows by the account's weight, the
+highest credit wins (ties: the order written) and the winner's credit drops by
+the sum of the weights. A burst therefore splits even inside one reading
+interval. The pick itself is pure; the credit is charged only when a session
+really starts, never by a preview. When every weight is 0 the account that
+reopens first is picked and creation moves the session on to the first healthy
+link after the group.
 
 A group walks as a **set**. When a limit moves a session on and the cursor is on
 a member, or the next untried link is a member, every untried member of that
@@ -228,9 +244,12 @@ member nor revisit one.
 A group at the head of a chain that holds the subject's own account is that
 subject's **home group**. For an employee or engine subject with one,
 `GET /api/fallback-chains` reports `startPick`: the member a new session would
-be balanced onto now, why (`most-headroom`, `tie`, `only-candidate`,
-`no-readings`, `all-exhausted`) and the ranked candidates. The default login is
-not a candidate for an employee whose own login is a named profile. A session
+be balanced onto now, why (`weighted`, `only-candidate`, `no-readings`,
+`all-exhausted`) and the candidates by headroom with their `weight` and
+`sharePercent`. A group holds a subject's own login only when it names it: the
+default login is `{ engine: claude }`, a profile is `{ engine: claude, profile }`.
+The default login is not a candidate for an employee whose own login is a named
+profile. A session
 the balancer has pinned records its choice in `transportMeta.accountPick` and
 resolves against the chain the group came from (`source`), ahead of the pinned
 account's own chain, so its chain is the pinned account, the group's other

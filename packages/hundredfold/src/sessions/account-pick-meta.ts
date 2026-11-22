@@ -11,7 +11,7 @@ import type { Session } from "../shared/types.js";
 const SOURCES: readonly FallbackChainSource[] = ["session", "employee", "account", "engine", "none"];
 const STATES: readonly AccountHeadroom["state"][] = ["fresh", "stale", "unknown", "exhausted"];
 const TRIGGERS: readonly AccountPick["trigger"][] = ["start", "switch"];
-const REASONS: readonly AccountPick["reason"][] = ["most-headroom", "tie", "only-candidate", "no-readings", "all-exhausted"];
+const REASONS: readonly AccountPick["reason"][] = ["weighted", "only-candidate", "no-readings", "all-exhausted"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,7 +29,7 @@ function tightestOf(value: unknown): AccountHeadroom["tightest"] | undefined {
 function candidateOf(value: unknown): AccountHeadroom | undefined {
   if (!isRecord(value) || typeof value.account !== "string" || typeof value.label !== "string") return undefined;
   const state = oneOf(STATES, value.state);
-  if (!state || typeof value.activeSessions !== "number") return undefined;
+  if (!state || typeof value.weight !== "number" || typeof value.sharePercent !== "number") return undefined;
   const tightest = tightestOf(value.tightest);
   return {
     account: value.account,
@@ -38,7 +38,8 @@ function candidateOf(value: unknown): AccountHeadroom | undefined {
     ...(typeof value.headroomPercent === "number" ? { headroomPercent: value.headroomPercent } : {}),
     ...(tightest ? { tightest } : {}),
     ...(typeof value.readingAt === "string" ? { readingAt: value.readingAt } : {}),
-    activeSessions: value.activeSessions,
+    weight: value.weight,
+    sharePercent: value.sharePercent,
   };
 }
 

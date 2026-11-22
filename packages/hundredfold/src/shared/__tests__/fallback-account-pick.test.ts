@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ENGINE_HEALTH_REFRESH_INTERVAL_MS } from "../engine-health-interval.js";
-import { ACCOUNT_READING_FRESH_MS, pickGroupAccount, rankGroupAccounts, type GroupCandidate } from "../fallback-account-pick.js";
+import { ACCOUNT_READING_FRESH_MS, pickGroupAccount, rankGroupAccounts, recordAccountStart, resetAccountCredits, type GroupCandidate } from "../fallback-account-pick.js";
 import type { UsageSample } from "../claude-usage-history.js";
 
 /** The balancer: headroom from the tightest applicable window, tiers, tie-breaks, and the pick's reason. */
@@ -20,8 +20,10 @@ function account(name: string, reading?: UsageSample, extra: Partial<GroupCandid
   return { account: name, label: name, exhausted: false, ...(reading ? { reading } : {}), ...extra };
 }
 
-const rank = (candidates: GroupCandidate[], options: { model?: string | null; active?: Record<string, number> } = {}) =>
-  rankGroupAccounts(candidates, { now, model: options.model, activeSessions: (a) => options.active?.[a] ?? 0 });
+beforeEach(resetAccountCredits);
+
+const rank = (candidates: GroupCandidate[], options: { model?: string | null } = {}) =>
+  rankGroupAccounts(candidates, { now, model: options.model });
 
 const order = (candidates: GroupCandidate[], options?: Parameters<typeof rank>[1]): string[] => rank(candidates, options).map((r) => r.account);
 
@@ -108,58 +110,144 @@ describe("tiers", () => {
   });
 });
 
-describe("ties", () => {
+describe("ties in the ranking", () => {
   const equal = (name: string): GroupCandidate => account(name, sample(MIN, [["5h", 40]]));
 
-  it("fall to the fewest active sessions, then to the written order", () => {
-    expect(order([equal("a"), equal("b"), equal("c")], { active: { a: 2, b: 0, c: 1 } })).toEqual(["b", "c", "a"]);
-    expect(order([equal("a"), equal("b"), equal("c")], { active: { a: 1, b: 1, c: 1 } })).toEqual(["a", "b", "c"]);
+  it("fall to the order written", () => {
+    expect(order([equal("a"), equal("b"), equal("c")])).toEqual(["a", "b", "c"]);
     expect(order([equal("c"), equal("b"), equal("a")])).toEqual(["c", "b", "a"]);
   });
 
-  it("compare headroom in whole percent before looking at sessions", () => {
+  it("compare headroom in whole percent", () => {
     const a = account("a", sample(MIN, [["5h", 40.9]]));
     const b = account("b", sample(MIN, [["5h", 40.1]]));
-    // 40.9 used leaves 59.1 and 40.1 used leaves 59.9: both are 59 in whole percent, so sessions decide.
+    // 40.9 used leaves 59.1 and 40.1 used leaves 59.9: both are 59 in whole percent, so the written order decides.
     expect(rank([a, b]).map((r) => r.headroomPercent)).toEqual([59, 59]);
-    expect(order([a, b], { active: { a: 1 } })).toEqual(["b", "a"]);
+    expect(order([b, a])).toEqual(["b", "a"]);
+  });
+});
+
+describe("weights", () => {
+  it("are the headroom of a fresh reading and half the headroom of a stale one", () => {
+    const ranked = rank([account("fresh", sample(MIN, [["5h", 40]])), account("stale", sample(HOUR, [["5h", 40]])), account("other", sample(MIN, [["5h", 90]]))]);
+    expect(Object.fromEntries(ranked.map((r) => [r.account, r.weight]))).toEqual({ fresh: 60, stale: 30, other: 10 });
   });
 
-  it("do not let sessions outweigh headroom", () => {
-    expect(order([account("busy", sample(MIN, [["5h", 10]])), account("idle", sample(MIN, [["5h", 50]]))], { active: { busy: 9 } })).toEqual(["busy", "idle"]);
+  it("are 0 for an account at its limit and for one with no headroom, however fresh its reading", () => {
+    const ranked = rank([account("full", sample(MIN, [["5h", 100]])), account("out", sample(MIN, [["5h", 10]]), { exhausted: true }), account("ok", sample(MIN, [["5h", 50]]))]);
+    expect(Object.fromEntries(ranked.map((r) => [r.account, r.weight]))).toEqual({ ok: 50, full: 0, out: 0 });
   });
 
-  it("records the active session count on each candidate", () => {
-    expect(rank([equal("a")], { active: { a: 3 } })[0]!.activeSessions).toBe(3);
-    expect(rank([equal("a")])[0]!.activeSessions).toBe(0);
+  it("give an account with no reading nothing while another account has one, and 1 each when none has", () => {
+    expect(rank([account("known", sample(MIN, [["5h", 50]])), account("blind")]).map((r) => [r.account, r.weight])).toEqual([["known", 50], ["blind", 0]]);
+    expect(rank([account("a"), account("b")]).map((r) => r.weight)).toEqual([1, 1]);
+    // An exhausted account's reading does not count as "another has one".
+    expect(rank([account("out", sample(MIN, [["5h", 10]]), { exhausted: true }), account("blind")]).map((r) => [r.account, r.weight])).toEqual([["blind", 1], ["out", 0]]);
+  });
+
+  it("report each share as the weight over the sum, in whole percent", () => {
+    const ranked = rank([account("a", sample(MIN, [["5h", 40]])), account("b", sample(MIN, [["5h", 60]])), account("c", sample(MIN, [["5h", 100]]))]);
+    expect(ranked.map((r) => [r.account, r.sharePercent])).toEqual([["a", 60], ["b", 40], ["c", 0]]);
+    expect(rank([account("x", sample(MIN, [["5h", 100]]))])[0]!.sharePercent).toBe(0);
   });
 });
 
 describe("pickGroupAccount", () => {
   const ctx = { now, trigger: "start" as const, source: "employee" as const, groupIndex: 0 };
+  const share = (headroom: number[]): GroupCandidate[] => headroom.map((left, at) => account(`a${at}`, sample(MIN, [["5h", 100 - left]])));
 
-  it("picks the most headroom and says so, with the ranking", () => {
-    const pick = pickGroupAccount([account("a", sample(MIN, [["5h", 70]])), account("b", sample(MIN, [["5h", 20]]))], ctx)!;
-    expect(pick).toMatchObject({ at: now.toISOString(), trigger: "start", source: "employee", groupIndex: 0, picked: "b", reason: "most-headroom" });
-    expect(pick.candidates.map((c) => c.account)).toEqual(["b", "a"]);
+  /** Picks `count` times, charging each start as a real one, and counts where they went. */
+  function run(candidates: GroupCandidate[], count: number): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (let i = 0; i < count; i++) {
+      const pick = pickGroupAccount(candidates, ctx)!;
+      recordAccountStart(pick);
+      counts[pick.picked] = (counts[pick.picked] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  it("splits 100 starts exactly as the headroom: 60/40, 90/10 and 50/50", () => {
+    expect(run(share([60, 40]), 100)).toEqual({ a0: 60, a1: 40 });
+    resetAccountCredits();
+    expect(run(share([90, 10]), 100)).toEqual({ a0: 90, a1: 10 });
+    resetAccountCredits();
+    expect(run(share([50, 50]), 100)).toEqual({ a0: 50, a1: 50 });
   });
 
-  it("says tie when headroom is equal and sessions or order decided it", () => {
-    const equal = (name: string) => account(name, sample(MIN, [["5h", 40]]));
-    expect(pickGroupAccount([equal("a"), equal("b")], { ...ctx, activeSessions: (a) => (a === "a" ? 1 : 0) })).toMatchObject({ picked: "b", reason: "tie" });
+  it("alternates in the smooth order rather than sending a run to one account", () => {
+    const picked: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const pick = pickGroupAccount(share([60, 40]), ctx)!;
+      recordAccountStart(pick);
+      picked.push(pick.picked);
+    }
+    // The standard smooth weighted round-robin sequence for weights 3:2, repeated: no run of more than two for one account.
+    expect(picked.join(" ")).toBe("a0 a1 a0 a1 a0 a0 a1 a0 a1 a0");
+  });
+
+  it("splits a burst of 10 at equal headroom 5/5, and a burst of 10 over three accounts 4/3/3 by written order", () => {
+    expect(run(share([50, 50]), 10)).toEqual({ a0: 5, a1: 5 });
+    resetAccountCredits();
+    expect(run(share([30, 30, 30]), 10)).toEqual({ a0: 4, a1: 3, a2: 3 });
+  });
+
+  it("gives an exhausted account none, and an account with headroom its share", () => {
+    const candidates = [...share([70, 30]), account("out", sample(MIN, [["5h", 0]]), { exhausted: true })];
+    expect(run(candidates, 100)).toEqual({ a0: 70, a1: 30 });
+  });
+
+  it("charges nothing until a start is recorded: a pick, a preview and a validation are the same pick", () => {
+    const candidates = share([60, 40]);
+    const first = pickGroupAccount(candidates, ctx)!;
+    for (let i = 0; i < 5; i++) expect(pickGroupAccount(candidates, ctx)).toEqual(first);
+    recordAccountStart(first);
+    expect(pickGroupAccount(candidates, ctx)!.picked).toBe("a1");
+  });
+
+  it("keeps a credit table per set of accounts, so another group is not charged", () => {
+    run(share([60, 40]), 7);
+    const other = [account("x", sample(MIN, [["5h", 40]])), account("y", sample(MIN, [["5h", 40]]))];
+    expect(pickGroupAccount(other, ctx)!.picked).toBe("x");
+    // The same accounts in another written order are the same set and share its credits.
+    const reordered = share([60, 40]).reverse();
+    const forward = pickGroupAccount(share([60, 40]), ctx)!.picked;
+    expect(pickGroupAccount(reordered, ctx)!.picked).toBe(forward);
+  });
+
+  it("follows a change of headroom between starts instead of replaying the old split", () => {
+    expect(run(share([50, 50]), 10)).toEqual({ a0: 5, a1: 5 });
+    const shifted = share([90, 10]);
+    const next = run(shifted, 100);
+    expect(next.a0! + next.a1!).toBe(100);
+    expect(next.a0).toBeGreaterThanOrEqual(89);
+    expect(next.a0).toBeLessThanOrEqual(91);
+  });
+
+  it("records the pick with the weights, shares and ranking at the time", () => {
+    const pick = pickGroupAccount([account("a", sample(MIN, [["5h", 70]])), account("b", sample(MIN, [["5h", 20]]))], ctx)!;
+    expect(pick).toMatchObject({ at: now.toISOString(), trigger: "start", source: "employee", groupIndex: 0, reason: "weighted" });
+    expect(pick.candidates.map((c) => [c.account, c.weight, c.sharePercent])).toEqual([["b", 80, 73], ["a", 30, 27]]);
   });
 
   it("says only-candidate for a single account, and no-readings when nothing can be read", () => {
     expect(pickGroupAccount([account("a", sample(MIN, [["5h", 5]]))], ctx)).toMatchObject({ picked: "a", reason: "only-candidate" });
     expect(pickGroupAccount([account("a"), account("b")], ctx)).toMatchObject({ picked: "a", reason: "no-readings" });
+    resetAccountCredits();
+    expect(run([account("a"), account("b")], 10)).toEqual({ a: 5, b: 5 });
   });
 
-  it("says all-exhausted and picks the account that reopens first", () => {
+  it("says all-exhausted when every weight is 0, and picks the account that reopens first", () => {
     const pick = pickGroupAccount([
       account("a", undefined, { exhausted: true, reopensAt: now.getTime() + 4 * HOUR }),
       account("b", undefined, { exhausted: true, reopensAt: now.getTime() + HOUR }),
     ], { ...ctx, trigger: "switch", source: "engine", groupIndex: 2 })!;
     expect(pick).toMatchObject({ picked: "b", reason: "all-exhausted", trigger: "switch", source: "engine", groupIndex: 2 });
+    // Accounts that are readable but have no headroom left are also all-zero.
+    expect(pickGroupAccount([account("full", sample(MIN, [["5h", 100]])), account("out", undefined, { exhausted: true })], ctx)).toMatchObject({ picked: "full", reason: "all-exhausted" });
+    // Charging an all-zero pick changes nothing.
+    recordAccountStart(pick);
+    expect(pickGroupAccount([account("a", sample(MIN, [["5h", 50]])), account("b", sample(MIN, [["5h", 50]]))], ctx)!.picked).toBe("a");
   });
 
   it("is deterministic for a given state", () => {

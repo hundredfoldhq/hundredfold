@@ -9,7 +9,7 @@ import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type Fallb
 import { linkHealth } from "./fallback-chain-health.js";
 import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
 import {
-  fallbackLinkKey, fallbackLinkLabel,
+  fallbackGroupOf, fallbackLinkKey, fallbackLinkLabel,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
 } from "./fallback-chain-wire.js";
 import { engineSupportsRemote, REMOTE_ENGINE_CLI, type EngineName } from "./models.js";
@@ -211,20 +211,25 @@ function chainSource(
   return inheritedChain(config, session.engine, mode, ownAccount);
 }
 
+/** The chain a pick came from, when it still holds a group at the entry the pick recorded. */
+function holdingGroup<T extends { entries: readonly FallbackChainEntry[] }>(chain: T | undefined, pick: AccountPick): T | undefined {
+  return chain && fallbackGroupOf(chain.entries[pick.groupIndex]) !== null ? chain : undefined;
+}
+
 /**
  * The chain a balanced session keeps: the one its pick came from (`accountPick.source`), not the
  * pinned account's own. The group lives in its employee's chain, in the chain of the employee's own
- * login, or in the engine's, whichever the pick names; undefined when that chain is gone (edited
- * since), and the session then resolves as any other.
+ * login, or in the engine's, whichever the pick names; undefined when that chain no longer holds the
+ * group at the recorded entry (edited since), and the session then resolves as any other.
  */
 function pickedChainSource(
   config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined,
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } | undefined {
-  if (pick.source === "employee") return employee?.fallback === undefined ? undefined : { source: "employee", entries: employee.fallback };
-  if (pick.source === "engine") return { source: "engine", entries: engineChain(config, "claude") };
+  if (pick.source === "employee") return holdingGroup(employee?.fallback === undefined ? undefined : { source: "employee" as const, entries: employee.fallback }, pick);
+  if (pick.source === "engine") return holdingGroup({ source: "engine" as const, entries: engineChain(config, "claude") }, pick);
   if (pick.source !== "account") return undefined;
   const inherited = inheritedChain(config, "claude", "account", accountForEmployee(employee, "claude"));
-  return inherited.source === "account" ? inherited : undefined;
+  return holdingGroup(inherited.source === "account" ? inherited : undefined, pick);
 }
 
 export interface SessionFallbackChainOptions extends GroupRankInputs {

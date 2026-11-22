@@ -4,7 +4,7 @@ import { expandFallbackChain } from "../fallback-chain-expand.js";
 import { homeGroupOf } from "../fallback-chain-group.js";
 import { sessionFallbackChain } from "../fallback-chain.js";
 import { accountSubject, employeeSubject, engineSubject } from "../fallback-chain-subjects.js";
-import type { AccountPick, FallbackChainEntry } from "../fallback-chain-wire.js";
+import type { AccountPick, FallbackChainEntry, FallbackWrittenEntry } from "../fallback-chain-wire.js";
 import type { EngineHealthReading } from "../engine-health.js";
 import type { UsageSample } from "../claude-usage-history.js";
 import type { Employee, HundredfoldConfig, JsonObject, ModelRegistry } from "../types.js";
@@ -46,7 +46,7 @@ const used = (percent: number, extra: Array<[string, number]> = []): UsageSample
 
 const LIMITS: Record<string, UsageSample> = { claude: used(80), [key("A")]: used(70), [key("B")]: used(20), [key("C")]: used(50) };
 
-function resolve(options: { config?: HundredfoldConfig; employee?: Employee; session?: Parameters<typeof makeSession>[0]; health?: EngineHealthReading; limits?: Record<string, UsageSample | undefined>; active?: Record<string, number> } = {}) {
+function resolve(options: { config?: HundredfoldConfig; employee?: Employee; session?: Parameters<typeof makeSession>[0]; health?: EngineHealthReading; limits?: Record<string, UsageSample | undefined>; } = {}) {
   return sessionFallbackChain({
     config: options.config ?? config(),
     employee: options.employee,
@@ -55,7 +55,6 @@ function resolve(options: { config?: HundredfoldConfig; employee?: Employee; ses
     health: options.health ?? {},
     limits: options.limits ?? LIMITS,
     now,
-    activeSessions: (account) => options.active?.[account] ?? 0,
   });
 }
 
@@ -75,7 +74,7 @@ describe("expansion in place", () => {
   it("annotates each member with the group's place, the group as written and its ranking input", () => {
     const { links } = resolve();
     const [, b, , a] = links;
-    expect(b!.group).toMatchObject({ index: 0, written: GROUP, headroom: { account: key("B"), state: "fresh", headroomPercent: 80, activeSessions: 0, tightest: { window: "5h", usedPercent: 20 } } });
+    expect(b!.group).toMatchObject({ index: 0, written: GROUP, headroom: { account: key("B"), state: "fresh", headroomPercent: 80, weight: 80, sharePercent: 50, tightest: { window: "5h", usedPercent: 20 } } });
     expect(a!.group!.headroom).toMatchObject({ account: key("A"), headroomPercent: 30 });
     expect(b!.written).toEqual({ engine: "claude", profile: "B" });
   });
@@ -86,10 +85,9 @@ describe("expansion in place", () => {
     expect(onA.links.filter((link) => link.group).map((link) => link.account)).toEqual([key("B"), key("C"), "claude"]);
   });
 
-  it("orders ties by active sessions, then written order, and reflects a new reading on the next resolution", () => {
+  it("orders ties by written order, and reflects a new reading on the next resolution", () => {
     const equal = { claude: used(50), [key("A")]: used(50), [key("B")]: used(50), [key("C")]: used(50) };
     expect(keys(resolve({ limits: equal }).links)).toEqual(["claude||opus", "claude|A|opus", "claude|B|opus", "claude|C|opus", "opencode||openrouter/x"]);
-    expect(keys(resolve({ limits: equal, active: { [key("A")]: 2, [key("B")]: 0, [key("C")]: 1 } }).links).slice(1, 4)).toEqual(["claude|B|opus", "claude|C|opus", "claude|A|opus"]);
     expect(keys(resolve({ limits: { ...LIMITS, [key("A")]: used(5) } }).links).slice(1, 4)).toEqual(["claude|A|opus", "claude|B|opus", "claude|C|opus"]);
   });
 
@@ -160,14 +158,14 @@ describe("a chain with no group", () => {
 
 function pick(source: AccountPick["source"], picked = key("A")): JsonObject {
   const record: AccountPick = {
-    at: now.toISOString(), trigger: "start", source, groupIndex: 0, picked, reason: "most-headroom",
-    candidates: [{ account: picked, label: "claude · A", state: "fresh", headroomPercent: 30, tightest: { window: "5h", usedPercent: 70, resetsAt: "2026-11-20T15:00:00.000Z" }, readingAt: "2026-11-20T11:59:00.000Z", activeSessions: 1 }],
+    at: now.toISOString(), trigger: "start", source, groupIndex: 0, picked, reason: "weighted",
+    candidates: [{ account: picked, label: "claude · A", state: "fresh", headroomPercent: 30, tightest: { window: "5h", usedPercent: 70, resetsAt: "2026-11-20T15:00:00.000Z" }, readingAt: "2026-11-20T11:59:00.000Z", weight: 30, sharePercent: 100 }],
   };
   return record as unknown as JsonObject;
 }
 
 describe("a balanced session", () => {
-  const worker = (fallback?: FallbackChainEntry[]): Employee => ({ name: "dev", displayName: "Dev", department: "eng", rank: "senior", engine: "claude", model: "opus", persona: "p", ...(fallback ? { fallback } : {}) });
+  const worker = (fallback?: FallbackWrittenEntry[]): Employee => ({ name: "dev", displayName: "Dev", department: "eng", rank: "senior", engine: "claude", model: "opus", persona: "p", ...(fallback ? { fallback } : {}) });
 
   it("resolves against the chain its pick came from, not the pinned account's own", () => {
     // A has a chain of its own; the engine's group is what the session keeps.
@@ -200,6 +198,20 @@ describe("a balanced session", () => {
     expect(malformed.source).toBe("account");
   });
 
+  it("follows a pick only while its chain still holds a group at the recorded entry", () => {
+    const meta = { claudeConfigDir: DIRS.A, transportMeta: { accountPick: pick("engine") } };
+    // The engine's group was removed since the pick.
+    expect(resolve({ config: config([TAIL], { A: [{ engine: "claude", profile: "C" }] }), session: meta })).toMatchObject({ source: "account" });
+    // The group moved to another entry.
+    expect(resolve({ config: config([TAIL, GROUP]), session: meta }).source).toBe("account");
+    // An employee now writes a chain of its own, and the pick was from the engine's: the pick still names the engine's chain.
+    expect(resolve({ employee: worker([TAIL]), session: { ...meta, employee: "dev" } }).source).toBe("engine");
+    // An edited employee chain with no group at the entry is no longer followed.
+    const fromEmployee = { ...meta, employee: "dev", transportMeta: { accountPick: pick("employee") } };
+    expect(resolve({ employee: worker([TAIL]), session: fromEmployee }).source).toBe("employee");
+    expect(resolve({ employee: worker([TAIL, GROUP]), session: fromEmployee }).links.some((link) => link.group)).toBe(true);
+  });
+
   it("an explicit fallback target still wins over the pick", () => {
     const { source } = resolve({ session: { fallbackTarget: { engine: "opencode", model: "openrouter/x" }, transportMeta: { accountPick: pick("engine") } } });
     expect(source).toBe("session");
@@ -218,6 +230,13 @@ describe("the session view's pick", () => {
     expect(view({ accountPick: { ...recorded, trigger: "later" } })).not.toHaveProperty("pick");
     expect(view({ accountPick: { ...recorded, candidates: [{ account: "x" }] } })).not.toHaveProperty("pick");
     expect(view({ accountPick: { ...recorded, groupIndex: 1.5 } })).not.toHaveProperty("pick");
+    expect(view({ accountPick: { ...recorded, candidates: [{ ...(recorded.candidates as unknown as Array<Record<string, unknown>>)[0], weight: "high" }] } })).not.toHaveProperty("pick");
+  });
+
+  it("shows no pick once the chain no longer follows it (its group is gone)", () => {
+    const gone = sessionFallbackChainView({ config: config([TAIL]), session: makeSession({ claudeConfigDir: DIRS.A, transportMeta: { accountPick: pick("engine") } }), registry, health: {}, limits: LIMITS, now });
+    expect(gone).not.toHaveProperty("pick");
+    expect(gone.source).toBe("account");
   });
 });
 
@@ -248,7 +267,7 @@ describe("the chains API subjects", () => {
     const claude = engineSubject(env, "claude");
     expect(claude.configured).toEqual([GROUP, TAIL]);
     expect(claude.effective.filter((link) => link.group).map((link) => link.account)).toEqual([key("B"), key("C"), key("A")]);
-    expect(claude.startPick).toMatchObject({ trigger: "start", source: "engine", groupIndex: 0, picked: key("B"), reason: "most-headroom" });
+    expect(claude.startPick).toMatchObject({ trigger: "start", source: "engine", groupIndex: 0, picked: key("B"), reason: "weighted" });
     expect(claude.startPick!.candidates.map((candidate) => candidate.account)).toEqual([key("B"), key("C"), key("A"), "claude"]);
     expect(engineSubject(env, "opencode")).not.toHaveProperty("startPick");
   });

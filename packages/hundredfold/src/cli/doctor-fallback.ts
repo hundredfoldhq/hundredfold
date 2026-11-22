@@ -28,7 +28,7 @@ export function fallbackChainFindings(home: string): DoctorFinding[] {
 /** One finding per group problem, or one ok line when the config holds groups and none is wrong. Nothing when it holds none. */
 function groupFindings(engines: unknown): DoctorFinding[] {
   const problems = Object.values(groupProblemsByChain(engines)).flat();
-  if (problems.length > 0) return problems.map((problem) => ({ level: "problem", message: `${problem}. A config with this group does not load; fix it in config.yaml.` }));
+  if (problems.length > 0) return problems.map((problem) => ({ level: "problem", message: `${problem}. A config with this problem does not load; fix it in config.yaml.` }));
   const count = groupCount(engines);
   return count === 0 ? [] : [{ level: "ok", message: `config.yaml holds ${count} balanced account group${count === 1 ? "" : "s"}, and none has a problem.` }];
 }

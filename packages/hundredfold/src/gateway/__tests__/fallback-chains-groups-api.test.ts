@@ -61,7 +61,7 @@ describe("GET /api/fallback-chains with a group", () => {
     expect(keys(claude.effective)).toEqual(["claude|B|opus", "claude|A|opus", "codex||"]);
     expect(claude.effective[0].group).toMatchObject({ index: 0, written: GROUP, headroom: { account: KEY_B, state: "fresh", headroomPercent: 90 } });
     expect(claude.effective[2]).not.toHaveProperty("group");
-    expect(claude.startPick).toMatchObject({ trigger: "start", source: "engine", groupIndex: 0, picked: KEY_B, reason: "most-headroom" });
+    expect(claude.startPick).toMatchObject({ trigger: "start", source: "engine", groupIndex: 0, picked: KEY_B, reason: "weighted" });
     expect(claude.startPick.candidates.map((c: any) => c.account)).toEqual([KEY_B, KEY_A, "claude"]);
   });
 
@@ -142,8 +142,8 @@ describe("GET /api/sessions/:id fallback.chain for a balanced session", () => {
   it("has the chain its pick came from and carries the pick", async () => {
     writeUsage({ claude: 10, [KEY_A]: 60, [KEY_B]: 30 });
     const pick = {
-      at: "2026-11-20T12:00:00.000Z", trigger: "start", source: "engine", groupIndex: 0, picked: KEY_B, reason: "most-headroom",
-      candidates: [{ account: KEY_B, label: "claude · B", state: "fresh", headroomPercent: 70, tightest: { window: "5h", usedPercent: 30 }, readingAt: "2026-11-20T11:59:00.000Z", activeSessions: 0 }],
+      at: "2026-11-20T12:00:00.000Z", trigger: "start", source: "engine", groupIndex: 0, picked: KEY_B, reason: "weighted",
+      candidates: [{ account: KEY_B, label: "claude · B", state: "fresh", headroomPercent: 70, tightest: { window: "5h", usedPercent: 30 }, readingAt: "2026-11-20T11:59:00.000Z", weight: 70, sharePercent: 100 }],
     };
     const session = registry.createSession({ engine: "claude", source: "web", sourceRef: "web:balanced", model: "opus", claudeConfigDir: DIR_B, transportMeta: { accountPick: pick } });
     const chain = (await call("GET", `/api/sessions/${session.id}`)).body.fallback.chain;

@@ -5,8 +5,8 @@ import { withoutUsage } from "../session-fallback-api.js";
 
 /** What a department-scoped caller is shown of a balanced session: the pick and the group's state, never the usage numbers behind them. */
 
-const headroom = { account: "claude:a", label: "claude · a", state: "fresh" as const, headroomPercent: 40, tightest: { window: "5h", usedPercent: 60, resetsAt: "2026-11-20T15:00:00.000Z" }, readingAt: "2026-11-20T11:59:00.000Z", activeSessions: 2 };
-const pick: AccountPick = { at: "2026-11-20T12:00:00.000Z", trigger: "start", source: "engine", groupIndex: 0, picked: "claude:a", reason: "most-headroom", candidates: [headroom, { ...headroom, account: "claude" }] };
+const headroom = { account: "claude:a", label: "claude · a", state: "fresh" as const, headroomPercent: 40, tightest: { window: "5h", usedPercent: 60, resetsAt: "2026-11-20T15:00:00.000Z" }, readingAt: "2026-11-20T11:59:00.000Z", weight: 40, sharePercent: 60 };
+const pick: AccountPick = { at: "2026-11-20T12:00:00.000Z", trigger: "start", source: "engine", groupIndex: 0, picked: "claude:a", reason: "weighted", candidates: [headroom, { ...headroom, account: "claude" }] };
 const written = { group: [{ engine: "claude" }, { engine: "claude", profile: "a" }] };
 
 function link(extra: Partial<ResolvedFallbackLink>): ResolvedFallbackLink {
@@ -21,19 +21,19 @@ function view(links: ResolvedFallbackLink[], withPick = true): SessionFallbackVi
 }
 
 describe("withoutUsage", () => {
-  it("strips the headroom numbers from the pick's candidates and keeps its reason, choice and counts", () => {
+  it("strips the headroom numbers from the pick's candidates and keeps its reason, choice, weights and shares", () => {
     const { pick: shown } = withoutUsage(view([link({})])).chain;
-    expect(shown).toMatchObject({ picked: "claude:a", reason: "most-headroom", trigger: "start", source: "engine", groupIndex: 0 });
+    expect(shown).toMatchObject({ picked: "claude:a", reason: "weighted", trigger: "start", source: "engine", groupIndex: 0 });
     for (const candidate of shown!.candidates) {
-      expect(Object.keys(candidate).sort()).toEqual(["account", "activeSessions", "label", "state"]);
+      expect(Object.keys(candidate).sort()).toEqual(["account", "label", "sharePercent", "state", "weight"]);
     }
-    expect(shown!.candidates[0]).toMatchObject({ state: "fresh", activeSessions: 2 });
+    expect(shown!.candidates[0]).toMatchObject({ state: "fresh", weight: 40, sharePercent: 60 });
   });
 
   it("strips the group member's ranking numbers and the link's usedPercent and window, keeping state, reset and the group", () => {
     const [shown] = withoutUsage(view([link({ health: { state: "ok", until: "2026-11-20T15:00:00.000Z", usedPercent: 60, window: "5h" }, group: { index: 0, written, headroom } })])).chain.links;
     expect(shown!.health).toEqual({ state: "ok", until: "2026-11-20T15:00:00.000Z" });
-    expect(shown!.group).toEqual({ index: 0, written, headroom: { account: "claude:a", label: "claude · a", state: "fresh", activeSessions: 2 } });
+    expect(shown!.group).toEqual({ index: 0, written, headroom: { account: "claude:a", label: "claude · a", state: "fresh", weight: 40, sharePercent: 60 } });
   });
 
   it("leaves a view with no pick and links with no group or health as they are", () => {

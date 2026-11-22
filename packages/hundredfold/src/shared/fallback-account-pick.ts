@@ -4,10 +4,15 @@ import type { AccountHeadroom, AccountPick, FallbackChainSource } from "./fallba
 
 /**
  * The account balancer: given the Claude accounts of a group and what is known
- * of each one's usage, rank them by headroom and pick the one a new session
- * should run on. Pure: samples, health verdicts and session counts go in, a
- * ranking comes out; nothing is read from disk and no provider is called.
- * docs/design/fallback-account-groups.md (4) is the rule this implements.
+ * of each one's usage, rank them by headroom and pick the account a new session
+ * should run on. New sessions are spread across the group in proportion to each
+ * account's headroom by a deterministic smooth weighted round-robin, so a burst
+ * of starts inside one usage-reading interval splits instead of all landing on
+ * the account that looked best. Picking is pure (samples, health verdicts and
+ * the in-memory credits go in, a pick comes out); the credits are charged only
+ * by `recordAccountStart`, after a session really started. Nothing is read from
+ * disk and no provider is called. docs/design/fallback-account-groups.md (4) is
+ * the rule this implements.
  */
 
 /** A sample older than this is stale: twice the cadence the engine-health refresh writes it at. */
@@ -30,8 +35,6 @@ export interface GroupRankOptions {
   now: Date;
   /** The model the session will run, or none: it decides which model-scoped windows apply. */
   model?: string | null;
-  /** How many sessions are active on the account now. Default: none. */
-  activeSessions?: (account: string) => number;
 }
 
 /** The tightest window that applies and counts, and the headroom it leaves. */
@@ -75,18 +78,23 @@ function stateOf(candidate: GroupCandidate, now: Date): AccountHeadroom["state"]
   return now.getTime() - candidate.reading.at <= ACCOUNT_READING_FRESH_MS ? "fresh" : "stale";
 }
 
-function headroomRecord(candidate: GroupCandidate, options: GroupRankOptions): AccountHeadroom {
+/** What an account's headroom is worth as a share of new sessions: linear in headroom, halved when the reading is stale, nothing at its limit or with no headroom. `anyReading`: some account that is not at its limit has a reading, so one with none gets nothing; with none anywhere, each gets 1 (an even split). */
+function weightOf(state: AccountHeadroom["state"], headroomPercent: number | undefined, anyReading: boolean): number {
+  if (state === "exhausted") return 0;
+  if (state === "unknown") return anyReading ? 0 : 1;
+  const headroom = headroomPercent ?? 0;
+  return state === "stale" ? headroom / 2 : headroom;
+}
+
+interface Measured {
+  state: AccountHeadroom["state"];
+  headroom?: Headroom;
+  reading?: UsageSample;
+}
+
+function measure(candidate: GroupCandidate, options: GroupRankOptions): Measured {
   const { reading } = candidate;
-  const headroom = reading ? headroomOf(reading, options.model, options.now) : undefined;
-  return {
-    account: candidate.account,
-    label: candidate.label,
-    state: stateOf(candidate, options.now),
-    ...(headroom ? { headroomPercent: headroom.percent } : {}),
-    ...(headroom?.tightest ? { tightest: headroom.tightest } : {}),
-    ...(reading ? { readingAt: new Date(reading.at).toISOString() } : {}),
-    activeSessions: Math.max(options.activeSessions?.(candidate.account) ?? 0, 0),
-  };
+  return { state: stateOf(candidate, options.now), reading, ...(reading ? { headroom: headroomOf(reading, options.model, options.now) } : {}) };
 }
 
 const TIER_ORDER: Record<AccountHeadroom["state"], number> = { fresh: 0, stale: 1, unknown: 2, exhausted: 3 };
@@ -97,33 +105,50 @@ interface Ranked {
   written: number;
 }
 
-/** Best first: tier, then (when every account in the tier is out) the earliest reopening, then most headroom, fewest active sessions and written order. */
+/** Best first: tier, then (among accounts that are all out) the earliest reopening, then most headroom and the order written. */
 function compareRanked(a: Ranked, b: Ranked): number {
   const x = a.headroom;
   const y = b.headroom;
   return TIER_ORDER[x.state] - TIER_ORDER[y.state]
     || (x.state === "exhausted" ? a.reopensAt - b.reopensAt : 0)
     || (y.headroomPercent ?? 0) - (x.headroomPercent ?? 0)
-    || x.activeSessions - y.activeSessions
     || a.written - b.written;
 }
 
 function rankedOf(candidates: readonly GroupCandidate[], options: GroupRankOptions): Ranked[] {
+  const measured = candidates.map((candidate) => measure(candidate, options));
+  const anyReading = measured.some((m) => m.state !== "exhausted" && m.reading !== undefined);
+  const weights = measured.map((m) => weightOf(m.state, m.headroom?.percent, anyReading));
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
   return candidates
-    .map((candidate, written): Ranked => ({
-      headroom: headroomRecord(candidate, options),
-      reopensAt: candidate.reopensAt ?? Number.POSITIVE_INFINITY,
-      written,
-    }))
+    .map((candidate, written): Ranked => {
+      const { state, headroom, reading } = measured[written]!;
+      const weight = weights[written]!;
+      return {
+        headroom: {
+          account: candidate.account,
+          label: candidate.label,
+          state,
+          ...(headroom ? { headroomPercent: headroom.percent } : {}),
+          ...(headroom?.tightest ? { tightest: headroom.tightest } : {}),
+          ...(reading ? { readingAt: new Date(reading.at).toISOString() } : {}),
+          weight,
+          sharePercent: total > 0 ? Math.round((weight / total) * 100) : 0,
+        },
+        reopensAt: candidate.reopensAt ?? Number.POSITIVE_INFINITY,
+        written,
+      };
+    })
     .sort(compareRanked);
 }
 
 /**
- * The group's accounts ranked best first. The tightest applicable window
- * decides the headroom; tiers are fresh, stale, unknown, then exhausted, so an
- * account that cannot be read is never preferred over one that can. Ties fall
- * to the fewest active sessions, then to the order the group is written in, so
- * the same state always gives the same ranking.
+ * The group's accounts ranked best first, each with its weight and share. The
+ * tightest applicable window decides the headroom; tiers are fresh, stale,
+ * unknown, then exhausted, so an account that cannot be read is never preferred
+ * over one that can; within a tier, highest headroom first, then written order.
+ * This is the order a limit walks the group's other members in, and the order
+ * of a pick's candidates; it is not what a new session is spread by.
  */
 export function rankGroupAccounts(candidates: readonly GroupCandidate[], options: GroupRankOptions): AccountHeadroom[] {
   return rankedOf(candidates, options).map((ranked) => ranked.headroom);
@@ -136,31 +161,73 @@ export interface GroupPickContext extends GroupRankOptions {
   groupIndex: number;
 }
 
-function reasonOf(ranked: readonly Ranked[]): AccountPick["reason"] {
-  const [best, next] = ranked.map((entry) => entry.headroom);
-  if (best!.state === "exhausted") return "all-exhausted";
-  if (next === undefined) return "only-candidate";
-  if (best!.state === "unknown") return "no-readings";
-  const level = (item: AccountHeadroom): string => `${item.state}:${item.headroomPercent}`;
-  return level(best!) === level(next) ? "tie" : "most-headroom";
+/** The credit each account of a candidate set has built up: weights added at each start, the winner charged the total. In memory, keyed by the set's sorted account keys, so a restart begins every set at 0. */
+const credits = new Map<string, Map<string, number>>();
+
+function setKey(accounts: readonly string[]): string {
+  return [...accounts].sort().join("|");
+}
+
+/** Forgets every credit. For tests and for a config reload that changes what a group means. */
+export function resetAccountCredits(): void {
+  credits.clear();
+}
+
+/** The account with the highest credit once this start's weights are added (ties: the order written), among those with a weight. Undefined when none has. */
+function winnerOf(written: readonly AccountHeadroom[], writtenOrder: readonly string[]): string | undefined {
+  const held = credits.get(setKey(written.map((entry) => entry.account)));
+  let best: { account: string; credit: number; at: number } | undefined;
+  for (const entry of written) {
+    if (entry.weight <= 0) continue;
+    const credit = (held?.get(entry.account) ?? 0) + entry.weight;
+    const at = writtenOrder.indexOf(entry.account);
+    if (!best || credit > best.credit || (credit === best.credit && at < best.at)) best = { account: entry.account, credit, at };
+  }
+  return best?.account;
+}
+
+function reasonOf(ranked: readonly AccountHeadroom[], picked: string | undefined): AccountPick["reason"] {
+  if (picked === undefined) return "all-exhausted";
+  if (ranked.length === 1) return "only-candidate";
+  return ranked.every((entry) => entry.state === "unknown" || entry.state === "exhausted") ? "no-readings" : "weighted";
 }
 
 /**
- * The account a new session should run on, with the ranking behind the choice.
- * `all-exhausted`: every account is out and the one that reopens first is
- * picked, for creation's own reroute to move the session past the group.
- * Undefined for a group with no candidate.
+ * The account a new session should run on, with the weights behind the choice.
+ * Pure: it reads the credits and changes nothing, so a preview, a validation
+ * and the board walk's view can ask without charging anything; a start that
+ * really happens is charged with `recordAccountStart`. `all-exhausted`: every
+ * account has no weight, and the one that reopens first (best ranked) is picked,
+ * for creation's own reroute to move the session past the group. Undefined for
+ * a group with no candidate.
  */
 export function pickGroupAccount(candidates: readonly GroupCandidate[], context: GroupPickContext): AccountPick | undefined {
-  const ranked = rankedOf(candidates, context);
+  const ranked = rankGroupAccounts(candidates, context);
   if (ranked.length === 0) return undefined;
+  const picked = winnerOf(ranked, candidates.map((candidate) => candidate.account));
   return {
     at: context.now.toISOString(),
     trigger: context.trigger,
     source: context.source,
     groupIndex: context.groupIndex,
-    picked: ranked[0]!.headroom.account,
-    reason: reasonOf(ranked),
-    candidates: ranked.map((entry) => entry.headroom),
+    picked: picked ?? ranked[0]!.account,
+    reason: reasonOf(ranked, picked),
+    candidates: ranked,
   };
+}
+
+/**
+ * Charges a start to the account it was picked for: every candidate's credit
+ * grows by the weight the pick recorded and the winner's drops by their sum, so
+ * the next pick sees the start the usage readings have not caught up with. Call
+ * it once, after the session row exists, never for a preview.
+ */
+export function recordAccountStart(pick: Pick<AccountPick, "picked" | "candidates">): void {
+  const total = pick.candidates.reduce((sum, entry) => sum + entry.weight, 0);
+  if (total <= 0 || !pick.candidates.some((entry) => entry.account === pick.picked && entry.weight > 0)) return;
+  const key = setKey(pick.candidates.map((entry) => entry.account));
+  const held = credits.get(key) ?? new Map<string, number>();
+  for (const entry of pick.candidates) held.set(entry.account, (held.get(entry.account) ?? 0) + entry.weight);
+  held.set(pick.picked, (held.get(pick.picked) ?? 0) - total);
+  credits.set(key, held);
 }

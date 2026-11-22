@@ -13,13 +13,11 @@ import type { HundredfoldConfig } from "./types.js";
  * Balanced account groups at resolve time: reading what the balancer needs from
  * health and the usage samples, ordering the members of an expanded group by
  * headroom, and finding the group a session's own account makes its "home".
- * The ranking rule itself is `fallback-account-pick.ts`'s.
+ * The ranking and weighting rules themselves are `fallback-account-pick.ts`'s.
  */
 
-/** What resolving a chain reads to rank a group: health and the limits readings, plus how many sessions are active on an account (part of the tie-break; default none). */
-export interface GroupRankInputs extends FallbackHealthInputs {
-  activeSessions?: (account: string) => number;
-}
+/** What resolving a chain reads to rank a group: health and the limits readings. */
+export type GroupRankInputs = FallbackHealthInputs;
 
 /** An account's candidate: its latest usage sample (the injected readings when given, else the one on disk) and whether health or a signed-out login rules it out. */
 export function accountCandidate(inputs: FallbackHealthInputs, account: string, label: string): GroupCandidate {
@@ -40,7 +38,7 @@ export function accountCandidate(inputs: FallbackHealthInputs, account: string, 
 /** The ranking of some Claude links (the members of a group), best first, for a session that will run `model`. */
 export function rankLinks(inputs: GroupRankInputs, links: readonly Pick<ResolvedFallbackLink, "account" | "label">[], model: string | undefined): AccountHeadroom[] {
   const candidates = links.map((link) => accountCandidate(inputs, link.account, link.label));
-  return rankGroupAccounts(candidates, { now: inputs.now ?? new Date(), model, activeSessions: inputs.activeSessions });
+  return rankGroupAccounts(candidates, { now: inputs.now ?? new Date(), model });
 }
 
 /**
@@ -127,7 +125,7 @@ export function startPickOf(inputs: GroupRankInputs, home: HomeGroup, resolved: 
     return [accountCandidate(inputs, account, fallbackLinkLabel(link))];
   });
   return pickGroupAccount(candidates, {
-    now: inputs.now ?? new Date(), model: context.model, activeSessions: inputs.activeSessions,
+    now: inputs.now ?? new Date(), model: context.model,
     trigger: "start", source: context.source, groupIndex: home.index,
   });
 }

@@ -31,6 +31,9 @@ export interface FallbackLink {
  */
 export type FallbackChainEntry = string | FallbackLink | FallbackGroupEntry;
 
+/** An entry in its object forms: one target, or a group. What an employee's chain holds, and what an editor reads back. */
+export type FallbackWrittenEntry = FallbackLink | FallbackGroupEntry;
+
 /**
  * A chain entry that is a set of Claude accounts rather than one target. When a
  * new session starts on an account in the group at the head of its chain, the
@@ -53,7 +56,10 @@ export interface AccountHeadroom {
   tightest?: { window: string; usedPercent: number; resetsAt?: string };
   /** ISO time of the usage sample the headroom came from. */
   readingAt?: string;
-  activeSessions: number;
+  /** Its weight in the split of new sessions: its headroom (halved when the reading is stale), 0 at its limit. */
+  weight: number;
+  /** The weight over the sum of weights, in whole percent. */
+  sharePercent: number;
 }
 
 /** What the balancer chose for a session, and the ranking it chose from. */
@@ -67,8 +73,8 @@ export interface AccountPick {
   groupIndex: number;
   /** The account key the session was pinned to. */
   picked: string;
-  reason: "most-headroom" | "tie" | "only-candidate" | "no-readings" | "all-exhausted";
-  /** Ranked, best first. */
+  reason: "weighted" | "only-candidate" | "no-readings" | "all-exhausted";
+  /** With the weights at the time, by headroom, highest first. */
   candidates: AccountHeadroom[];
 }
 
@@ -231,7 +237,7 @@ export interface FallbackChainSubject {
   primary: ResolvedFallbackLink | null;
   /** The chain as written, normalised to links; a group entry is kept whole. Null: the
    *  subject writes none (an employee then inherits; an engine or account has no fallback). */
-  configured: Array<FallbackLink | FallbackGroupEntry> | null;
+  configured: FallbackWrittenEntry[] | null;
   /** True when `configured` came from string entries, whose own chains expand. */
   legacy: boolean;
   /** What would run, in order, after legacy expansion and de-duplication. */
