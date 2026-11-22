@@ -102,6 +102,21 @@ function useBackgroundChip(state: VoiceUiState, controller: VoiceController | nu
   return derived.chip
 }
 
+/** The controller a pane already holds, or one handed over from the pane it replaces, for this chat. */
+function carriedOver(sessionId: string | null | undefined, held: VoiceController | null): VoiceController | null {
+  if (!sessionId) return null
+  if (held?.boundSessionId?.() === sessionId) { dropHandoff(held); return held }
+  return claimHandoff(sessionId) ?? null
+}
+
+function pickController(
+  config: EnabledConfig | null, sessionId: string | null | undefined, newChat: VoiceSessionStarter | null | undefined, held: VoiceController | null,
+): VoiceController | null {
+  if (!config || !config.available) return null
+  const target = sessionId || newChat
+  return carriedOver(sessionId, held) ?? (target ? createController(config, target) : null)
+}
+
 /**
  * The controller for the chat in the pane. On a new chat it is made with a way to create the chat on the first tap; once
  * the pane is bound to the chat it created, that same controller carries on (a new one would stop the conversation).
@@ -112,15 +127,11 @@ function useController(
   newChat: VoiceSessionStarter | null | undefined,
 ): VoiceController | null {
   const held = useRef<VoiceController | null>(null)
-  const controller = useMemo(() => {
-    if (!config || !config.available) return null
-    if (sessionId && held.current?.boundSessionId?.() === sessionId) { dropHandoff(held.current); return held.current }
-    const handedOver = sessionId ? claimHandoff(sessionId) : undefined
-    if (handedOver) return handedOver
-    const target = sessionId || newChat
-    return target ? createController(config, target) : null
-    // The starter is read at tap time through its own ref; only the chat and the config decide the controller.
-  }, [config, sessionId, Boolean(newChat)])
+  // Only the chat and the config decide the controller; the starter is read at tap time through its own ref.
+  const controller = useMemo(
+    () => pickController(config, sessionId, newChat, held.current),
+    [config, sessionId, Boolean(newChat)],
+  )
   held.current = controller
   useEffect(() => {
     if (controller) releaseClaim(controller)
