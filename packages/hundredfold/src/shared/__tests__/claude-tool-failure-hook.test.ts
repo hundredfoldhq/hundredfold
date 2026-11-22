@@ -47,6 +47,28 @@ describe("localClaudeKnowsToolFailureHook", () => {
     expect(localClaudeKnowsToolFailureHook(path.join(dir, "missing-claude"))).toBe(false);
   });
 
+  it("holds a failed run against nobody: a probe that failed once passes the next time on the same binary", () => {
+    const bin = path.join(dir, "flaky-claude");
+    const flag = path.join(dir, "ready");
+    const log = path.join(dir, "flaky.log");
+    fs.writeFileSync(bin, `#!/bin/sh\necho ask >> '${log}'\n[ -e '${flag}' ] || exit 1\necho '2.1.330 (Claude Code)'\n`, { mode: 0o755 });
+    expect(localClaudeKnowsToolFailureHook(bin)).toBe(false);
+    fs.writeFileSync(flag, "");
+    expect(localClaudeKnowsToolFailureHook(bin)).toBe(true);
+    // The pass is kept: no third run.
+    expect(localClaudeKnowsToolFailureHook(bin)).toBe(true);
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  it("does not keep the answer for a build that is too old either: an upgrade at the same path is seen", () => {
+    const bin = path.join(dir, "shim-claude");
+    fs.writeFileSync(bin, `#!/bin/sh\necho '2.0.40 (Claude Code)'\n`, { mode: 0o755 });
+    expect(localClaudeKnowsToolFailureHook(bin)).toBe(false);
+    // Same size and, within the clock's grain, possibly the same mtime: the old build was never remembered.
+    fs.writeFileSync(bin, `#!/bin/sh\necho '2.1.330 (Claude Code)'\n`, { mode: 0o755 });
+    expect(localClaudeKnowsToolFailureHook(bin)).toBe(true);
+  });
+
   it("asks again when the binary at the same path was replaced", () => {
     const first = fakeClaude("claude", "2.0.40");
     expect(localClaudeKnowsToolFailureHook(first.bin)).toBe(false);

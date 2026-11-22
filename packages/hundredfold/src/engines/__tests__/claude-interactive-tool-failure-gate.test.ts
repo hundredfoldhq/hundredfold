@@ -83,3 +83,58 @@ describe("InteractiveClaudeEngine — which sessions register PostToolUseFailure
     expect((await askedFor("gate-missing", path.join(dir, "missing-claude"))).toolFailureHook).toBeUndefined();
   });
 });
+
+/**
+ * A session that respawns its PTY to deliver a prompt the warm one never took writes its settings
+ * again, for the new process: that file must carry the same registration, or the respawned session
+ * is back to counting a failed call as running.
+ */
+describe("InteractiveClaudeEngine — the settings a respawned session writes", () => {
+  let dir: string;
+  let registry: HookRegistry;
+  let engine: InteractiveClaudeEngine;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    settingsAsked.length = 0;
+    clearToolFailureHookCacheForTests();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-failure-respawn-"));
+    registry = new HookRegistry();
+    engine = new InteractiveClaudeEngine(new PtyLifecycleManager({ maxLivePtys: 4 }), registry);
+  });
+  afterEach(() => {
+    registry.dispose?.();
+    vi.useRealTimers();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Warm a session on `version`, then make a second prompt go undelivered so the engine respawns; returns what the respawn's settings were asked for. */
+  async function respawnedSettings(id: string, version: string): Promise<Record<string, unknown>> {
+    const bin = path.join(dir, `claude-${version}`);
+    fs.writeFileSync(bin, `#!/bin/sh\necho '${version} (Claude Code)'\n`, { mode: 0o755 });
+    const first = engine.run({ sessionId: id, prompt: "first", cwd: "/tmp", resumeSessionId: "c1", bin } as any);
+    await vi.advanceTimersByTimeAsync(20);
+    registry.deliver(id, { hook_event_name: "SessionStart", session_id: "c1" });
+    registry.deliver(id, { hook_event_name: "Stop", last_assistant_message: "done" });
+    expect((await first).error).toBeUndefined();
+    const writesBefore = settingsAsked.length;
+
+    const second = engine.run({ sessionId: id, prompt: "second", cwd: "/tmp", resumeSessionId: "c1", bin } as any);
+    // The TUI never acknowledges the paste: after the CR retries the engine respawns with the prompt in argv.
+    await vi.advanceTimersByTimeAsync(25_000);
+    // One write for the turn on the warm PTY, one for the respawn.
+    expect(settingsAsked.length).toBe(writesBefore + 2);
+    const asked = settingsAsked[settingsAsked.length - 1]!;
+    engine.kill(id, "Interrupted: test over");
+    await second;
+    return asked;
+  }
+
+  it("registers it again for a build that knows the event", async () => {
+    expect((await respawnedSettings("respawn-new", "2.1.330")).toolFailureHook).toBe(true);
+  });
+
+  it("does not register it for an older build", async () => {
+    expect((await respawnedSettings("respawn-old", "2.0.40")).toolFailureHook).toBeUndefined();
+  });
+});

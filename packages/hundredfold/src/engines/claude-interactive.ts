@@ -2765,7 +2765,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
           // Tools and dialogs counted while the paste was held were other
           // turns' (the hold kept them to gate its quiet backstop); a tool the
           // operator interrupted never fires PostToolUse, and would otherwise
-          // pin this turn "busy" for good.
+          // pin this turn "busy" for good. A late end hook of such a call
+          // (PostToolUse, or PostToolUseFailure on a build that registers it)
+          // finds the count at zero, which it clamps, and clears a dialog flag that
+          // is gone by then anyway.
           entry.activeTools = 0;
           entry.blockedOnPermissionAt = undefined;
         }
