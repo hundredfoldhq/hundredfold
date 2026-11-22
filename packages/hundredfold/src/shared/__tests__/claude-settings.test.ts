@@ -28,6 +28,17 @@ describe("claude-settings", () => {
     expect(s.hooks.PostCompact[0].hooks[0].command).toBe("node '/h/relay.mjs' 'hundredfold-abc'");
   });
 
+  it("registers PostToolUseFailure only when asked: an older Claude Code stops at a dialog on an unknown hook event", () => {
+    const base = { sessionId: "hundredfold-abc", relayScript: "/h/relay.mjs" };
+    expect(buildSessionSettings(base).hooks.PostToolUseFailure).toBeUndefined();
+    expect(buildSessionSettings({ ...base, toolFailureHook: false }).hooks.PostToolUseFailure).toBeUndefined();
+    const on = buildSessionSettings({ ...base, toolFailureHook: true });
+    expect(on.hooks.PostToolUseFailure?.[0]?.hooks[0]?.command).toBe("node '/h/relay.mjs' 'hundredfold-abc'");
+    // The rest of the hooks are the same either way.
+    const { PostToolUseFailure: _ignored, ...rest } = on.hooks;
+    expect(rest).toEqual(buildSessionSettings(base).hooks);
+  });
+
   it("shell-quotes hook relay paths and session ids", () => {
     const s = buildSessionSettings({ sessionId: "hundredfold ' tricky", relayScript: "/tmp/path with spaces/relay's.mjs" });
     const stop = s.hooks.Stop[0].hooks[0];

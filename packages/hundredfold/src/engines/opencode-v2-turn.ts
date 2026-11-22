@@ -1,4 +1,4 @@
-import type { EngineResult, EngineRunOpts, SteerOutcome, StreamDelta } from "../shared/types.js";
+import type { EngineResult, EngineRunOpts, ForegroundWork, SteerOutcome, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { USER_STOP_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { OpencodeTurn } from "./opencode-turn.js";
@@ -16,7 +16,7 @@ import {
 } from "./opencode-server-turn.js";
 import { fallbackModelNotice, requestedModel, stepModel } from "./opencode-fallback-notice.js";
 import { abandonedRetryError, providerFailureReason, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
-import { isAbortError, record, runLinesFromStoredReply, str, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
+import { isAbortError, record, runLinesFromStoredReply, str, V2ForegroundTools, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
 import { cancelledV2Requests, HUNDREDFOLD_V2_PROMPT_METADATA, hundredfoldSessionNotes, type HundredfoldSessionNotes } from "./opencode-v2-history.js";
 import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes, v2WithdrawInbox } from "./opencode-v2-api.js";
 import { RESEED_PREAMBLE, retryReseed } from "./opencode-server-compaction.js";
@@ -57,6 +57,9 @@ const PROMPT_NOT_RUN = {
 const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
 const HISTORY_LIMIT = 100;
 const QUOTE_LIMIT = 500;
+/** The events after which none of the turn's tool calls is still running. */
+const FOREGROUND_ENDING_EVENTS = new Set(["session.step.ended", "session.step.failed", "session.execution.succeeded", "session.execution.interrupted", "session.execution.failed"]);
+
 /** Deny the question tool: nobody is there to answer it (see the header). */
 const NO_QUESTIONS = [{ action: "question", resource: "*", effect: "deny" }];
 
@@ -110,6 +113,8 @@ export class OpencodeV2ServerTurn {
   private readonly queuedByOthers = new Set<string>();
   /** The turn's prompt has been delivered. */
   private delivered = false;
+  /** The tool calls the turn's steps have running (see foregroundWork). */
+  private readonly foreground = new V2ForegroundTools();
   /** Inputs steered into the turn (see steer) the server has not yet delivered. */
   private readonly pendingSteers = new Map<string, PendingSteer>();
   /** The turn is waiting for a steer past the end of its execution (see onExecutionEnded). */
@@ -183,6 +188,15 @@ export class OpencodeV2ServerTurn {
    */
   canSteer(): boolean {
     return this.ownInput && !this.settled && !this.interrupting;
+  }
+
+  /**
+   * The tool call that has run longest in this turn, from the server's event stream: what the voice hub
+   * checks before it decides how to cut in on a turn. Null with no tool running, and once the turn is
+   * over or being stopped. There is no soft interrupt here: a barge-in is steered in at the next step.
+   */
+  foregroundWork(): ForegroundWork | null {
+    return this.settled || this.interrupting ? null : this.foreground.oldest();
   }
 
   /**
@@ -653,6 +667,7 @@ export class OpencodeV2ServerTurn {
 
   private onEvent(event: V2Event): void {
     const data = record(event.data) ?? {};
+    this.noteForegroundEnd(event, data);
     const handler = this.handlers[event.type];
     if (handler) {
       // Child sessions only matter for the permission and form prompts.
@@ -662,7 +677,15 @@ export class OpencodeV2ServerTurn {
       return;
     }
     // Text and tool events: the turn's own steps only.
-    if (data.sessionID === this.sessionId && this.own.has(str(data.assistantMessageID) ?? "")) this.feed(this.lines.lineFor(event));
+    if (data.sessionID === this.sessionId && this.own.has(str(data.assistantMessageID) ?? "")) {
+      this.foreground.onEvent(event);
+      this.feed(this.lines.lineFor(event));
+    }
+  }
+
+  /** A step that ended, failed or was aborted has no tool still running (an aborted tool reports no result). */
+  private noteForegroundEnd(event: V2Event, data: Record<string, unknown>): void {
+    if (data.sessionID === this.sessionId && FOREGROUND_ENDING_EVENTS.has(event.type)) this.foreground.clear();
   }
 
   /** Note which inputs others queue (see onDelivered). */
