@@ -236,6 +236,7 @@ describe('tapAction', () => {
     expect(tapAction('off', false, 'hands-free')).toBe('start')
     expect(tapAction('suspended', true, 'hands-free')).toBe('resume')
     expect(tapAction('speaking', false, 'hands-free')).toBe('stop')
+    expect(tapAction('paused', false, 'push-to-talk')).toBe('stop')
     expect(tapAction('listening', false, 'hands-free')).toBe('stop')
   })
 

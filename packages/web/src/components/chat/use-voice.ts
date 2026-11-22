@@ -54,7 +54,7 @@ export interface UseVoice {
 export function tapAction(phase: VoicePhase, needsTap: boolean, mode: 'hands-free' | 'push-to-talk'): 'start' | 'resume' | 'stop' | 'none' {
   if (phase === 'off') return 'start'
   if (needsTap) return 'resume'
-  return mode === 'hands-free' || phase === 'suspended' ? 'stop' : 'none'
+  return mode === 'hands-free' || phase === 'suspended' || phase === 'paused' ? 'stop' : 'none'
 }
 
 function unavailableReason(config: EnabledConfig, controller: VoiceController | null): string | null {

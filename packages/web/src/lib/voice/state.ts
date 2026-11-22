@@ -7,9 +7,10 @@ import {
   type VoiceServerFrame,
   type VoiceTurnState,
 } from "@hundredfold/gateway-events"
+import type { NativeStateEvent } from "@/platform/native-bridge"
 
 /** What the control shows. `off` means voice mode is not running for this chat. */
-export type VoicePhase = "off" | "connecting" | "listening" | "hearing" | "thinking" | "working" | "speaking" | "suspended"
+export type VoicePhase = "off" | "paused" | "connecting" | "listening" | "hearing" | "thinking" | "working" | "speaking" | "suspended"
 
 export interface VoiceBackgroundTask {
   taskId: string
@@ -25,7 +26,7 @@ export interface VoiceReadyInfo {
 }
 
 export interface VoiceUiState {
-  status: "off" | "connecting" | "on" | "suspended"
+  status: "off" | "connecting" | "on" | "suspended" | "paused"
   mode: VoiceMode
   turn: VoiceTurnState
   /** The gateway's voice-activity state: someone is talking. */
@@ -71,6 +72,7 @@ export type VoiceAction =
   | { type: "frame"; frame: VoiceServerFrame; now: number }
   | { type: "closed"; code: number; reason: string; requested: boolean }
   | { type: "suspended" }
+  | { type: "native-state"; state: NativeStateEvent["state"]; reason?: NativeStateEvent["reason"] }
   | { type: "resumed" }
   | { type: "needs-tap" }
   | { type: "dismiss-notice" }
@@ -79,6 +81,12 @@ export type VoiceAction =
   | { type: "failed"; message: string }
 
 export const SUSPENDED_NOTICE = "Voice mode was suspended by the device."
+export const PAUSED_NOTICE = "Voice mode is paused by a call or another app. It resumes when that ends."
+
+const NATIVE_STOP_ERRORS: Partial<Record<NonNullable<NativeStateEvent["reason"]>, string>> = {
+  error: "Voice mode stopped on this device.",
+  socket_closed: "Voice connection lost.",
+}
 
 const TURN_PHASE: Record<VoiceTurnState, VoicePhase> = {
   idle: "listening",
@@ -91,6 +99,7 @@ const OFF_PHASE: Record<Exclude<VoiceUiState["status"], "on">, VoicePhase> = {
   off: "off",
   connecting: "connecting",
   suspended: "suspended",
+  paused: "paused",
 }
 
 /** What to call the state, from the gateway's turn and the voice-activity flag. */
@@ -174,6 +183,16 @@ function frame(state: VoiceUiState, f: VoiceServerFrame, now: number): VoiceUiSt
   return handler ? handler(state, f, now) : state
 }
 
+/** The mobile shell's own state: a stop from the lock screen goes back to idle, a call pauses, a failure says so. */
+function nativeState(state: VoiceUiState, a: ActionOf<"native-state">): VoiceUiState {
+  switch (a.state) {
+    case "paused": return state.status === "off" ? state : { ...state, status: "paused", notice: PAUSED_NOTICE, vadSpeaking: false, partial: "" }
+    case "running": return state.status === "paused" ? { ...state, status: "on", notice: null } : state
+    case "stopped": return ended(state, { error: a.reason ? (NATIVE_STOP_ERRORS[a.reason] ?? null) : null })
+    case "connecting": return state
+  }
+}
+
 type ActionOf<K extends VoiceAction["type"]> = Extract<VoiceAction, { type: K }>
 type ActionHandlers = { [K in VoiceAction["type"]]: (state: VoiceUiState, action: ActionOf<K>) => VoiceUiState }
 
@@ -182,6 +201,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   frame: (state, a) => frame(state, a.frame, a.now),
   closed,
   suspended: (state) => (state.status === "off" ? state : { ...state, status: "suspended", notice: SUSPENDED_NOTICE, vadSpeaking: false, partial: "" }),
+  "native-state": nativeState,
   resumed: (state) => ({ ...state, status: "on", needsTap: false }),
   "needs-tap": (state) => ({ ...state, needsTap: true }),
   "dismiss-notice": (state) => ({ ...state, notice: null, error: null }),

@@ -104,3 +104,70 @@ describe("NativeVoiceSession", () => {
     expect(voicePhase(session.getSnapshot())).toBe("listening")
   })
 })
+
+describe("NativeVoiceSession native_state events", () => {
+  async function running() {
+    const rig = bridge()
+    const session = new NativeVoiceSession(rig.value, { sessionId: "s", mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    rig.send(READY)
+    return { ...rig, session }
+  }
+
+  it("a stop from the lock screen or notification returns the control to idle, quietly", async () => {
+    const { session, send } = await running()
+    send({ type: "native_state", state: "stopped", reason: "notification" })
+    expect(session.getSnapshot()).toMatchObject({ status: "off", error: null, notice: null })
+    expect(voicePhase(session.getSnapshot())).toBe("off")
+  })
+
+  it("a stop the user asked for in the app is idle too", async () => {
+    const { session, send } = await running()
+    send(JSON.stringify({ type: "native_state", state: "stopped", reason: "user" }))
+    expect(voicePhase(session.getSnapshot())).toBe("off")
+  })
+
+  it("a phone call or Siri pauses it, with a notice, and it comes back when the shell says running", async () => {
+    const { session, send } = await running()
+    send({ type: "native_state", state: "paused", reason: "interruption" })
+    expect(voicePhase(session.getSnapshot())).toBe("paused")
+    expect(session.getSnapshot().notice).toMatch(/paused by a call/)
+    send({ type: "native_state", state: "running" })
+    expect(voicePhase(session.getSnapshot())).toBe("listening")
+    expect(session.getSnapshot().notice).toBeNull()
+  })
+
+  it("a stop with reason error or socket_closed says so", async () => {
+    const a = await running()
+    a.send({ type: "native_state", state: "stopped", reason: "error" })
+    expect(a.session.getSnapshot().error).toMatch(/stopped on this device/)
+    const b = await running()
+    b.send({ type: "native_state", state: "stopped", reason: "socket_closed" })
+    expect(b.session.getSnapshot().error).toBe("Voice connection lost.")
+  })
+
+  it("running and connecting before the gateway is ready do not skip ahead of ready", async () => {
+    const rig = bridge()
+    const session = new NativeVoiceSession(rig.value, { sessionId: "s", mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    rig.send({ type: "native_state", state: "connecting" })
+    rig.send({ type: "native_state", state: "running" })
+    expect(voicePhase(session.getSnapshot())).toBe("connecting")
+    rig.send(READY)
+    expect(voicePhase(session.getSnapshot())).toBe("listening")
+  })
+
+  it("is not a gateway frame: an unknown native_state value is ignored", async () => {
+    const { session, send } = await running()
+    send({ type: "native_state", state: "exploded" })
+    expect(voicePhase(session.getSnapshot())).toBe("listening")
+  })
+
+  it("a tap on a paused control stops voice mode through the shell", async () => {
+    const { session, send, value } = await running()
+    send({ type: "native_state", state: "paused", reason: "interruption" })
+    session.stop()
+    expect(value.voiceStop).toHaveBeenCalledTimes(1)
+    expect(voicePhase(session.getSnapshot())).toBe("off")
+  })
+})

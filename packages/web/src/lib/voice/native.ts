@@ -1,5 +1,5 @@
 import type { VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
-import type { HundredfoldNativeBridge } from "@/platform/native-bridge"
+import type { HundredfoldNativeBridge, NativeStateEvent } from "@/platform/native-bridge"
 import { parseServerFrame } from "./socket"
 import { VoiceStore, type VoiceController } from "./controller"
 import type { VoiceUiState } from "./state"
@@ -38,6 +38,19 @@ function errorCode(error: unknown): string {
 export function nativeStartMessage(error: unknown): string {
   const code = errorCode(error)
   return START_ERRORS[code] ?? "Voice mode could not start on this device."
+}
+
+const NATIVE_STATES = new Set(["connecting", "running", "paused", "stopped"])
+
+/** The shell's own state object, whether forwarded parsed or as a string. */
+export function asNativeState(raw: unknown): NativeStateEvent | null {
+  let value = raw
+  if (typeof raw === "string") {
+    try { value = JSON.parse(raw) } catch { return null }
+  }
+  if (!value || typeof value !== "object") return null
+  const event = value as { type?: unknown; state?: unknown }
+  return event.type === "native_state" && typeof event.state === "string" && NATIVE_STATES.has(event.state) ? (value as NativeStateEvent) : null
 }
 
 /**
@@ -108,6 +121,11 @@ export class NativeVoiceSession implements VoiceController {
 
   private onForwarded(raw: unknown): void {
     if (this.stopping) return
+    const native = asNativeState(raw)
+    if (native) {
+      this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason })
+      return
+    }
     const frame: VoiceServerFrame | null = typeof raw === "string" ? parseServerFrame(raw) : parseServerFrame(JSON.stringify(raw))
     if (frame) this.store.dispatch({ type: "frame", frame, now: this.now() })
   }

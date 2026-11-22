@@ -87,6 +87,17 @@ describe('VoiceControl', () => {
     expect(voiceControlLabel(withPhase(needsTap))).toBe('Voice mode was suspended. Tap to resume')
   })
 
+  it('shows a paused state when a call or another app took the audio', () => {
+    const paused = voiceReducer(stateAfter(), { type: 'native-state', state: 'paused', reason: 'interruption' })
+    const voice = withPhase(paused, { phase: 'paused' })
+    render(<VoiceControl voice={voice} />)
+    const button = document.querySelector('[data-voice-control]') as HTMLElement
+    expect(button.getAttribute('data-state')).toBe('paused')
+    expect(button.getAttribute('aria-label')).toMatch(/paused by a call/)
+    render(<VoiceCaption voice={voice} />)
+    expect(document.querySelector('[data-voice-message]')?.textContent).toMatch(/paused by a call/)
+  })
+
   it('push-to-talk: hold to talk through the controller, with a separate end button', () => {
     const voice = withPhase(stateAfter(), { mode: 'push-to-talk' })
     render(<VoiceControl voice={voice} />)
