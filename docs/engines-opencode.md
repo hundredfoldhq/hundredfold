@@ -238,7 +238,7 @@ engines:
 
 ### Account groups
 
-Declared accounts can be balanced: a `{ group: [...] }` entry at the head of an opencode employee's `fallback` or of `engines.opencode.fallback` holds accounts by `profile`, and a new opencode session is to be spread across them in proportion to each account's headroom instead of always billing the first.
+Declared accounts can be balanced: a `{ group: [...] }` entry at the head of an opencode employee's `fallback` or of `engines.opencode.fallback` holds accounts by `profile`, and each new opencode session is spread across them in proportion to each account's headroom instead of always billing the first.
 
 ```yaml
 engines:
