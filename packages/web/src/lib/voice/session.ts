@@ -1,6 +1,6 @@
-import type { VoiceClientFrame, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
+import type { VoiceClientFrame, VoiceCueSettings, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { startCapture, requestMicrophone } from "./capture-worklet"
-import { DEFAULT_CUE_SETTINGS, VoiceCuePlayer, wantedCue, type CueAudioContext, type VoiceCuePlayerLike } from "./cues"
+import { DEFAULT_CUE_SETTINGS, VoiceCuePlayer, wantedCue, type CueAudioContext, type CueInputs, type VoiceCuePlayerLike } from "./cues"
 import { VoiceStore, type VoiceController } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
@@ -214,17 +214,21 @@ export class BrowserVoiceSession implements VoiceController {
   private syncCue(): void {
     const state = this.store.snapshot
     const settings = state.ready?.cues ?? DEFAULT_CUE_SETTINGS
-    const cue = wantedCue({
+    const cue = wantedCue(this.cueInputs(state, settings))
+    if (!cue && !this.cuePlayer) return
+    this.cuePlayer ??= this.ctx ? this.deps.createCuePlayer(this.ctx) : null
+    this.cuePlayer?.set(cue, settings.volume)
+  }
+
+  private cueInputs(state: VoiceUiState, settings: VoiceCueSettings): CueInputs {
+    return {
       settings,
       running: state.status === "on",
       turn: state.turn,
       hearing: state.vadSpeaking || state.partial !== "" || this.talking,
       speechAudible: this.player?.isActive() === true,
       toolBackgrounded: state.toolBackgrounded,
-    })
-    if (!cue && !this.cuePlayer) return
-    this.cuePlayer ??= this.ctx ? this.deps.createCuePlayer(this.ctx) : null
-    this.cuePlayer?.set(cue, settings.volume)
+    }
   }
 
   private applyToAudio(frame: VoiceServerFrame): void {

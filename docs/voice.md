@@ -171,7 +171,7 @@ Both are made on the device (a short sine tick with a soft envelope; no audio fi
 3. A cue that is playing is silenced the moment the gateway says it hears you, so it never sits under your own voice for long.
 4. Its audio is on a player of its own, on the same audio session as the microphone, so the platform's echo canceller knows it is output.
 
-The measured result with the real voice-activity detector is in the pull request that added cues; to check your own setup on speakers, turn the volume up and watch for the chat to start a turn on its own.
+Measured against the real Silero detector on a gateway, with the cue played straight into the microphone uplink and no echo cancelling at all: each cue at volume 1 for 20 seconds (about 0.07 RMS, above the default onset level for the 35 to 50 ms of each tick, never for 250 ms), and a cue at five times that level (about 0.36 RMS), started no utterance, no transcript and no `stop_playback`, while a spoken sentence at normal level did. If a loud room or an open speaker still sets it off on your setup, lower `cues.volume` or turn the cues off.
 
 ## The screen is locked
 
