@@ -1,11 +1,11 @@
-import { findSubject, useFallbackChains } from '@/hooks/use-fallback-chains'
+import { useFallbackChains } from '@/hooks/use-fallback-chains'
 import type { FallbackChainsResponse } from '@hundredfold/fallback-chain-wire'
 import { effectivePrimaryProfile, startableProfileNames } from './new-chat-helpers'
 
 /** Whether the chat's subject (its employee, else the Claude engine) has a chain opening with a group that holds its own account. */
 function hasHomeGroup(chains: FallbackChainsResponse | undefined, employee: string | undefined): boolean {
-  const subject = employee ? findSubject(chains?.subjects, 'employee', employee) : findSubject(chains?.subjects, 'engine', 'claude')
-  return subject?.startPick !== undefined
+  const [kind, id] = employee ? ['employee', employee] : ['engine', 'claude']
+  return chains?.subjects?.find((s) => s.kind === kind && s.id === id)?.startPick !== undefined
 }
 
 /**
