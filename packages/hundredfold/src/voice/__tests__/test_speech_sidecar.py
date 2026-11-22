@@ -483,6 +483,15 @@ class PinnedDownloadTests(unittest.TestCase):
         sc._download_pinned(self.dest, self.download())
         self.assertEqual(self.fetched, [])
 
+    def test_an_update_that_fails_part_way_leaves_no_config_behind(self):
+        sc._download_pinned(self.dest, self.download())
+        spec = self.download()
+        spec["files"][2]["sha256"] = "0" * 64  # a new pin whose file does not match
+        spec["files"][0]["sha256"] = "1" * 64  # and the old file no longer counts as the pinned one
+        with self.assertRaises(RuntimeError):
+            sc._download_pinned(self.dest, spec)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "config.json")))  # so the half-updated directory is not loaded
+
     def test_a_damaged_file_is_fetched_again(self):
         sc._download_pinned(self.dest, self.download())
         with open(os.path.join(self.dest, "encoder-model.onnx"), "wb") as out:

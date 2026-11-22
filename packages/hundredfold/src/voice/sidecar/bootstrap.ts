@@ -231,6 +231,13 @@ interface Marker {
   installedAt?: string;
 }
 
+/**
+ * One install at a time per instance home, across installers: a second installer (another speech-to-text
+ * model, after a config reload) waits for the first, then looks at the marker again. Two at once would
+ * rebuild the venv under each other.
+ */
+const homeInstalls = new Map<string, Promise<unknown>>();
+
 export class SpeechInstaller {
   private readonly paths: VoicePaths;
   private running: Promise<InstallStatus> | null = null;
@@ -255,7 +262,16 @@ export class SpeechInstaller {
   ensureInstalled(): Promise<InstallStatus> {
     if (this.running) return this.running;
     if (this.markerMatches()) return Promise.resolve({ state: "ready", progress: 1 });
-    this.running = this.install().finally(() => { this.running = null; });
+    const root = this.paths.root;
+    const ahead = homeInstalls.get(root);
+    if (ahead) this.set({ state: "installing", progress: 0 });
+    const turn = (ahead ?? Promise.resolve()).then(() => (this.markerMatches() ? this.set({ state: "ready", progress: 1 }) : this.install()));
+    const tail = turn.catch(() => undefined);
+    homeInstalls.set(root, tail);
+    this.running = turn.finally(() => {
+      this.running = null;
+      if (homeInstalls.get(root) === tail) homeInstalls.delete(root);
+    });
     return this.running;
   }
 

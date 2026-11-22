@@ -182,6 +182,40 @@ describe("SpeechInstaller", () => {
       expect(MODEL_ONLY_REQUIRED_BYTES.gpu).toBeLessThan(REQUIRED_BYTES.gpu);
     });
 
+    it("two installers on one home, for two models, build the venv once and the marker lists both", async () => {
+      const calls = path.join(home, "calls.log");
+      const python = path.join(home, "fake-python.sh");
+      // The base interpreter makes the venv; the venv's python is slow at pip, so a second installer arrives mid-install.
+      const venvPython = `#!/bin/sh\necho "venv $*" >> ${calls}\nif [ "$2" = "pip" ]; then sleep 1; fi\nexit 0\n`;
+      fs.writeFileSync(python, `#!/bin/sh\necho "base $*" >> ${calls}\nif [ "$1" = "-m" ] && [ "$2" = "venv" ]; then mkdir -p "$3/bin" && cat > "$3/bin/python" <<'EOS'\n${venvPython}EOS\nchmod +x "$3/bin/python"; fi\nexit 0\n`, { mode: 0o755 });
+      const findPython = () => ({ command: python, version: "3.13.0" });
+      const first = make({ findPython }).installer;
+      const second = make({ sttModel: () => unified, findPython }).installer;
+      const a = first.ensureInstalled();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(second.status().state).toBe("not_installed");
+      const b = second.ensureInstalled();
+      expect(second.status().state).toBe("installing"); // waiting its turn
+      await expect(Promise.all([a, b])).resolves.toEqual([{ state: "ready", progress: 1 }, { state: "ready", progress: 1 }]);
+      const log = fs.readFileSync(calls, "utf8").split("\n").filter(Boolean);
+      expect(log.filter((line) => line.startsWith("base -m venv"))).toHaveLength(1);
+      expect(log.filter((line) => line.includes("pip install") && line.includes("--upgrade pip"))).toHaveLength(1);
+      expect(log.filter((line) => line.includes("--download"))).toHaveLength(2); // both models were fetched
+      const marker = JSON.parse(fs.readFileSync(voicePaths(home).marker, "utf8")) as { sttModels: string[] };
+      expect([...marker.sttModels].sort()).toEqual(["parakeet-tdt-0.6b-v2", unified].sort());
+    }, 30_000);
+
+    it("a second installer that finds its model installed by the first does no work", async () => {
+      const python = path.join(home, "fake-python.sh");
+      fs.writeFileSync(python, `#!/bin/sh\nif [ "$1" = "-m" ] && [ "$2" = "venv" ]; then mkdir -p "$3/bin" && printf '#!/bin/sh\\nexit 0\\n' > "$3/bin/python" && chmod +x "$3/bin/python"; fi\nexit 0\n`, { mode: 0o755 });
+      const findPython = () => ({ command: python, version: "3.13.0" });
+      const a = make({ sttModel: () => unified, findPython }).installer;
+      const b = make({ sttModel: () => unified, findPython: () => { throw new Error("must not look for Python"); } }).installer;
+      const first = a.ensureInstalled();
+      const second = b.ensureInstalled();
+      await expect(Promise.all([first, second])).resolves.toEqual([{ state: "ready", progress: 1 }, { state: "ready", progress: 1 }]);
+    });
+
     it("a fresh install records the model it downloaded", async () => {
       const python = path.join(home, "fake-python.sh");
       // `-m venv <dir>` makes a venv whose python is the stand-in below; everything else succeeds.

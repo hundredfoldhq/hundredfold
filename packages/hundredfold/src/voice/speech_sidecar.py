@@ -581,13 +581,17 @@ def _sha256(path: str) -> str:
 def _download_pinned(dest: str, download: dict[str, Any]) -> None:
     """A model `onnx-asr` has no name for: each file at a pinned commit of a Hugging Face repository,
     checked against its SHA-256, and put in `dest` under the name the loader looks for. A file already
-    there with the right hash is kept, so a failed install resumes where it stopped. `download["config"]`
-    becomes `config.json`, written last: the directory is a loadable model only once everything is in it."""
+    there with the right hash is kept, so a failed install resumes at the first file not yet complete (a file
+    interrupted part-way starts again from its first byte). `download["config"]` becomes `config.json`,
+    removed first and written last: a directory holding `config.json` is a complete model, even after a
+    failed update."""
     from huggingface_hub import hf_hub_download
 
     os.makedirs(dest, exist_ok=True)
     staging = os.path.join(dest, ".downloading")
     try:
+        if os.path.exists(os.path.join(dest, "config.json")):
+            os.remove(os.path.join(dest, "config.json"))
         for entry in download["files"]:
             target = os.path.join(dest, entry["local"])
             if os.path.isfile(target) and _sha256(target) == entry["sha256"]:
