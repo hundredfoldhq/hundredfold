@@ -76,7 +76,7 @@ async function liveEngine(id: string) {
   const cmd = { type: "command", command: `node ${relay}` };
   hoisted.settingsPath = path.join(dir, "settings.json");
   fs.writeFileSync(hoisted.settingsPath, JSON.stringify({
-    hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreToolUse", "PostToolUse", "Notification", "PostCompact"].map((e) => [e, [{ hooks: [cmd] }]])),
+    hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "PostCompact"].map((e) => [e, [{ hooks: [cmd] }]])),
   }));
   const lifecycle = new PtyLifecycleManager({ maxLivePtys: 4 });
   const engine = new InteractiveClaudeEngine(lifecycle, registry);
@@ -133,6 +133,26 @@ describe.skipIf(!LIVE || !CONFIG_DIR)("InteractiveClaudeEngine soft interrupt â€
       live.close();
     }
   }, 300_000);
+
+  it("a tool that failed is no longer foreground work: a Bash after a failed Read is backgroundable", async () => {
+    const id = "soft-live-failed";
+    const live = await liveEngine(id);
+    const { engine, hooks, until } = live;
+    const marker = path.join(dirs[dirs.length - 1]!, "marker.txt");
+    try {
+      const turn = engine.run(live.runOpts(`First use the Read tool on /nonexistent/missing-file.txt (it is expected to fail). Then run exactly this Bash command in the foreground, with no run_in_background: ${longCommand(marker)}  Then reply with exactly: LONG-DONE`));
+      // A failed call fires PostToolUseFailure and no PostToolUse.
+      expect(await until(() => hooks.some((h) => h.event === "PostToolUseFailure"), 60_000)).toBe(true);
+      expect(await until(() => engine.foregroundWork(id)?.tool === "Bash", 60_000)).toBe(true);
+      // Were the failed Read still counted, an interrupt would be taken to abort it.
+      expect(engine.foregroundWork(id)).toMatchObject({ tool: "Bash", backgroundable: true });
+      const result = await turn;
+      expect(result.error).toBeUndefined();
+      expect(engine.foregroundWork(id)).toBeNull();
+    } finally {
+      live.close();
+    }
+  }, 240_000);
 
   it("an interrupted prompt Esc put back in the composer does not prefix the next turn", async () => {
     const id = "soft-live-composer";

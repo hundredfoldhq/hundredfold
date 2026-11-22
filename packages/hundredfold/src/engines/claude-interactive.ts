@@ -1711,6 +1711,11 @@ export function pasteAndSubmit(
   };
 }
 
+/** The Claude Code a local session runs, for what its build is asked; none for a remote session, which builds its own settings on its host. */
+function localClaudeBin(opts: Pick<EngineRunOpts, "bin"> & Parameters<typeof isRemoteTarget>[0]): string | undefined {
+  return isRemoteTarget(opts) ? undefined : resolveBin("claude", opts.bin);
+}
+
 export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEngine, SoftInterruptibleEngine, PtyViewEngine, BackgroundTasksSource {
   name = "claude" as const;
   /** Active turn resolvers keyed by Hundredfold session id. `boundProc` is the specific
@@ -2287,7 +2292,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
 
     let handle: PtyHandle | undefined;
     try {
-      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
       if (opts.resolvedMcp && !isRemoteTarget(opts)) {
         opts.mcpConfigPath = writeMcpConfigFile(opts.resolvedMcp, hundredfoldSessionId);
       }
@@ -2609,7 +2614,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     // view showed "Settings file not found". The settings file carries HOOKS only; the
     // system prompt + main-agent sentinel go via the --append-system-prompt CLI flag at
     // spawn() (the settings-file appendSystemPrompt KEY is ignored by claude ≥2.1.x).
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
     // A cold-respawn release cleans the per-session MCP file. Materialize the
     // already-resolved config again at the boundary where Claude will read it.
     // A remote session gets its MCP config staged on the other host instead
@@ -3457,7 +3462,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     // cleanup path (`cleanupSessionSettings`) is keyed on it, and leaving a
     // dangling entry there would be a second, subtler divergence. The REMOTE
     // path is what actually reaches `--settings`.
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile);
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
     const baseArgs = (settings: string): string[] => {
       const args: string[] = [
         "--chrome",
