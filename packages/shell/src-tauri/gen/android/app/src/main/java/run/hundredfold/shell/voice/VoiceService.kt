@@ -174,7 +174,11 @@ class VoiceService : Service() {
             )
             .setOnAudioFocusChangeListener { change ->
                 when (change) {
-                    AudioManager.AUDIOFOCUS_LOSS,
+                    // Another app took the audio for good (music, a video): no GAIN will
+                    // follow, so voice mode ends instead of sitting paused behind a
+                    // notification that still says it is listening.
+                    AudioManager.AUDIOFOCUS_LOSS -> VoiceNative.nativeStopRequested("focus_lost")
+                    // A call or assistant: pause now, resume when focus comes back.
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                     -> if (interruptedAt == 0L) {
                         interruptedAt = SystemClock.elapsedRealtime()

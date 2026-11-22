@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process"
 import WebSocket from "ws"
 
 const adb = (process.env.ADB ?? "adb").split(" ")
-const run = (...args) => execFileSync(adb[0], [...adb.slice(1), ...args], { encoding: "utf8" }).trim()
+const run = (...args) => execFileSync(adb[0], [...adb.slice(1), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim()
 const port = Number(process.env.CDP_PORT ?? 9222)
 
 const pid = run("shell", "pidof", "run.hundredfold.shell").split(/\s+/)[0]

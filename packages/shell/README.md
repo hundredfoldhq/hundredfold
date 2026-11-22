@@ -98,7 +98,18 @@ A web UI that is suspended or gone does not end the session.
 | Lock-screen control | notification action "Stop" | Now Playing "Voice mode on" with a stop command |
 | Status | built, and run on an emulator with the screen locked (below) | **written to the contract, never built or run**: it needs a Mac with Xcode and an Apple team |
 
-Android and the Rust core do not depend on the iOS files. The emulator has no
+Behaviour worth knowing: a call or assistant that takes the audio pauses voice mode
+and it resumes when the system hands the audio back; another app taking the audio
+for good (music, video) ends voice mode (`native_state` stopped, reason `error`)
+rather than leaving a "listening" notification over a paused session; a gateway that
+does not answer `hello` with `ready` within 10 s ends it the same way. In
+push-to-talk the microphone stays open and only frames between `ptt_down` and
+`ptt_up` are sent.
+
+Android and the Rust core do not depend on the iOS files. Unverified on iOS in
+particular: that `setVoiceProcessingEnabled(true)` leaves an input format
+`AVAudioConverter` can convert to 16 kHz mono (`start` returns false if not), and the
+Now Playing stop command on a locked device. The emulator has no
 acoustic echo canceller (`AcousticEchoCanceler.isAvailable()` is false there), so
 echo cancellation is only exercised on a real phone.
 

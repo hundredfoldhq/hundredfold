@@ -259,6 +259,15 @@ pub fn open_gateway_stream(
     Ok((id, sender))
 }
 
+/// A close initiated by this side is a normal closure (1000), so the gateway sees a
+/// clean end rather than "no status".
+fn normal_close() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "".into(),
+    }))
+}
+
 async fn run_socket(
     stream_id: String,
     request: http::Request<()>,
@@ -287,7 +296,7 @@ async fn run_socket(
             outgoing = receiver.recv() => match outgoing {
                 Some(OutgoingFrame::Text(text)) => if writer.send(Message::Text(text.into())).await.is_err() { break; },
                 Some(OutgoingFrame::Binary(bytes)) => if writer.send(Message::Binary(bytes.into())).await.is_err() { break; },
-                Some(OutgoingFrame::Close) | None => { let _ = writer.send(Message::Close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() }))).await; break; }
+                Some(OutgoingFrame::Close) | None => { let _ = writer.send(normal_close()).await; break; }
             },
             incoming = reader.next() => match incoming {
                 Some(Ok(Message::Text(text))) => if !sink.text(&stream_id, text.to_string()) { break; },
@@ -327,13 +336,22 @@ pub fn close_origin_streams(registry: &StreamRegistry, origin: &CanonicalOrigin)
 
 #[cfg(test)]
 mod tests {
-    use super::{close_origin_streams, OpenStream, OutgoingFrame, StreamRegistry};
+    use super::{close_origin_streams, normal_close, OpenStream, OutgoingFrame, StreamRegistry};
     use crate::origin::CanonicalOrigin;
     use std::{
         collections::HashMap,
         sync::{Arc, Mutex},
     };
     use tokio::sync::mpsc;
+
+    #[test]
+    fn a_close_from_this_side_is_a_normal_closure() {
+        use tokio_tungstenite::tungstenite::{protocol::frame::coding::CloseCode, Message};
+        match normal_close() {
+            Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Normal),
+            other => panic!("expected a close frame with a code, got {other:?}"),
+        }
+    }
 
     #[test]
     fn forgetting_one_origin_closes_only_its_streams() {

@@ -12,11 +12,13 @@
 // is a placeholder saying how long the utterance was.
 //
 //   node fake-voice-server.mjs [--port 7790] [--log events.jsonl]
-//        [--reply reply.wav] [--gateway-stop-ms 0] [--end-silence-ms 800]
+//        [--reply reply.wav] [--gateway-stop-ms 0] [--end-silence-ms 800] [--never-ready]
 //
 // `--reply` is a 24 kHz mono PCM16 WAV (default: a synthetic tone sequence).
 // `--gateway-stop-ms N` sends `stop_playback` after N ms of speech over
 // playback (0 disables it, so the client's own onset detector does the work).
+// `--never-ready` reads `hello` and then stays silent, to exercise the client's
+// wait for `ready`.
 // `GET /stats` reports the up-audio frames received, so a run can check that
 // audio kept arriving while the phone's screen was locked.
 
@@ -82,7 +84,7 @@ function rms(buffer) {
   return Math.sqrt(sum / samples) / 32768
 }
 
-export function createFakeVoiceServer({ port = 7790, logPath, replyWav, gatewayStopMs = 0, endSilenceMs = 800, host = "127.0.0.1" } = {}) {
+export function createFakeVoiceServer({ port = 7790, logPath, replyWav, gatewayStopMs = 0, endSilenceMs = 800, neverReady = false, host = "127.0.0.1" } = {}) {
   const log = (event, detail = {}) => {
     const line = JSON.stringify({ t: new Date().toISOString(), event, ...detail })
     if (logPath) appendFileSync(logPath, line + "\n")
@@ -269,8 +271,9 @@ export function createFakeVoiceServer({ port = 7790, logPath, replyWav, gatewayS
             return
           }
           s.mode = frame.mode
-          s.ready = true
           log("hello", { mode: frame.mode, client: frame.client })
+          if (neverReady) break
+          s.ready = true
           send({
             type: "ready", protocol: 1, sessionId,
             input: { encoding: "pcm16", sampleRate: UP_RATE }, output: { encoding: "pcm16", sampleRate: DOWN_RATE },
@@ -326,6 +329,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     replyWav: arg("reply"),
     gatewayStopMs: Number(arg("gateway-stop-ms", 0)),
     endSilenceMs: Number(arg("end-silence-ms", 800)),
+    neverReady: process.argv.includes("--never-ready"),
   })
   await fake.start()
   process.on("SIGTERM", () => fake.stop().then(() => process.exit(0)))

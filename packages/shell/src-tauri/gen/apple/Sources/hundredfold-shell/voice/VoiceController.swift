@@ -218,6 +218,10 @@ final class VoiceController {
             return generation
         }
         guard let token = accepted else { return }
+        // Build the buffers first, then schedule each one only if no flush has happened
+        // since the audio was accepted: an onset flush on the capture thread can land
+        // between the two, and stale buffers must not play after a barge-in.
+        var buffers: [AVAudioPCMBuffer] = []
         pcm.withUnsafeBytes { raw in
             let samples = raw.bindMemory(to: Int16.self)
             var offset = 0
@@ -229,13 +233,20 @@ final class VoiceController {
                     channel[i] = Float(Int16(littleEndian: samples[offset + i])) / 32768.0
                 }
                 buffer.frameLength = AVAudioFrameCount(count)
+                buffers.append(buffer)
+                offset += count
+            }
+        }
+        for buffer in buffers {
+            let count = Int64(buffer.frameLength)
+            state.sync {
+                guard generation == token else { return }
                 player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                     self?.state.async {
                         guard let self, self.generation == token else { return }
-                        self.playedFrames += Int64(count)
+                        self.playedFrames += count
                     }
                 }
-                offset += count
             }
         }
     }

@@ -39,18 +39,24 @@ class VoiceBridge(private val activity: ComponentActivity) {
      * Starts the foreground service and waits for its audio engine, so a start
      * that cannot work (microphone busy, service refused) fails here.
      */
-    fun start(handsFree: Boolean) {
+    fun start(@Suppress("UNUSED_PARAMETER") handsFree: Boolean) {
         val context = activity.applicationContext
         engineReady = CountDownLatch(1)
         startError = null
         ContextCompat.startForegroundService(
             context,
-            Intent(context, VoiceService::class.java).setAction(VoiceService.ACTION_START).putExtra("handsFree", handsFree),
+            Intent(context, VoiceService::class.java).setAction(VoiceService.ACTION_START),
         )
+        // Whatever goes wrong below, the service must not come up late with no session
+        // behind it, so a failed start always stops it.
         if (!engineReady!!.await(START_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            stop()
             throw IllegalStateException("voice service did not start")
         }
-        startError?.let { throw IllegalStateException("voice service failed", it) }
+        startError?.let {
+            stop()
+            throw IllegalStateException("voice service failed", it)
+        }
     }
 
     fun configureOnset(threshold: Float, minSpeechMs: Int) {

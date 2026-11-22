@@ -12,7 +12,7 @@
 
 use hundredfold_voice_core::{
     protocol::{Mode, Onset},
-    session::{Action, Input, NativeState, Session},
+    session::{Action, Input, NativeState, Session, READY_TIMEOUT_MS},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -249,10 +249,13 @@ pub async fn voice_start<R: Runtime>(
     match started {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
+            // The service may still come up late; make sure nothing is left running.
+            platform.stop();
             release();
             return Err(error);
         }
         Err(_) => {
+            platform.stop();
             release();
             return Err(NativeError::transport());
         }
@@ -349,6 +352,8 @@ async fn run_session(
     let mut session = Session::new(mode);
     let clock = Instant::now();
     let mut platform_stopped = false;
+    // Set when the socket opens, cleared once `ready` has arrived (or the session ended).
+    let mut ready_deadline: Option<tokio::time::Instant> = None;
     let mut pending = session.begin();
     loop {
         for action in pending.drain(..) {
@@ -397,6 +402,15 @@ async fn run_session(
         }
         let input = tokio::select! {
             biased;
+            _ = async {
+                match ready_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                ready_deadline = None;
+                Input::ReadyTimeout
+            }
             input = control.recv() => match input {
                 Some(input) => input,
                 None => Input::Stop { reason: "closed".into() },
@@ -411,7 +425,14 @@ async fn run_session(
         {
             let _ = started.send(matches!(input, Input::SocketOpened));
         }
+        if matches!(input, Input::SocketOpened) {
+            ready_deadline =
+                Some(tokio::time::Instant::now() + Duration::from_millis(READY_TIMEOUT_MS));
+        }
         pending = session.handle(input, clock.elapsed().as_millis() as u64);
+        if session.state() != NativeState::Connecting {
+            ready_deadline = None;
+        }
     }
     if let Some(started) = started.take() {
         let _ = started.send(false);

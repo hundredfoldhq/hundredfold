@@ -20,6 +20,9 @@ use crate::{
 /// it and is dropped too.
 pub const INTERRUPT_GUARD_MS: u64 = 400;
 
+/// How long the gateway has, after the socket opens, to answer `hello` with `ready`.
+pub const READY_TIMEOUT_MS: u64 = 10_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     AwaitingSocket,
@@ -128,6 +131,8 @@ pub enum Input {
     Stop {
         reason: String,
     },
+    /// The gateway did not send `ready` in time after the socket opened.
+    ReadyTimeout,
     /// A phone call, Siri or another app took the audio.
     InterruptionBegan,
     InterruptionEnded {
@@ -359,6 +364,13 @@ impl Session {
                 )]
             }
             Input::Stop { reason } => self.stop(reason::of_stop(&reason)),
+            Input::ReadyTimeout => {
+                if self.phase == Phase::AwaitingReady {
+                    self.stop(reason::ERROR)
+                } else {
+                    Vec::new()
+                }
+            }
             Input::InterruptionBegan => {
                 if self.phase != Phase::Running || self.paused {
                     return Vec::new();
@@ -497,6 +509,37 @@ mod tests {
             min_speech_ms: 240
         })));
         assert!(actions.contains(&state(NativeState::Running, None)));
+    }
+
+    #[test]
+    fn a_gateway_that_never_sends_ready_ends_the_session_with_an_error() {
+        let mut session = Session::new(Mode::HandsFree);
+        session.handle(Input::SocketOpened, 0);
+        let actions = session.handle(Input::ReadyTimeout, READY_TIMEOUT_MS);
+        assert!(session.is_stopped());
+        assert_eq!(texts(&actions), vec![r#"{"type":"bye"}"#]);
+        assert!(actions.contains(&Action::CloseSocket));
+        assert!(actions.contains(&Action::StopPlatform));
+        assert!(actions.contains(&state(NativeState::Stopped, Some("error".into()))));
+    }
+
+    #[test]
+    fn the_ready_timeout_is_ignored_once_ready_arrived_or_the_session_ended() {
+        let mut running = running(Mode::HandsFree);
+        assert!(running
+            .handle(Input::ReadyTimeout, READY_TIMEOUT_MS)
+            .is_empty());
+        assert_eq!(running.state(), NativeState::Running);
+        let mut stopped = Session::new(Mode::HandsFree);
+        stopped.handle(
+            Input::Stop {
+                reason: "user".into(),
+            },
+            0,
+        );
+        assert!(stopped
+            .handle(Input::ReadyTimeout, READY_TIMEOUT_MS)
+            .is_empty());
     }
 
     #[test]
