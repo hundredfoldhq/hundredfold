@@ -45,8 +45,8 @@ GATEWAY_REPO="$(cd "${HUNDREDFOLD_VERIFY_GATEWAY_REPO:-$REPO}" && pwd -P)"
 HELPER="$REPO/scripts/hundredfold-sandbox.sh"
 DRIVER_DIR="$REPO/scripts/verify-fallback-chains"
 INSTANCE="fallback-chains"
-# Waiting on part B of the account group work (start-path pinning at creation): they assert the pick a
-# session records. Drop each id from this list when that work is merged into the branch under test.
+# Scenario ids that wait on runtime work not merged into the branch under test. Empty: every scenario runs
+# and counts. Add an id here for work that has not landed, and drop it when it does.
 DEFAULT_PENDING=""
 MODE="both"; ONLY=""; PENDING="$DEFAULT_PENDING"; PORT="${HUNDREDFOLD_VERIFY_PORT:-}"; KEEP=0; RETAIN=""; SKIP_BUILD=0; STRICT=0; TEARDOWN=""
 
