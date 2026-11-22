@@ -31,6 +31,8 @@ a token to the real service. A guard preloaded into every Node process refuses, 
 `network-refusals.jsonl`, any connection that is not loopback; a scenario fails if the log is
 not empty.
 
+The fake `opencode` keeps the ids of the sessions it creates in a file (`FAKE_OPENCODE_SESSIONS_FILE`, set by the script), as
+opencode keeps its sessions in its data directory, so a gateway restart in server mode still finds the session a turn resumes.
 A remote employee runs on a "host" that is this machine, reached through a stand-in `ssh` (see
 [Remote employees](#remote-employees-and-the-stand-in-ssh)): there is no sshd, no key and no network.
 

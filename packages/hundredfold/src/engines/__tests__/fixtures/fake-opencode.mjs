@@ -101,6 +101,7 @@
 // FAKE_OPENCODE_STAGED_LOG names a file each `serve` and `run` appends one JSON line to:
 // the verb, the staged config file (OPENCODE_CONFIG) as it read at start, and the
 // environment variables named by FAKE_OPENCODE_STAGED_ENV (comma separated);
+// FAKE_OPENCODE_SESSIONS_FILE names a file the session ids are kept in across `serve` processes;
 // FAKE_OPENCODE_RUN_LOG names a file each `run` appends its argv to as one JSON line; FAKE_OPENCODE_SERVE_LOG names a file each
 // `serve` start appends a line to; FAKE_OPENCODE_CREATE_DELAY_MS delays the
 // answer to POST /session; FAKE_OPENCODE_HISTORY_DELAY_MS delays the answer
@@ -169,6 +170,16 @@ function serve() {
   // id -> { busy, queue, running, messages, pending: Map<requestId, resolve> }
   const sessions = new Map();
   let seq = 0;
+  const emptySession = () => ({ busy: false, queue: [], running: null, messages: [], pending: new Map() });
+  // FAKE_OPENCODE_SESSIONS_FILE: the ids of the sessions a server created, kept in a file the way opencode keeps its sessions in its
+  // data directory, so a server started again (a gateway restart) still knows a session an earlier one made. Their messages are not kept.
+  const sessionsFile = process.env.FAKE_OPENCODE_SESSIONS_FILE;
+  if (sessionsFile && fs.existsSync(sessionsFile)) {
+    for (const id of fs.readFileSync(sessionsFile, "utf8").split("\n").filter(Boolean)) {
+      sessions.set(id, emptySession());
+      seq = Math.max(seq, Number(id.slice(-6)) || 0);
+    }
+  }
   let config = null;
   try { config = process.env.OPENCODE_CONFIG ? JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, "utf8")) : null; } catch { config = "unreadable"; }
   const info = { pid: process.pid, cwd: process.cwd(), argv, config, hundredfoldSessionId: process.env.HUNDREDFOLD_SESSION_ID ?? null, hasPassword: Boolean(password) };
@@ -182,7 +193,8 @@ function serve() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const newSession = (parentID) => {
     const id = newId("ses");
-    sessions.set(id, { busy: false, queue: [], running: null, messages: [], pending: new Map() });
+    sessions.set(id, emptySession());
+    if (sessionsFile) fs.appendFileSync(sessionsFile, `${id}\n`);
     publish("session.created", { sessionID: id, info: { id, ...(parentID ? { parentID } : {}) } });
     return id;
   };

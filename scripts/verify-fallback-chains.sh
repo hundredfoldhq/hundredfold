@@ -109,7 +109,7 @@ instance_env() {
   env -i PATH="$VERIFY_ROOT/bin:$NODE_DIR:/usr/bin:/bin" HOME="$HOST_HOME" LANG=C.UTF-8 TERM=dumb TMPDIR="$VERIFY_ROOT/tmp" \
     XDG_CONFIG_HOME="$HOST_HOME/.config" XDG_DATA_HOME="$HOST_HOME/.local/share" XDG_CACHE_HOME="$HOST_HOME/.cache" XDG_STATE_HOME="$HOST_HOME/.local/state" \
     FAKE_PROVIDER_OPENCODE_MODELS="own-provider/model-own,x-provider/model-x,y-provider/model-y,group-b-provider/model-own" \
-    FAKE_PROVIDER_SCENARIO="$VERIFY_ROOT/scenario.json" FAKE_PROVIDER_LEDGER="$VERIFY_ROOT/ledger.jsonl" FAKE_PROVIDER_NET_LOG="$VERIFY_ROOT/network-refusals.jsonl" \
+    FAKE_OPENCODE_SESSIONS_FILE="$VERIFY_ROOT/opencode-sessions.txt" FAKE_PROVIDER_SCENARIO="$VERIFY_ROOT/scenario.json" FAKE_PROVIDER_LEDGER="$VERIFY_ROOT/ledger.jsonl" FAKE_PROVIDER_NET_LOG="$VERIFY_ROOT/network-refusals.jsonl" \
     HUNDREDFOLD_CLAUDE_USAGE_API=off NODE_OPTIONS="--require $DRIVER_DIR/network-guard.cjs" HUNDREDFOLD_REPO="$GATEWAY_REPO" HUNDREDFOLD_SANDBOX_NODE_BIN="$NODE_BIN" "$@"
 }
 

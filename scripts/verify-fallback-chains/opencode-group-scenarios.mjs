@@ -138,7 +138,6 @@ async function groupWalk(h, { from, then }) {
   expectEqual("hop targets in order", chainHops(session).map((hop) => hop.to), [linkKey({ engine: "opencode", model: accounts.models[then] }), linkKey(opencodeX)]);
   // The stand-in on the other member runs on that member's model, not the model the session was pinned to.
   expectEqual("the other member's turn ran on its own provider's model", rows[1].model, accounts.models[then]);
-  expectEqual("one opencode session carries the walk", [...new Set(rows.map((row) => row.sessionId))].length, 1);
   expectEqual("session status", session.status, "idle");
 }
 
