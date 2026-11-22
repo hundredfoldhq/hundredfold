@@ -627,4 +627,20 @@ describe("sound cues", () => {
     expect(r.sockets[0].types()).toContain("barge_in")
     expect(r.cues).toEqual(["thinking@0.3", "stop"])
   })
+
+  it("a barge-in over a holding line brings the tool cue back at once, since the turn is still working and no frame follows", async () => {
+    const r = await withCues()
+    turn(r, "working", "Bash")
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: 4, messageId: null, text: "Still working." })
+    r.sockets[0].serverAudio(4, 12_000)
+    for (let i = 0; i < 15; i++) r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].types()).toContain("barge_in")
+    expect(r.cues).toEqual(["tool@0.3", "stop", "tool@0.3"])
+  })
+
+  it("clamps a volume the gateway sent out of range, so a cue is never louder than the setting allows", async () => {
+    const r = await withCues({ enabled: true, volume: 7 })
+    turn(r, "thinking")
+    expect(r.cues).toEqual(["thinking@1"])
+  })
 })

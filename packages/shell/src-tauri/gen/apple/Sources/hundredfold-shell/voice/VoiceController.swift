@@ -53,6 +53,8 @@ final class VoiceController {
     private var pendingCapture = Data()
     private var interruptedAt: DispatchTime?
     private var observers: [NSObjectProtocol] = []
+    /// The cue the session last asked for (PCM16LE mono), kept so a restarted engine can play it again. Guarded by `state`.
+    private var cuePCM: Data?
 
     private func nowMs() -> Int64 {
         Int64((DispatchTime.now().uptimeNanoseconds - clock.uptimeNanoseconds) / 1_000_000)
@@ -141,6 +143,7 @@ final class VoiceController {
     private func teardown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
+        state.sync { cuePCM = nil }
         cuePlayer.stop()
         engine.stop()
         if playerAttached {
@@ -187,7 +190,9 @@ final class VoiceController {
             return false
         }
         player.play()
-        // A cue the engine restart stopped is asked for again by the session when it is still wanted.
+        // The restart stopped the cue's node, and the session only asks again when the wanted cue changes,
+        // so play the last one it asked for.
+        playCue()
         return true
     }
 
@@ -330,8 +335,17 @@ final class VoiceController {
 
     /// Loops `pcm` (PCM16LE mono at 24 kHz) as the sound cue, replacing any cue; empty data stops it.
     func setCue(_ pcm: Data) {
+        state.sync { cuePCM = pcm.count >= 2 ? pcm : nil }
         cuePlayer.stop()
-        guard state.sync(execute: { running && interruptedAt == nil }), pcm.count >= 2 else { return }
+        playCue()
+    }
+
+    /// Plays the cue the session last asked for, if any. A node must not be played while the engine is
+    /// stopped (that raises an exception), so in the gap of a route change or interruption this does
+    /// nothing and the restart plays the cue instead.
+    private func playCue() {
+        guard let pcm = state.sync(execute: { running && interruptedAt == nil ? cuePCM : nil }),
+              engine.isRunning else { return }
         let frames = pcm.count / 2
         guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frames)),
               let channel = buffer.floatChannelData?[0] else { return }
@@ -347,6 +361,7 @@ final class VoiceController {
     }
 
     func pause() {
+        state.sync { cuePCM = nil }
         cuePlayer.stop()
         player.pause()
     }

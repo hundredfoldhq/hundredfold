@@ -195,7 +195,6 @@ struct CueState {
     speech: HashSet<u32>,
     /// What the platform was last told to play.
     playing: Option<Cue>,
-    volume: f32,
 }
 
 impl CueState {
@@ -208,7 +207,6 @@ impl CueState {
             partial: false,
             speech: HashSet::new(),
             playing: None,
-            volume: 0.0,
         }
     }
 }
@@ -315,12 +313,11 @@ impl Session {
             speech_audible: !self.cues.speech.is_empty(),
             tool_backgrounded: self.cues.tool_backgrounded,
         });
-        let volume = self.cues.settings.volume;
-        if wanted == self.cues.playing && (wanted.is_none() || volume == self.cues.volume) {
+        if wanted == self.cues.playing {
             return None;
         }
         self.cues.playing = wanted;
-        self.cues.volume = volume;
+        let volume = self.cues.settings.volume;
         Some(wanted.map(|cue| CueRequest { cue, volume }))
     }
 
@@ -499,8 +496,8 @@ impl Session {
                 self.phase = Phase::Running;
                 self.cues = CueState {
                     settings: ready.cues,
+                    // What the platform plays carries over, so a second `ready` can still stop it.
                     playing: self.cues.playing,
-                    volume: self.cues.volume,
                     ..CueState::new()
                 };
                 actions.push(Action::ConfigureOnset(ready.onset));
@@ -1316,6 +1313,50 @@ mod tests {
             cue_actions(&session.handle(Input::SegmentPlayed(4), 3)),
             vec![Some(Cue::Tool)]
         );
+    }
+
+    #[test]
+    fn a_stop_playback_frees_the_cue_because_the_dropped_speech_never_reports_played() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "working");
+        assert_eq!(start_speech(&mut session, 7), vec![None]);
+        assert_eq!(
+            frame(&mut session, r#"{"type":"stop_playback"}"#),
+            vec![Some(Cue::Tool)]
+        );
+    }
+
+    #[test]
+    fn the_end_of_a_turn_frees_the_cue_from_speech_that_never_reported_played() {
+        let mut session = running(Mode::HandsFree);
+        turn(&mut session, "thinking");
+        assert_eq!(start_speech(&mut session, 3), vec![None]);
+        assert!(turn(&mut session, "idle").is_empty());
+        assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+    }
+
+    #[test]
+    fn a_new_thinking_turn_forgets_a_live_transcript_that_never_ended() {
+        let mut session = running(Mode::HandsFree);
+        frame(
+            &mut session,
+            r#"{"type":"transcript","utteranceId":"u","text":"hm","final":false}"#,
+        );
+        assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+    }
+
+    #[test]
+    fn a_second_ready_can_still_stop_the_cue_it_found_playing() {
+        for cues in [
+            r#"{"enabled":false,"volume":0.3}"#,
+            r#"{"enabled":true,"volume":0.3}"#,
+        ] {
+            let mut session = running(Mode::HandsFree);
+            assert_eq!(turn(&mut session, "thinking"), vec![Some(Cue::Thinking)]);
+            // The new ready starts the turn state over, so nothing is wanted: the platform must be told.
+            let again = session.handle(Input::GatewayText(ready_with(cues)), 5);
+            assert_eq!(cue_actions(&again), vec![None], "cues {cues}");
+        }
     }
 
     #[test]

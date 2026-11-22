@@ -160,7 +160,7 @@ Both are made on the device (a short sine tick with a soft envelope; no audio fi
 
 **They stop at once** when the assistant starts to speak (a reply or the holding line, from the moment the gateway announces the sentence), when you are heard speaking (the gateway's voice activity, a partial transcript, or push-to-talk held), when the turn ends, and when voice mode stops, is suspended by the device or is paused by a call. A cue that was silenced for speech starts again if the work is still going when the speech has played out.
 
-**Long work moved to the background:** when a tool call is moved to the background (see above), the tool sound stops and the thinking sound takes its place until the turn ends, since the assistant is free to answer. Background work that keeps running after the turn has ended is silent; the chat shows it as moved and still running.
+**Long work moved to the background:** when a tool call is moved to the background (see above), the tool sound stops and the thinking sound takes its place until the turn ends, since the assistant is free to answer. Background work that keeps running after the turn has ended is silent; the chat shows it as moved and still running. The hand-over is approximate: the gateway's `background` frame does not name the tool call, so a task moved while a different tool is running also switches the sound early.
 
 **Settings:** Settings, Voice mode, has a switch and a volume slider; the same keys are `voice.cues.enabled` and `voice.cues.volume` in `config.yaml`. They are on at a low volume by default, apply the next time voice mode starts, and a config with no `cues` block, or one with stale keys, loads and uses the defaults.
 
