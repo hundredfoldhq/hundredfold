@@ -50,8 +50,11 @@ Per-turn reminder: `[Voice: spoken reply. Short, plain sentences; no markdown or
 
 ## `GET /api/voice/config`
 
-Operator and members (members get the same shape; it reveals nothing about sessions).
-Refused to department-scoped callers (`department-scope/rules.ts`, `/api/voice*`).
+Operator only. Refused to department-scoped callers (`department-scope/rules.ts`,
+`/api/voice*`). Board members get no voice config: the member router serves only
+`/api/member/*`, and members cannot message sessions yet, so nothing on the member side
+would use it. When member chat lands, it adds `GET /api/member/voice/config` (same body)
+with its consumer; nothing is added for members now (Principle V).
 
 Disabled or absent:
 
