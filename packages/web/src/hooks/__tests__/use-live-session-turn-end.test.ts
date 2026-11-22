@@ -164,10 +164,13 @@ describe("a turn that ends after a mid-turn re-read", () => {
 
     it("is only ever a partial row: settled prose at the end of the snapshot is kept", async () => {
       const { emit, result } = await midTurn()
-      getSession.mockResolvedValue({ status: "running", messages: [U, { id: "a1", role: "assistant", content: "Hello wor", timestamp: 2 }] })
+      getSession.mockResolvedValue({ status: "running", messages: [U,
+        { id: "p1", role: "assistant", content: "Using Read", timestamp: 2, partial: true, toolCall: "Read", meta: { sidechain: true } },
+        { id: "a1", role: "assistant", content: "Hello wor", timestamp: 3 },
+      ] })
       await act(async () => { await result.current.reload("s1") })
       await act(async () => { emit("session:completed", { sessionId: "s1", result: "Hello world." }); await Promise.resolve() })
-      expect(rows(result)).toEqual(["q?", "Hello wor", "Hello world."])
+      expect(rows(result)).toEqual(["q?", "[tool] Used Read", "Hello wor", "Hello world."])
     })
 
     it("is final once a main-thread tool call ends the block, even with nothing streamed since", async () => {
