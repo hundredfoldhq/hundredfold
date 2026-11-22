@@ -38,17 +38,19 @@ export function reconcileCompletedTurnMessages(args: {
 }
 
 /**
- * The stored copy of the text block still being streamed, in a chat re-read that landed mid-turn:
+ * The stored copy of the text block still being streamed, in a chat read that landed mid-turn:
  * the last partial prose row, with nothing after it that ends the block (a main-thread tool call,
  * a block, later prose). A sub-agent's tool call does not end the main text block, so sidechain
  * tool rows after the prose are skipped. The live stream goes on to extend this row, which the
- * gateway grows in place, so the live view must not keep it beside the text it became.
+ * gateway grows in place, so the live view must not keep it beside the text it became: a view
+ * that already holds the streamed text drops the row when it flushes, and a view opened with no
+ * streamed text yet takes the row's text in front of the first live tail.
  */
-export function findStreamedCopyId(rows: Message[]): string | null {
+export function findStreamedCopy(rows: Message[]): Message | null {
   let last = rows.length - 1
   while (last >= 0 && isSidechainToolRow(rows[last])) last -= 1
   const row = rows[last]
-  return row && row.content.trim() && isPlainPartialProse(row) ? row.id : null
+  return row && row.content.trim() && isPlainPartialProse(row) ? row : null
 }
 
 /**
