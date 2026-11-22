@@ -44,7 +44,8 @@ export interface NewSessionSelectionResult {
    *  `reroutedSessionMeta`, so the session goes back once the window passes. */
   reroute?: SessionReroute;
   /** The account the balancer pinned the session to, when its chain opens with a group holding its own login:
-   *  `claudeConfigDir` goes to `createSession`, `accountPick` into the transport meta (`metaWithAccountPick`),
+   *  `claudeConfigDir` goes to `createSession` (an opencode session's pin is the `model` this result carries instead),
+   *  `accountPick` into the transport meta (`metaWithAccountPick`),
    *  and the creating caller charges the start (`chargeAccountStart`) right after the row exists. A validation never charges it. */
   claudeConfigDir?: AccountPin["claudeConfigDir"];
   accountPick?: AccountPick;
@@ -123,7 +124,7 @@ export function validateNewSessionSelection(
     const health = readEngineHealth();
     const employee = defaults.employee ? orgRegistry().get(defaults.employee) : undefined;
     const choice = rerouteAtCreation({
-      config, employee, engine, model: defaultModel, health, scope: rerouteScope(employee, pin), pin,
+      config, employee, engine, model: pin.model ?? defaultModel, health, scope: rerouteScope(employee, pin), pin,
       registry: availabilityRegistry(registry, (candidate) => registry[candidate]?.available === true),
     });
     if (choice) {
@@ -181,6 +182,10 @@ export function validateNewSessionSelection(
       }
     }
   }
+
+  // An opencode session the balancer pinned runs on the model it picked (the same key on the picked account's provider), unless
+  // a reroute moved it: then the chain's own link decided the model, and the pin is not the session's.
+  if (pin.model !== undefined && !reroute) model = pin.model;
 
   let effortLevel: string | undefined;
   const effortFromBody = body.effortLevel !== undefined;

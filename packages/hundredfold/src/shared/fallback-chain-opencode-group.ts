@@ -21,6 +21,11 @@ export function isOpencodeAccountKey(account: string): boolean {
   return account.startsWith("opencode/");
 }
 
+/** The provider an opencode account key names (`opencode/opencode-go-b` gives `opencode-go-b`), or undefined for a key that is not one. */
+export function opencodeAccountKeyProvider(account: string): string | undefined {
+  return isOpencodeAccountKey(account) && account.length > "opencode/".length ? account.slice("opencode/".length) : undefined;
+}
+
 /** The provider of a `provider/model` id, or undefined when it names none. */
 export function opencodeProviderOf(model: string | null | undefined): string | undefined {
   const slash = model ? model.indexOf("/") : -1;

@@ -27,7 +27,7 @@ import { withEngineHealth } from "../shared/engine-health.js";
 import { withInternalFallback } from "../engines/opencode-internal-fallback.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
-import { transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
+import { metaWithoutPickForModel, transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
 import { fallbackPreviewFor, parseFallbackModeParam, parseFallbackModePatch, withFallbackView } from "./session-fallback-api.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget } from "../sessions/fallback-target.js";
@@ -2000,7 +2000,12 @@ export async function handleApiRequest(
           defaultModel: engineConfigForPatch.model,
         });
         if (!patch.ok) return badRequest(res, patch.error || "invalid model/effort");
-        if (patch.updates?.model !== undefined) updates.model = patch.updates.model;
+        if (patch.updates?.model !== undefined) {
+          updates.model = patch.updates.model;
+          // A model named on an opencode session is an account the operator chose: the balancer's pick no longer describes it.
+          const unpicked = metaWithoutPickForModel(session, patch.updates.model);
+          if (unpicked) updates.transportMeta = unpicked;
+        }
         if (patch.updates?.effortLevel !== undefined) updates.effortLevel = patch.updates.effortLevel;
       }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");

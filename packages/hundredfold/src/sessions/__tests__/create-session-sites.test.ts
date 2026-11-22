@@ -13,15 +13,16 @@ import { describe, expect, it } from "vitest";
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** Sites that start an agent session on Claude: each must route its account through the pin. */
-const PINNED: Record<string, { calls: number; through: string[] }> = {
-  "gateway/api.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"] },
-  "gateway/spawn-session.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"] },
-  "gateway/todo-employee-session.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"] },
-  "gateway/todo-dispatch.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"] },
-  "gateway/todo-capture-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"] },
-  "gateway/talk-turn-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"] },
-  "talk/control/delegation-adapter.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"] },
-  "sessions/manager.ts": { calls: 1, through: ["newSessionEngineSelection", "chargeAccountStart"] },
+const PINNED: Record<string, { calls: number; through: string[]; model: string }> = {
+  "gateway/api.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"], model: "model: selection.model" },
+  "gateway/spawn-session.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"], model: "model: selection.model" },
+  "gateway/todo-employee-session.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"], model: "model: selection.model" },
+  "gateway/todo-dispatch.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
+  "gateway/todo-capture-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
+  "gateway/talk-turn-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "{ model: pin.model }" },
+  "talk/control/delegation-adapter.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
+  // The manager creates the row from the selection the engine chooser made, which spreads the pinned model (`pinnedModel`).
+  "sessions/manager.ts": { calls: 1, through: ["newSessionEngineSelection", "chargeAccountStart"], model: "...selection" },
 };
 
 /** Sites that never start an agent on Claude, and why. */
@@ -58,6 +59,13 @@ describe("createSession call sites", () => {
   it.each(Object.entries(PINNED))("%s routes its account through the pin", (file, site) => {
     const source = fs.readFileSync(path.join(SRC, file), "utf8");
     for (const name of site.through) expect(source, `${file} must use ${name}`).toContain(name);
+  });
+
+  // An opencode session's account is its model, so a site that creates the row from anything but the pinned model puts the session
+  // on the account it was not balanced to, and the pick it records is then a lie.
+  it.each(Object.entries(PINNED))("%s stores the model the pin chose", (file, site) => {
+    const source = fs.readFileSync(path.join(SRC, file), "utf8");
+    expect(source, `${file} must create its row with ${site.model}`).toContain(site.model);
   });
 
   it("gives every exempt site a reason", () => {

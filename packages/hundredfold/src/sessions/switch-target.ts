@@ -279,13 +279,20 @@ function buildTarget(
   };
 }
 
+/** Whether the request names a model: an opencode switch that does is a chosen account, whatever the group says. */
+function namesModel(request: SwitchRequest): boolean {
+  return typeof request.model === "string" && request.model.trim() !== "";
+}
+
 /**
  * The account the balancer picks for a deliberate engine-only switch onto Claude (no profile named, the session
  * coming from another engine), when the session's chain opens with a group holding its own login. A switch
- * naming a profile, or staying on Claude, is never balanced.
+ * naming a profile, or staying on Claude, is never balanced. The same for a switch onto opencode that names no model
+ * (opencode's account is its model): the pick is the model the switch lands on.
  */
 function balancedSwitch(config: HundredfoldConfig, session: Session, own: SwitchTargetView, engine: string, request: SwitchRequest): AccountPin | undefined {
-  if (engine !== "claude" || own.engine === "claude" || request.profile !== undefined) return undefined;
+  if ((engine !== "claude" && engine !== "opencode") || own.engine === engine || request.profile !== undefined) return undefined;
+  if (engine === "opencode" && namesModel(request)) return undefined;
   const pin = pinAccountAtCreation({
     config, employee: employeeOf(config, session), engine, model: typeof request.model === "string" ? request.model.trim() : undefined, trigger: "switch",
   });
@@ -297,13 +304,15 @@ function switchProfile(
   config: HundredfoldConfig, session: Session, engine: string, request: SwitchRequest, balanced: AccountPin | undefined,
 ): { ok: true; dir: string | null } | Extract<SwitchResolution, { ok: false }> {
   // A remote employee's pick lives in its transport meta: the profile column, a directory on the gateway, is left as the row has it.
-  if (balanced?.remoteAccountPin !== undefined) return { ok: true, dir: session.claudeConfigDir };
+  // So does an opencode pick, which lives in the model.
+  if (balanced?.remoteAccountPin !== undefined || (balanced && engine === "opencode")) return { ok: true, dir: session.claudeConfigDir };
   return balanced ? { ok: true, dir: balanced.claudeConfigDir ?? null } : resolveProfile(config, session, engine, request.profile);
 }
 
-/** What the switch writes of the balancer's record: the pick, null to clear an earlier one (a switch that names a profile pins it), or nothing. */
+/** What the switch writes of the balancer's record: the pick, null to clear an earlier one (a switch that names a profile, or an opencode model, pins it), or nothing. */
 function pickWrite(engine: string, request: SwitchRequest, balanced: AccountPin | undefined): Pick<Extract<SwitchResolution, { ok: true }>, "accountPick"> {
-  const accountPick = balanced?.accountPick ?? (engine === "claude" && request.profile !== undefined ? null : undefined);
+  const chosen = (engine === "claude" && request.profile !== undefined) || (engine === "opencode" && namesModel(request));
+  const accountPick = balanced?.accountPick ?? (chosen ? null : undefined);
   return accountPick === undefined ? {} : { accountPick };
 }
 
@@ -350,7 +359,8 @@ function finishSwitch(
   const { request, balanced } = asked;
   const remoteAccountPin = remotePinWrite(session, engine, request, balanced);
   const after = sessionAfterPin(session, remoteAccountPin);
-  const built = buildTarget(config, session, own, { engine, dir, after }, request);
+  // A balanced opencode switch lands on the model its pick names (the own model, spelled on the own account, when that is the pick).
+  const built = buildTarget(config, session, own, { engine, dir, after }, balanced?.model === undefined ? request : { ...request, model: balanced.model });
   if (!built.ok) return built;
   const target = markedTarget(built.target, session, { balanced: Boolean(balanced), remoteAccountPin });
   const refused = asked.caller.caller === "session" ? selfRefusal(config, { session, after }, own, target, asked.caller.now ?? new Date()) : undefined;

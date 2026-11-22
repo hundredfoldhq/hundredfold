@@ -46,7 +46,9 @@ export function resolveSubstituteChain(input: ChooseSubstituteInput, health: Eng
   const scope = { scoped: substituteScoped(session, input.remoteTarget), remote: Boolean(remote), ...(remote ? { host: sshDestination(remote) } : {}) };
   const registry = runtimeRegistry(input);
   const { source, links } = sessionFallbackChain({ config, employee, session: own, registry, health, scope });
-  const namedModel = (link: ResolvedFallbackLink): string | undefined => (linkModelWritten(link) ? link.model : undefined);
+  // An opencode group member names no model but stands for one: the session's own model key on the member's provider. It is the
+  // account the hop moves to, so the stand-in runs on it; every other link leaves its model to the stand-in as before.
+  const namedModel = (link: ResolvedFallbackLink): string | undefined => (linkModelWritten(link) || (link.engine === "opencode" && link.group) ? link.model : undefined);
   const accountMode = own.engine === "claude" && !remote;
   return { source, links, accountMode, namedModel };
 }

@@ -232,6 +232,7 @@ export async function handOff(
   const spawned = createSession({
     engine: config.engines.default,
     ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.model ? { model: pin.model } : {}),
     ...(pin.accountPick ? { transportMeta: metaWithAccountPick(undefined, pin) } : {}),
     source: "web",
     sourceRef: `talk-handoff:${randomUUID()}`,

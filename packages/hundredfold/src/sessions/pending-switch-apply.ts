@@ -44,7 +44,9 @@ function stillOn(own: SwitchTargetView, from: SwitchTargetView): boolean {
 function requestFor(to: SwitchTargetView): SwitchRequest {
   // A balanced target names no profile: the balancer picks again when the switch is applied.
   const profile = to.engine !== "claude" || to.balanced || to.keepsRemotePin ? undefined : (to.claudeConfigDir === null ? "" : (to.profile ?? undefined));
-  return { engine: to.engine, profile, model: to.model ?? undefined, effortLevel: to.effortLevel ?? undefined };
+  // A balanced opencode target names no model either: its account is its model, which the balancer picks again.
+  const model = to.balanced && to.engine === "opencode" ? undefined : to.model ?? undefined;
+  return { engine: to.engine, profile, model, effortLevel: to.effortLevel ?? undefined };
 }
 
 /** The target to apply, or why the switch no longer can happen: the session moved meanwhile, or the target is no longer one it may move to. */
