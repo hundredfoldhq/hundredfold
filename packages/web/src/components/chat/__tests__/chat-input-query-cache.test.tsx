@@ -76,7 +76,21 @@ describe("ChatInput query-backed menus", () => {
     expect(classes).toEqual(expect.arrayContaining(["min-w-0", "shrink", "overflow-hidden"]))
     expect(classes).not.toContain("shrink-0")
     // Its icon floor is sized from the composer, not the viewport, and stops at a narrow composer.
-    expect(classes).toContain("@min-[192px]/composer:min-w-12")
+    expect(classes).toContain("@min-[198px]/composer:min-w-12")
+  })
+
+  it("steps the waiting-on status floors at the widths the fixed row leaves room for", () => {
+    renderWithCachedQueries({
+      selectorSlot: <span data-testid="model-chip">GPT-5.6 Sol</span>,
+      statusSlot: <span data-testid="status">2 working</span>,
+    })
+    // 148px of fixed controls + the floors that apply (48px chip, then 24/40/72px status) + 2px slack.
+    const classes = screen.getByTestId("status").parentElement!.className.split(/\s+/)
+    expect(classes).toEqual(expect.arrayContaining([
+      "@min-[222px]/composer:has-[>*]:min-w-6",
+      "@min-[238px]/composer:has-[>*]:min-w-10",
+      "@min-[270px]/composer:has-[>*]:min-w-[4.5rem]",
+    ]))
   })
 
   it("drops the toolbar floors when the row also holds the CLI keys", () => {

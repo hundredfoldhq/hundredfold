@@ -81,16 +81,16 @@ interface ChatInputProps {
  * Minimum widths that keep the model chip's icons (48px) and the waiting-on status (24px for the
  * dot and count, 40px, then 72px for the short label) visible in a narrow composer. A floor only
  * applies once the composer row has room for it. The parts of the row that never shrink (attach,
- * context ring, Send and the gaps) take 142px with phone-sized buttons and 136px on desktop, so
- * each threshold is 142px + the floors that would apply + 2px of slack: a busy row of any width
+ * context ring, Send and the gaps) take 146px with phone-sized buttons and 148px on desktop, so
+ * each threshold is 148px + the floors that would apply + 2px of slack: a busy row of any width
  * never overflows and never pushes Send out. Sized from the composer container, never the
  * viewport, because a chat-grid pane is phone-narrow on a wide screen. A row that also shows the
  * CLI keys or the voice control has less to spare, so it gets no floors (TOOLBAR_FLOORS is only
  * applied when `toolbarFloors` holds).
  */
 const TOOLBAR_FLOORS = {
-  selector: '@min-[192px]/composer:min-w-12',
-  status: '@min-[216px]/composer:has-[>*]:min-w-6 @min-[232px]/composer:has-[>*]:min-w-10 @min-[264px]/composer:has-[>*]:min-w-[4.5rem]',
+  selector: '@min-[198px]/composer:min-w-12',
+  status: '@min-[222px]/composer:has-[>*]:min-w-6 @min-[238px]/composer:has-[>*]:min-w-10 @min-[270px]/composer:has-[>*]:min-w-[4.5rem]',
 } as const
 
 function resizeImage(file: File, maxPx: number): Promise<string> {

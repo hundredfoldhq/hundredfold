@@ -1,7 +1,7 @@
 import type { UseVoice } from './use-voice'
 import type { VoicePhase } from '@/lib/voice/state'
 
-/* The voice-mode control in the composer toolbar, beside the dictation mic.
+/* The voice-mode control in the composer toolbar, beside Send.
  * One tap starts listening and speaking, a second tap stops; in push-to-talk
  * mode it is held to talk and a small button beside it ends voice mode.
  *

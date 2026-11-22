@@ -56,7 +56,7 @@ export function CliKeybar({
 
   return (
     <div ref={ref} className="relative flex justify-end">
-      {/* Sized and tokened like the attach and mic buttons it sits between. */}
+      {/* Sized and tokened like the attach button and the Send or voice control it sits before. */}
       <Button
         type="button"
         variant="ghost"
