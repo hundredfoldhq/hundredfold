@@ -1,10 +1,14 @@
 //! The bundled Hundredfold shell shared by desktop, iOS, and Android.
 
+#[cfg(target_os = "android")]
+mod android;
 mod commands;
 mod credentials;
 mod deep_link;
 #[cfg(desktop)]
 mod display;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(desktop)]
 mod menu;
 mod navigation;
@@ -12,6 +16,7 @@ mod origin;
 #[cfg(desktop)]
 mod probe;
 mod stream;
+mod voice;
 
 #[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
@@ -50,10 +55,29 @@ const BRIDGE_SCRIPT: &str = r#"
         return internals.invoke('stream', { input, onEvent: on_event });
       },
       forget: (input) => invoke('forget', input),
+      /*voice*/
     }),
   });
 })();
 "#;
+
+/// The native voice entries. Mobile only: the web client picks the native voice session
+/// whenever `voiceStart` exists, and the desktop shell has no native audio, so it must
+/// leave the browser path in charge there.
+#[cfg(mobile)]
+const VOICE_METHODS: &str = r#"voiceStart: (input, onFrame) => {
+        const on_event = new Channel(onFrame);
+        return internals.invoke('voice_start', { input, onEvent: on_event });
+      },
+      voiceStop: () => internals.invoke('voice_stop', {}),
+      voicePtt: (input) => invoke('voice_ptt', input),
+      voiceStatus: () => internals.invoke('voice_status', {}),"#;
+#[cfg(not(mobile))]
+const VOICE_METHODS: &str = "";
+
+fn bridge_script() -> String {
+    BRIDGE_SCRIPT.replace("/*voice*/", VOICE_METHODS)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -72,6 +96,10 @@ pub fn run() {
         commands::request,
         stream::stream,
         commands::forget,
+        voice::voice_start,
+        voice::voice_stop,
+        voice::voice_ptt,
+        voice::voice_status,
         probe::report
     ]);
     #[cfg(mobile)]
@@ -79,7 +107,11 @@ pub fn run() {
         commands::pair,
         commands::request,
         stream::stream,
-        commands::forget
+        commands::forget,
+        voice::voice_start,
+        voice::voice_stop,
+        voice::voice_ptt,
+        voice::voice_status
     ]);
 
     builder
@@ -101,7 +133,7 @@ pub fn run() {
                     .title("Hundredfold")
                     .inner_size(1280.0, 860.0)
                     .min_inner_size(390.0, 480.0)
-                    .initialization_script(BRIDGE_SCRIPT)
+                    .initialization_script(bridge_script())
                     .on_navigation(move |url| match navigation::decide(url) {
                         navigation::NavigationDecision::Local => true,
                         navigation::NavigationDecision::External => {
@@ -131,4 +163,21 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("the Hundredfold shell failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bridge_script;
+
+    #[test]
+    fn the_bridge_exposes_voice_on_mobile_only() {
+        let script = bridge_script();
+        assert!(
+            script.contains("stream:"),
+            "the common entries are always there"
+        );
+        assert_eq!(script.contains("voiceStart"), cfg!(mobile));
+        assert_eq!(script.contains("voiceStatus"), cfg!(mobile));
+        assert!(!script.contains("/*voice*/"));
+    }
 }

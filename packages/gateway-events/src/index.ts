@@ -3,6 +3,7 @@
  *  and the per-event payload guards in ./payload-guards.js. */
 import type { CompanyChangedEvent, JsonObject, JsonValue, MessageMediaWire, TalkProactiveCuePayload } from "./payloads.js"
 export type * from "./payloads.js"
+export * from "./voice-protocol.js"
 
 export interface GatewayEventMap {
   "session:started": { sessionId: string }
@@ -96,6 +97,8 @@ export interface GatewayEventMap {
   "talk:tts:download:complete": Record<string, never>
   "talk:tts:download:error": { error: string }
   "talk:proactive-cue": TalkProactiveCuePayload
+  /** The local speech install (voice mode): where it is, 0 to 1, and why it failed. */
+  "voice:install": { state: "not_installed" | "installing" | "ready" | "failed"; progress: number; reason?: string }
 }
 
 export type GatewayEventName = keyof GatewayEventMap
@@ -142,6 +145,7 @@ export const GATEWAY_EVENTS = {
   talkTtsDownloadComplete: "talk:tts:download:complete",
   talkTtsDownloadError: "talk:tts:download:error",
   talkProactiveCue: "talk:proactive-cue",
+  voiceInstall: "voice:install",
 } as const satisfies Record<string, GatewayEventName>
 
 const gatewayEventNames = new Set<string>(Object.values(GATEWAY_EVENTS))

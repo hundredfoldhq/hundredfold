@@ -40,3 +40,7 @@ docker-compose.override.yml
 site/.vitepress/dist/
 site/.vitepress/cache/
 site/.vitepress/.temp/
+
+# Python bytecode
+__pycache__/
+*.pyc

@@ -343,6 +343,7 @@ import { claudeProfileFromDir, type ClaudeProfile } from "../shared/claude-profi
 import { declaredAccountByKey } from "../shared/claude-accounts-config.js";
 import { claudeAccountKey } from "../shared/engine-account.js";
 import { handleTalkApi } from "./talk-api.js";
+import { handleVoiceApi } from "./voice-api.js";
 import { onboardingNeeded, applyEngineChoice, personalizeOperatingManual } from "./onboarding-policy.js";
 import {
   CONTAINER_RESTART_UNSUPPORTED_MESSAGE,
@@ -404,6 +405,8 @@ export interface ApiContext {
   gatewayBootId?: string;
   getConfig: () => HundredfoldConfig;
   emit: GatewayEmit;
+  /** Whether voice mode was set up at boot (the voice runtime exists); absent where voice is not wired. */
+  voiceRunning?: () => boolean;
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   /** Re-read config.yaml into memory immediately (same as the file-watcher does,
@@ -1313,6 +1316,8 @@ export async function handleApiRequest(
     if (controlPlaneAction && !requireOperatorControlPlaneAuthority(req, res, controlPlaneAction, context)) {
       return;
     }
+
+    if (await handleVoiceApi(req, res, { method, pathname, url }, { getConfig: context.getConfig, emit: context.emit, ...(context.voiceRunning ? { voiceRunning: context.voiceRunning } : {}) })) return;
 
     if (method === "GET" && pathname === "/api/callback-deliveries/dead-letter") {
       if (!requireCallbackRecoveryAuthority(req, res, context)) return;

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { logger } from "../shared/logger.js";
-import { getSession, getMessages, insertMessage, updateMessageContent, updateSession, type SessionMessage } from "../sessions/registry.js";
+import { EXTERNAL_TURN_META_KEY, getSession, getMessages, insertMessage, updateMessageContent, updateSession, type SessionMessage } from "../sessions/registry.js";
 import { notifyParentOfExternalTurn } from "../sessions/callbacks.js";
 import { initDb } from "../shared/db.js";
 import { findTranscriptOfSession } from "./session-claude-profile.js";
@@ -10,6 +10,10 @@ import type { Employee, Session } from "../shared/types.js";
 import { withoutBoardReminder } from "../sessions/turn/board-reminder.js";
 import { withoutPauseNotice } from "../sessions/pause-notice.js";
 import { withoutLeftBackgroundNote } from "../sessions/left-background-tasks.js";
+import { withoutVoiceEnvelope } from "../voice/envelope.js";
+
+/** Marks assistant rows this sync stored, so a voice attachment can tell the engine's own replies from a gateway turn's. */
+const EXTERNAL_META = { [EXTERNAL_TURN_META_KEY]: true };
 
 /**
  * External-turn sync: persist turns that happened OUTSIDE a gateway run() —
@@ -119,7 +123,8 @@ export function transcriptEntryText(obj: any): { role: "user" | "assistant"; con
   if (typeof content !== "string" || !content.trim()) return null;
   if (isControlText(content)) return null;
   // The gateway appends the board reminder and a pause notice to the prompt it sends; the session's message is what the sender wrote.
-  if (obj.type === "user") content = withoutLeftBackgroundNote(withoutPauseNotice(withoutBoardReminder(content)));
+  // The voice envelope sits behind the left-background note, so it comes off second.
+  if (obj.type === "user") content = withoutVoiceEnvelope(withoutLeftBackgroundNote(withoutPauseNotice(withoutBoardReminder(content))));
   if (!content.trim()) return null;
   return { role: obj.type, content: content.trim() };
 }
@@ -409,7 +414,7 @@ export function syncExternalTurn(
     const existing = getMessages(sessionId);
     const newest = existing[existing.length - 1];
     if (newest && newest.role === "assistant" && newest.content === hookText) return 0;
-    insertMessage(sessionId, "assistant", hookText);
+    insertMessage(sessionId, "assistant", hookText, undefined, undefined, undefined, EXTERNAL_META);
     const anchorIso = new Date().toISOString();
     setAnchor(sessionId, anchorIso, { typedTurn: true });
     emit("session:external-turn", { sessionId });
@@ -467,7 +472,7 @@ export function syncExternalTurn(
   // One transaction for the upgrades plus the inserts (mirrors the transcript backfill).
   const txn = db.transaction((items: TranscriptTailEntry[]) => {
     upgradeTruncatedRows(alreadyPersisted, tail);
-    for (const e of items) insertMessage(sessionId, e.role, e.content);
+    for (const e of items) insertMessage(sessionId, e.role, e.content, undefined, undefined, undefined, e.role === "assistant" ? EXTERNAL_META : undefined);
   });
   txn(fresh);
   // A PTY-native first turn means the DB may not know the engine session yet —

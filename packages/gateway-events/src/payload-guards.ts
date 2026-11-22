@@ -249,6 +249,11 @@ export const payloadGuards: Record<GatewayEventName, PayloadGuard> = {
   "cron:run-finished": (value) =>
     isRecord(value) && isString(value.jobId) && (value.status === "success" || value.status === "error"),
   "engines:updated": isEmptyPayload,
+  "voice:install": (value) =>
+    isRecord(value)
+      && ["not_installed", "installing", "ready", "failed"].includes(String(value.state))
+      && isNumber(value.progress)
+      && isOptionalString(value.reason),
   "stt:download:progress": isProgressPayload,
   "stt:download:complete": (value) => isRecord(value) && isString(value.model),
   "stt:download:error": isErrorPayload,

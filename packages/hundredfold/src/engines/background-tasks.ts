@@ -36,9 +36,16 @@ function monitorCommand(input: Record<string, unknown> | undefined): string | nu
 
 type Fields = Record<string, unknown> | undefined;
 
+/** A foreground command the CLI moved to the background: Ctrl+B in the terminal (`backgroundedByUser`),
+ *  a turn abort, or a message that had to reach the model (verified on 2.1.330: the answer carries
+ *  `backgroundTaskId` and one of these flags, and the call's input says nothing of the background). */
+function movedToBackground(response: Fields): boolean {
+  return response?.backgroundedByUser === true || response?.backgroundedByTurnAbort === true || response?.backgroundedToDeliverMessage === true;
+}
+
 function launchedProcess(input: Fields, response: Fields, base: Pick<LaunchedTask, "description" | "startedAt">): LaunchedTask | null {
-  if (input?.run_in_background !== true || typeof response?.backgroundTaskId !== "string") return null;
-  return { ...base, kind: "process", id: response.backgroundTaskId, command: clip(input.command, COMMAND_MAX), agentType: null, timeoutMs: null };
+  if ((input?.run_in_background !== true && !movedToBackground(response)) || typeof response?.backgroundTaskId !== "string") return null;
+  return { ...base, kind: "process", id: response.backgroundTaskId, command: clip(input?.command, COMMAND_MAX), agentType: null, timeoutMs: null };
 }
 
 /** The timeout the Monitor runs under. The CLI's answer wins over what was asked: it caps the request

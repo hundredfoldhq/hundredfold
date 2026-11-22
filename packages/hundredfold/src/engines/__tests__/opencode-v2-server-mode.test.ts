@@ -39,6 +39,7 @@ import { USER_STOP_INTERRUPTION_REASON } from "../../sessions/interruption-reaso
 import { PtyLifecycleManager } from "../pty-lifecycle.js";
 import { HUNDREDFOLD_HOME } from "../../shared/paths.js";
 import type { EngineResult, EngineRunOpts, ResolvedMcpConfig, StreamDelta } from "../../shared/types.js";
+import { isSoftInterruptibleEngine } from "../../shared/types.js";
 
 const FAKE_V2 = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-opencode-v2.mjs");
 const TIMING_DEFAULTS = { ...SERVER_TURN_TIMING };
@@ -1385,6 +1386,74 @@ describe("the terminal view of an OpenCode 2 session", () => {
     await streamed(h);
     const server = h.pool.get("sess-1")!;
     expect(buildOpencodeViewArgs(server.hostUrl, "ses_test0001", server.api)).toEqual(["--server", server.hostUrl, "-s", "ses_test0001"]);
+  });
+});
+
+describe("the tool call a running turn is waiting on (foregroundWork)", { timeout: 30_000 }, () => {
+  async function sessionWithServer(h: Harness): Promise<string> {
+    const first = await h.engine.run(runOpts({ prompt: "hello" }));
+    expect(first.error).toBeUndefined();
+    return first.sessionId!;
+  }
+
+  it("is null with no turn, and for a session the engine does not know", async () => {
+    const h = harness();
+    expect(h.engine.foregroundWork("sess-none")).toBeNull();
+    await sessionWithServer(h);
+    expect(h.engine.foregroundWork("sess-1")).toBeNull();
+  });
+
+  it("names the tool from when it starts executing until its result, with its start time and description", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const before = Date.now();
+    const turn = streamed(h, { resumeSessionId: id, prompt: "run it SLOWTOOL" });
+    await waitDelivered(h);
+    let work = h.engine.foregroundWork("sess-1");
+    await waitFor(() => (work = h.engine.foregroundWork("sess-1")) !== null);
+    // Nothing is ever backgrounded on this engine: the hub steers.
+    expect(work).toMatchObject({ tool: "shell", description: "echo", backgroundable: false });
+    expect(work!.startedAt).toBeGreaterThanOrEqual(before);
+    expect(work!.startedAt).toBeLessThanOrEqual(Date.now());
+    // The tool takes 1.5 s: it is still the same call a moment later, with the same start.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(h.engine.foregroundWork("sess-1")).toEqual(work);
+    // Its result ends it, while the turn goes on to its answer.
+    await waitFor(() => h.engine.foregroundWork("sess-1") === null);
+    const { result } = await turn;
+    expect(result.result).toBe("tool done");
+    expect(h.engine.foregroundWork("sess-1")).toBeNull();
+  });
+
+  it("is null for a turn that only writes text, however long its step takes", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = streamed(h, { resumeSessionId: id, prompt: "SLOW answer" });
+    await waitDelivered(h);
+    const seen: Array<unknown> = [];
+    const poll = setInterval(() => seen.push(h.engine.foregroundWork("sess-1")), 50);
+    await turn;
+    clearInterval(poll);
+    expect(seen.length).toBeGreaterThan(5);
+    expect(seen.every((w) => w === null)).toBe(true);
+  });
+
+  it("is null as soon as the turn is being stopped, with its tool still unfinished", async () => {
+    const h = harness();
+    const id = await sessionWithServer(h);
+    const turn = streamed(h, { resumeSessionId: id, prompt: "run it SLOWTOOL" });
+    await waitDelivered(h);
+    await waitFor(() => h.engine.foregroundWork("sess-1") !== null);
+    h.engine.kill("sess-1", USER_STOP_INTERRUPTION_REASON);
+    expect(h.engine.foregroundWork("sess-1")).toBeNull();
+    await turn;
+    expect(h.engine.foregroundWork("sess-1")).toBeNull();
+  });
+
+  it("is not a soft-interruptible engine: it offers foregroundWork as a plain method", () => {
+    const h = harness();
+    expect(isSoftInterruptibleEngine(h.engine)).toBe(false);
+    expect(typeof h.engine.foregroundWork).toBe("function");
   });
 });
 
