@@ -120,21 +120,31 @@ sleep 1
 
 say "removing the task from recents: the session must end cleanly (bye, close 1000)"
 # On a loaded host the recents UI can take longer than a fixed sleep to come up, and a
-# swipe sent before it is shown does nothing. Open it, wait until it has focus (the
-# app no longer does), swipe, and check the task is gone; retry from the home screen
-# a bounded number of times (the recents key toggles, so never press it twice in a row).
-task_listed() { adb shell dumpsys activity recents 2>/dev/null | grep -q 'A=[0-9]*:run.hundredfold.shell\|packageName=run.hundredfold.shell'; }
-app_focused() { adb shell dumpsys window 2>/dev/null | grep -m1 mCurrentFocus | grep -q run.hundredfold.shell; }
+# swipe sent before it is shown does nothing. Open it, wait until the launcher shows the
+# task cards (id/snapshot in the UI dump), swipe, and check the task is gone; retry from
+# the home screen a bounded number of times (the recents key toggles, so every attempt
+# starts from HOME). Output is captured before grepping: under pipefail a `grep -q` on a
+# pipe can report SIGPIPE (141) for a match.
+task_listed() {
+  local out
+  out=$(adb shell dumpsys activity recents 2>/dev/null) || true
+  grep -q 'A=[0-9]*:run.hundredfold.shell' <<<"$out"
+}
+recents_shown() {
+  local out
+  adb shell uiautomator dump /sdcard/r.xml >/dev/null 2>&1 || true
+  out=$(adb shell cat /sdcard/r.xml 2>/dev/null) || true
+  grep -q 'id/snapshot' <<<"$out"
+}
 dismissed=
 for attempt in 1 2 3 4; do
   adb shell input keyevent 3 # home: a known starting point for every attempt
   sleep 1
   adb shell input keyevent 187
   for _ in $(seq 1 20); do
-    app_focused || break
+    recents_shown && break
     sleep 0.5
   done
-  sleep 1 # the focus moves before the task cards are laid out
   adb shell input swipe 540 1100 540 100 60
   for _ in $(seq 1 10); do
     task_listed || { dismissed=1; break; }
