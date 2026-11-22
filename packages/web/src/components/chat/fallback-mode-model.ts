@@ -1,4 +1,5 @@
 import type { SessionFallbackChainView } from '@hundredfold/fallback-chain-wire'
+import { pickReasonText } from '@/lib/account-pick-format'
 
 export type SessionFallbackMode = 'fallback' | 'fallback-children' | 'auto-resume'
 
@@ -83,6 +84,8 @@ export function fallbackChipTitle(view: SessionFallbackView): string {
     parts.push(`(${detail})`)
   }
   if (view.mode === 'fallback-children') parts.push('· child sessions inherit it')
+  const pick = view.chain?.pick
+  if (pick) parts.push(`· ${pickReasonText(pick)}`)
   return parts.join(' ')
 }
 

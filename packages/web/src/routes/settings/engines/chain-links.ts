@@ -1,8 +1,11 @@
 import {
+  fallbackGroupOf,
   fallbackLinkKey,
   type FallbackChainEntry,
   fallbackLinkOf,
+  type FallbackGroupEntry,
   type FallbackLink,
+  type FallbackWrittenEntry,
   type ResolvedFallbackLink,
 } from "@hundredfold/fallback-chain-wire"
 import { engineDisplayName } from "@/lib/engine-names"
@@ -25,9 +28,27 @@ export interface ChainContext {
   profiles: string[]
 }
 
-/** Each entry as a link; an entry that is neither form is dropped. */
+/** One row of the editor: a target, or a balanced group of Claude accounts. */
+export type ChainItem = FallbackWrittenEntry
+
+/** Whether the row is a balanced group. */
+export function isGroupItem(item: ChainItem): item is FallbackGroupEntry {
+  return "group" in item
+}
+
+/** Each entry as a link; an entry that is neither form (a group included) is dropped. */
 export function linksOfEntries(entries: readonly unknown[] | undefined): FallbackLink[] {
   return (entries ?? []).flatMap((entry) => fallbackLinkOf(entry) ?? [])
+}
+
+/** Each entry as a row: a link, or a group kept whole. An entry that is neither form is dropped. */
+export function itemsOfEntries(entries: readonly unknown[] | undefined): ChainItem[] {
+  return (entries ?? []).flatMap((entry) => fallbackGroupOf(entry) ?? fallbackLinkOf(entry) ?? [])
+}
+
+/** Identity of a row: a link's key, or a group's members' keys in order. */
+export function itemKey(item: ChainItem): string {
+  return isGroupItem(item) ? `group[${item.group.map(fallbackLinkKey).join(",")}]` : fallbackLinkKey(item)
 }
 
 /** True when any entry is a string, whose own chain expands at run time. */
@@ -42,8 +63,24 @@ export function linkOfResolved(resolved: FallbackLink & { written?: FallbackLink
   return { engine, ...(profile ? { profile } : {}), ...(model ? { model } : {}) }
 }
 
+/** The effective chain as rows: consecutive links that came from one group collapse into that group, as written. */
+export function itemsOfResolved(effective: readonly ResolvedFallbackLink[]): { items: ChainItem[]; origins: ("config" | "legacy")[] } {
+  const items: ChainItem[] = []
+  const origins: ("config" | "legacy")[] = []
+  let open: number | undefined
+  for (const link of effective) {
+    const group = link.group
+    if (group && open === group.index) continue
+    open = group?.index
+    // The group as config spells it (what an editor writes back), never the members' resolved models.
+    items.push(group ? { group: group.written.group.map(linkOfResolved) } : linkOfResolved(link))
+    origins.push(link.origin)
+  }
+  return { items, origins }
+}
+
 export interface ShownChain {
-  links: FallbackLink[]
+  links: ChainItem[]
   /** Per row: "legacy" for a link expanded from another entry's own chain. */
   origins: ("config" | "legacy")[]
   /** The chain is written in string entries, so `links` is its expansion. */
@@ -58,19 +95,20 @@ export interface ShownChain {
 export function shownChain(entries: readonly unknown[] | undefined, effective: ResolvedFallbackLink[] | undefined): ShownChain {
   const legacy = hasLegacyEntries(entries)
   if (legacy && effective) {
-    return { links: effective.map(linkOfResolved), origins: effective.map((l) => l.origin), legacy }
+    const { items, origins } = itemsOfResolved(effective)
+    return { links: items, origins, legacy }
   }
-  const links = linksOfEntries(entries)
+  const links = itemsOfEntries(entries)
   return { links, origins: links.map(() => "config" as const), legacy }
 }
 
-export function removeLink(links: FallbackLink[], index: number): FallbackLink[] {
+export function removeLink<T extends ChainItem>(links: T[], index: number): T[] {
   return links.filter((_, i) => i !== index)
 }
 
 /** Move one link, keeping every other link's relative order. An index outside the
  *  chain returns it unchanged rather than dropping or duplicating a link. */
-export function moveLink(links: FallbackLink[], from: number, to: number): FallbackLink[] {
+export function moveLink<T extends ChainItem>(links: T[], from: number, to: number): T[] {
   if (from === to) return links
   if (from < 0 || from >= links.length || to < 0 || to >= links.length) return links
   const next = [...links]
@@ -79,7 +117,7 @@ export function moveLink(links: FallbackLink[], from: number, to: number): Fallb
   return next
 }
 
-export function replaceLink(links: FallbackLink[], index: number, link: FallbackLink): FallbackLink[] {
+export function replaceLink<T extends ChainItem>(links: T[], index: number, link: T): T[] {
   return links.map((existing, i) => (i === index ? link : existing))
 }
 
@@ -121,20 +159,64 @@ export function rowLabel(link: FallbackLink): string {
   return [engineDisplayName(link.engine), link.profile, link.model].filter(Boolean).join(" · ")
 }
 
+/** A row as its controls name it: a link as {@link rowLabel}, a group as "Balanced group (default login, work)". */
+export function itemLabel(item: ChainItem): string {
+  return isGroupItem(item) ? `Balanced group (${item.group.map((m) => m.profile ?? "default login").join(", ")})` : rowLabel(item)
+}
+
 /**
  * The link a new row starts as: the first installed engine whose bare link the
  * chain does not already hold and that is not `self`, else the first engine that
  * is not `self`. The latter is a duplicate, which the row says so the operator
  * changes it.
  */
-export function blankLink(ctx: ChainContext, links: FallbackLink[], self: FallbackLink | readonly FallbackLink[] | undefined): FallbackLink {
+export function blankLink(ctx: ChainContext, links: ChainItem[], self: FallbackLink | readonly FallbackLink[] | undefined): FallbackLink {
   const selves = selfSpellings(self)
-  const taken = new Set([...links, ...selves].map(fallbackLinkKey))
+  const taken = new Set([...membersOf(links), ...selves].map(fallbackLinkKey))
   const names = ctx.engines.map((e) => e.name)
   const installed = ctx.engines.filter((e) => e.available).map((e) => e.name)
   const free = installed.find((name) => !taken.has(fallbackLinkKey({ engine: name })))
   const own = new Set(selves.map((s) => s.engine))
   return { engine: free ?? names.find((name) => !own.has(name)) ?? names[0] ?? "claude" }
+}
+
+/** Every target the rows name: a link itself, and each account of a group. */
+export function membersOf(items: readonly ChainItem[]): FallbackLink[] {
+  return items.flatMap((item) => (isGroupItem(item) ? item.group : [item]))
+}
+
+/** A Claude account as a group member: "" is the default login and writes no profile. */
+export function accountLink(profile: string): FallbackLink {
+  return profile ? { engine: "claude", profile } : { engine: "claude" }
+}
+
+/** The account a group member names, "" for the default login. */
+export function accountOf(link: FallbackLink): string {
+  return link.profile ?? ""
+}
+
+/** Every account a group may hold: the default login first, then the declared profiles. */
+export function groupAccountOptions(profiles: string[], labels: Record<string, string> = {}): { value: string; label: string }[] {
+  return [{ value: "", label: "Default login" }, ...profiles.map((name) => ({ value: name, label: labels[name] ?? name }))]
+}
+
+/**
+ * A new group's members: the default login and the first declared account, skipping the accounts
+ * the chain already lists elsewhere (a member repeating a standalone link is a duplicate). Fewer
+ * than two free accounts yields what there is, and the validator says the group needs two.
+ */
+export function blankGroup(ctx: ChainContext, items: ChainItem[]): FallbackGroupEntry {
+  const taken = new Set(membersOf(items).map(fallbackLinkKey))
+  const free = ["", ...ctx.profiles].map(accountLink).filter((link) => !taken.has(fallbackLinkKey(link)))
+  return { group: free.slice(0, 2) }
+}
+
+/** The group with `profile` added or removed. Members keep the order written; a new one goes last. */
+export function withMember(group: FallbackGroupEntry, profile: string, on: boolean): FallbackGroupEntry {
+  const link = accountLink(profile)
+  const key = fallbackLinkKey(link)
+  const without = group.group.filter((member) => fallbackLinkKey(member) !== key)
+  return { group: on ? [...without, link] : without }
 }
 
 /** The target a chain falls back from, as every spelling a link may not repeat. */
@@ -148,15 +230,17 @@ export function selfSpellings(self: FallbackLink | readonly FallbackLink[] | und
  * goes back as that very entry, so nothing about it changes — its fields, its
  * spelling — and an object entry is never turned into a string. Every other link
  * is a plain object link, which is also how a legacy chain's expansion is saved.
+ * A group goes back as `{ group: [...] }` of the members the operator chose (the
+ * `written` form, never resolved models), as the entry it was when untouched.
  */
-export function writeLinks(entries: readonly FallbackChainEntry[] | undefined, links: FallbackLink[]): FallbackChainEntry[] {
-  const untouched = (entries ?? []).filter((entry): entry is FallbackLink => typeof entry === "object" && entry !== null)
-  return links.map((link) => {
-    const key = fallbackLinkKey(link)
+export function writeLinks(entries: readonly FallbackChainEntry[] | undefined, items: ChainItem[]): FallbackChainEntry[] {
+  const untouched = (entries ?? []).filter((entry): entry is FallbackLink | FallbackGroupEntry => typeof entry === "object" && entry !== null)
+  return items.map((item) => {
+    const key = itemKey(item)
     const at = untouched.findIndex((entry) => {
-      const known = fallbackLinkOf(entry)
-      return known !== null && fallbackLinkKey(known) === key
+      const known = fallbackGroupOf(entry) ?? fallbackLinkOf(entry)
+      return known !== null && itemKey(known) === key
     })
-    return at === -1 ? link : untouched.splice(at, 1)[0]
+    return at === -1 ? item : untouched.splice(at, 1)[0]
   })
 }

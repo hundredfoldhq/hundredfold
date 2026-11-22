@@ -4,7 +4,7 @@ import {
   type FallbackLink,
 } from "@hundredfold/fallback-chain-wire"
 import { accountEntriesFor, accountNames, allAccountNames, chainEntriesFor, type EnginesConfig } from "./chain-model"
-import type { ChainContext } from "./chain-links"
+import { isGroupItem, type ChainContext, type ChainItem } from "./chain-links"
 
 /* Chain validation on the client. The sentences are the wire module's own, so a
  * chain the editor refuses is refused in the words the config loader would use. */
@@ -21,7 +21,7 @@ export function validatorContext(ctx: ChainContext, self: FallbackLink | undefin
  */
 export function rowProblems(
   where: string,
-  links: FallbackLink[],
+  links: ChainItem[],
   ctx: FallbackChainContext,
 ): { byRow: string[][]; general: string[] } {
   const byRow: string[][] = links.map(() => [])
@@ -85,7 +85,7 @@ export function chainSaveBlocker(
  */
 export function rowProblemsAgainst(
   where: string,
-  links: FallbackLink[],
+  links: ChainItem[],
   ctx: ChainContext,
   selves: readonly FallbackLink[],
 ): { byRow: string[][]; general: string[] } {
@@ -105,17 +105,21 @@ export type HostProblem = (at: string, profile: string) => string | undefined
  * Per row, the host-specific reason its Claude profile is refused (an account on the wrong side),
  * in the gateway's own sentence. A name that is declared nowhere gets none: the validator refuses it as naming no account.
  */
-export function hostRowProblems(where: string, links: FallbackLink[], hostProblem: HostProblem | undefined): string[][] {
-  return links.map((link, index) => {
-    const reason = hostProblem && link.engine === "claude" && link.profile !== undefined ? hostProblem(`${where}[${index}]: profile "${link.profile}"`, link.profile) : undefined
-    return reason ? [reason] : []
+export function hostRowProblems(where: string, links: ChainItem[], hostProblem: HostProblem | undefined): string[][] {
+  const reasonOf = (at: string, link: { engine: string; profile?: string }) =>
+    hostProblem && link.engine === "claude" && link.profile !== undefined ? hostProblem(`${at}: profile "${link.profile}"`, link.profile) : undefined
+  return links.map((item, index) => {
+    const reasons = isGroupItem(item)
+      ? item.group.map((member, at) => reasonOf(`${where}[${index}].group[${at}]`, member))
+      : [reasonOf(`${where}[${index}]`, item)]
+    return reasons.filter((reason): reason is string => reason !== undefined)
   })
 }
 
 /** {@link rowProblemsAgainst}, with the host reasons added under their rows. */
 export function rowProblemsWithHost(
   where: string,
-  links: FallbackLink[],
+  links: ChainItem[],
   ctx: ChainContext,
   selves: readonly FallbackLink[],
   hostProblem: HostProblem | undefined,

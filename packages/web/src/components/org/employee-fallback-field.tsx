@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import type { FallbackChainSubject, FallbackLink } from "@hundredfold/fallback-chain-wire"
+import type { FallbackChainSubject } from "@hundredfold/fallback-chain-wire"
 import { ChainFlowDisclosure } from "@/components/fallback/chain-flow-disclosure"
 import { resolveForFlow } from "@/components/fallback/resolve-links"
 import { useModelRegistry } from "@/hooks/use-model-registry"
@@ -7,9 +7,10 @@ import { useFallbackChains } from "@/hooks/use-fallback-chains"
 import type { Employee, EmployeeUpdate } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import { ChainEditor } from "@/routes/settings/engines/chain-editor"
+import { isGroupItem, type ChainItem } from "@/routes/settings/engines/chain-links"
 import { LegacyNotice } from "@/routes/settings/engines/chain-body"
 import { SettingsSelect } from "@/routes/settings/shared"
-import { chainBlocked, employeeChainOf, employeeSubject, fallbackFieldState, inheritedLabel, sameChain, subjectProblems, type InheritedChain, type OwnChain } from "./employee-fallback"
+import { chainBlocked, employeeChainOf, employeeSubject, fallbackFieldState, inheritedLabel, runningItems, sameChain, subjectProblems, type InheritedChain, type OwnChain } from "./employee-fallback"
 
 export { employeeChainOf, sameChain }
 export { refreshFallbackChains } from "@/hooks/use-fallback-chains"
@@ -23,8 +24,8 @@ interface EmployeeFallbackFieldProps {
   /** The model, as the editor now has it: the own target a link may not repeat. */
   model?: string
   /** The employee's own chain; null inherits. */
-  value: FallbackLink[] | null
-  onChange: (next: FallbackLink[] | null) => void
+  value: ChainItem[] | null
+  onChange: (next: ChainItem[] | null) => void
   /** Told whether the chain holds a problem, so the editor can refuse to save it. */
   onBlockedChange?: (blocked: boolean) => void
 }
@@ -72,7 +73,7 @@ function ChainChoice({ custom, ready, inherited, onChange }: {
   custom: boolean
   ready: boolean
   inherited: InheritedChain
-  onChange: (next: FallbackLink[] | null) => void
+  onChange: (next: ChainItem[] | null) => void
 }) {
   return (
     <SettingsSelect
@@ -122,13 +123,13 @@ export function EmployeeFallbackField({ employee, engine, model, value, onChange
         </>
       )}
       {/* The gateway's reading is of the saved engine: an unsaved engine change draws its own target plain. */}
-      {shown.length > 0 && <ChainFlowDisclosure links={resolveForFlow(self, shown, engine === employee.engine ? subject : undefined, originsOf(own))} />}
+      {shown.length > 0 && <ChainFlowDisclosure links={resolveForFlow(self, shown, engine === employee.engine ? subject : undefined, originsOf(own))} startPick={engine === employee.engine ? subject?.startPick : undefined} />}
     </div>
   )
 }
 
 /** The default's chain as plain text: it is read here, and edited where it is written. */
-function InheritedRows({ links, engine, preview, source }: { links: FallbackLink[]; engine: string; preview: boolean; source?: InheritedChain["source"] }) {
+function InheritedRows({ links, engine, preview, source }: { links: ChainItem[]; engine: string; preview: boolean; source?: InheritedChain["source"] }) {
   return (
     <>
       {links.length === 0 ? <NoFallback engine={engine} why={source === "none" ? "undeclared" : "default"} /> : <FallbackList links={links} />}
@@ -150,13 +151,15 @@ function NoFallback({ engine, why }: { engine: string; why: keyof typeof NO_FALL
 }
 
 /** An ordered, read-only chain: the same words a row's label uses. */
-export function FallbackList({ links }: { links: FallbackLink[] }) {
+export function FallbackList({ links }: { links: ChainItem[] }) {
   return (
     <ol data-fallback-list className="m-0 flex list-none flex-col gap-[2px] p-0 text-[length:var(--text-footnote)] text-[var(--text-secondary)]">
       {links.map((link, i) => (
         <li key={i}>
           <span className="text-[var(--text-quaternary)] [font-variant-numeric:tabular-nums]">{i + 1}. </span>
-          {[engineDisplayName(link.engine), link.profile, link.model].filter(Boolean).join(" · ")}
+          {isGroupItem(link)
+            ? <>Balanced group: {link.group.map((m) => [engineDisplayName(m.engine), m.profile, m.model].filter(Boolean).join(" · ")).join(", ")}</>
+            : [engineDisplayName(link.engine), link.profile, link.model].filter(Boolean).join(" · ")}
         </li>
       ))}
     </ol>
@@ -176,7 +179,7 @@ export function EmployeeFallbackSummary({ employee }: { employee: Employee }) {
   const subject = employeeSubject(chains, employee.name)
   if (!subject) return null
   // What would run, so the resolved models: this is read, never written back.
-  const links = subject.effective.map((l) => ({ engine: l.engine, ...(l.profile ? { profile: l.profile } : {}), ...(l.model ? { model: l.model } : {}) }))
+  const links = runningItems(subject.effective)
   const { from, why } = summaryOrigin(subject, employee.engine)
   return (
     <div className="mt-[var(--space-4)]" data-employee-fallback-summary>
@@ -184,7 +187,7 @@ export function EmployeeFallbackSummary({ employee }: { employee: Employee }) {
         Fallback chain <span className="font-normal normal-case tracking-normal text-[var(--text-quaternary)]">· {from}</span>
       </p>
       {links.length === 0 ? <NoFallback engine={employee.engine} why={why} /> : <FallbackList links={links} />}
-      {links.length > 0 && <ChainFlowDisclosure links={resolveForFlow(subject.primary ?? { engine: employee.engine }, links, subject)} />}
+      {links.length > 0 && <ChainFlowDisclosure links={resolveForFlow(subject.primary ?? { engine: employee.engine }, links, subject)} startPick={subject.startPick} />}
     </div>
   )
 }
