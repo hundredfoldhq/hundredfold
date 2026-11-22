@@ -14,6 +14,8 @@ interface UserMessageSlotProps {
   messageId: string
   text: string
   content: React.ReactNode
+  /** The user said this aloud (voice mode). */
+  spoken?: boolean
   media: MediaAttachment[]
   entering?: boolean
   onRetry?: (text: string, media?: MediaAttachment[]) => void
