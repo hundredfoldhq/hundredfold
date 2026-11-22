@@ -72,7 +72,7 @@ export type VoiceAction =
   | { type: "frame"; frame: VoiceServerFrame; now: number }
   | { type: "closed"; code: number; reason: string; requested: boolean }
   | { type: "suspended" }
-  | { type: "native-state"; state: NativeStateEvent["state"]; reason?: NativeStateEvent["reason"] }
+  | { type: "native-state"; state: NativeStateEvent["state"]; reason?: NativeStateEvent["reason"]; code?: number }
   | { type: "resumed" }
   | { type: "needs-tap" }
   | { type: "dismiss-notice" }
@@ -86,6 +86,19 @@ export const PAUSED_NOTICE = "Voice mode is paused by a call or another app. It 
 const NATIVE_STOP_ERRORS: Partial<Record<NonNullable<NativeStateEvent["reason"]>, string>> = {
   error: "Voice mode stopped on this device.",
   socket_closed: "Voice connection lost.",
+}
+
+/** Why the shell's socket closed, by the close code it forwards. */
+const NATIVE_CLOSE_MESSAGES: Record<number, string> = {
+  [VOICE_CLOSE.inUse]: "Voice is in use on this chat by someone else.",
+  [VOICE_CLOSE.limit]: "Too many voice sessions on this gateway.",
+  [VOICE_CLOSE.accessLost]: "You no longer have access to this chat.",
+  [VOICE_CLOSE.sessionGone]: "This chat no longer exists.",
+}
+
+function nativeStopError(a: ActionOf<"native-state">): string | null {
+  if (a.reason === "socket_closed" && a.code !== undefined && NATIVE_CLOSE_MESSAGES[a.code]) return NATIVE_CLOSE_MESSAGES[a.code]
+  return a.reason ? (NATIVE_STOP_ERRORS[a.reason] ?? null) : null
 }
 
 const TURN_PHASE: Record<VoiceTurnState, VoicePhase> = {
@@ -188,7 +201,7 @@ function nativeState(state: VoiceUiState, a: ActionOf<"native-state">): VoiceUiS
   switch (a.state) {
     case "paused": return state.status === "off" ? state : { ...state, status: "paused", notice: PAUSED_NOTICE, vadSpeaking: false, partial: "" }
     case "running": return state.status === "paused" ? { ...state, status: state.ready ? "on" : "connecting", notice: null } : state
-    case "stopped": return ended(state, { error: a.reason ? (NATIVE_STOP_ERRORS[a.reason] ?? null) : null })
+    case "stopped": return ended(state, { error: nativeStopError(a) })
     case "connecting": return state
   }
 }

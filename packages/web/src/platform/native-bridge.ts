@@ -23,7 +23,7 @@ export type NativeStreamEvent =
   | { event: "failed"; streamId: string; code: string; message: string }
 
 /** Why `voice_start` refused. The shell answers with one of these codes, as a string or `{ code }`. */
-export type NativeVoiceErrorCode = "permission_denied" | "not_paired" | "unsupported"
+export type NativeVoiceErrorCode = "permission-denied" | "not-paired" | "unsupported" | "voice-busy" | "invalid-path" | "invalid-request" | "transport-failed"
 /**
  * The one shell-only object on the native voice channel, besides the gateway's
  * forwarded frames: the native session's own state. A gateway never sends it,
@@ -33,6 +33,8 @@ export interface NativeStateEvent {
   type: "native_state"
   state: "connecting" | "running" | "paused" | "stopped"
   reason?: "user" | "notification" | "interruption" | "error" | "socket_closed"
+  /** The WebSocket close code, present only with `reason: "socket_closed"`. */
+  code?: number
 }
 export interface NativeVoiceStartInput {
   target: NativeGatewayTarget

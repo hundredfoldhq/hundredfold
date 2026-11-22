@@ -58,16 +58,30 @@ describe("NativeVoiceSession", () => {
     expect(voicePhase(session.getSnapshot())).toBe("off")
   })
 
-  it("turns the shell's refusal codes into something a person can act on", async () => {
-    for (const [code, text] of [["permission_denied", /permission/i], ["not_paired", /not paired/i], ["unsupported", /not supported/i]] as const) {
+  it("says clearly when the microphone was refused or the app is not paired", async () => {
+    for (const [code, text] of [["permission-denied", /microphone permission/i], ["not-paired", /not paired/i]] as const) {
       const { value } = bridge({ voiceStart: vi.fn(async () => { throw { code } }) } as Partial<NativeVoiceBridge>)
       const session = new NativeVoiceSession(value, { sessionId: "s", mode: "hands-free", origin: ORIGIN })
       await session.start()
       expect(session.getSnapshot()).toMatchObject({ status: "off" })
       expect(session.getSnapshot().error).toMatch(text)
     }
-    expect(nativeStartMessage("permission_denied")).toMatch(/permission/i)
-    expect(nativeStartMessage(new Error("boom"))).toMatch(/could not start/i)
+    expect(nativeStartMessage("permission-denied")).toMatch(/permission/i)
+  })
+
+  it.each(["unsupported", "voice-busy", "invalid-path", "invalid-request", "transport-failed", "something-new"])("%s gets the generic message", async (code) => {
+    const { value } = bridge({ voiceStart: vi.fn(async () => { throw { code } }) } as Partial<NativeVoiceBridge>)
+    const session = new NativeVoiceSession(value, { sessionId: "s", mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    expect(session.getSnapshot().error).toBe("Couldn't start voice mode on this device.")
+  })
+
+  it("reads a code given as a bare string or an Error message, and tolerates the underscored spelling", () => {
+    expect(nativeStartMessage("permission-denied")).toMatch(/permission/i)
+    expect(nativeStartMessage(new Error("not-paired"))).toMatch(/not paired/i)
+    expect(nativeStartMessage("PERMISSION_DENIED")).toMatch(/permission/i)
+    expect(nativeStartMessage(new Error("boom"))).toBe("Couldn't start voice mode on this device.")
+    expect(nativeStartMessage(undefined)).toBe("Couldn't start voice mode on this device.")
   })
 
   it("an ok:false answer is a failure", async () => {
@@ -135,6 +149,32 @@ describe("NativeVoiceSession native_state events", () => {
     send({ type: "native_state", state: "running" })
     expect(voicePhase(session.getSnapshot())).toBe("listening")
     expect(session.getSnapshot().notice).toBeNull()
+  })
+
+  it.each([
+    [4409, /in use on this chat by someone else/],
+    [4429, /Too many voice sessions on this gateway/],
+    [4401, /no longer have access to this chat/],
+    [4404, /This chat no longer exists/],
+  ])("socket_closed with close code %i says why", async (code, text) => {
+    const { session, send } = await running()
+    send({ type: "native_state", state: "stopped", reason: "socket_closed", code })
+    expect(session.getSnapshot()).toMatchObject({ status: "off" })
+    expect(session.getSnapshot().error).toMatch(text)
+  })
+
+  it("socket_closed with no code, an unknown code, or a code that is not a number shows the generic error", async () => {
+    for (const extra of [{}, { code: 1006 }, { code: "4409" }]) {
+      const { session, send } = await running()
+      send({ type: "native_state", state: "stopped", reason: "socket_closed", ...extra })
+      expect(session.getSnapshot().error).toBe("Voice connection lost.")
+    }
+  })
+
+  it("a code with any other reason is ignored", async () => {
+    const { session, send } = await running()
+    send({ type: "native_state", state: "stopped", reason: "notification", code: 4409 })
+    expect(session.getSnapshot().error).toBeNull()
   })
 
   it("a stop with reason error or socket_closed says so", async () => {

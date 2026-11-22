@@ -18,26 +18,32 @@ export function nativeVoiceBridge(bridge: HundredfoldNativeBridge | undefined): 
   return bridge as NativeVoiceBridge
 }
 
+/** Only these two are worth a specific sentence; every other code (unsupported, voice-busy, ...) is the generic one. */
 const START_ERRORS: Record<string, string> = {
-  permission_denied: "Microphone permission was denied. Allow it in the phone's settings for this app.",
-  not_paired: "This app is not paired with the gateway.",
-  unsupported: "Voice mode is not supported on this device.",
+  "permission-denied": "Microphone permission was denied. Allow it in the phone's settings for this app.",
+  "not-paired": "This app is not paired with the gateway.",
+}
+const GENERIC_START_ERROR = "Couldn't start voice mode on this device."
+
+/** The shell's native errors are kebab-case (`permission-denied`); an underscored spelling means the same. */
+function kebab(code: string): string {
+  return code.trim().toLowerCase().replaceAll("_", "-")
 }
 
 function errorCode(error: unknown): string {
-  if (typeof error === "string") return error
+  if (typeof error === "string") return kebab(error)
   if (error && typeof error === "object") {
     const code = (error as { code?: unknown }).code
-    if (typeof code === "string") return code
+    if (typeof code === "string") return kebab(code)
     const message = (error as { message?: unknown }).message
-    if (typeof message === "string") return message
+    if (typeof message === "string") return kebab(message)
   }
   return ""
 }
 
 export function nativeStartMessage(error: unknown): string {
   const code = errorCode(error)
-  return START_ERRORS[code] ?? "Voice mode could not start on this device."
+  return START_ERRORS[code] ?? GENERIC_START_ERROR
 }
 
 const NATIVE_STATES = new Set(["connecting", "running", "paused", "stopped"])
@@ -49,8 +55,10 @@ export function asNativeState(raw: unknown): NativeStateEvent | null {
     try { value = JSON.parse(raw) } catch { return null }
   }
   if (!value || typeof value !== "object") return null
-  const event = value as { type?: unknown; state?: unknown }
-  return event.type === "native_state" && typeof event.state === "string" && NATIVE_STATES.has(event.state) ? (value as NativeStateEvent) : null
+  const event = value as { type?: unknown; state?: unknown; code?: unknown }
+  if (event.type !== "native_state" || typeof event.state !== "string" || !NATIVE_STATES.has(event.state)) return null
+  // `code` is only meaningful as a number; anything else is dropped rather than trusted.
+  return typeof event.code === "number" ? (value as NativeStateEvent) : ({ ...(value as NativeStateEvent), code: undefined })
 }
 
 /**
@@ -130,7 +138,7 @@ export class NativeVoiceSession implements VoiceController {
     if (this.stopping) return
     const native = asNativeState(raw)
     const frame = native ? null : parseServerFrame(typeof raw === "string" ? raw : JSON.stringify(raw))
-    if (native) this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason })
+    if (native) this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason, code: native.code })
     else if (frame) this.store.dispatch({ type: "frame", frame, now: this.now() })
     // A run the shell or gateway ended while the button was held leaves nothing held.
     if (this.store.snapshot.status === "off") this.talking = false
