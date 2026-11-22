@@ -22,21 +22,25 @@ export function toolFailureHookSupported(versionOutput: string): boolean {
   return version !== undefined && compareSemver(version, TOOL_FAILURE_HOOK_MIN_VERSION) >= 0;
 }
 
-/** What was found per binary, by path, size and modification time, so an upgrade is noticed. Asked once: a failed run answers false. */
-const answers = new Map<string, boolean>();
+/**
+ * Binaries that passed, by path, size and modification time, so an upgrade is noticed. Only a pass is
+ * kept, as in claude-md-excludes.ts: a refusal is asked again, so a run that merely failed or timed out
+ * under load is not held against every later session, and an upgrade behind a version manager's
+ * unchanging shim is picked up. A bare name that does not resolve to a file is never kept either.
+ */
+const passed = new Set<string>();
 
-/** The local check: run `bin --version` once per binary. False when it cannot be run or reports an older build. */
+/** The local check: run `bin --version`, remembering a pass. False when it cannot be run or reports an older build. */
 export function localClaudeKnowsToolFailureHook(bin: string): boolean {
-  let key = bin;
+  let key: string | undefined;
   try {
     const real = fs.realpathSync(bin);
     const stat = fs.statSync(real);
     key = `${real}\0${stat.size}\0${stat.mtimeMs}`;
   } catch {
-    // Not a path we can see (a bare name, say): remembered under the name.
+    // Not a path we can see (a bare name, say): asked every time, never cached.
   }
-  const known = answers.get(key);
-  if (known !== undefined) return known;
+  if (key !== undefined && passed.has(key)) return true;
   let output = "";
   try {
     output = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] });
@@ -44,10 +48,10 @@ export function localClaudeKnowsToolFailureHook(bin: string): boolean {
     output = "";
   }
   const supported = toolFailureHookSupported(output);
-  answers.set(key, supported);
+  if (supported && key !== undefined) passed.add(key);
   return supported;
 }
 
 export function clearToolFailureHookCacheForTests(): void {
-  answers.clear();
+  passed.clear();
 }

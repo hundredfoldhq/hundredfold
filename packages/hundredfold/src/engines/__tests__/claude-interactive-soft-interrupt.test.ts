@@ -435,6 +435,28 @@ describe("InteractiveClaudeEngine — soft interrupt", () => {
       expect(keys()).toEqual([CTRL_B]);
     });
 
+    it("leaves a turn whose paste is held behind a background re-run alone: the PTY is running somebody else's turn", async () => {
+      await warmUp("s-held");
+      // The re-run a finished background task opens, with no gateway turn running.
+      deliver("s-held", { hook_event_name: "UserPromptSubmit", prompt: "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>" });
+      const held = engine.run({ sessionId: "s-held", prompt: "second", cwd: "/tmp", resumeSessionId: "c1" } as any);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(engine.isTurnRunning("s-held")).toBe(true);
+      expect(writes().some((w) => w.includes("second"))).toBe(false);
+      // A barge-in now would Esc the re-run and settle a turn that never started.
+      expect(await engine.softInterrupt("s-held", "voice")).toEqual({ ended: false, reason: "no_turn" });
+      expect(keys()).toEqual([]);
+      expect(engine.isTurnRunning("s-held")).toBe(true);
+      // The re-run ends, and the held turn pastes and runs as usual.
+      deliver("s-held", { hook_event_name: "Stop", last_assistant_message: "background done" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(writes().some((w) => w.includes("second"))).toBe(true);
+      deliver("s-held", { hook_event_name: "UserPromptSubmit", prompt: "second" });
+      deliver("s-held", { hook_event_name: "Stop", last_assistant_message: "second answer" });
+      expect((await held).result).toBe("second answer");
+      expect(released).toEqual([]);
+    });
+
     it("leaves a Rewind menu alone", async () => {
       const { turn } = await runningTurn("s-rewind");
       ptys[0]!.emit("   Rewind\r\n\r\n   Restore the code and/or conversation to the point before…\r\n\r\n     Reply with exactly the word READY.\r\n     No code changes\r\n\r\n   ❯ (current)\r\n\r\n   Enter to continue · Esc to cancel");
