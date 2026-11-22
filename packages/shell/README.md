@@ -80,17 +80,11 @@ exposes them to the web app as `window.__HUNDREDFOLD_NATIVE__.voice.{start, stop
 ptt, status}`. Error codes follow the shell's existing kebab-case convention.
 
 The channel carries the gateway's frames unchanged (`ready`, `transcript`,
-`segment_start`, `turn`, `detached`, ...; binary audio is never forwarded) plus one
-frame that only the native client sends, about the native session itself:
-
-```json
-{ "type": "native_state", "state": "connecting | running | paused | stopped", "reason": "notification" }
-```
-
-`reason` is set on `stopped`: `user`, `notification` (Stop on the lock screen),
-`connect_failed`, `unsupported_format`, or what the gateway said (`taken_over`,
-`access_lost`, `session_gone`, `in_use`, `limit`, `closed`, `shutdown`,
-`connection_lost`). A web UI that is suspended or gone does not end the session.
+`segment_start`, `turn`, `detached`, ...; binary audio is never forwarded) plus the
+shell-only `native_state` object, which reports the native session's own state (so
+the web UI learns of a Stop from the notification or a pause for a call). Its shape
+and `reason` values are specified in `specs/009-voice-mode/contracts/native-voice.md`.
+A web UI that is suspended or gone does not end the session.
 
 ### Platform status
 
@@ -108,11 +102,13 @@ acoustic echo canceller (`AcousticEchoCanceler.isAvailable()` is false there), s
 echo cancellation is only exercised on a real phone.
 
 Credentials: the keyring build enables the Apple backend only, so on Android there
-is no OS-backed store. Native voice (and `pair`, `request`, `stream`) therefore use
-a process-lifetime in-memory store off Apple platforms: a pairing lasts until the
-app process ends, then the user pairs again. It is **not** secure storage and must
-not be described as such; persistent Android Keystore storage is a separate
-decision.
+is no OS-backed store. Off Apple platforms the shell therefore keeps the pairing
+credential in a process-lifetime, in-memory store (compiled only for non-Apple
+targets; the Apple build is unchanged). It is never written to disk, a pairing lasts
+until the app process ends and the user then pairs again (while voice runs the
+foreground service keeps the process alive), and it is **not** secure storage and
+must not be described as such. Persistent Android Keystore storage is a separate
+security change, not part of this feature.
 
 ### Rust tests
 

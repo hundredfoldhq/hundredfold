@@ -11,7 +11,7 @@
 
 use crate::{
     audio::{parse_down_frame, FrameChunker},
-    protocol::{close_reason, ClientFrame, GatewayFrame, Mode, Onset, PROTOCOL_VERSION},
+    protocol::{ClientFrame, GatewayFrame, Mode, Onset, PROTOCOL_VERSION},
 };
 
 /// After an interruption, audio and segment announcements that were already in
@@ -56,8 +56,9 @@ pub struct StateEvent {
 }
 
 impl StateEvent {
-    /// `{"type":"native_state","state":...,"reason"?:...}`. Gateways never emit
-    /// this type, so it cannot be confused with a forwarded gateway frame.
+    /// `{"type":"native_state","state":...,"reason"?:...}` as specified in
+    /// contracts/native-voice.md. Gateways never emit this type, so it cannot be
+    /// confused with a forwarded gateway frame.
     pub fn to_json(&self) -> String {
         let mut value = serde_json::json!({
             "type": "native_state",
@@ -67,6 +68,30 @@ impl StateEvent {
             value["reason"] = serde_json::Value::String(reason.clone());
         }
         value.to_string()
+    }
+}
+
+/// The `reason` values of a `native_state` frame (contracts/native-voice.md).
+pub mod reason {
+    /// Voice mode was turned off from the app.
+    pub const USER: &str = "user";
+    /// Stop from the lock screen or the notification.
+    pub const NOTIFICATION: &str = "notification";
+    /// A system interruption (a call, Siri, another app) paused voice mode.
+    pub const INTERRUPTION: &str = "interruption";
+    /// The session could not start or had to end: no connection, an audio format
+    /// the client does not speak.
+    pub const ERROR: &str = "error";
+    /// The gateway closed the socket, or the connection was lost.
+    pub const SOCKET_CLOSED: &str = "socket_closed";
+
+    /// Maps what the platform says caused a stop onto the contract's values.
+    pub fn of_stop(requested: &str) -> &'static str {
+        match requested {
+            "user" => USER,
+            "notification" | "lock_screen" => NOTIFICATION,
+            _ => ERROR,
+        }
     }
 }
 
@@ -133,7 +158,6 @@ pub struct Session {
     highest_segment: Option<u32>,
     drop_through: Option<u32>,
     guard_until_ms: u64,
-    detached_reason: Option<String>,
     chunker: FrameChunker,
 }
 
@@ -147,7 +171,6 @@ impl Session {
             highest_segment: None,
             drop_through: None,
             guard_until_ms: 0,
-            detached_reason: None,
             chunker: FrameChunker::default(),
         }
     }
@@ -194,7 +217,7 @@ impl Session {
         }
     }
 
-    fn stop(&mut self, reason: String) -> Vec<Action> {
+    fn stop(&mut self, reason: &'static str) -> Vec<Action> {
         let was = self.phase;
         self.phase = Phase::Stopped;
         let mut actions = Vec::new();
@@ -203,7 +226,7 @@ impl Session {
         }
         actions.push(Action::CloseSocket);
         actions.push(Action::StopPlatform);
-        actions.push(state(NativeState::Stopped, Some(reason)));
+        actions.push(state(NativeState::Stopped, Some(reason.to_owned())));
         actions
     }
 
@@ -226,18 +249,16 @@ impl Session {
                     .to_json(),
                 )]
             }
-            Input::SocketClosed { code, .. } => {
+            Input::SocketClosed { .. } => {
                 let reason = if self.phase == Phase::AwaitingSocket {
-                    "connect_failed".to_owned()
+                    reason::ERROR
                 } else {
-                    self.detached_reason
-                        .take()
-                        .unwrap_or_else(|| close_reason(code).to_owned())
+                    reason::SOCKET_CLOSED
                 };
                 self.phase = Phase::Stopped;
                 vec![
                     Action::StopPlatform,
-                    state(NativeState::Stopped, Some(reason)),
+                    state(NativeState::Stopped, Some(reason.to_owned())),
                 ]
             }
             Input::GatewayText(text) => self.gateway_text(text, now_ms),
@@ -323,7 +344,7 @@ impl Session {
                     .to_json(),
                 )]
             }
-            Input::Stop { reason } => self.stop(reason),
+            Input::Stop { reason } => self.stop(reason::of_stop(&reason)),
             Input::InterruptionBegan => {
                 if self.phase != Phase::Running || self.paused {
                     return Vec::new();
@@ -335,7 +356,10 @@ impl Session {
                     self.ptt_down = false;
                     actions.push(Action::SendText(ClientFrame::PttUp.to_json()));
                 }
-                actions.push(state(NativeState::Paused, None));
+                actions.push(state(
+                    NativeState::Paused,
+                    Some(reason::INTERRUPTION.to_owned()),
+                ));
                 actions
             }
             Input::InterruptionEnded { suspended_ms } => {
@@ -363,7 +387,7 @@ impl Session {
                     return actions;
                 }
                 if ready.protocol != PROTOCOL_VERSION || !ready.input_ok || !ready.output_ok {
-                    actions.extend(self.stop("unsupported_format".to_owned()));
+                    actions.extend(self.stop(reason::ERROR));
                     return actions;
                 }
                 self.phase = Phase::Running;
@@ -389,9 +413,8 @@ impl Session {
                     actions.push(Action::SegmentEnd(segment_id));
                 }
             }
-            GatewayFrame::Detached { reason } => {
-                self.detached_reason = Some(reason);
-            }
+            // The frame is forwarded above; the gateway closes the socket next.
+            GatewayFrame::Detached { .. } => {}
             GatewayFrame::Other => {}
         }
         actions
@@ -467,10 +490,7 @@ mod tests {
         assert!(session.is_stopped());
         assert!(actions.contains(&Action::CloseSocket));
         assert!(actions.contains(&Action::StopPlatform));
-        assert!(actions.contains(&state(
-            NativeState::Stopped,
-            Some("unsupported_format".into())
-        )));
+        assert!(actions.contains(&state(NativeState::Stopped, Some("error".into()))));
     }
 
     #[test]
@@ -731,16 +751,17 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_socket_reports_why_and_stops_the_platform() {
-        let cases = [
-            (Some(4401), "access_lost"),
-            (Some(4409), "in_use"),
-            (Some(4429), "limit"),
-            (Some(4404), "session_gone"),
-            (Some(1000), "closed"),
-            (None, "connection_lost"),
-        ];
-        for (code, reason) in cases {
+    fn a_closed_socket_stops_the_platform_whatever_the_close_code() {
+        // The close code itself is not reported: the contract has one reason for a
+        // socket the gateway (or the network) closed.
+        for code in [
+            Some(4401),
+            Some(4409),
+            Some(4429),
+            Some(4404),
+            Some(1000),
+            None,
+        ] {
             let mut session = running(Mode::HandsFree);
             let actions = session.handle(
                 Input::SocketClosed {
@@ -753,14 +774,14 @@ mod tests {
                 actions,
                 vec![
                     Action::StopPlatform,
-                    state(NativeState::Stopped, Some(reason.into()))
+                    state(NativeState::Stopped, Some("socket_closed".into()))
                 ]
             );
         }
     }
 
     #[test]
-    fn a_failed_connection_reports_connect_failed() {
+    fn a_failed_connection_reports_an_error() {
         let mut session = Session::new(Mode::HandsFree);
         let actions = session.handle(
             Input::SocketClosed {
@@ -769,15 +790,16 @@ mod tests {
             },
             0,
         );
-        assert!(actions.contains(&state(NativeState::Stopped, Some("connect_failed".into()))));
+        assert!(actions.contains(&state(NativeState::Stopped, Some("error".into()))));
     }
 
     #[test]
-    fn detached_gives_the_stop_reason() {
+    fn detached_is_forwarded_and_the_close_that_follows_stops_the_session() {
         let mut session = running(Mode::HandsFree);
-        session.handle(
-            Input::GatewayText(r#"{"type":"detached","reason":"taken_over"}"#.into()),
-            1,
+        let detached = r#"{"type":"detached","reason":"taken_over"}"#;
+        assert_eq!(
+            session.handle(Input::GatewayText(detached.into()), 1),
+            vec![Action::Forward(detached.into())]
         );
         let actions = session.handle(
             Input::SocketClosed {
@@ -786,7 +808,30 @@ mod tests {
             },
             2,
         );
-        assert!(actions.contains(&state(NativeState::Stopped, Some("taken_over".into()))));
+        assert!(actions.contains(&state(NativeState::Stopped, Some("socket_closed".into()))));
+    }
+
+    #[test]
+    fn stop_reasons_map_onto_the_contract_values() {
+        for (asked, reported) in [
+            ("user", "user"),
+            ("notification", "notification"),
+            ("lock_screen", "notification"),
+            ("connect_failed", "error"),
+            ("anything else", "error"),
+        ] {
+            let mut session = running(Mode::HandsFree);
+            let actions = session.handle(
+                Input::Stop {
+                    reason: asked.into(),
+                },
+                1,
+            );
+            assert!(
+                actions.contains(&state(NativeState::Stopped, Some(reported.into()))),
+                "{asked}"
+            );
+        }
     }
 
     #[test]
@@ -794,7 +839,7 @@ mod tests {
         let mut session = running(Mode::HandsFree);
         let began = session.handle(Input::InterruptionBegan, 10);
         assert!(began.contains(&Action::PausePlayback));
-        assert!(began.contains(&state(NativeState::Paused, None)));
+        assert!(began.contains(&state(NativeState::Paused, Some("interruption".into()))));
         assert_eq!(session.state(), NativeState::Paused);
         assert!(session.handle(Input::Capture(vec![0; 640]), 11).is_empty());
         // A second begin is a no-op.
@@ -836,12 +881,12 @@ mod tests {
     fn state_events_serialize_as_native_state_frames() {
         let json = StateEvent {
             state: NativeState::Stopped,
-            reason: Some("access_lost".into()),
+            reason: Some("socket_closed".into()),
         }
         .to_json();
         assert_eq!(
             json,
-            r#"{"reason":"access_lost","state":"stopped","type":"native_state"}"#
+            r#"{"reason":"socket_closed","state":"stopped","type":"native_state"}"#
         );
         let bare = StateEvent {
             state: NativeState::Running,

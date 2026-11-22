@@ -169,17 +169,3 @@ impl GatewayFrame {
         })
     }
 }
-
-/// Why the native session ended, as reported to the web UI.
-pub fn close_reason(code: Option<u16>) -> &'static str {
-    match code {
-        Some(1000) => "closed",
-        Some(1001) => "shutdown",
-        Some(4400) => "protocol_error",
-        Some(4401) => "access_lost",
-        Some(4404) => "session_gone",
-        Some(4409) => "in_use",
-        Some(4429) => "limit",
-        _ => "connection_lost",
-    }
-}

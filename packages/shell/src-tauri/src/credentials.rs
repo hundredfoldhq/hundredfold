@@ -135,7 +135,10 @@ pub mod test_store {
 
 #[cfg(test)]
 mod tests {
-    use super::{account, test_store::MemoryCredentialStore, CredentialStore, GatewayCredential};
+    use super::{
+        account, test_store::MemoryCredentialStore, CredentialStore, GatewayCredential,
+        SessionCredentialStore,
+    };
     use crate::origin::CanonicalOrigin;
 
     #[test]
@@ -148,6 +151,44 @@ mod tests {
         assert_eq!(
             account(&a),
             account(&CanonicalOrigin::parse("http://127.0.0.1:7779").unwrap())
+        );
+    }
+
+    /// The in-memory store backs pairing on platforms with no OS credential store, so
+    /// it must never write a credential anywhere. It holds nothing but a
+    /// `Mutex<HashMap>`, and the production code of this module (everything before
+    /// the test module) names no filesystem API.
+    #[test]
+    fn the_session_store_never_touches_the_filesystem() {
+        let source = include_str!("credentials.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for api in [
+            "std::fs",
+            "fs::",
+            "File::",
+            "OpenOptions",
+            "create_dir",
+            "std::io::Write",
+            "tempfile",
+            "dirs::",
+            "std::env::temp_dir",
+        ] {
+            assert!(
+                !production.contains(api),
+                "credentials.rs must not use {api}: the in-memory store is never written to disk"
+            );
+        }
+        // And it still round-trips, so the check above is guarding something real.
+        let store = SessionCredentialStore::default();
+        let origin = CanonicalOrigin::parse("http://127.0.0.1:7779").unwrap();
+        let credential = GatewayCredential {
+            cookie_header: "auth=never-on-disk".into(),
+            device_id: "device".into(),
+        };
+        store.put(&origin, &credential).unwrap();
+        assert_eq!(
+            store.get(&origin).unwrap().unwrap().cookie_header,
+            "auth=never-on-disk"
         );
     }
 
