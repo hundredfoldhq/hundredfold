@@ -2,7 +2,8 @@ import { AlertTriangle } from "@/components/ui/icon"
 import type { EngineLimitAccountSnapshot, EngineLimitEngineSnapshot, EngineLimitWindow } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import { accountStatus } from "./account-status"
-import { AccountFacts, isOpencodeAccount, ModelBuckets } from "./opencode-account-parts"
+import { AccountFacts, isOpencodeAccount } from "./opencode-account-parts"
+import { OpencodeUsageBody } from "./provider-usage"
 import { agoLabel, barColor, clampPercent, resetLabel, windowLabel } from "./format"
 import { deriveFreshness, type FreshnessKind } from "./use-engine-limits"
 
@@ -93,6 +94,8 @@ function creditLabelFor(engine: EngineLimitEngineSnapshot): string | null {
 function toneAndNote(engine: EngineLimitEngineSnapshot, account: EngineLimitAccountSnapshot | undefined, now: number): { tone: Tone; note: string | null } {
   const status = account ? accountStatus(account, now) : null
   if (status) return { tone: status, note: status.note }
+  // The panel on the card says why; the engine's "not metered" copy would contradict a reading that failed.
+  if (engine.providerUsage?.status === "unavailable") return { tone: { color: "var(--system-orange)", label: "Usage unavailable" }, note: null }
   const kind = deriveFreshness(engine, now).kind
   return { tone: badge(kind, engine, now), note: noteFor(engine, kind) }
 }
@@ -160,6 +163,26 @@ function Windows({ engine, now, emptyNote }: { engine: EngineLimitEngineSnapshot
   )
 }
 
+function hasBucketWindows(engine: EngineLimitEngineSnapshot): boolean {
+  return engine.buckets?.some((b) => (b.windows?.length ?? 0) + (b.primary ? 1 : 0) > 0) ?? false
+}
+
+/** An opencode account's figures and facts, an opencode engine's own buckets or provider reading, or any other engine's windows. */
+function CardBody({ engine, account, now, emptyNote }: { engine: EngineLimitEngineSnapshot; account?: EngineLimitAccountSnapshot; now: number; emptyNote?: string }) {
+  if (isOpencodeAccount(account)) {
+    return (
+      <>
+        <OpencodeUsageBody usage={account.providerUsage} buckets={account.buckets} provider={account.provider} covered={account.providerUsage?.provider ?? account.provider} now={now} />
+        <AccountFacts account={account} now={now} />
+      </>
+    )
+  }
+  if (engine.name === "opencode" && (engine.providerUsage || hasBucketWindows(engine))) {
+    return <OpencodeUsageBody usage={engine.providerUsage} buckets={engine.buckets} covered={engine.providerUsage?.provider} now={now} />
+  }
+  return <Windows engine={engine} now={now} emptyNote={emptyNote} />
+}
+
 /** One configured agent: an engine, or an account (engine + profile) when the
  *  engine reports several. `account` carries the per-account state and `title`
  *  its name. */
@@ -190,16 +213,7 @@ export function EngineCard({ engine, now, account, title, emptyNote }: EngineCar
       )}
 
       <div className="flex-1">
-        {isOpencodeAccount(account) ? (
-          <>
-            <ModelBuckets buckets={account.buckets} provider={account.provider} now={now} />
-            <AccountFacts account={account} now={now} />
-          </>
-        ) : engine.name === "opencode" && engine.buckets?.some((b) => (b.windows?.length ?? 0) + (b.primary ? 1 : 0) > 0) ? (
-          <ModelBuckets buckets={engine.buckets} now={now} />
-        ) : (
-          <Windows engine={engine} now={now} emptyNote={emptyNote} />
-        )}
+        <CardBody engine={engine} account={account} now={now} emptyNote={emptyNote} />
       </div>
 
       {creditLabel && (

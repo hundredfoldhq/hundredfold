@@ -13,6 +13,10 @@ assertIsolatedTestHome(process.env.HUNDREDFOLD_HOME);
 // It also replaces CLAUDE_CONFIG_DIR, so no test reaches the real transcripts.
 createIsolatedTestFileHome();
 assertIsolatedClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR);
+// opencode keeps its stored credentials under the data directory. The limits collector reads them to ask
+// OpenCode Go for usage, so a suite on a machine signed in to opencode would otherwise make a real request with
+// the operator's key. Pointing the data directory into the isolated home leaves no credential to find.
+process.env.XDG_DATA_HOME = `${process.env.HUNDREDFOLD_HOME}/xdg-data`;
 
 /**
  * Scrub gateway/engine env that leaks in when the suite runs from inside a live

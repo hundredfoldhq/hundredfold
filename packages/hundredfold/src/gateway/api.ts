@@ -4510,13 +4510,13 @@ export async function handleApiRequest(
     if (await handleBoardWalkApi(req, res, { method, pathname, url }, context)) return;
     if (await handleBoardHooksApi(req, res, { method, pathname, url }, context)) return;
 
-    // POST /api/engine-limits/refresh — currently identical to GET for live
-    // sources. Kept as a command-shaped endpoint so the UI/CLI can request a
-    // deliberate refresh without changing the public contract later.
+    // POST /api/engine-limits/refresh — the same read as GET, except that OpenCode Go
+    // is asked again instead of answered from its short-cached usage reading. Kept
+    // as a command-shaped endpoint so the UI/CLI can request a deliberate refresh.
     if (method === "POST" && pathname === "/api/engine-limits/refresh") {
       const engine = url.searchParams.get("engine") || undefined;
       const config = context.getConfig();
-      const limits = await collectEngineLimits(config, { engine });
+      const limits = await collectEngineLimits(config, { engine, fresh: true });
       return json(res, engine ? limits : scopeEngineLimitsToConfigured(limits, config, orgRegistry(config).values()));
     }
 

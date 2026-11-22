@@ -147,6 +147,11 @@ export interface OpencodeLimitsDeps {
   now?: () => number;
 }
 
+/** The same note for a provider that has its own usage endpoint: the ledger is only the fallback estimate there. */
+export const OPENCODE_UNMETERED_FALLBACK_REASON =
+  "No allowance is configured to estimate hundredfold's own opencode spend against, which is what stands in while the provider's own usage cannot be read. "
+  + "Set engines.opencode.usageLimits.monthlyUsd (or an account's usageLimits) to estimate it (docs/engines-opencode.md).";
+
 export const OPENCODE_UNMETERED_REASON =
   "OpenCode exposes no account quota endpoint, and no allowance is configured to meter hundredfold's own opencode spend against. "
   + "Set engines.opencode.usageLimits.monthlyUsd (or an account's usageLimits) to meter it (docs/engines-opencode.md).";

@@ -88,7 +88,7 @@ export function opencodeModelHealthKey(model: string | undefined): string | unde
   return model !== undefined && slash > 0 && slash < model.length - 1 ? `opencode/${model}` : undefined;
 }
 
-function opencodeDatabasePath(env: NodeJS.ProcessEnv): string {
+export function opencodeDatabasePath(env: NodeJS.ProcessEnv): string {
   const data = env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
   return path.join(data, "opencode", "opencode.db");
 }

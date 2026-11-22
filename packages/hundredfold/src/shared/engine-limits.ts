@@ -10,6 +10,7 @@ import type {
   EngineLimitWindow,
   EngineLimitsResponse,
   HundredfoldConfig,
+  ProviderUsage,
 } from "./types.js";
 import { noteLimitReading, recordExhaustedWindows } from "./engine-health.js";
 import { collectClaudeAccounts } from "./engine-limits-accounts.js";
@@ -19,6 +20,7 @@ import { collectClaudeLimits } from "./engine-limits-claude.js";
 import { collectMusecodeLimits } from "./engine-limits-musecode.js";
 import { collectOpencodeLimits, meteringConfigured, OPENCODE_UNMETERED_REASON } from "./engine-limits-opencode.js";
 import { collectOpencodeAccounts } from "./engine-limits-opencode-accounts.js";
+import { collectGoUsage, goProvidersInUse, providerHealthBuckets, withEngineUsage } from "./engine-limits-opencode-usage.js";
 import { recordMeteredExhaustion } from "./engine-health-meter.js";
 import {
   baseSnapshot,
@@ -34,6 +36,10 @@ import { buildEngineChildEnv } from "./child-env.js";
 
 export interface CollectEngineLimitsOptions {
   engine?: string;
+  /** A deliberate refresh: ask OpenCode Go again instead of reusing its short-cached reading. */
+  fresh?: boolean;
+  /** Test seam: replaces the OpenCode Go usage reader. */
+  goUsage?: typeof collectGoUsage;
 }
 
 const LIVE_LIMIT_ENGINES = new Set(["codex", "claude"]);
@@ -330,6 +336,11 @@ export async function collectEngineLimits(
   const names = opts.engine ? [opts.engine] : Object.keys(registry);
   const generatedAt = nowIso();
   const engines: Record<string, EngineLimitEngineSnapshot> = {};
+  // OpenCode Go's own usage, asked for alongside the other engines' reads: its request is the slowest thing here.
+  const defaultModel = registry.opencode?.defaultModel;
+  const goUsage: Promise<Map<string, ProviderUsage>> = names.includes("opencode") && goProvidersInUse(config, { defaultModel }).length > 0
+    ? (opts.goUsage ?? collectGoUsage)(config, { fresh: opts.fresh === true, defaultModel }).catch(() => new Map())
+    : Promise.resolve(new Map());
 
   for (const name of names) {
     if (!registry[name]) {
@@ -352,6 +363,7 @@ export async function collectEngineLimits(
     } else if (name === "opencode" && meteringConfigured(config)) {
       engines[name] = collectOpencodeLimits(config)
         ?? collectUnsupported(config, name, UNSUPPORTED_REASONS.opencode);
+      engines[name] = withEngineUsage(engines[name], config, await goUsage);
     } else if (name === "musecode") {
       engines[name] = collectMusecodeLimits(config);
     } else if (name === "antigravity") {
@@ -365,6 +377,7 @@ export async function collectEngineLimits(
       };
     } else if (UNSUPPORTED_REASONS[name]) {
       engines[name] = collectUnsupported(config, name, UNSUPPORTED_REASONS[name]);
+      if (name === "opencode") engines[name] = withEngineUsage(engines[name], config, await goUsage);
     } else {
       engines[name] = collectUnsupported(config, name, "No limit collector is registered for this engine.");
     }
@@ -374,7 +387,7 @@ export async function collectEngineLimits(
     // bucket), so only it may clear a record; the others record a spent window and nothing more.
     // opencode's readings are metered per provider and recorded under `opencode/<provider>`, never the engine's own key.
     if (name === "claude") noteLimitReading(name, engines[name]);
-    else if (name === "opencode") recordMeteredExhaustion(engines[name].buckets);
+    else if (name === "opencode") recordMeteredExhaustion(providerHealthBuckets(engines[name].buckets, await goUsage));
     else recordExhaustedWindows(name, engines[name].windows);
   }
 
@@ -382,7 +395,7 @@ export async function collectEngineLimits(
   // single account, so that response is unchanged (FR-078).
   const claudeAccounts = engines.claude ? await collectClaudeAccounts(config, engines.claude) : undefined;
   // And each declared opencode account, read after the meter has written its health.
-  const opencodeAccounts = engines.opencode ? collectOpencodeAccounts(config, engines.opencode) : undefined;
+  const opencodeAccounts = engines.opencode ? collectOpencodeAccounts(config, engines.opencode, { providerUsage: await goUsage }) : undefined;
   const accounts = { ...(claudeAccounts ? { claude: claudeAccounts } : {}), ...(opencodeAccounts ? { opencode: opencodeAccounts } : {}) };
   return { generatedAt, default: config.engines.default, engines, ...(Object.keys(accounts).length > 0 ? { accounts } : {}) };
 }
