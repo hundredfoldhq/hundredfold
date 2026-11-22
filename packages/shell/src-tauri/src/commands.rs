@@ -7,7 +7,7 @@ use tauri::{State, WebviewWindow};
 use url::Url;
 
 use crate::{
-    credentials::{GatewayCredential, OsCredentialStore, SharedCredentialStore},
+    credentials::{platform_store, GatewayCredential, SharedCredentialStore},
     origin::{CanonicalOrigin, GatewayTarget},
     stream::{close_origin_streams, StreamRegistry},
 };
@@ -105,6 +105,21 @@ impl NativeError {
     fn redirect_denied() -> Self {
         Self::new("redirect-denied", "Gateway redirects are not followed")
     }
+    pub(crate) fn permission_denied() -> Self {
+        Self::new(
+            "permission-denied",
+            "Voice mode needs microphone and notification access",
+        )
+    }
+    pub(crate) fn unsupported() -> Self {
+        Self::new(
+            "unsupported",
+            "Native voice is not available on this platform",
+        )
+    }
+    pub(crate) fn voice_busy() -> Self {
+        Self::new("voice-busy", "Voice mode is already running")
+    }
     pub(crate) fn unknown_stream() -> Self {
         Self::new("unknown-stream", "The native gateway stream is not open")
     }
@@ -126,7 +141,7 @@ impl NativeState {
             .map_err(|_| NativeError::transport())?;
         Ok(Self {
             client,
-            credentials: Arc::new(OsCredentialStore),
+            credentials: platform_store(),
             streams: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
@@ -203,7 +218,7 @@ pub fn trusted_document(label: &str, url: &Url) -> bool {
     )
 }
 
-fn confine(window: &WebviewWindow) -> Result<(), NativeError> {
+pub(crate) fn confine<R: tauri::Runtime>(window: &WebviewWindow<R>) -> Result<(), NativeError> {
     let url = window.url().map_err(|_| NativeError::denied())?;
     trusted_document(window.label(), &url)
         .then_some(())
