@@ -1,0 +1,40 @@
+// The audio part of the Android emulator's controller service (the full
+// definition ships with the emulator as lib/emulator_controller.proto). Field
+// numbers and names match it, so this subset talks to the real service.
+syntax = "proto3";
+
+package android.emulation.control;
+
+import "google/protobuf/empty.proto";
+
+service EmulatorController {
+  // Audio the emulated device plays, as a stream of packets.
+  rpc streamAudio(AudioFormat) returns (stream AudioPacket) {}
+  // Audio injected into the emulated device's microphone.
+  rpc injectAudio(stream AudioPacket) returns (google.protobuf.Empty) {}
+}
+
+message AudioFormat {
+  enum SampleFormat {
+    AUD_FMT_U8 = 0;
+    AUD_FMT_S16 = 1;
+  }
+  enum Channels {
+    Mono = 0;
+    Stereo = 1;
+  }
+  enum DeliveryMode {
+    MODE_UNSPECIFIED = 0;
+    MODE_REAL_TIME = 1;
+  }
+  uint64 samplingRate = 1;
+  Channels channels = 2;
+  SampleFormat format = 3;
+  DeliveryMode mode = 4;
+}
+
+message AudioPacket {
+  AudioFormat format = 1;
+  uint64 timestamp = 2;
+  bytes audio = 3;
+}

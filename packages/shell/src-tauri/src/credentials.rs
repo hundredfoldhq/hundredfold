@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{commands::NativeError, origin::CanonicalOrigin};
 
+#[cfg(target_vendor = "apple")]
 const SERVICE: &str = "run.hundredfold.shell.gateway";
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -24,16 +28,19 @@ pub trait CredentialStore: Send + Sync {
 
 pub type SharedCredentialStore = Arc<dyn CredentialStore>;
 
+#[cfg(target_vendor = "apple")]
 pub struct OsCredentialStore;
 
 fn account(origin: &CanonicalOrigin) -> String {
     format!("{:x}", Sha256::digest(origin.as_str().as_bytes()))
 }
 
+#[cfg(target_vendor = "apple")]
 fn entry(origin: &CanonicalOrigin) -> Result<keyring::Entry, NativeError> {
     keyring::Entry::new(SERVICE, &account(origin)).map_err(|_| NativeError::credential_store())
 }
 
+#[cfg(target_vendor = "apple")]
 impl CredentialStore for OsCredentialStore {
     fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
         match entry(origin)?.get_password() {
@@ -66,36 +73,64 @@ impl CredentialStore for OsCredentialStore {
     }
 }
 
+/// Credentials held in memory for the life of the process.
+///
+/// Used where there is no OS-backed store: the keyring build enables the Apple
+/// backend only, so on Android its default is a mock whose entries do not
+/// persist, and a pairing would be unusable the moment it was made. This store
+/// is **not** secure storage and is not persisted: the user pairs again after
+/// the app process ends.
+#[derive(Default)]
+pub struct SessionCredentialStore(Mutex<HashMap<String, GatewayCredential>>);
+
+impl CredentialStore for SessionCredentialStore {
+    fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .get(&account(origin))
+            .cloned())
+    }
+
+    fn put(
+        &self,
+        origin: &CanonicalOrigin,
+        credential: &GatewayCredential,
+    ) -> Result<(), NativeError> {
+        self.0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .insert(account(origin), credential.clone());
+        Ok(())
+    }
+
+    fn delete(&self, origin: &CanonicalOrigin) -> Result<bool, NativeError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| NativeError::credential_store())?
+            .remove(&account(origin))
+            .is_some())
+    }
+}
+
+/// The credential store for this platform: Keychain on Apple platforms, the
+/// process-lifetime store elsewhere.
+pub fn platform_store() -> SharedCredentialStore {
+    #[cfg(target_vendor = "apple")]
+    {
+        Arc::new(OsCredentialStore)
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        Arc::new(SessionCredentialStore::default())
+    }
+}
+
 #[cfg(test)]
 pub mod test_store {
-    use super::{account, CanonicalOrigin, CredentialStore, GatewayCredential};
-    use crate::commands::NativeError;
-    use std::{collections::HashMap, sync::Mutex};
-
-    #[derive(Default)]
-    pub struct MemoryCredentialStore(Mutex<HashMap<String, GatewayCredential>>);
-
-    impl CredentialStore for MemoryCredentialStore {
-        fn get(&self, origin: &CanonicalOrigin) -> Result<Option<GatewayCredential>, NativeError> {
-            Ok(self.0.lock().unwrap().get(&account(origin)).cloned())
-        }
-
-        fn put(
-            &self,
-            origin: &CanonicalOrigin,
-            credential: &GatewayCredential,
-        ) -> Result<(), NativeError> {
-            self.0
-                .lock()
-                .unwrap()
-                .insert(account(origin), credential.clone());
-            Ok(())
-        }
-
-        fn delete(&self, origin: &CanonicalOrigin) -> Result<bool, NativeError> {
-            Ok(self.0.lock().unwrap().remove(&account(origin)).is_some())
-        }
-    }
+    pub type MemoryCredentialStore = super::SessionCredentialStore;
 }
 
 #[cfg(test)]

@@ -10,10 +10,16 @@ use std::{
 };
 use tauri::{ipc::Channel, State, WebviewWindow};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::header, Message};
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::header,
+    protocol::{frame::coding::CloseCode, CloseFrame},
+    Message,
+};
 
 use crate::{
     commands::{trusted_document, NativeError, NativeState},
+    credentials::SharedCredentialStore,
     origin::{CanonicalOrigin, GatewayTarget},
 };
 
@@ -95,36 +101,14 @@ pub async fn stream(
     confine(&window)?;
     match input {
         StreamInput::Open { target, path } => {
-            let origin = CanonicalOrigin::parse(&target.origin)?;
-            let credential = state
-                .credentials
-                .get(&origin)?
-                .ok_or_else(NativeError::not_paired)?;
-            let mut url = origin.request_url(&path)?;
-            url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
-                .map_err(|_| NativeError::invalid_origin())?;
-            let mut request = url
-                .as_str()
-                .into_client_request()
-                .map_err(|_| NativeError::invalid_path())?;
-            request.headers_mut().insert(
-                header::COOKIE,
-                credential
-                    .cookie_header
-                    .parse()
-                    .map_err(|_| NativeError::credential_store())?,
-            );
-            let id = format!("stream-{}", NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed));
-            let (sender, receiver) = mpsc::unbounded_channel();
-            state
-                .streams
-                .lock()
-                .map_err(|_| NativeError::transport())?
-                .insert(id.clone(), OpenStream { origin, sender });
-            let registry = state.streams.clone();
-            let task_id = id.clone();
-            tauri::async_runtime::spawn(run_socket(task_id, request, receiver, on_event, registry));
-            Ok(StreamReceipt { stream_id: id })
+            let (stream_id, _) = open_gateway_stream(
+                &state.credentials,
+                &state.streams,
+                &target,
+                &path,
+                ChannelSink(on_event),
+            )?;
+            Ok(StreamReceipt { stream_id })
         }
         StreamInput::Send {
             stream_id,
@@ -165,31 +149,132 @@ pub async fn stream(
     }
 }
 
+/// Where a gateway socket's events go. The `stream` command forwards them to
+/// the WebView over a Tauri channel; the native voice session consumes them in
+/// Rust, so audio never reaches JavaScript. Methods that return `bool` stop
+/// the socket when they return `false`.
+pub trait SocketSink: Send + 'static {
+    fn opened(&self, stream_id: &str) -> bool;
+    fn text(&self, stream_id: &str, text: String) -> bool;
+    fn binary(&self, stream_id: &str, bytes: Vec<u8>) -> bool;
+    fn closed(&self, stream_id: &str, code: Option<u16>, reason: String);
+    fn failed(&self, stream_id: &str);
+}
+
+struct ChannelSink(Channel<StreamEvent>);
+
+impl SocketSink for ChannelSink {
+    fn opened(&self, stream_id: &str) -> bool {
+        self.0
+            .send(StreamEvent::Opened {
+                stream_id: stream_id.to_owned(),
+            })
+            .is_ok()
+    }
+
+    fn text(&self, stream_id: &str, text: String) -> bool {
+        self.0
+            .send(StreamEvent::Message {
+                stream_id: stream_id.to_owned(),
+                text: Some(text),
+                bytes_base64: None,
+            })
+            .is_ok()
+    }
+
+    fn binary(&self, stream_id: &str, bytes: Vec<u8>) -> bool {
+        self.0
+            .send(StreamEvent::Message {
+                stream_id: stream_id.to_owned(),
+                text: None,
+                bytes_base64: Some(BASE64.encode(bytes)),
+            })
+            .is_ok()
+    }
+
+    fn closed(&self, stream_id: &str, code: Option<u16>, reason: String) {
+        let _ = self.0.send(StreamEvent::Closed {
+            stream_id: stream_id.to_owned(),
+            code,
+            reason,
+        });
+    }
+
+    fn failed(&self, stream_id: &str) {
+        let _ = self.0.send(StreamEvent::Failed {
+            stream_id: stream_id.to_owned(),
+            code: "stream-failed",
+            message: "The gateway stream could not connect",
+        });
+    }
+}
+
+/// Opens an authenticated gateway WebSocket for a paired origin: the same
+/// credential, origin rules and registry entry (so `forget` closes it) whether
+/// the consumer is the WebView or the native voice session.
+pub fn open_gateway_stream(
+    credentials: &SharedCredentialStore,
+    streams: &StreamRegistry,
+    target: &GatewayTarget,
+    path: &str,
+    sink: impl SocketSink,
+) -> Result<(String, mpsc::UnboundedSender<OutgoingFrame>), NativeError> {
+    let origin = CanonicalOrigin::parse(&target.origin)?;
+    let credential = credentials
+        .get(&origin)?
+        .ok_or_else(NativeError::not_paired)?;
+    let mut url = origin.request_url(path)?;
+    url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+        .map_err(|_| NativeError::invalid_origin())?;
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|_| NativeError::invalid_path())?;
+    request.headers_mut().insert(
+        header::COOKIE,
+        credential
+            .cookie_header
+            .parse()
+            .map_err(|_| NativeError::credential_store())?,
+    );
+    let id = format!("stream-{}", NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed));
+    let (sender, receiver) = mpsc::unbounded_channel();
+    streams
+        .lock()
+        .map_err(|_| NativeError::transport())?
+        .insert(
+            id.clone(),
+            OpenStream {
+                origin,
+                sender: sender.clone(),
+            },
+        );
+    tauri::async_runtime::spawn(run_socket(
+        id.clone(),
+        request,
+        receiver,
+        sink,
+        streams.clone(),
+    ));
+    Ok((id, sender))
+}
+
 async fn run_socket(
     stream_id: String,
     request: http::Request<()>,
     mut receiver: mpsc::UnboundedReceiver<OutgoingFrame>,
-    channel: Channel<StreamEvent>,
+    sink: impl SocketSink,
     registry: StreamRegistry,
 ) {
     let Ok((socket, _)) = tokio_tungstenite::connect_async(request).await else {
-        let _ = channel.send(StreamEvent::Failed {
-            stream_id: stream_id.clone(),
-            code: "stream-failed",
-            message: "The gateway stream could not connect",
-        });
+        sink.failed(&stream_id);
         registry
             .lock()
             .ok()
             .map(|mut streams| streams.remove(&stream_id));
         return;
     };
-    if channel
-        .send(StreamEvent::Opened {
-            stream_id: stream_id.clone(),
-        })
-        .is_err()
-    {
+    if !sink.opened(&stream_id) {
         registry
             .lock()
             .ok()
@@ -202,19 +287,15 @@ async fn run_socket(
             outgoing = receiver.recv() => match outgoing {
                 Some(OutgoingFrame::Text(text)) => if writer.send(Message::Text(text.into())).await.is_err() { break; },
                 Some(OutgoingFrame::Binary(bytes)) => if writer.send(Message::Binary(bytes.into())).await.is_err() { break; },
-                Some(OutgoingFrame::Close) | None => { let _ = writer.send(Message::Close(None)).await; break; }
+                Some(OutgoingFrame::Close) | None => { let _ = writer.send(Message::Close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() }))).await; break; }
             },
             incoming = reader.next() => match incoming {
-                Some(Ok(Message::Text(text))) => if channel.send(StreamEvent::Message {
-                    stream_id: stream_id.clone(), text: Some(text.to_string()), bytes_base64: None,
-                }).is_err() { break; },
-                Some(Ok(Message::Binary(bytes))) => if channel.send(StreamEvent::Message {
-                    stream_id: stream_id.clone(), text: None, bytes_base64: Some(BASE64.encode(bytes)),
-                }).is_err() { break; },
+                Some(Ok(Message::Text(text))) => if !sink.text(&stream_id, text.to_string()) { break; },
+                Some(Ok(Message::Binary(bytes))) => if !sink.binary(&stream_id, bytes.to_vec()) { break; },
                 Some(Ok(Message::Close(frame))) => {
                     let (code, reason) = frame.map(|frame| (Some(frame.code.into()), frame.reason.to_string()))
                         .unwrap_or((None, String::new()));
-                    let _ = channel.send(StreamEvent::Closed { stream_id: stream_id.clone(), code, reason });
+                    sink.closed(&stream_id, code, reason);
                     break;
                 }
                 Some(Ok(Message::Ping(bytes))) => if writer.send(Message::Pong(bytes)).await.is_err() { break; },
@@ -227,11 +308,7 @@ async fn run_socket(
         .lock()
         .ok()
         .map(|mut streams| streams.remove(&stream_id));
-    let _ = channel.send(StreamEvent::Closed {
-        stream_id,
-        code: None,
-        reason: String::new(),
-    });
+    sink.closed(&stream_id, None, String::new());
 }
 
 pub fn close_origin_streams(registry: &StreamRegistry, origin: &CanonicalOrigin) {

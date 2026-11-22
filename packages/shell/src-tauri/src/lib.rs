@@ -1,10 +1,14 @@
 //! The bundled Hundredfold shell shared by desktop, iOS, and Android.
 
+#[cfg(target_os = "android")]
+mod android;
 mod commands;
 mod credentials;
 mod deep_link;
 #[cfg(desktop)]
 mod display;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(desktop)]
 mod menu;
 mod navigation;
@@ -12,6 +16,7 @@ mod origin;
 #[cfg(desktop)]
 mod probe;
 mod stream;
+mod voice;
 
 #[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
@@ -50,6 +55,15 @@ const BRIDGE_SCRIPT: &str = r#"
         return internals.invoke('stream', { input, onEvent: on_event });
       },
       forget: (input) => invoke('forget', input),
+      voice: Object.freeze({
+        start: (input, onEvent) => {
+          const on_event = new Channel(onEvent);
+          return internals.invoke('voice_start', { input, onEvent: on_event });
+        },
+        stop: () => internals.invoke('voice_stop', {}),
+        ptt: (input) => invoke('voice_ptt', input),
+        status: () => internals.invoke('voice_status', {}),
+      }),
     }),
   });
 })();
@@ -72,6 +86,10 @@ pub fn run() {
         commands::request,
         stream::stream,
         commands::forget,
+        voice::voice_start,
+        voice::voice_stop,
+        voice::voice_ptt,
+        voice::voice_status,
         probe::report
     ]);
     #[cfg(mobile)]
@@ -79,7 +97,11 @@ pub fn run() {
         commands::pair,
         commands::request,
         stream::stream,
-        commands::forget
+        commands::forget,
+        voice::voice_start,
+        voice::voice_stop,
+        voice::voice_ptt,
+        voice::voice_status
     ]);
 
     builder
