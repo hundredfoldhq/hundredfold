@@ -341,6 +341,50 @@ describe("how a spoken message reaches a running turn (FR-013 to FR-018)", () =>
   });
 });
 
+describe("the wait for a soft interrupt (it can take several seconds)", () => {
+  it("the holding line is spoken at once, the turn stays `working`, and other frames are not held up", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true } } });
+    h.state.turnRunning = true;
+    h.engine.work = { tool: "Bash", startedAt: h.clock.now() - 9_000, description: "sleep 60", backgroundable: true };
+    let finish!: () => void;
+    (h.engine as unknown as { softInterrupt: unknown }).softInterrupt = () => new Promise((resolve) => {
+      finish = () => resolve({ ended: true, backgrounded: [{ taskId: "bg-1", description: "sleep 60" }] });
+    });
+    const { socket, attachment } = h.connect();
+    h.event("session:started");
+    h.delta("tool_use", "", { toolName: "Bash" });
+    await settle();
+    socket.clear();
+    await h.say(attachment, "what is two plus two");
+    // Soft interrupt still pending: the line is out, nothing was delivered yet.
+    expect(h.delivered).toHaveLength(0);
+    expect(socket.ofType("holding")).toHaveLength(1);
+    expect(socket.ofType("segment_start")).toHaveLength(1);
+    expect(socket.ofType("turn").map((f) => f.state)).not.toContain("speaking");
+    // Frames still flow while it waits.
+    h.vad().start();
+    h.audio(attachment, 3);
+    expect(socket.ofType("vad").some((f) => f.speaking === true)).toBe(true);
+    finish();
+    await settle();
+    expect(h.delivered.map((d) => d.mode)).toEqual(["queue"]);
+  });
+
+  it("an interrupted turn settles with its quiet-preemption error: nothing is reported and nothing is said", async () => {
+    const h = createHarness({ engine: { soft: { preserves: true } } });
+    h.state.turnRunning = true;
+    const { socket, attachment } = h.connect();
+    h.event("session:started");
+    await h.say(attachment, "new question");
+    socket.clear();
+    h.event("session:completed", { result: null, error: "Interrupted: voice barge-in" });
+    await settle();
+    expect(socket.ofType("error")).toHaveLength(0);
+    expect(socket.ofType("segment_start")).toHaveLength(0);
+    expect(JSON.stringify(socket.frames())).not.toContain("Interrupted");
+  });
+});
+
 describe("the old thread's tail is not spoken over the new answer", () => {
   it("after a send-now, text of the cut turn is dropped until a turn boundary, then the new reply is spoken", async () => {
     const h = createHarness();

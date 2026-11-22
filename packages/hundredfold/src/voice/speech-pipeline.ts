@@ -132,6 +132,12 @@ export class SpeechPipeline {
     return this.queue.length > 0 || this.history.some((s) => s.state === "queued" || s.state === "synthesising" || s.state === "sent");
   }
 
+  /** As `hasUnplayed`, for the reply's own sentences: a holding line is not the reply being spoken. */
+  hasUnplayedReply(): boolean {
+    return this.queue.some((s) => !s.holding)
+      || this.history.some((s) => !s.holding && (s.state === "queued" || s.state === "synthesising" || s.state === "sent"));
+  }
+
   /** The client reported a segment played in full. */
   markPlayed(segmentId: number): void {
     const segment = this.history.find((s) => s.id === segmentId);

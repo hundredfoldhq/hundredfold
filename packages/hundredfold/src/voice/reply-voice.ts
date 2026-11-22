@@ -288,7 +288,8 @@ export class ReplyVoice {
   }
 
   private emitTurn(): void {
-    const state: VoiceTurnState = this.pipeline.hasUnplayed() ? "speaking" : this.engineTurn;
+    // A holding line spoken while long work runs leaves the turn `working`: it is not the reply.
+    const state: VoiceTurnState = this.pipeline.hasUnplayedReply() ? "speaking" : this.engineTurn;
     const key = `${state}:${state === "working" ? (this.tool ?? "") : ""}`;
     if (key === this.lastTurnSent || this.suspended) return;
     this.lastTurnSent = key;
