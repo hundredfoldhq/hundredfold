@@ -252,6 +252,8 @@ export class SpeechSidecarClient {
   /**
    * A VAD stream. Audio written while the sidecar is not ready is held (bounded), and a stream that
    * outlives a crash is opened again on the respawn, with its handlers, so it does not go quiet.
+   * Offsets count from 0 again on each reopen, and audio dropped from a full queue is not counted:
+   * a caller must not compare offsets from before a respawn with offsets after it.
    */
   vad(stream: string, params: VadParams): SidecarVad {
     const release = this.lease();

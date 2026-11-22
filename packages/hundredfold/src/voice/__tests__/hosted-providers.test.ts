@@ -1,17 +1,20 @@
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { resolveVoiceConfig, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider } from "../provider.js";
-import { iso6391, parseWav, toWav } from "../providers/audio.js";
+import { iso6391, looksLikeMp3, mpegFrameLength, parseWav, toWav } from "../providers/audio.js";
 import { EnergyVad } from "../providers/energy-vad.js";
 import { LocalSttProvider, LocalTtsProvider } from "../providers/local.js";
 import { OpenAiSttProvider, OpenAiTtsProvider } from "../providers/openai.js";
 import { OpenAiCompatibleSttProvider, OpenAiCompatibleTtsProvider } from "../providers/openai-compatible.js";
 import { createSttProvider, createTtsProvider, createVad, closeSharedLocalSpeech } from "../providers/registry.js";
-import type { SpeechInstaller } from "../sidecar/bootstrap.js";
-import type { SpeechSidecarClient } from "../sidecar/client.js";
+import { SpeechInstaller } from "../sidecar/bootstrap.js";
+import { SpeechSidecarClient } from "../sidecar/client.js";
 
 const KEY = "sk-test-sentinel-0123456789";
 const ENV = { OPENAI_API_KEY: KEY, LOCAL_KEY: "local-secret-key" };
@@ -414,6 +417,64 @@ describe("OpenAI-compatible TTS", () => {
     await expect(drain(synth(compatible(byContent.url)))).rejects.toThrow(/only returns MP3/);
     const frameSync = await httpServer((_request, res) => res.end(Buffer.from([0xff, 0xfb, 0x90, 0x00, 0, 0])));
     await expect(drain(synth(compatible(frameSync.url)))).rejects.toThrow(/only returns MP3/);
+    // Two 128 kbit/s 44.1 kHz frames (417 bytes each) sent in small pieces, so the sniff has to read past its first 12 bytes.
+    const frame = Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x00]), Buffer.alloc(413)]);
+    const twoFrames = await httpServer((_request, res) => {
+      res.writeHead(200, { "Content-Type": "application/octet-stream" });
+      const body = Buffer.concat([frame, frame]);
+      for (let at = 0; at < body.length; at += 100) res.write(body.subarray(at, at + 100));
+      res.end();
+    });
+    await expect(drain(synth(compatible(twoFrames.url)))).rejects.toThrow(/only returns MP3/);
+  });
+
+  it("plays raw PCM whose first sample is negative (0xFFxx looks like an MPEG frame sync)", async () => {
+    const opening = (samples: number[]) => {
+      const audio = pcm(150, 800); // 4800 bytes, 24 kHz PCM16LE
+      samples.forEach((sample, index) => audio.writeInt16LE(sample, index * 2));
+      return audio;
+    };
+    // -1 then 16 (FF FF 10 00) and -1025 then 144 (FF FB 90 00, the commonest MP3 header) are valid MPEG frame headers on their own; no second frame follows.
+    const cases: Array<[string | null, number[]]> = [
+      ["audio/pcm", [-1, -1]], ["audio/pcm", [-257, 3]], ["audio/pcm", [-1, 16]], ["audio/L16; rate=24000", [-1, 16]],
+      ["application/octet-stream", [-1, -1]], ["application/octet-stream", [-1, 16]], [null, [-257, 3]], [null, [-1025, 144]], ["application/octet-stream", [-1025, 144]],
+    ];
+    for (const [type, samples] of cases) {
+      const audio = opening(samples);
+      const server = await httpServer((_request, res) => { if (type) res.writeHead(200, { "Content-Type": type }); res.end(audio); });
+      expect((await drain(synth(compatible(server.url)))).equals(audio), `${type} ${samples.join(",")}`).toBe(true);
+    }
+    // The same, arriving in small pieces: the sniff has to read on to where a second frame would start before it decides.
+    const audio = opening([-1025, 144]);
+    const chunked = await httpServer((_request, res) => {
+      res.writeHead(200, { "Content-Type": "application/octet-stream" });
+      res.write(audio.subarray(0, 16));
+      setTimeout(() => res.end(audio.subarray(16)), 50); // a pause, so the first 16 bytes arrive on their own
+    });
+    expect((await drain(synth(compatible(chunked.url)))).equals(audio)).toBe(true);
+  });
+
+  it("reads MPEG frame headers strictly", () => {
+    const header = (...bytes: number[]) => Buffer.from(bytes);
+    expect(mpegFrameLength(header(0xff, 0xfb, 0x90, 0x00))).toBe(417); // MPEG-1 layer III, 128 kbit/s, 44.1 kHz
+    expect(mpegFrameLength(header(0xff, 0xfb, 0x92, 0x00))).toBe(418); // padded
+    expect(mpegFrameLength(header(0xff, 0xf3, 0x84, 0x00))).toBe(192); // MPEG-2 layer III, 64 kbit/s, 24 kHz
+    expect(mpegFrameLength(header(0xff, 0xe3, 0x18, 0x00))).toBe(72); // MPEG-2.5 layer III, 8 kbit/s, 8 kHz
+    expect(mpegFrameLength(header(0xff, 0xfd, 0x90, 0x00))).toBe(522); // MPEG-1 layer II, 160 kbit/s
+    expect(mpegFrameLength(header(0xff, 0xff, 0x10, 0x00))).toBe(32); // MPEG-1 layer I, 32 kbit/s
+    expect(mpegFrameLength(header(0xff, 0xff, 0x12, 0x00))).toBe(36); // padded by one 4-byte slot
+    for (const [name, bytes] of [
+      ["no sync", [0xff, 0x1b, 0x90, 0x00]], ["reserved version", [0xff, 0xeb, 0x90, 0x00]], ["reserved layer", [0xff, 0xf9, 0x90, 0x00]],
+      ["free bitrate", [0xff, 0xfb, 0x00, 0x00]], ["bad bitrate", [0xff, 0xfb, 0xf0, 0x00]], ["reserved rate", [0xff, 0xfb, 0x9c, 0x00]],
+      ["reserved emphasis", [0xff, 0xfb, 0x90, 0x02]], ["short", [0xff, 0xfb, 0x90]],
+    ] as const) expect(mpegFrameLength(Buffer.from(bytes)), name).toBeNull();
+    expect(looksLikeMp3(Buffer.from([0xff, 0xff, 0xff, 0xff, 0, 0]))).toBe(false); // two -1 samples
+  });
+
+  it("believes a raw PCM content type over bytes that look like a container", async () => {
+    const audio = Buffer.concat([Buffer.from("ID3"), pcm(150, 800)]).subarray(0, 4800); // 24 kHz PCM16LE that happens to open "ID3"
+    const server = await httpServer((_request, res) => { res.writeHead(200, { "Content-Type": "audio/pcm" }); res.end(audio); });
+    expect((await drain(synth(compatible(server.url)))).equals(audio)).toBe(true);
   });
 
   it("refuses a WAV that is not 16-bit mono PCM", async () => {
@@ -455,6 +516,17 @@ describe("hosted provider edge cases", () => {
       expect(events[0]).toMatchObject({ type: "error" });
       expect(JSON.stringify(events)).not.toContain("local-secret-key");
       expect(JSON.stringify(events)).toContain("***");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("redacts the key from a speech request that fails before any response", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("upstream said bad key local-secret-key"));
+    try {
+      const failure = await drain(synth(compatTts("http://127.0.0.1:1"))).catch((error: Error) => error);
+      expect((failure as Error).message).toMatch(/could not be reached: upstream said bad key \*\*\*/);
+      expect((failure as Error).message).not.toContain("local-secret-key");
     } finally {
       spy.mockRestore();
     }
@@ -559,6 +631,25 @@ describe("registry", () => {
     const own = { stt: { provider: "openai-compatible", baseUrl: "http://localhost:8000" }, tts: { provider: "openai-compatible", baseUrl: "http://localhost:8880" } };
     expect(createSttProvider(resolve(own))).toBeInstanceOf(OpenAiCompatibleSttProvider);
     expect(createTtsProvider(resolve(own))).toBeInstanceOf(OpenAiCompatibleTtsProvider);
+  });
+
+  it("closing the shared local speech stops its sidecar and cancels a running install", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "voice-registry-"));
+    const cancel = vi.spyOn(SpeechInstaller.prototype, "cancel");
+    const close = vi.spyOn(SpeechSidecarClient.prototype, "close");
+    try {
+      createTtsProvider(resolve({}), { home });
+      createSttProvider(resolve({}), { home }); // the same shared pair
+      closeSharedLocalSpeech();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      closeSharedLocalSpeech(); // nothing left to close
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      cancel.mockRestore();
+      close.mockRestore();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("falls back to the in-process energy VAD when the local sidecar is absent and a hosted provider is in use", () => {

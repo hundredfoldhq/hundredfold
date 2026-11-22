@@ -8,10 +8,12 @@
 import { resolveEnvVar } from "../../shared/env-ref.js";
 import type { ResolvedVoiceSide } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
-import { iso6391, looksLikeMp3, looksLikeOggOrFlac, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
+import { iso6391, looksLikeMp3, looksLikeOggOrFlac, mp3SniffBytes, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
 import { pcmChunks, postSpeech, SpeechHttpError, type SpeechRequest } from "./speech-http.js";
 
 const TTS_RATE = 24_000;
+/** Content types that name raw PCM (OpenAI and most compatible servers send `audio/pcm` for `response_format: "pcm"`). */
+const RAW_PCM_TYPE = /^\s*audio\/(pcm|l16|x-pcm|raw)\b/i;
 const MP3_ONLY = "the server only returns MP3, which voice mode cannot play; configure it to return PCM or WAV";
 const COMPRESSED = "the server returns compressed audio (Ogg or FLAC), which voice mode cannot play; configure it to return PCM or WAV";
 
@@ -150,12 +152,11 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
 
   /** Raw PCM streams through; a WAV (asked for, or sent anyway) is read whole and unwrapped; MP3, Ogg and FLAC are refused. */
   private async *audioFrom(response: Response): AsyncGenerator<Buffer> {
-    if (/mpeg|mp3/i.test(response.headers.get("content-type") ?? "")) throw new Error(MP3_ONLY);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (/mpeg|mp3/i.test(contentType)) throw new Error(MP3_ONLY);
     const chunks = pcmChunks(response);
-    const head = await readHead(chunks, 12); // enough bytes to tell what this is, however the network split them
+    const head = await sniffHead(chunks, contentType);
     if (head.length === 0) return;
-    if (looksLikeMp3(head)) throw new Error(MP3_ONLY);
-    if (looksLikeOggOrFlac(head)) throw new Error(COMPRESSED);
     if (head.toString("ascii", 0, 4) !== "RIFF") {
       yield head;
       yield* chunks;
@@ -169,9 +170,23 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
   }
 }
 
-/** The first `bytes` bytes (or all there are) from a chunk stream, joined, so the rest can still be read from it. */
-async function readHead(chunks: AsyncGenerator<Buffer>, bytes: number): Promise<Buffer> {
-  const parts: Buffer[] = [];
+/**
+ * The opening bytes of the reply, read far enough to tell what it is however the network split them, after refusing
+ * MP3, Ogg and FLAC. A server that names raw PCM is believed: any byte pattern is a valid sample, so sniffing it can
+ * only misfire.
+ */
+async function sniffHead(chunks: AsyncGenerator<Buffer>, contentType: string): Promise<Buffer> {
+  let head = await readHead(chunks, 12);
+  if (head.length === 0 || RAW_PCM_TYPE.test(contentType)) return head;
+  if (mp3SniffBytes(head) > head.length) head = await readHead(chunks, mp3SniffBytes(head) - head.length, head);
+  if (looksLikeMp3(head)) throw new Error(MP3_ONLY);
+  if (looksLikeOggOrFlac(head)) throw new Error(COMPRESSED);
+  return head;
+}
+
+/** At least `bytes` more bytes (or all there are) from a chunk stream, joined onto `start`, so the rest can still be read from it. */
+async function readHead(chunks: AsyncGenerator<Buffer>, bytes: number, start: Buffer = Buffer.alloc(0)): Promise<Buffer> {
+  const parts: Buffer[] = [start];
   let size = 0;
   while (size < bytes) {
     const next = await chunks.next();

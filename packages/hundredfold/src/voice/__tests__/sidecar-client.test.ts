@@ -232,6 +232,21 @@ describe("speech sidecar client: recovery and abort", () => {
     vad.close();
   });
 
+  it("a write alone brings a VAD stream back once the sidecar can respawn", async () => {
+    const sidecar = client("die-on-tts", { respawnMinMs: 150 });
+    const vad = sidecar.vad("v1", VAD);
+    const events: unknown[] = [];
+    vad.on((event) => events.push(event));
+    vad.write(Buffer.alloc(640));
+    await until(() => events.length === 1);
+    await expect(collect(sidecar.synthesize("t1", SPEECH, new AbortController().signal))).rejects.toThrow();
+    await sleep(200); // the respawn hold passes; nothing else asks for the sidecar
+    vad.write(Buffer.alloc(640));
+    await until(() => events.length === 2);
+    expect(spawned).toHaveLength(2);
+    vad.close();
+  });
+
   it("holds at most a bounded amount of audio for a stream while the sidecar starts", async () => {
     const sidecar = client("", { pingEveryMs: 5000 }, { FAKE_HELLO_DELAY_MS: "300" });
     const vad = sidecar.vad("v1", VAD);

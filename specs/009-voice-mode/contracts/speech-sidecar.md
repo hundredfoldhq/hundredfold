@@ -27,7 +27,7 @@ Every reply can instead be `error {ref, message}`. A request is answered in the 
 sidecar finishes it, not the order sent: replies carry the request's id, stream or
 utterance.
 
-**VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence.
+**VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence. Offsets count from the first audio the sidecar received on this stream: when the gateway reopens a stream after a sidecar respawn they start again at 0, and audio dropped while the sidecar was down (the client holds at most 256 chunks) is not counted, so offsets from before a respawn are invalid after it.
 
 ## Lifecycle
 

@@ -78,9 +78,65 @@ function wavSamples(format: WavFormat | null, data: Buffer): ParsedWav | { error
   return { sampleRate: format.rate, pcm: Buffer.from(data.subarray(0, data.length - (data.length % 2))) };
 }
 
-/** Whether `head` starts like an MP3 (an ID3 tag or an MPEG audio frame sync). */
+// kbit/s by bitrate index (1..14), for MPEG-1 and for MPEG-2/2.5, per layer (I, II, III).
+const MPEG1_KBPS = [
+  [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+  [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+  [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+];
+const MPEG2_KBPS = [
+  [32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+  [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+  [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+];
+const MPEG_RATES: Record<number, number[]> = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+
+interface MpegHeader { version: number; layer: number; bitrateIndex: number; rateIndex: number; padding: number }
+
+/** The fields of the four-byte MPEG audio frame header at `at`, or null when it is not a valid one (any reserved or "bad" value). */
+function mpegHeader(data: Buffer, at: number): MpegHeader | null {
+  if (at + 4 > data.length || data[at] !== 0xff || (data[at + 1]! & 0xe0) !== 0xe0) return null;
+  const header = {
+    version: (data[at + 1]! >> 3) & 3, // 0 = 2.5, 1 reserved, 2 = 2, 3 = 1
+    layer: 4 - ((data[at + 1]! >> 1) & 3), // 4 is the reserved layer bits 00
+    bitrateIndex: data[at + 2]! >> 4, // 0 is free format, 15 is bad
+    rateIndex: (data[at + 2]! >> 2) & 3, // 3 is reserved
+    padding: (data[at + 2]! >> 1) & 1,
+  };
+  const reserved = header.version === 1 || header.layer === 4 || header.rateIndex === 3 || (data[at + 3]! & 3) === 2;
+  return reserved || header.bitrateIndex === 0 || header.bitrateIndex === 15 ? null : header;
+}
+
+/** The byte length of the MPEG audio frame whose header is at `at`, or null when those four bytes are not a valid frame header. */
+export function mpegFrameLength(data: Buffer, at = 0): number | null {
+  const header = mpegHeader(data, at);
+  if (!header) return null;
+  const { version, layer, bitrateIndex, rateIndex, padding } = header;
+  const bitrate = (version === 3 ? MPEG1_KBPS : MPEG2_KBPS)[layer - 1]![bitrateIndex - 1]! * 1000;
+  const rate = MPEG_RATES[version]![rateIndex]!;
+  if (layer === 1) return (Math.floor((12 * bitrate) / rate) + padding) * 4;
+  return Math.floor(((layer === 3 && version !== 3 ? 72 : 144) * bitrate) / rate) + padding;
+}
+
+/**
+ * How many bytes `looksLikeMp3` wants to see: enough for an ID3 tag's name, or, when the body opens with a valid
+ * frame header, for that frame and the next one's header.
+ */
+export function mp3SniffBytes(head: Buffer): number {
+  const first = mpegFrameLength(head);
+  return first === null ? 4 : first + 4;
+}
+
+/**
+ * Whether `head` starts like an MP3: an ID3 tag, or a valid MPEG audio frame header followed by another at the
+ * frame's end. A frame sync alone is not enough: raw PCM16LE whose first sample is negative (0xFFxx) opens with one.
+ * A body that ends before a second frame could begin is judged on its first header.
+ */
 export function looksLikeMp3(head: Buffer): boolean {
-  return head.length >= 3 && (head.toString("ascii", 0, 3) === "ID3" || (head[0] === 0xff && (head[1]! & 0xe0) === 0xe0));
+  if (head.length >= 3 && head.toString("ascii", 0, 3) === "ID3") return true;
+  const first = mpegFrameLength(head);
+  if (first === null) return false;
+  return head.length < first + 4 || mpegFrameLength(head, first) !== null;
 }
 
 /** Whether `head` starts like Ogg or FLAC, which the pipeline cannot play either. */

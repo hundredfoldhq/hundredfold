@@ -48,6 +48,8 @@ describe("paths and environment", () => {
     const env = sidecarEnv({ PATH: "/bin", HTTPS_PROXY: "http://proxy:3128", OPENAI_API_KEY: "sk-secret", HUNDREDFOLD_TOKEN: "t", HOME: "/home/x" });
     expect(env.PATH).toBe("/bin");
     expect(env.HTTPS_PROXY).toBe("http://proxy:3128");
+    const gpu = sidecarEnv({ CUDA_VISIBLE_DEVICES: "1", NVIDIA_VISIBLE_DEVICES: "all" });
+    expect([gpu.CUDA_VISIBLE_DEVICES, gpu.NVIDIA_VISIBLE_DEVICES]).toEqual(["1", "all"]);
     expect(Object.keys(env).join()).not.toMatch(/OPENAI|TOKEN/);
     expect(JSON.stringify(env)).not.toContain("sk-secret");
   });
