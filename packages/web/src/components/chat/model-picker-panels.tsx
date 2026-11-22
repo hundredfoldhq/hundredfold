@@ -179,11 +179,15 @@ function opencodeRowsOf(opencode: OpencodeRows, engine: string) {
   ]
 }
 
-/** Claude, listed once per profile; the plain row is the employee's/gateway's own login, named as such. */
-function claudeRowsOf(profiles: string[], profile: string | undefined, engine: string, onChooseProfile: (profile: string | undefined) => void) {
+/** The plain Claude row's name: the own login, or the balanced split when the subject's chain opens with a group holding it. */
+export const OWN_LOGIN_LABEL = 'Own login'
+export const BALANCED_LABEL = 'Balanced (by headroom)'
+
+/** Claude, listed once per profile; the plain row is the employee's/gateway's own login, named as such, or "Balanced" when a group spreads new sessions by headroom (it sends no profile either way). */
+function claudeRowsOf(profiles: string[], profile: string | undefined, engine: string, balanced: boolean | undefined, onChooseProfile: (profile: string | undefined) => void) {
   const name = engineDisplayName('claude')
   return [
-    <EngineRow key="claude" label={`${name} · Own login`} on={engine === 'claude' && !profile} onPick={() => onChooseProfile(undefined)} />,
+    <EngineRow key="claude" label={`${name} · ${balanced ? BALANCED_LABEL : OWN_LOGIN_LABEL}`} on={engine === 'claude' && !profile} onPick={() => onChooseProfile(undefined)} />,
     ...profiles.map((p) => (
       <EngineRow key={`claude:${p}`} label={`${name} · ${p}`} on={engine === 'claude' && profile === p} onPick={() => onChooseProfile(p)} />
     )),
@@ -192,7 +196,7 @@ function claudeRowsOf(profiles: string[], profile: string | undefined, engine: s
 
 /** The engine list: pick one to browse its models. With declared Claude accounts, Claude is listed once per profile;
  *  with declared opencode accounts, opencode is listed once per account. */
-export function EnginePanel({ engines, engine, onBack, onChoose, onRefresh, profiles, profile, onChooseProfile, opencode }: {
+export function EnginePanel({ engines, engine, onBack, onChoose, onRefresh, profiles, profile, balanced, onChooseProfile, opencode }: {
   engines: EngineRegistryEntry[]
   engine: string
   onBack: () => void
@@ -201,13 +205,15 @@ export function EnginePanel({ engines, engine, onBack, onChoose, onRefresh, prof
   /** Declared Claude account names; empty/absent leaves the panel exactly as before. */
   profiles?: string[]
   profile?: string
+  /** The plain Claude row is the balanced split, not the own login. */
+  balanced?: boolean
   onChooseProfile?: (profile: string | undefined) => void
   /** Declared opencode accounts; absent or empty leaves opencode as one row. */
   opencode?: OpencodeRows
 }) {
   const rowsOf = (e: EngineRegistryEntry) => {
     if (e.name === 'opencode' && opencode?.accounts.length) return opencodeRowsOf(opencode, engine)
-    if (e.name === 'claude' && profiles?.length && onChooseProfile) return claudeRowsOf(profiles, profile, engine, onChooseProfile)
+    if (e.name === 'claude' && profiles?.length && onChooseProfile) return claudeRowsOf(profiles, profile, engine, balanced, onChooseProfile)
     return [<EngineRow key={e.name} label={engineDisplayName(e.name)} on={e.name === engine} onPick={() => onChoose(e.name)} />]
   }
   return (

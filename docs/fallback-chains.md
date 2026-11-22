@@ -115,6 +115,21 @@ account, which the rule above forbids for a standalone link; that is how a
 chain says "balance across these accounts, mine included". A chain with no
 group parses, resolves and walks exactly as before.
 
+In the web app, a group is one row in the chain editor (Settings > Engines, each
+account card, and the employee editor): tick the accounts it holds from the default
+login and the declared accounts, and reorder or remove it like any link. A group is
+saved as `{ group: [...] }` from the members as written, never the models the gateway
+resolved them to, and the gateway's validation sentences show under its row. The
+diagram draws a group as one node listing its accounts in the order a limit walks
+them, each with its headroom and its share of new sessions, and the start node says
+where a new session would start. A balanced session's fallback chip shows which account
+it was pinned to and why: each account's headroom and share (weighted by headroom, not
+"most headroom"), when it was picked and on what trigger. A department-scoped viewer is
+sent the pick without the numbers, and sees the accounts, their states and the reason.
+In the new-chat picker the default option reads "Balanced (by headroom)" when the chosen
+employee's chain opens with a group holding its own account, and sends no profile;
+choosing a profile still sends `claude:<name>`.
+
 ### Legacy forms
 
 The string forms keep working and keep their meaning:

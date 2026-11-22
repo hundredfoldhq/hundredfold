@@ -3,7 +3,7 @@ import type { FallbackLink } from "@hundredfold/fallback-chain-wire"
 import { Plus } from "@/components/ui/icon"
 import { Button } from "@/components/ui/button"
 import { engineDisplayName } from "@/lib/engine-names"
-import { blankLink, moveLink, removeLink, replaceLink, selfSpellings, type ChainContext } from "./chain-links"
+import { blankGroup, blankLink, moveLink, removeLink, replaceLink, selfSpellings, type ChainContext, type ChainItem } from "./chain-links"
 import { rowProblemsWithHost, type HostProblem } from "./chain-problems"
 import { ChainRow, type RowFields } from "./chain-row"
 import { rowShift, useChainDrag } from "./use-chain-drag"
@@ -21,7 +21,7 @@ export interface ChainEditorProps {
   self: FallbackLink | readonly FallbackLink[] | undefined
   /** Where the chain is written, so a refusal names it as the config loader would. */
   where: string
-  links: FallbackLink[]
+  links: ChainItem[]
   /** Per row: expanded from another entry's own chain. */
   expanded: boolean[]
   fields: Omit<RowFields, "chainName" | "ownEngine">
@@ -31,7 +31,7 @@ export interface ChainEditorProps {
   serverProblems?: string[]
   /** Why a declared account is the wrong side for this chain's employee, in the gateway's words; the validator alone calls such a name unknown. */
   hostProblem?: HostProblem
-  onChange: (links: FallbackLink[]) => void
+  onChange: (links: ChainItem[]) => void
 }
 
 function dragStyle(drag: ReturnType<typeof useChainDrag>["drag"], index: number, reducedMotion: boolean): CSSProperties {
@@ -65,7 +65,7 @@ function unshownProblems(own: { byRow: string[][]; general: string[] }, serverPr
 }
 
 /** What a reorder does, kept together: the links, the ids that travel with the rows, and where focus goes. */
-function useChainMoves(links: FallbackLink[], onChange: (links: FallbackLink[]) => void) {
+function useChainMoves(links: ChainItem[], onChange: (links: ChainItem[]) => void) {
   const rows = useRowIds(links.length)
   const focusAfter = useRef<{ id: string; dir: "earlier" | "later" } | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -95,6 +95,22 @@ function useChainMoves(links: FallbackLink[], onChange: (links: FallbackLink[]) 
       onChange(removeLink(links, index))
     },
   }
+}
+
+/** The two ways to grow a chain: a target, or a balanced group of Claude accounts. */
+function AddButtons({ chainName, onAddLink, onAddGroup }: { chainName: string; onAddLink: () => void; onAddGroup: () => void }) {
+  return (
+    <div className="mt-[var(--space-2)] flex flex-wrap gap-[var(--space-1)]">
+      <Button variant="secondary" size="sm" aria-label={`Add a target to the ${chainName}`} onClick={onAddLink}>
+        <Plus size={14} aria-hidden />
+        Add a fallback target
+      </Button>
+      <Button variant="secondary" size="sm" aria-label={`Add a balanced group to the ${chainName}`} onClick={onAddGroup}>
+        <Plus size={14} aria-hidden />
+        Add a balanced group
+      </Button>
+    </div>
+  )
 }
 
 /** The ordered chain: engine, profile and model per link; drag a row by its grip,
@@ -136,16 +152,7 @@ export function ChainEditor(props: ChainEditorProps) {
         </div>
       )}
       <GeneralProblems problems={unshownProblems(problems, serverProblems)} />
-      <Button
-        variant="secondary"
-        size="sm"
-        className="mt-[var(--space-2)]"
-        aria-label={`Add a target to the ${chainName}`}
-        onClick={() => onChange([...links, blankLink(ctx, links, selves)])}
-      >
-        <Plus size={14} aria-hidden />
-        Add a fallback target
-      </Button>
+      <AddButtons chainName={chainName} onAddLink={() => onChange([...links, blankLink(ctx, links, selves)])} onAddGroup={() => onChange([...links, blankGroup(ctx, links)])} />
     </div>
   )
 }

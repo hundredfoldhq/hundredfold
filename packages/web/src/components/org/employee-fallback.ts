@@ -1,34 +1,51 @@
 import {
-  fallbackLinkKey,
   employeeProfileHostProblem,
-  fallbackLinkOf,
   type FallbackChainEntry,
   type FallbackChainSubject,
   type FallbackChainsResponse,
   type FallbackLink,
   type FallbackProfileOption,
+  type ResolvedFallbackLink,
 } from "@hundredfold/fallback-chain-wire"
 import type { Employee } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import type { EnginesResponse } from "@/lib/api"
-import { linkOfResolved } from "@/routes/settings/engines/chain-links"
+import { itemKey, itemsOfEntries, itemsOfResolved, type ChainItem } from "@/routes/settings/engines/chain-links"
 import { hostRowProblems, rowProblemsAgainst, type HostProblem } from "@/routes/settings/engines/chain-problems"
 
 /* What the employee screens need to know about a chain: whether it is the
  * employee's own, where an inherited one comes from, and what would run. */
 
-/** The links an employee writes, or null when it writes none and inherits. */
-export function employeeChainOf(employee: Employee): FallbackLink[] | null {
+/** The rows an employee writes (links, and groups kept whole), or null when it writes none and inherits. */
+export function employeeChainOf(employee: Employee): ChainItem[] | null {
   // Links, or entries as written: either reads the same.
   const entries: readonly FallbackChainEntry[] | null | undefined = employee.fallback
   if (!Array.isArray(entries)) return null
-  return entries.flatMap((entry) => fallbackLinkOf(entry) ?? [])
+  return itemsOfEntries(entries)
 }
 
 /** Same chain, whatever the spelling or the order a link's fields were written in: what decides whether the PATCH has anything to send. */
-export function sameChain(a: FallbackLink[] | null, b: FallbackLink[] | null): boolean {
+export function sameChain(a: ChainItem[] | null, b: ChainItem[] | null): boolean {
   if (a === null || b === null) return a === b
-  return a.length === b.length && a.every((link, i) => fallbackLinkKey(link) === fallbackLinkKey(b[i]))
+  return a.length === b.length && a.every((item, i) => itemKey(item) === itemKey(b[i]))
+}
+
+/**
+ * What a chain would run, as rows: each link with the model it would run, a balanced group as one row
+ * of its members in the order a limit walks them. Read, never written back.
+ */
+export function runningItems(effective: readonly ResolvedFallbackLink[]): ChainItem[] {
+  const plain = (l: ResolvedFallbackLink): FallbackLink => ({ engine: l.engine, ...(l.profile ? { profile: l.profile } : {}), ...(l.model ? { model: l.model } : {}) })
+  const items: ChainItem[] = []
+  let open: number | undefined
+  for (const link of effective) {
+    const group = link.group
+    const last = items[items.length - 1]
+    if (group && open === group.index && last && "group" in last) last.group.push(plain(link))
+    else items.push(group ? { group: [plain(link)] } : plain(link))
+    open = group?.index
+  }
+  return items
 }
 
 type EmployeeHost = Pick<Employee, "remoteHost" | "remoteUser" | "remoteClaudeConfigDir" | "claudeProfile">
@@ -85,7 +102,7 @@ export function declaredAccountOf(employee: EmployeeHost, chains: FallbackChains
 export interface InheritedChain {
   /** "Claude · work" or "Codex": what the default is called. */
   label: string
-  links: FallbackLink[]
+  links: ChainItem[]
   /** Worked out here, not read from the gateway: an unsaved change, shown as what would run once saved. */
   preview: boolean
   /** Where it comes from; `none` is a named Claude profile that is not a declared account. */
@@ -116,10 +133,10 @@ export function inheritedChain(
   chains: FallbackChainsResponse | undefined,
 ): InheritedChain {
   if (engine === "claude" && account) {
-    return { label: inheritedLabel("account", account, engine), links: subjectOf(chains, "account", account)?.effective.map(linkOfResolved) ?? [], preview: false, source: "account" }
+    return { label: inheritedLabel("account", account, engine), links: itemsOfResolved(subjectOf(chains, "account", account)?.effective ?? []).items, preview: false, source: "account" }
   }
   if (engine === "claude" && claudeProfile) return { label: inheritedLabel("none", undefined, engine), links: [], preview: false, source: "none" }
-  return { label: inheritedLabel("engine", engine, engine), links: subjectOf(chains, "engine", engine)?.effective.map(linkOfResolved) ?? [], preview: false, source: "engine" }
+  return { label: inheritedLabel("engine", engine, engine), links: itemsOfResolved(subjectOf(chains, "engine", engine)?.effective ?? []).items, preview: false, source: "engine" }
 }
 
 export function employeeSubject(chains: FallbackChainsResponse | undefined, name: string): FallbackChainSubject | undefined {
@@ -140,12 +157,12 @@ function serverInherited(subject: FallbackChainSubject | undefined, derived: Inh
   if (unsaved || source === "employee") return { ...derived, preview: true }
   // No answer from the gateway yet (or none at all): nothing unsaved to preview.
   if (subject === undefined || source === undefined) return derived
-  return { label: inheritedLabel(source, subject.sourceId, engine), links: subject.effective.map(linkOfResolved), preview: false, source }
+  return { label: inheritedLabel(source, subject.sourceId, engine), links: itemsOfResolved(subject.effective).items, preview: false, source }
 }
 
 /** The chain the editor shows and edits. */
 export interface OwnChain {
-  links: FallbackLink[]
+  links: ChainItem[]
   /** Per link: expanded from another entry's own chain. */
   expanded: boolean[]
   /** The employee's chain is written in engine names, so `links` is its expansion until it is edited. */
@@ -157,10 +174,11 @@ export interface OwnChain {
  * shown as the gateway expands it, as Settings shows an engine's, until the first
  * edit: that edit then writes what runs, as explicit links, rather than the names alone.
  */
-function ownChainOf(employee: Employee, value: FallbackLink[], subject: FallbackChainSubject | undefined): OwnChain {
+function ownChainOf(employee: Employee, value: ChainItem[], subject: FallbackChainSubject | undefined): OwnChain {
   const written = employeeChainOf(employee)
   if (subject?.legacy && sameChain(value, written)) {
-    return { links: subject.effective.map(linkOfResolved), expanded: subject.effective.map((l) => l.origin === "legacy"), legacy: true }
+    const { items, origins } = itemsOfResolved(subject.effective)
+    return { links: items, expanded: origins.map((origin) => origin === "legacy"), legacy: true }
   }
   return { links: value, expanded: value.map(() => false), legacy: false }
 }
@@ -184,7 +202,7 @@ function ownTargetSpellings(employee: Employee, engine: string, account: string 
 export function fallbackFieldState(
   employee: Employee,
   engine: string,
-  value: FallbackLink[] | null,
+  value: ChainItem[] | null,
   chains: FallbackChainsResponse | undefined,
   /** The model the editor now has; the saved one when it does not say. */
   model?: string,
@@ -210,7 +228,7 @@ export interface DeclaredAccounts {
 
 /** How many problems the validator finds in an employee's own chain: a chain with any is not saved. */
 export function chainProblemCount(
-  links: FallbackLink[],
+  links: ChainItem[],
   selves: readonly FallbackLink[],
   registry: EnginesResponse,
   /** A name that is not among the declared accounts names no account. */

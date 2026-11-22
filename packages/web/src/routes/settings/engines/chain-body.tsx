@@ -3,7 +3,7 @@ import { ChainFlowDisclosure } from "@/components/fallback/chain-flow-disclosure
 import { resolveForFlow } from "@/components/fallback/resolve-links"
 import { subjectProblems } from "@/hooks/use-fallback-chains"
 import { ChainEditor } from "./chain-editor"
-import { shownChain } from "./chain-links"
+import { shownChain, type ChainItem } from "./chain-links"
 import type { RowFields } from "./chain-row"
 
 export interface ChainBodyProps {
@@ -20,7 +20,7 @@ export interface ChainBodyProps {
   where: string
   waitsAs: string
   fields: Omit<RowFields, "chainName" | "ownEngine">
-  onChange: (links: FallbackLink[]) => void
+  onChange: (links: ChainItem[]) => void
 }
 
 /** A chain written in engine names runs as its expansion; say so once, so the
@@ -59,7 +59,7 @@ export function ChainBody(props: ChainBodyProps) {
         onChange={props.onChange}
       />
       {shown.links.length > 0 && (
-        <ChainFlowDisclosure links={resolveForFlow(props.self, shown.links, props.subject, shown.origins)} />
+        <ChainFlowDisclosure links={resolveForFlow(props.self, shown.links, props.subject, shown.origins)} startPick={props.subject?.startPick} />
       )}
     </>
   )
