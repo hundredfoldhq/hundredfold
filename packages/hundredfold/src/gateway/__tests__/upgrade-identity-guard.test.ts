@@ -148,3 +148,82 @@ describe("PTY WebSocket upgrade authority", () => {
     expect(socket.writes.join("")).toContain("403 Forbidden");
   });
 });
+
+describe("no-auth same-origin trust on a WebSocket handshake without fetch metadata", () => {
+  const config = { gateway: { host: "127.0.0.1" } } as never;
+  // What Chromium sends on a same-origin WebSocket handshake: an Origin, no Sec-Fetch-*.
+  const handshake = {
+    host: "127.0.0.1:7801",
+    origin: "http://127.0.0.1:7801",
+    upgrade: "websocket",
+    connection: "Upgrade",
+    "sec-websocket-version": "13",
+    "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+  };
+  function handshakeReq(headers: http.IncomingHttpHeaders, method = "GET"): http.IncomingMessage {
+    return Object.assign(req(headers), { method });
+  }
+  const trusted = (headers: http.IncomingHttpHeaders, method?: string) =>
+    isSameOriginBrowserRequest(handshakeReq(headers, method), config, { upgradeHandshake: true });
+
+  it("trusts a handshake whose Origin is exactly the listener's", () => {
+    expect(trusted(handshake)).toBe(true);
+    expect(trusted({ ...handshake, host: "localhost:7801", origin: "http://localhost:7801" })).toBe(true);
+
+    const socket = new FakeUpgradeSocket();
+    const request = handshakeReq(handshake);
+    const rejected = (guards as any).rejectPtyUpgrade(request, socket, {
+      operatorAuthenticated: isSameOriginBrowserRequest(request, config, { upgradeHandshake: true }),
+    });
+    expect(rejected).toBe(false);
+    expect(socket.destroyed).toBe(false);
+  });
+
+  it("refuses a mismatched, missing, duplicated or opaque Origin", () => {
+    expect(trusted({ ...handshake, origin: "http://evil.example" })).toBe(false);
+    expect(trusted({ ...handshake, origin: "http://127.0.0.1:7802" })).toBe(false);
+    expect(trusted({ ...handshake, origin: "https://127.0.0.1:7801" })).toBe(false);
+    expect(trusted({ ...handshake, origin: "http://localhost:7801" })).toBe(false);
+    expect(trusted({ ...handshake, origin: "null" })).toBe(false);
+    expect(trusted({ ...handshake, origin: undefined })).toBe(false);
+    expect(trusted({ ...handshake, origin: ["http://127.0.0.1:7801", "http://127.0.0.1:7801"] } as unknown as http.IncomingHttpHeaders)).toBe(false);
+
+    const socket = new FakeUpgradeSocket();
+    const request = handshakeReq({ ...handshake, origin: "http://evil.example" });
+    const rejected = (guards as any).rejectPtyUpgrade(request, socket, {
+      operatorAuthenticated: isSameOriginBrowserRequest(request, config, { upgradeHandshake: true }),
+    });
+    expect(rejected).toBe(true);
+    expect(socket.writes.join("")).toContain("403 Forbidden");
+  });
+
+  it("refuses fetch metadata that is present but not same-origin, even partly", () => {
+    expect(trusted({ ...handshake, "sec-fetch-site": "cross-site" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-site" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "none" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-site": "cross-site", "sec-fetch-mode": "websocket", "sec-fetch-dest": "empty" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-mode": "websocket" })).toBe(false);
+    expect(trusted({ ...handshake, "sec-fetch-dest": "empty" })).toBe(false);
+    // The complete same-origin set is still trusted.
+    expect(trusted({ ...handshake, "sec-fetch-site": "same-origin", "sec-fetch-mode": "websocket", "sec-fetch-dest": "empty" })).toBe(true);
+  });
+
+  it("keeps requiring fetch metadata off the upgrade handshake", () => {
+    // The HTTP API's trust check: not an upgrade handshake.
+    expect(isSameOriginBrowserRequest(handshakeReq(handshake), config)).toBe(false);
+    expect(trusted(handshake, "POST")).toBe(false);
+    expect(trusted({ ...handshake, upgrade: "h2c" })).toBe(false);
+    expect(trusted({ ...handshake, upgrade: undefined })).toBe(false);
+  });
+
+  it("keeps the loopback, proxy and auth gates", () => {
+    expect(isSameOriginBrowserRequest(handshakeReq(handshake), { gateway: { host: "127.0.0.1", authRequired: true } } as never, { upgradeHandshake: true })).toBe(false);
+    expect(trusted({ ...handshake, "x-forwarded-for": "203.0.113.9" })).toBe(false);
+    expect(trusted({ ...handshake, host: "evil.example:7801", origin: "http://evil.example:7801" })).toBe(false);
+    const remote = Object.assign(handshakeReq(handshake), {
+      socket: { remoteAddress: "203.0.113.9", localAddress: "127.0.0.1", localPort: 7801 },
+    });
+    expect(isSameOriginBrowserRequest(remote, config, { upgradeHandshake: true })).toBe(false);
+  });
+});

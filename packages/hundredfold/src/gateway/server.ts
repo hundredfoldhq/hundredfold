@@ -1149,7 +1149,7 @@ export async function startGateway(
       if (rejectPtyUpgrade(req, socket, {
         operatorAuthenticated:
           verifyGatewayAuth(req.headers, gatewayAuthToken, HUNDREDFOLD_HOME)
-          || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig)),
+          || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig, { upgradeHandshake: true })),
       })) return;
       let sessionId: string;
       try {
