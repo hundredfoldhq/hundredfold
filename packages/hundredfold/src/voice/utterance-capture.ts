@@ -104,7 +104,10 @@ export class UtteranceCapture {
       open.stream.write(pcm);
       open.audioMs += pcm.length / BYTES_PER_MS;
     }
-    if (open.audioMs >= this.options.maxUtteranceMs) this.cutForLength(open);
+    if (open.audioMs < this.options.maxUtteranceMs) return;
+    // Silence counted during a hold is not speech running long: the utterance has already ended, so it ends normally.
+    if (this.cancelHold) this.endSpeech();
+    else this.cutForLength(open);
   }
 
   pttDown(): void {

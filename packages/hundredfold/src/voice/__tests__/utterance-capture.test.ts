@@ -179,6 +179,21 @@ describe("UtteranceCapture, holding an unfinished utterance", () => {
     expect(stt.last().ended).toBe(false);
   });
 
+  it("a hold that runs into the length limit ends the utterance normally and does not swallow the next one", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, maxUtteranceMs: 400, unfinishedHoldMs: 800 });
+    vad.start(0); feed(15);
+    stt.last().partial("and the");
+    vad.end();
+    feed(10); // 200 ms of silence inside the hold crosses the limit
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
+    expect(stt.last().ended).toBe(true);
+    clock.advance(2000);
+    feed(20);
+    vad.start(1500);
+    expect(log).toContain("start:u2");
+    expect(stt.streams).toHaveLength(2);
+  });
+
   it("push-to-talk is never held", () => {
     const { stt, feed, capture } = make({ pushToTalk: true, unfinishedHoldMs: 800 });
     capture.pttDown(); feed(5);

@@ -72,7 +72,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `vad.threshold` | `0.5` | Speech probability that counts as speech, 0 to 1. |
 | `vad.minSpeechMs` | `250` | Speech must last this long to start an utterance, 50 to 2000. |
 | `vad.silenceMs` | `1000` | Silence that ends an utterance, 200 to 5000. A shorter pause than this does not end your turn; lower it for a snappier reply, raise it if the assistant still cuts in on your pauses. |
-| `vad.unfinishedHoldMs` | `800` | Extra silence waited when the words so far look unfinished (they trail off on "and", "the", "to", a comma, "um" and the like), so a pause to think does not end the turn. Speaking again inside it continues the same utterance. 0 turns it off, up to 5000. Hands-free only; push-to-talk ends when you release. |
+| `vad.unfinishedHoldMs` | `800` | Extra silence waited when the words so far look unfinished (they trail off on "and", "the", "to", a comma, "um" and the like), so a pause to think does not end the turn. Speaking again inside it continues the same utterance. It works from the live transcript, so it helps when the words end on such a word ("book a table and"); a pause after a finished-looking sentence is ended by `vad.silenceMs` alone. 0 turns it off, up to 5000. Hands-free only; push-to-talk ends when you release. |
 | `vad.prerollMs` | `300` | Audio kept from before speech was detected, 0 to 1000. |
 | `bargeIn.enabled` | `true` | Whether speaking over the assistant stops it. |
 | `bargeIn.minSpeechMs` | `250` | How long your voice must be heard over playback before playback stops, 50 to 2000. |
