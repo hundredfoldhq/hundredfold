@@ -170,7 +170,9 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   const own = resolvedLink(env, subject.own, "config", subject.own, { claudeAccount, healthProvider: unpinnedHealthProvider(env.config, subject.own) });
   const seen = new Set<string>([own.key]);
   // A remote subject on a declared account is also its own target when a link names no profile: that runs the account it has.
-  if (subject.scope.remote && own.profile !== undefined) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  // A session pinned to another account than its employee's login is not: the unprofiled link is its employee's own login, a link of its own.
+  const unprofiledIsOwn = subject.claudeAccount === undefined || subject.claudeAccount === own.account;
+  if (subject.scope.remote && own.profile !== undefined && unprofiledIsOwn) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {
@@ -200,11 +202,13 @@ export function inheritedChain(
 
 /** Which chain a session gets, first match wins: its own target, its employee's chain, then what its account and engine give. */
 function chainSource(
-  config: HundredfoldConfig, session: Session, employee: Employee | undefined, mode: FallbackExpansionMode, ownAccount: string,
+  config: HundredfoldConfig, session: Session, employee: Employee | undefined, runs: { mode: FallbackExpansionMode; ownAccount: string; remote: boolean },
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } {
+  const { mode, ownAccount, remote } = runs;
   const target = session.fallbackTarget;
   if (target) return { source: "session", entries: [{ engine: target.engine, model: target.model }] };
-  const picked = mode === "account" ? readAccountPick(session.transportMeta) : undefined;
+  // A remote employee's session is balanced too: its pick names the chain it came from (the employee's, else the engine's).
+  const picked = mode === "account" || remote ? readAccountPick(session.transportMeta) : undefined;
   const fromPick = picked && pickedChainSource(config, picked, employee);
   if (fromPick) return fromPick;
   if (employee?.fallback !== undefined) return { source: "employee", entries: employee.fallback };
@@ -260,7 +264,9 @@ export function sessionFallbackChain(options: SessionFallbackChainOptions): { so
   const remoteOwn = isRemoteClaudeAccount(ownAccount) ? ownAccount : undefined;
   const ownProfile = session.engine === "claude" ? (scope.remote ? remoteOwn : claudeAccountKey(ownClaudeProfile(session, employee))) : undefined;
   const own = ownTargetLink(config, { engine: session.engine, model: session.model, account: ownProfile });
-  const { source, entries } = chainSource(config, session, employee, mode, ownAccount);
+  const { source, entries } = chainSource(config, session, employee, { mode, ownAccount, remote: scope.remote });
   const env: FallbackChainEnv = { config, registry, ...inputs };
-  return { source, links: resolveFallbackLinks(env, { own, ownAccount, claudeAccount, entries, mode, scope }) };
+  // An unprofiled link in a remote chain is its employee's own login, whichever account the balancer pinned the session to.
+  const loginAccount = scope.remote ? accountForEmployee(employee, "claude") : claudeAccount;
+  return { source, links: resolveFallbackLinks(env, { own, ownAccount, claudeAccount: loginAccount, entries, mode, scope }) };
 }

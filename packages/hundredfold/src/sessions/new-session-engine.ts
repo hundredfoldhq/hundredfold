@@ -13,6 +13,7 @@ import { startsOnPreferredEngine } from "./session-fallback.js";
 import type { SessionFallbackMode } from "../shared/session-fallback-config.js";
 import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { metaWithAccountPick, pinAccountAtCreation, type AccountPin } from "./account-pin.js";
+import { metaWithRemoteAccountPin } from "./remote-account-pin.js";
 
 /** What a routed turn brought with it about where the session should run. */
 export interface NewSessionEnginePreference {
@@ -78,7 +79,7 @@ function healthyStart(
   // remote gate then refuses — a session that looks started and can never run.
   // Scoped to the machine this session will actually run on: a login that
   // died on the gateway is no reason to move a remote employee's session.
-  const health = substituteHealth(engineHealthForTarget(readEngineHealth(), preference.employee), preference.employee, { claudeConfigDir: pin.claudeConfigDir ?? null });
+  const health = substituteHealth(engineHealthForTarget(readEngineHealth(), preference.employee), preference.employee, { claudeConfigDir: pin.claudeConfigDir ?? null, transportMeta: metaWithRemoteAccountPin(undefined, pin.remoteAccountPin ?? undefined) ?? null });
   // Installed where the session will run: a remote employee's on its host.
   const destination = isRemoteTarget(preference.employee) ? sshDestination(preference.employee) : undefined;
   const registry = availabilityRegistry(getModelRegistry(config), (candidate) => engines.has(candidate) && engineInstalledWhereRun(config, candidate, destination));

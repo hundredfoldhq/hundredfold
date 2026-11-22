@@ -87,7 +87,6 @@ describe("pinAccountAtCreation: when it balances", () => {
   it.each([
     ["a session on another engine", { engine: "opencode" }],
     ["a caller that named a profile", { namedProfile: true }],
-    ["a remote employee", { employee: employee({ remoteHost: "build.example.test", remoteCwd: "/srv/work" } as Partial<Employee>) }],
     ["a chain with no group", { config: config([TAIL]) }],
     ["a group that does not open the chain", { config: config([TAIL, GROUP]) }],
     ["a group that does not hold the employee's own login", { employee: employee({ claudeConfigDir: "/srv/operator/.claude-other" }) }],

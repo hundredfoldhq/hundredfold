@@ -1,10 +1,11 @@
 import { claudeProfileFromDir, resolveEmployeeClaudeProfile, type ClaudeProfile } from "../shared/claude-profile.js";
 import {
-  accountForEmployee, claudeAccountKey, DEFAULT_CLAUDE_ACCOUNT, employeeClaudeAccount, isClaudeAccount, isRemoteClaudeAccount,
+  accountForEmployee, claudeAccountKey, DEFAULT_CLAUDE_ACCOUNT, employeeClaudeAccount, isClaudeAccount, isRemoteClaudeAccount, remoteAccountForTarget,
 } from "../shared/engine-account.js";
 import type { RemoteScope } from "../shared/remote-department.js";
-import { employeeRemoteTarget } from "../shared/remote-target.js";
+import { employeeRemoteTarget, isRemoteTarget } from "../shared/remote-target.js";
 import type { Employee, Session, SessionRemoteTarget } from "../shared/types.js";
+import { honouredRemoteAccountPin, type RemoteAccountPin } from "./remote-account-pin.js";
 
 /** The parts of a session this module reads; the transport meta and the chosen
  *  profile are optional so a caller holding only an id-and-employee view can ask too. */
@@ -57,10 +58,26 @@ export function remoteAccountOverride(session: SessionView): AccountOverride | u
   return override && isRemoteClaudeAccount(override.substituteAccount) && override.substituteConfigDir ? override : undefined;
 }
 
-/** The target with the profile directory of the remote account the session stands on, when it stands on one; else as it is. */
+/**
+ * The remote pin a session carries and its employee's host still honours: the account the balancer started it
+ * on, when that is not its employee's own login. `employeeAccount` is the employee's own login key.
+ */
+function standingPin(session: SessionView | null | undefined, employeeAccount: string | undefined): RemoteAccountPin | undefined {
+  return session ? honouredRemoteAccountPin(session.transportMeta, employeeAccount) : undefined;
+}
+
+/**
+ * The target with the profile directory of the remote account the session runs on, when it is not its
+ * employee's own login. Precedence: a standing account override's directory, else the balancer's pin, else
+ * the employee's own (the target as it came). An override that stands on the employee's own login (no
+ * directory of its own) keeps the target as it is: it holds the session off its pin.
+ */
 export function withStandingRemoteAccount<T extends SessionRemoteTarget>(target: T, session: SessionView | null | undefined): T {
-  const override = session ? remoteAccountOverride(session) : undefined;
-  return override ? { ...target, remoteClaudeConfigDir: override.substituteConfigDir! } : target;
+  const override = session ? accountOverride(session) : undefined;
+  const standing = override && isRemoteClaudeAccount(override.substituteAccount) ? override : undefined;
+  if (standing) return standing.substituteConfigDir ? { ...target, remoteClaudeConfigDir: standing.substituteConfigDir } : target;
+  const pin = isRemoteTarget(target) ? standingPin(session, remoteAccountForTarget(target)) : undefined;
+  return pin ? { ...target, remoteClaudeConfigDir: pin.configDir } : target;
 }
 
 /**
@@ -89,7 +106,8 @@ function chosenProfile(session: SessionView | null | undefined, employee?: Pick<
 /** The session's own Claude account: the profile it was started on, else its employee's, else the default. */
 export function ownClaudeAccount(session: SessionView): string {
   const employeeAccount = session.employee ? employeeClaudeAccount(session.employee) : DEFAULT_CLAUDE_ACCOUNT;
-  if (!session.claudeConfigDir || isRemoteClaudeAccount(employeeAccount)) return employeeAccount;
+  if (isRemoteClaudeAccount(employeeAccount)) return standingPin(session, employeeAccount)?.account ?? employeeAccount;
+  if (!session.claudeConfigDir) return employeeAccount;
   return claudeAccountKey(claudeProfileFromDir(session.claudeConfigDir));
 }
 
@@ -101,10 +119,16 @@ export function ownClaudeProfile(
   return chosenProfile(session, employee) ?? resolveEmployeeClaudeProfile(employee);
 }
 
-/** The account key of `ownClaudeProfile`, from the roster record in hand: a remote employee's own login, else the profile's. */
+/**
+ * The account key of `ownClaudeProfile`, from the roster record in hand: the profile the session was started
+ * on, else a remote employee's login (the remote account the balancer pinned the session to, when it did, else
+ * its own), else the employee's.
+ */
 export function ownClaudeAccountOf(session: SessionView | null | undefined, employee: Employee | undefined): string {
   const chosen = chosenProfile(session, employee);
-  return chosen ? claudeAccountKey(chosen) : accountForEmployee(employee, "claude");
+  if (chosen) return claudeAccountKey(chosen);
+  const employeeAccount = accountForEmployee(employee, "claude");
+  return standingPin(session, employeeAccount)?.account ?? employeeAccount;
 }
 
 /** The Claude account the session's turns run on now. */

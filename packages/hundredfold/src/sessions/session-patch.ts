@@ -1,4 +1,5 @@
-import type { HundredfoldConfig } from "../shared/types.js";
+import type { Employee, HundredfoldConfig } from "../shared/types.js";
+import { isRemoteTarget, sshDestination } from "../shared/remote-target.js";
 import { getModelRegistry, effortLevelsForModel, hasDynamicModelCatalog, isKnownEngine } from "../shared/models.js";
 import { effortLevelsPending } from "../shared/opencode-catalogue.js";
 import { readEngineHealth } from "../shared/engine-health.js";
@@ -13,6 +14,7 @@ import { startsOnPreferredEngine } from "./session-fallback.js";
 import type { SessionFallbackMode } from "../shared/session-fallback-config.js";
 import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { pinAccountAtCreation, type AccountPin } from "./account-pin.js";
+import type { RemoteAccountPin } from "./remote-account-pin.js";
 
 /**
  * Validate a mid-chat model/effort change for an existing session.
@@ -46,12 +48,22 @@ export interface NewSessionSelectionResult {
    *  and the creating caller charges the start (`chargeAccountStart`) right after the row exists. A validation never charges it. */
   claudeConfigDir?: AccountPin["claudeConfigDir"];
   accountPick?: AccountPick;
+  /** The same for a remote employee's session: the declared remote account the balancer pinned it to, written to the transport meta by `metaWithAccountPick`. */
+  remoteAccountPin?: RemoteAccountPin;
   error?: string;
 }
 
 export interface SessionPatchContext {
   engineSessionId?: string | null;
   defaultModel?: string | null;
+}
+
+/**
+ * Where the creation reroute judges the chain: not by host (see below), except for a remote employee's session the balancer
+ * pinned to a remote account, whose own account and chain are the host's and cannot be read as a gateway session's.
+ */
+function rerouteScope(employee: Employee | undefined, pin: AccountPin): { scoped: boolean; remote: boolean; host?: string } {
+  return pin.remoteAccountPin && isRemoteTarget(employee) ? { scoped: false, remote: true, host: sshDestination(employee) } : { scoped: false, remote: false };
 }
 
 export function validateNewSessionSelection(
@@ -111,7 +123,7 @@ export function validateNewSessionSelection(
     const health = readEngineHealth();
     const employee = defaults.employee ? orgRegistry().get(defaults.employee) : undefined;
     const choice = rerouteAtCreation({
-      config, employee, engine, model: defaultModel, health, scope: { scoped: false, remote: false }, pin,
+      config, employee, engine, model: defaultModel, health, scope: rerouteScope(employee, pin), pin,
       registry: availabilityRegistry(registry, (candidate) => registry[candidate]?.available === true),
     });
     if (choice) {
@@ -213,6 +225,7 @@ export function validateNewSessionSelection(
     ok: true, engine, model, effortLevel, ...(reroute ? { reroute } : {}),
     ...(pin.accountPick ? { accountPick: pin.accountPick } : {}),
     ...(pin.claudeConfigDir !== undefined ? { claudeConfigDir: pin.claudeConfigDir } : {}),
+    ...(pin.remoteAccountPin ? { remoteAccountPin: pin.remoteAccountPin } : {}),
   };
 }
 
