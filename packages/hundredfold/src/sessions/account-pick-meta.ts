@@ -61,3 +61,21 @@ export function readAccountPick(meta: Session["transportMeta"] | null | undefine
   const candidates = raw.candidates.flatMap((candidate) => candidateOf(candidate) ?? []);
   return header && candidates.length === raw.candidates.length ? { ...header, candidates } : undefined;
 }
+
+/** The usage numbers of a ranking entry (headroom, the window behind it, the reading's time, and the weight and share that a fresh reading's headroom makes): what a department-scoped caller is not shown. */
+export function withoutHeadroomNumbers<T extends Partial<AccountHeadroom>>(headroom: T): T {
+  const { headroomPercent: _percent, tightest: _tightest, readingAt: _at, weight: _weight, sharePercent: _share, ...rest } = headroom;
+  return rest as T;
+}
+
+/**
+ * The transport meta as a session body carries it: the recorded pick without its usage numbers. The full pick is
+ * the fallback view's `pick` (for a caller that may see it); the raw record in the meta is an implementation
+ * detail no reader needs, and every route that serialises a session would otherwise have to remember to strip it.
+ */
+export function transportMetaWithoutPickNumbers<T extends Session["transportMeta"]>(meta: T): T {
+  const raw = (meta as Record<string, unknown> | null | undefined)?.accountPick;
+  if (!isRecord(raw) || !Array.isArray(raw.candidates)) return meta;
+  const candidates = raw.candidates.map((candidate) => (isRecord(candidate) ? withoutHeadroomNumbers(candidate) : candidate));
+  return { ...meta, accountPick: { ...raw, candidates } } as T;
+}

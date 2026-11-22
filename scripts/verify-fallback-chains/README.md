@@ -82,15 +82,13 @@ what it decides is a model turn, and the fake model calls none of the walk's too
 tick runs its turn and starts nothing by itself. `h.restartGateway()` stops and starts the instance
 through the sandbox helper (`--helper`, `--instance`, which the script passes).
 
-p, q, s, t, u and v assert the pick a session records at creation, which the start paths pin
-(part B of the account group work). They are in the script's default `--pending` until that is
-merged into the branch under test; `--pending ""` runs everything for real. r, and every scenario
-above it with no group in config, run now.
+p, q, s, t, u and v assert the pick a session records at creation, which the start paths pin.
+Every scenario runs and counts: the default `--pending` list is empty.
 
-Every scenario runs and counts. `--pending a,b` marks scenarios that wait on runtime work not
-yet merged (the default list is the group scenarios above that need start-path pinning): a pending scenario is reported, never
-failed; one that passes is reported as "pending but passing", and `--strict` fails the run on
-it. Drop an id from `DEFAULT_PENDING` in `verify-fallback-chains.sh` when its work lands.
+`--pending a,b` marks scenarios that wait on runtime work not yet merged: a pending scenario is
+reported, never failed; one that passes is reported as "pending but passing", and `--strict` fails the
+run on it. Put an id in `DEFAULT_PENDING` in `verify-fallback-chains.sh` for work that is not merged yet,
+and drop it when the work lands.
 
 To check the gateway of another checkout against this harness's fakes and scenarios (for
 instance `main`, to confirm scenario e passes there too), set `HUNDREDFOLD_VERIFY_GATEWAY_REPO`.

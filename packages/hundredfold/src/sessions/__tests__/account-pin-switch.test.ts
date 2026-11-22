@@ -200,6 +200,23 @@ describe("a session's own switch (compact_session)", () => {
     expect(row.claudeConfigDir).toBe(FRIEND);
   });
 
+  it("charges the start it applies, once: the next switch sees it", () => {
+    applied(codexSession("web:c1b"), { engine: "claude" });
+    const { outcome } = applied(codexSession("web:c1c"), { engine: "claude" });
+    expect(outcome).toMatchObject({ applied: true });
+    // 20 and 60 headroom (and 10 for the default login): the first went to friend, the second goes to the other account.
+    expect(pickOf(registry.getSession(registry.getSessionBySourceRef("web:c1c")!.id)!)).toMatchObject({ picked: spareKey });
+    // A declined switch (the session moved meanwhile) charges nothing.
+    const moved = codexSession("web:c1d");
+    const resolved = resolveSwitchTarget(config, moved, { engine: "claude" }, { caller: "session" });
+    if (!resolved.ok) throw new Error(resolved.error);
+    const pending = buildPendingSwitch(config, moved, resolved, { claimedAt: Date.now(), handoff: { handoff: "continue" } as never, opencodeMode: undefined });
+    registry.updateSession(moved.id, { status: "running", attemptToken: "attempt-2", model: "gpt-5.4" });
+    expect(applyPendingSwitch({ config, emit: emit as never }, registry.getSession(moved.id)!, pending, "attempt-2")).toMatchObject({ applied: false });
+    const next = codexSession("web:c1e");
+    expect(resolveSwitchTarget(config, next, { engine: "claude" }, { caller: "operator" })).toMatchObject({ accountPick: { picked: expect.any(String) } });
+  });
+
   it("picks again at apply time: the account that looked best when it asked may not be by then", () => {
     const session = codexSession("web:c2");
     const resolved = resolveSwitchTarget(config, session, { engine: "claude" }, { caller: "session" });

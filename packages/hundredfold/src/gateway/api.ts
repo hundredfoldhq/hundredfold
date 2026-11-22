@@ -27,6 +27,7 @@ import { withEngineHealth } from "../shared/engine-health.js";
 import { withInternalFallback } from "../engines/opencode-internal-fallback.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
+import { transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
 import { fallbackPreviewFor, parseFallbackModeParam, parseFallbackModePatch, withFallbackView } from "./session-fallback-api.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget } from "../sessions/fallback-target.js";
@@ -1128,6 +1129,8 @@ export function serializeSession(
     backgroundActivity: bg ? serializeRuntimeActivity(bg) : null,
     delegatedActivity: delegatedActivityIndex?.get(session.id) ?? null,
     claudeProfile: sessionClaudeProfileWire(session, context),
+    // The balancer's record without its usage numbers: those are the fallback view's `pick`, which a scoped caller gets stripped.
+    transportMeta: transportMetaWithoutPickNumbers(session.transportMeta),
   };
 }
 

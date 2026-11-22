@@ -176,6 +176,22 @@ describe("a balanced session", () => {
     expect({ dir: after.claudeConfigDir, pick: pickOf(after) }).toEqual(before);
   });
 
+  it("carries no usage number in the session body any caller reads: the get, the list and the spawn response", async () => {
+    const created = await spawn({ employee: "a-worker" });
+    const numbers = /"(weight|sharePercent|headroomPercent|usedPercent|readingAt|tightest)"/;
+    expect(JSON.stringify(created.body.transportMeta?.accountPick)).not.toMatch(numbers);
+    expect(created.body.transportMeta.accountPick).toMatchObject({ picked: expect.any(String), reason: "weighted" });
+    const got = await call("GET", `/api/sessions/${created.body.id}`);
+    expect(JSON.stringify(got.body.transportMeta.accountPick)).not.toMatch(numbers);
+    // The fallback view is where a caller allowed to see the numbers reads them.
+    expect(got.body.fallback.chain.pick.candidates[0]).toHaveProperty("headroomPercent");
+    const list = await call("GET", "/api/sessions");
+    const listed = (list.body.sessions ?? list.body).find((row: { id: string }) => row.id === created.body.id);
+    expect(JSON.stringify(listed.transportMeta.accountPick)).not.toMatch(numbers);
+    // The stored row keeps the full record the view is built from.
+    expect(pickOf(registry.getSession(created.body.id)!)!.candidates[0]).toHaveProperty("weight");
+  });
+
   it("is shown a department-scoped caller's own pick without any usage number, weight or share", async () => {
     const created = await spawn({ employee: "a-worker" });
     const session = registry.getSession(created.body.id)!;
