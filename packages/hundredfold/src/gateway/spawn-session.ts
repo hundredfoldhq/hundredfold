@@ -1,7 +1,9 @@
 import { logger } from "../shared/logger.js";
 import type { Employee, HundredfoldConfig, Session } from "../shared/types.js";
 import { createSession, getSession, insertMessage, updateSession, enqueueQueueItem } from "../sessions/registry.js";
-import { validateNewSessionSelection } from "../sessions/session-patch.js";
+import { validateNewSessionSelection, type NewSessionSelectionResult } from "../sessions/session-patch.js";
+import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
+import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget, fallbackTargetRefusal, parseFallbackTargetPatch, prospectiveSession } from "../sessions/fallback-target.js";
 import type { StoredFallbackTarget } from "../shared/session-fallback-config.js";
@@ -84,7 +86,7 @@ function defaultProvenance(): SpawnProvenance {
  *  gateway-default session. */
 type SpawnSelection =
   | { ok: false; error: string; status?: 400 | 403 }
-  | { ok: true; engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; fallbackMode?: SessionFallbackMode; claudeConfigDir?: string };
+  | { ok: true; engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; fallbackMode?: SessionFallbackMode; claudeConfigDir?: string; accountPick?: AccountPick };
 
 /** The mode a spawn stores: its explicit one, else the parent's rule (undefined for a root). */
 function resolveFallbackMode(
@@ -150,16 +152,13 @@ async function resolveSpawnEmployee(
   return { ok: true, employee: emp, defaults };
 }
 
-async function resolveSelection(
+/** Synchronous on purpose: the account pick it makes is charged by the caller after the session row exists, with nothing awaited in between. */
+function resolveSelection(
   config: HundredfoldConfig,
   input: SpawnSessionInput,
-  employeeName: string | null,
-): Promise<SpawnSelection> {
-  const fallback = resolveFallbackMode(config, input);
-  if (!fallback.ok) return fallback;
-  const fallbackMode = fallback.mode;
-  const who = await resolveSpawnEmployee(config, employeeName);
-  if (!who.ok) return who;
+  who: Extract<Awaited<ReturnType<typeof resolveSpawnEmployee>>, { ok: true }>,
+  fallbackMode: SessionFallbackMode | undefined,
+): SpawnSelection {
   const employeeRecord = who.employee;
   const employeeDefaults = who.defaults;
   const choice = engineChoice(config, input, employeeRecord);
@@ -168,16 +167,25 @@ async function resolveSelection(
     engine: choice.engine,
     model: input.model,
     effortLevel: input.effortLevel,
-  }, { ...employeeDefaults, ...(fallbackMode ? { fallbackMode } : {}) });
+  }, { ...employeeDefaults, ...(fallbackMode ? { fallbackMode } : {}), ...(choice.claudeConfigDir ? { namedProfile: true } : {}) });
   if (!selection.ok) return { ok: false, error: selection.error || "invalid engine/model/effort" };
+  return spawnSelectionOf(config, selection, { fallbackMode, claudeConfigDir: choice.claudeConfigDir });
+}
+
+/** The spawn a validated selection makes: the profile the caller named, else the account the balancer pinned. */
+function spawnSelectionOf(
+  config: HundredfoldConfig, selection: NewSessionSelectionResult, named: { fallbackMode: SessionFallbackMode | undefined; claudeConfigDir: string | undefined },
+): SpawnSelection {
+  const claudeConfigDir = named.claudeConfigDir ?? selection.claudeConfigDir ?? undefined;
   return {
     ok: true,
     engineName: selection.engine || config.engines.default,
     model: selection.model,
     effortLevel: selection.effortLevel,
     reroute: selection.reroute,
-    ...(fallbackMode ? { fallbackMode } : {}),
-    ...(choice.claudeConfigDir ? { claudeConfigDir: choice.claudeConfigDir } : {}),
+    ...(named.fallbackMode ? { fallbackMode: named.fallbackMode } : {}),
+    ...(claudeConfigDir ? { claudeConfigDir } : {}),
+    ...(selection.accountPick ? { accountPick: selection.accountPick } : {}),
   };
 }
 
@@ -256,11 +264,28 @@ export async function spawnSession(
 ): Promise<SpawnSessionOutcome> {
   const config = context.getConfig();
   const employeeName = input.employee ?? null;
-  const selection = await resolveSelection(config, input, employeeName);
+  const fallbackMode = resolveFallbackMode(config, input);
+  if (!fallbackMode.ok) return fallbackMode;
+  const who = await resolveSpawnEmployee(config, employeeName);
+  if (!who.ok) return who;
+  // Everything that awaits is done: from the pick to the charge below runs in one synchronous stretch.
+  const selection = resolveSelection(config, input, who, fallbackMode.mode);
   if (!selection.ok) return selection;
   const fallback = storedFallback(config, input, employeeName, selection);
   if (!fallback.ok) return fallback;
 
+  const session = createSpawnedSession(config, input, employeeName, selection, fallback.stored);
+  logger.info(`Web session created: ${session.id} (model=${selection.model || "default"})`);
+  recordFirstMessage(session, input);
+
+  return startFirstTurn(context, session, input, selection.engineName);
+}
+
+/** The row for a spawn, charged to the account the balancer picked once it exists. */
+function createSpawnedSession(
+  config: HundredfoldConfig, input: SpawnSessionInput, employeeName: string | null,
+  selection: Extract<SpawnSelection, { ok: true }>, stored: { fallbackMode: SessionFallbackMode | undefined; fallbackTarget: StoredFallbackTarget | undefined },
+): Session {
   const provenance = input.provenance ?? defaultProvenance();
   const session = createSession({
     engine: selection.engineName,
@@ -279,7 +304,7 @@ export async function spawnSession(
     employee: employeeName,
     parentSessionId: input.parentSessionId,
     effortLevel: selection.effortLevel,
-    ...fallback.stored,
+    ...stored,
     claudeConfigDir: selection.claudeConfigDir,
     // Honor the requested model so API clients can pin per-employee models
     // (e.g. MCP servers that look up org/<employee>.yaml and pass the
@@ -291,10 +316,8 @@ export async function spawnSession(
     // scaffolded prompt pass the verbatim ask so list UIs show that instead).
     promptExcerpt: input.promptExcerpt,
     portalName: config.portal?.portalName,
-    transportMeta: reroutedSessionMeta(selection.reroute),
+    transportMeta: reroutedSessionMeta(selection.reroute, metaWithAccountPick(undefined, selection)),
   });
-  logger.info(`Web session created: ${session.id} (model=${selection.model || "default"})`);
-  recordFirstMessage(session, input);
-
-  return startFirstTurn(context, session, input, selection.engineName);
+  chargeAccountStart(selection);
+  return session;
 }

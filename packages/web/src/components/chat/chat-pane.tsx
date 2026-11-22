@@ -649,6 +649,7 @@ export function ChatPane({
             allowProfiles
             onEffectiveProfile={setEffectiveProfile}
             employeeRemote={sessionId ? sessionEmployeeRemote : selectedEmployeeRemote}
+            employee={selectedEmployee ?? undefined}
           />
           {/* Never locked by a running turn: a change reaches the gateway at once and applies from the next usage limit. */}
           <FallbackModeChip

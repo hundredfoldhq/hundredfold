@@ -26,6 +26,61 @@ beforeAll(async () => {
 const mk = (status: Store["createWorkItem"] extends (i: infer I) => unknown ? (I extends { status?: infer S } ? S : never) : never, extra: Partial<Parameters<Store["createWorkItem"]>[0]> = {}) =>
   store.createWorkItem({ title: `t-${Math.random().toString(36).slice(2, 8)}`, status, ...extra });
 
+describe("transition — leaving a terminal status (the full matrix)", () => {
+  const ALL = ["backlog", "executing", "in_review", "blocked", "done", "cancelled"] as const;
+  // The deliberate exits: start over, or straight back to review.
+  const REOPEN_TO = new Set(["backlog", "in_review"]);
+
+  for (const from of ["done", "cancelled"] as const) {
+    for (const to of ALL) {
+      if (to === from) continue;
+      const legal = REOPEN_TO.has(to);
+      it(`${from} → ${to} by the operator is ${legal ? "allowed" : "refused, naming the rule"}`, () => {
+        const wi = mk(from);
+        if (legal) {
+          const { item, event } = tr.transition(wi.id, to, "operator", { human: true, manual: true });
+          expect(item.status).toBe(to);
+          expect(item.closedAt).toBeNull(); // reopening clears closed_at
+          expect(event).toMatchObject({ kind: "status_change", fromStatus: from, toStatus: to, actor: "operator" });
+          expect(store.listWorkItemEvents(wi.id).at(-1)).toMatchObject({ kind: "status_change", fromStatus: from, toStatus: to });
+        } else {
+          let caught: unknown;
+          try {
+            tr.transition(wi.id, to, "operator", { human: true, manual: true });
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(tr.TransitionError);
+          expect((caught as InstanceType<Transitions["TransitionError"]>).code).toBe("illegal-edge");
+          expect((caught as Error).message).toContain(`the declared edges from ${from} are backlog, in_review`);
+          expect(store.getWorkItem(wi.id)?.status).toBe(from);
+          expect(store.listWorkItemEvents(wi.id).filter((e) => e.kind === "status_change")).toHaveLength(0);
+        }
+      });
+
+      it(`${from} → ${to} without human authority is refused as human-required`, () => {
+        const wi = mk(from);
+        let code: string | undefined;
+        try {
+          tr.transition(wi.id, to, "reconciler");
+        } catch (err) {
+          code = err instanceof tr.TransitionError ? err.code : undefined;
+        }
+        expect(code).toBe("human-required");
+        expect(store.getWorkItem(wi.id)?.status).toBe(from);
+      });
+    }
+  }
+
+  it("a closed Todo reopened to review is sent back to work through the review bounce, counting a round", () => {
+    const wi = mk("done");
+    tr.transition(wi.id, "in_review", "operator", { human: true, manual: true });
+    const back = tr.transition(wi.id, "executing", "operator", { human: true, manual: true });
+    expect(back.item.status).toBe("executing");
+    expect(back.item.rounds).toBe(1);
+  });
+});
+
 describe("transition — the guarded edge map", () => {
   it("moves along declared edges and appends a status_change event with actor + detail", () => {
     const wi = mk("backlog");

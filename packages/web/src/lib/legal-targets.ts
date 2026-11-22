@@ -105,6 +105,20 @@ export function legalTargets(
   return out
 }
 
+/** The rule behind the statuses `from` cannot reach, in words, for the surfaces
+ *  that say so out loud. It names the rule, not just the absence; `undefined`
+ *  when every other status is reachable (nothing to explain). */
+export function unreachableRule(from: WorkItemStatusWire): string | undefined {
+  if (FIXTURE.sticky.includes(from)) {
+    const exits = (FIXTURE.edges[from] ?? []).join(", ")
+    return `A closed Todo only reopens to ${exits}; to put it back to work, reopen it to in_review and send it back from there.`
+  }
+  const reachable = new Set<WorkItemStatusWire>(legalTargets(from).map((t) => t.status))
+  const missing = (Object.keys(FIXTURE.edges) as WorkItemStatusWire[]).filter((s) => s !== from && !reachable.has(s))
+  if (missing.length === 0) return undefined
+  return `A Todo in ${from} only moves to ${[...reachable].join(", ")}.`
+}
+
 /** Drag convenience: a column is a live drop target only when the edge is
  *  legal AND ungated (a gated column dims like an illegal one — §5). A cascade
  *  target dims with them: dropping a card says nothing about closing the

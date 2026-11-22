@@ -6,7 +6,8 @@ import { SettingsSelect } from "../shared"
 import type { EnginesResponse } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import { ChainModelSelect } from "./chain-model-select"
-import { noModelLabel, profileOptionsFor, rowLabel, withEngine, withModel, withProfile } from "./chain-links"
+import { isGroupItem, itemLabel, noModelLabel, profileOptionsFor, withEngine, withModel, withProfile, type ChainItem } from "./chain-links"
+import { GroupTarget } from "./chain-group"
 
 /** A row's icon button: ghost, at the 34px the rows are laid out for. */
 export const ROW_BUTTON_CLASS = "size-[34px] min-h-0 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
@@ -109,12 +110,19 @@ function RowActions({ label, chainName, index, count, onMove, onRemove }: {
   )
 }
 
+/** What a row names: a balanced group's accounts, or one target's engine, profile and model. */
+function RowBody({ item, index, fields, onChange }: { item: ChainItem; index: number; fields: RowFields; onChange: (item: ChainItem) => void }) {
+  return isGroupItem(item)
+    ? <GroupTarget group={item} index={index} fields={fields} onChange={onChange} />
+    : <RowTarget link={item} index={index} fields={fields} onChange={onChange} />
+}
+
 /** One link in the chain: its place in the order, the target it names, and the
  *  three ways to change that place without a pointer. */
 export function ChainRow({ rowId, link, index, count, fields, problems, expanded, style, onPointerDown, onChange, onMove, onRemove }: {
   /** Stable across moves and edits: see `useRowIds`. */
   rowId: string
-  link: FallbackLink
+  link: ChainItem
   index: number
   count: number
   fields: RowFields
@@ -124,15 +132,15 @@ export function ChainRow({ rowId, link, index, count, fields, problems, expanded
   expanded: boolean
   style: React.CSSProperties
   onPointerDown: (event: React.PointerEvent) => void
-  onChange: (link: FallbackLink) => void
+  onChange: (link: ChainItem) => void
   onMove: (to: number) => void
   onRemove: () => void
 }) {
-  const label = rowLabel(link)
+  const label = itemLabel(link)
   return (
     <div className="flex flex-col gap-[2px]">
       <div
-        data-chain-row={fallbackLinkLabel(link)}
+        data-chain-row={isGroupItem(link) ? label : fallbackLinkLabel(link)}
         data-row-id={rowId}
         data-invalid={problems.length > 0 || undefined}
         onPointerDown={onPointerDown}
@@ -148,7 +156,7 @@ export function ChainRow({ rowId, link, index, count, fields, problems, expanded
         </span>
         <span className="min-w-0 flex-1 @[560px]/chain:hidden" />
         <div className="order-last flex w-full @[560px]/chain:order-none @[560px]/chain:contents">
-          <RowTarget link={link} index={index} fields={fields} onChange={onChange} />
+          <RowBody item={link} index={index} fields={fields} onChange={onChange} />
         </div>
         <RowActions label={label} chainName={fields.chainName} index={index} count={count} onMove={onMove} onRemove={onRemove} />
       </div>

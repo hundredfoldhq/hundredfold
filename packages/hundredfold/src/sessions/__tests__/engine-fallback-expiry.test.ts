@@ -148,7 +148,7 @@ describe("a new session started while the primary is out of allowance", () => {
         substituteTarget: { engine: "codex" },
       },
       // The run starts at that link: the next limit moves on from it, never back to the target it left.
-      fallbackRun: { source: "engine", position: 1, tried: ["claude||opus"], startedAt: START.toISOString() },
+      fallbackRun: { source: "engine", position: 1, at: "codex||", tried: ["claude||opus"], startedAt: START.toISOString() },
     });
   });
 

@@ -9,9 +9,10 @@ import type { FallbackHopSkip, FallbackSkipReason, ResolvedFallbackLink } from "
  * `fallback.chain.next` reports with it, so the two cannot disagree.
  */
 
-/** Where a run stands on its chain: the index of the target the session is on, and every target tried so far (the own target included). */
+/** Where a run stands on its chain: the index of the target the session is on, and every target tried so far (the own target included). `at`: that target's key, which outranks the index when the chain's order changed since. */
 export interface FallbackRunCursor {
   position: number;
+  at?: string;
   tried: readonly string[];
 }
 
@@ -28,10 +29,16 @@ export interface NextFallbackLink {
  * a fallback link the run has tried (the target the session is on, which may lie
  * behind others when the walk went back to a link it had passed over for its
  * health); otherwise past the furthest tried target, as when the chain was
- * edited since. An edit cannot send a run to a target it already tried.
+ * edited since. An edit cannot send a run to a target it already tried. A run that
+ * recorded the key of its target (`at`) is found by it first: a balanced group's
+ * members are ranked by headroom each time the chain is resolved, so the recorded
+ * index may name another member by now, and the session would be taken for being
+ * on a link it never stood on.
  */
 export function effectivePosition(links: readonly ResolvedFallbackLink[], run: FallbackRunCursor | undefined): number {
   if (!run) return 0;
+  const standing = run.at === undefined ? -1 : links.findIndex((link, index) => index > 0 && link.key === run.at);
+  if (standing > 0) return standing;
   const tried = new Set(run.tried);
   const recorded = Number.isFinite(run.position) ? Math.trunc(run.position) : 0;
   if (recorded > 0 && recorded < links.length && tried.has(links[recorded]!.key)) return recorded;
@@ -51,6 +58,43 @@ interface Scan {
   skipped: FallbackHopSkip[];
 }
 
+/** The identity of the group block a link belongs to, in the chain as resolved: the group's written place and spelling. Undefined off a group. */
+function blockKey(link: ResolvedFallbackLink | undefined): string | undefined {
+  return link?.group ? `${link.group.index}:${JSON.stringify(link.group.written)}` : undefined;
+}
+
+/**
+ * The indices a walk from `position` considers, in order. A link outside a group
+ * is considered where it stands, after the cursor. A group block is a set: the
+ * first time the walk meets a member (the cursor's own block first, then the
+ * first member after the cursor) every member of the block is considered, in the
+ * resolved (headroom) order, wherever it sits relative to the cursor, before the
+ * walk moves past the block. The tried set is what keeps a re-ordering between
+ * resolutions from skipping a member or revisiting one.
+ */
+function considerationOrder(links: readonly ResolvedFallbackLink[], position: number): number[] {
+  const blocks = new Map<string, number[]>();
+  links.forEach((link, index) => {
+    const key = index > 0 ? blockKey(link) : undefined;
+    if (key !== undefined) blocks.set(key, [...(blocks.get(key) ?? []), index]);
+  });
+  const order: number[] = [];
+  const queued = new Set<number>();
+  const consider = (indices: readonly number[]): void => {
+    for (const index of indices) {
+      if (!queued.has(index)) order.push(index);
+      queued.add(index);
+    }
+  };
+  const home = position > 0 ? blockKey(links[position]) : undefined;
+  if (home !== undefined) consider((blocks.get(home) ?? []).filter((index) => index !== position));
+  for (let index = Math.max(position, 0) + 1; index < links.length; index++) {
+    const key = blockKey(links[index]);
+    consider(key === undefined ? [index] : (blocks.get(key) ?? [index]));
+  }
+  return order;
+}
+
 function scan(
   links: readonly ResolvedFallbackLink[],
   cursor: FallbackRunCursor,
@@ -60,7 +104,7 @@ function scan(
 ): Scan {
   const tried = new Set(cursor.tried);
   const skipped: FallbackHopSkip[] = [];
-  for (let index = Math.max(cursor.position, 0) + 1; index < links.length; index++) {
+  for (const index of considerationOrder(links, cursor.position)) {
     const link = links[index]!;
     const reason = ruledOut(link, tried, health, now) ?? (isSpent(link) ? "exhausted" : undefined);
     if (reason === undefined) return { found: { index, link, skipped }, skipped };
@@ -84,7 +128,8 @@ function passedOverBehind(links: readonly ResolvedFallbackLink[], cursor: Fallba
  * over for its health earlier is taken too. A limit can order a chain but never
  * empty one; a signed-out provider (`isLinkSignedOut`) is ruled out in every pass,
  * since each of its models would be refused with the same dead key. The own
- * target is always tried, so it is never the answer.
+ * target is always tried, so it is never the answer. A group block (a balanced
+ * group's members, expanded in place) is walked as a set: see `considerationOrder`.
  */
 export function nextFallbackLink(
   links: readonly ResolvedFallbackLink[],

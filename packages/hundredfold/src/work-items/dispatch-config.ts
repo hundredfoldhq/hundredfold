@@ -129,7 +129,7 @@ function validateOverride(
   const selection = validateNewSessionSelection(config, {
     engine,
     ...(model ? { model } : {}),
-  });
+  }, { validateOnly: true });
   if (!selection.ok) return { ok: false, error: selection.error ?? 'invalid engine/model override' };
   const unregistered = unregisteredModelError(config, selection.engine, selection.model);
   if (unregistered) return { ok: false, error: unregistered };

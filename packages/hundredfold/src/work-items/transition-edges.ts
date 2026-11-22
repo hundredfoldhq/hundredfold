@@ -12,10 +12,25 @@ export const EDGES: Readonly<Record<WorkItemStatus, ReadonlySet<WorkItemStatus>>
   in_review: new Set(['executing', 'done', 'blocked', 'cancelled']),
   blocked: new Set(['backlog', 'executing', 'in_review', 'done', 'cancelled']),
   // Sticky terminals: leaving them is HUMAN-ONLY (enforced in transitions.ts, not by
-  // edge absence).
-  done: new Set(['backlog']),
-  cancelled: new Set(['backlog']),
+  // edge absence). The operator reopens closed work to `backlog` (start over) or
+  // straight to `in_review` (it was closed too soon: look at it again). Nothing
+  // else is a reopen: `executing` is a start that dispatches an agent, which the
+  // review bounce (`in_review → executing`) already covers one move later, and
+  // `blocked` would stop work that is not running.
+  done: new Set(['backlog', 'in_review']),
+  cancelled: new Set(['backlog', 'in_review']),
 };
+
+/** The rule a refused move broke, in words: what `transition()` puts in the
+ *  `illegal-edge` error so the caller learns which rule said no, not only that
+ *  one did. A manual move into `executing` is refused earlier than the edge
+ *  check but only ever from a status whose edges lack it (a closed Todo), so
+ *  the declared exits are the whole answer. */
+export function illegalEdgeRule(from: WorkItemStatus, to: WorkItemStatus): string {
+  const exits = [...EDGES[from]].join(', ');
+  const closed = from === 'done' || from === 'cancelled' ? ` (a closed Todo reopens to ${exits}${to === 'executing' ? '; send it back from in_review once it is open' : ''})` : '';
+  return `the declared edges from ${from} are ${exits}${closed}`;
+}
 
 /** The statuses an agent session works in. Closing (`done`, `cancelled`) and
  *  reopening closed work are the operator's. */

@@ -6,6 +6,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
+import { AccountPickSummary } from './account-pick-summary'
 import { FALLBACK_MODE_OPTIONS, hasOwnTarget, servedByLabel, type SessionFallbackView } from './fallback-mode-model'
 
 /** The three modes, as a radio list; the session's current one is checked. */
@@ -66,8 +67,15 @@ export function FallbackModeMenu({ local, error, onPick, onChooseModel, onUseCon
   onChooseModel: () => void
   onUseConfig: () => void
 }) {
+  const pick = local.chain?.pick
   return (
     <>
+      {pick && (
+        <>
+          <AccountPickSummary pick={pick} />
+          <DropdownMenuSeparator className="bg-[var(--separator)]" />
+        </>
+      )}
       <DropdownMenuLabel className="pt-1 pb-1.5 text-[length:var(--text-caption2)] font-[var(--weight-bold)] uppercase tracking-[0.4px] text-[var(--text-quaternary)]">
         When the usage limit is hit
       </DropdownMenuLabel>
