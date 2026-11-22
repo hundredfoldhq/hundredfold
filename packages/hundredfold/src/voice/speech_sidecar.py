@@ -14,8 +14,10 @@ tested) without them.
 
 Choices where the contract is silent:
 
-* `hello.models` is `{"stt": {"name", "path", "quantization"}, "tts": {"model", "voices"},
-  "vad": {"model"}}`: where the models live, as the gateway's bootstrap put them.
+* `hello.models` is `{"stt": {"name", "path", "quantization", "streaming"?, "download"?}, "tts": {"model",
+  "voices"}, "vad": {"model"}}`: where the models live, as the gateway's bootstrap put them. `streaming` is
+  true for the buffered streaming Parakeet Unified export; `download` is the pinned-file spec a `--download`
+  run fetches.
 * A `vad.event` of kind `start` carries `atMs`, the stream offset to cut from so the
   utterance includes `prerollMs` of audio before speech began (never below 0). `end`
   carries the offset where speech stopped, before the trailing silence.

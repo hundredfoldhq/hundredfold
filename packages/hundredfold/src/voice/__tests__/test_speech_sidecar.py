@@ -439,8 +439,12 @@ class FrameEngine(sc.StreamEngine):
         return 0
 
     def step(self, tokens, state, frame):
-        # One token per frame, then the blank, as a joint does after it has spoken for a frame.
-        return (self.blank, state) if tokens and tokens[-1] == frame else (frame, state + 1)
+        # One token per frame, then the blank, as a joint does after it has spoken for a frame. The decoder state is the
+        # number of tokens it has taken in, as an RNN-T's prediction network's is: a state that was dropped or replayed
+        # between steps no longer matches the tokens, and the stub says so by speaking garbage.
+        if tokens and tokens[-1] == frame:
+            return self.blank, state
+        return (frame if state == len(tokens) else -1), state + 1
 
     def text(self, tokens):
         return ",".join(str(t) for t in tokens)
@@ -471,6 +475,21 @@ class StreamingUtteranceTests(unittest.TestCase):
                 with self.subTest(frames=frames, tail=tail, partials=len(cuts)):
                     text, _, _ = self.run_schedule(frames, tail, cuts)
                     self.assertEqual(text, expected_text(frames, tail))
+
+    def test_the_decoder_state_is_carried_between_requests_and_across_window_slides(self):
+        # 40 frames slide the window many times (it holds 10); the partials cut the utterance at chunk and mid-chunk points.
+        engine = FrameEngine()
+        utterance = sc.StreamingUtterance(engine)
+        pcm = frames_pcm(40)
+        total = 40 * FrameEngine.span
+        for cut in range(3000, total, 3000):
+            text = utterance.advance(pcm[: cut * 2], False)
+            self.assertNotIn("-1", text.split(","), f"state lost by the partial at {cut}")
+            self.assertEqual(utterance.state, len(utterance.tokens), f"state out of step with the tokens at {cut}")
+        self.assertEqual(utterance.advance(pcm, True), expected_text(40))
+        self.assertEqual(utterance.state, 40)
+        utterance.advance(frames_pcm(3), True)  # shorter audio for the same utterance starts it over, state included
+        self.assertEqual(utterance.state, 3)
 
     def test_a_partial_holds_back_only_what_still_lacks_right_context(self):
         # Five frames of audio: the first step needs a chunk and the right context (5 frames), so exactly 2 are decoded.
