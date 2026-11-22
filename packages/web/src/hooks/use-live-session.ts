@@ -731,14 +731,13 @@ export function useLiveSession(
   }, [])
 
   // At live text of the block: takes the stored copy of it out of the transcript, once, and returns
-  // its text, which the caller puts in front of the tail the frame carries. The flushed row that
-  // replaces it is new, so the copy no longer needs dropping at flush or completion.
+  // its text, which the caller puts in front of the tail the frame carries. The row is gone, and the
+  // row flushed in its place has a new id, so streamedCopyIdRef (matched by id) can drop neither.
   const takeStoredStreamTail = useCallback((): string => {
     streamBlockMovesRef.current += 1
     const stored = storedStreamTailRef.current
     if (!stored) return ''
     storedStreamTailRef.current = null
-    if (streamedCopyIdRef.current === stored.id) streamedCopyIdRef.current = null
     setMessages((prev) => prev.filter((m) => m.id !== stored.id))
     return stored.text
   }, [])
@@ -1130,14 +1129,15 @@ export function useLiveSession(
   }, [subscribe])
 
   // Load session data
-  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean }): Promise<void> => {
+  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean; blockMovesAtRead?: number }): Promise<void> => {
     const myToken = ++loadTokenRef.current
     const completionsAtStart = completionsRef.current
     if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     // Whether the failure came from the fetch (transient, retried) or from
     // processing what it returned (deterministic, so not retried).
     let fetched = false
-    const blockMovesAtRead = streamBlockMovesRef.current
+    // A reissued read stands in for the first one, so it is judged from when that one began.
+    const blockMovesAtRead = options?.blockMovesAtRead ?? streamBlockMovesRef.current
     try {
       const session = (await api.getSession(id, { last: INITIAL_MESSAGE_PAGE_SIZE })) as Record<string, unknown>
       fetched = true
@@ -1149,7 +1149,7 @@ export function useLiveSession(
       // truncated reply back over the final one. Its other rows are real (the history on a first
       // load, a user row only reads carry), so read again, once, now that the turn is over.
       if (!options?.reissued && completionsRef.current !== completionsAtStart && turnInFlight(session)) {
-        return loadSession(id, { suppressHydrating: true, reissued: true })
+        return loadSession(id, { suppressHydrating: true, reissued: true, blockMovesAtRead })
       }
       setHydrating(false)
       setLoadError(null)

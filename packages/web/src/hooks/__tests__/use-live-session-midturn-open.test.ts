@@ -214,6 +214,85 @@ describe("a chat opened mid-turn", () => {
     expect(proseRows(result.current.messages)).toEqual(["Let me check the fi"])
   })
 
+  it("keeps the joined row when a reload, its text and the tool call that ends it land in one act", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [user] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await settle()
+
+    getSession.mockResolvedValue({ status: "running", messages: [user, partial] })
+    await act(async () => {
+      await result.current.reload("s1")
+      emit("session:delta", { sessionId: "s1", type: "text", content: "le first." })
+      emit("session:delta", { sessionId: "s1", type: "tool_use", content: "Using Read", toolName: "Read" })
+    })
+    expect(result.current.streamingText).toBe("")
+    expect(proseRows(result.current.messages)).toEqual(["Let me check the file first."])
+  })
+
+  describe("a read that was out while a frame ended or extended the block seeds nothing", () => {
+    const toolUse = { type: "tool_use", content: "Using Read", toolName: "Read" }
+    const block = {
+      type: "block",
+      content: "Progress",
+      block: { op: "put", block: { id: "plan", type: "task-list", version: 1, payload: {} } },
+    }
+    const cases: [string, [string, Record<string, unknown>][]][] = [
+      ["a main tool call", [["session:delta", toolUse]]],
+      ["a block", [["session:delta", block]]],
+      ["text, then a tool call that flushes it", [["session:delta", { type: "text", content: "le first." }], ["session:delta", toolUse]]],
+      ["a snapshot, then a tool call that flushes it", [["session:delta", { type: "text_snapshot", content: "Let me check the file first." }], ["session:delta", toolUse]]],
+      ["a snapshot that empties the block", [["session:delta", { type: "text_snapshot", content: "" }]]],
+      ["a new turn", [["session:started", {}]]],
+      ["a stop", [["session:stopped", {}]]],
+      ["an interruption", [["session:interrupted", {}]]],
+    ]
+    for (const timing of ["in the act the read lands in", "rendered before the read lands"] as const) {
+      for (const [name, frames] of cases) {
+        it(`${name}, ${timing}`, async () => {
+          getSession.mockResolvedValue({ status: "running", messages: [user, partial] })
+          const { subscribe, emit } = makeBus()
+          const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+          await settle()
+
+          // The read starts before the frames and returns the old snapshot after them.
+          let land!: (session: unknown) => void
+          getSession.mockImplementationOnce(() => new Promise((resolve) => { land = resolve }))
+          const reload = result.current.reload("s1")
+          const send = () => { for (const [event, payload] of frames) emit(event, { sessionId: "s1", ...payload }) }
+          if (timing === "rendered before the read lands") act(send)
+          await act(async () => {
+            if (timing === "in the act the read lands in") send()
+            land({ status: "running", messages: [user, partial] })
+            await reload
+            emit("session:delta", { sessionId: "s1", type: "text", content: "Next block." })
+          })
+          expect(result.current.streamingText).toBe("Next block.")
+          expect(proseRows(result.current.messages)).not.toContain("Let me check the fiNext block.")
+          expect(proseRows(result.current.messages).some((row) => row.startsWith("Let me check the fi"))).toBe(true)
+        })
+      }
+    }
+
+    it("a completion, in the act the read lands in, with the read reissued after it", async () => {
+      getSession.mockResolvedValue({ status: "running", messages: [user, partial] })
+      const { subscribe, emit } = makeBus()
+      const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+      await settle()
+
+      let land!: (session: unknown) => void
+      getSession.mockImplementationOnce(() => new Promise((resolve) => { land = resolve }))
+      const reload = result.current.reload("s1")
+      await act(async () => {
+        emit("session:completed", { sessionId: "s1", result: "Let me check the fi" })
+        land({ status: "running", messages: [user, partial] })
+        await reload
+        emit("session:delta", { sessionId: "s1", type: "text", content: "Next block." })
+      })
+      expect(result.current.streamingText).toBe("Next block.")
+    })
+  })
+
   describe("the stored tail is not taken after the block or the turn has moved on", () => {
     const openMidTurn = async () => {
       getSession.mockResolvedValue({ status: "running", messages: [user, partial] })
