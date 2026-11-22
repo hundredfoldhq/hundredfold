@@ -97,7 +97,7 @@ adb reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
 say "launching the app, pairing, starting voice mode (hands-free)"
 adb shell am start -n run.hundredfold.shell/.MainActivity >/dev/null
 for _ in $(seq 1 30); do drive 'document.readyState' >/dev/null 2>&1 && break; sleep 1; done
-drive "(async()=>{const n=window.__HUNDREDFOLD_NATIVE__;const t={origin:'http://127.0.0.1:$PORT'};await n.pair({target:t,code:'123456'});window.__ev=[];await n.voice.start({target:t,sessionId:'demo-session',mode:'hands-free'},(m)=>window.__ev.push(m));await new Promise(r=>setTimeout(r,1500));return n.voice.status()})()" | tee -a "$TIMELINE"
+drive "(async()=>{const n=window.__HUNDREDFOLD_NATIVE__;const t={origin:'http://127.0.0.1:$PORT'};await n.pair({target:t,code:'123456'});window.__ev=[];await n.voiceStart({target:t,sessionId:'demo-session',mode:'hands-free'},(m)=>window.__ev.push(m));await new Promise(r=>setTimeout(r,1500));return n.voiceStatus()})()" | tee -a "$TIMELINE"
 wait_count hello 1 10
 say "voice mode is up: hello received from a '$(grep -o '"client":"[a-z]*"' "$SERVER_LOG" | head -1)' client"
 

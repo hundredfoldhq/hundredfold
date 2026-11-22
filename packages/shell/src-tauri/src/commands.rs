@@ -107,9 +107,14 @@ impl NativeError {
     }
     pub(crate) fn permission_denied() -> Self {
         Self::new(
-            "permission-denied",
+            "permission_denied",
             "Voice mode needs microphone and notification access",
         )
+    }
+    /// `voice_start`'s own spelling of [`Self::not_paired`]: contracts/native-voice.md
+    /// names its start failures `permission_denied`, `not_paired` and `unsupported`.
+    pub(crate) fn voice_not_paired() -> Self {
+        Self::new("not_paired", "This gateway profile is not paired")
     }
     pub(crate) fn unsupported() -> Self {
         Self::new(

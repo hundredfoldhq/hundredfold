@@ -55,15 +55,13 @@ const BRIDGE_SCRIPT: &str = r#"
         return internals.invoke('stream', { input, onEvent: on_event });
       },
       forget: (input) => invoke('forget', input),
-      voice: Object.freeze({
-        start: (input, onEvent) => {
-          const on_event = new Channel(onEvent);
-          return internals.invoke('voice_start', { input, onEvent: on_event });
-        },
-        stop: () => internals.invoke('voice_stop', {}),
-        ptt: (input) => invoke('voice_ptt', input),
-        status: () => internals.invoke('voice_status', {}),
-      }),
+      voiceStart: (input, onFrame) => {
+        const on_event = new Channel(onFrame);
+        return internals.invoke('voice_start', { input, onEvent: on_event });
+      },
+      voiceStop: () => internals.invoke('voice_stop', {}),
+      voicePtt: (input) => invoke('voice_ptt', input),
+      voiceStatus: () => internals.invoke('voice_status', {}),
     }),
   });
 })();

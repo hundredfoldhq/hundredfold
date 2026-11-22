@@ -178,6 +178,17 @@ pub fn voice_path(session_id: &str) -> Option<String> {
     valid_session_id(session_id).then(|| format!("/ws/voice/{session_id}"))
 }
 
+/// The codes `voice_start` may answer with are fixed by the contract, which spells
+/// them with underscores; the shared "not paired" error uses the shell's hyphenated
+/// spelling, so it is translated here.
+fn start_error(error: NativeError) -> NativeError {
+    if error.code == NativeError::not_paired().code {
+        NativeError::voice_not_paired()
+    } else {
+        error
+    }
+}
+
 fn lock_status(status: &Mutex<Status>) -> Status {
     status.lock().map(|s| *s).unwrap_or(Status {
         running: false,
@@ -198,7 +209,7 @@ pub async fn voice_start<R: Runtime>(
     let origin = CanonicalOrigin::parse(&input.target.origin)?;
     let platform = platform().ok_or_else(NativeError::unsupported)?;
     if state.credentials.get(&origin)?.is_none() {
-        return Err(NativeError::not_paired());
+        return Err(NativeError::voice_not_paired());
     }
 
     // Reserve the single session slot before touching the platform.
@@ -268,7 +279,7 @@ pub async fn voice_start<R: Runtime>(
         Err(error) => {
             platform.stop();
             release();
-            return Err(error);
+            return Err(start_error(error));
         }
     };
 
@@ -437,6 +448,23 @@ mod tests {
         test::{mock_builder, mock_context, noop_assets, MockRuntime},
         Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     };
+
+    #[test]
+    fn start_failures_use_the_contracts_underscore_codes() {
+        use crate::commands::NativeError;
+        assert_eq!(
+            super::start_error(NativeError::not_paired()).code,
+            "not_paired"
+        );
+        assert_eq!(NativeError::voice_not_paired().code, "not_paired");
+        assert_eq!(NativeError::permission_denied().code, "permission_denied");
+        assert_eq!(NativeError::unsupported().code, "unsupported");
+        // Other errors pass through unchanged.
+        assert_eq!(
+            super::start_error(NativeError::transport()).code,
+            "transport-failed"
+        );
+    }
 
     #[test]
     fn session_ids_are_plain_identifiers_only() {
