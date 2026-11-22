@@ -164,20 +164,34 @@ capabilities:
 
 | Engine | Capability | Long work on barge-in |
 |---|---|---|
-| claude (interactive) | `SoftInterruptibleEngine` (new): Esc in the TUI | Claude Code moves a running Bash to the background on turn abort or on delivering a queued message, and wakes itself with a task notification when it ends |
+| claude (interactive) | `SoftInterruptibleEngine` (new): Ctrl+B then Esc in the TUI (verified, see below) | Ctrl+B moves a running Bash to a background task; Esc then ends the turn. The command runs on, and Claude Code wakes itself with a task notification when it ends |
 | opencode 2.x | `SteerableEngine` (exists) | steer at the next step, plus a spoken holding line |
 | others | neither | queue behind the turn, plus a holding line; existing interrupt when nothing long runs |
 
-**Rationale**: Claude Code 2.1.330 (installed on the build machine) contains
-`backgroundedByTurnAbort`, `backgroundedToDeliverMessage`,
-`CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS` and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` (strings
-in the binary). The gateway already tracks Claude's background tasks
+**Rationale**: the gateway already tracks Claude's background tasks
 (`engines/background-tasks.ts`) and their wake-ups. Today `InteractiveClaudeEngine.kill`
 releases the PTY, which ends its background shells, so the voice path must never call
-it during long work. **Still to verify live** (first implementation task): that Esc
-during a foreground Bash backgrounds it rather than killing it, with no feature flag
-needed. If it kills, Claude uses steer (paste into the busy TUI, which takes the
-deliver-message branch) instead of Esc.
+it during long work.
+
+**Verified live (T037, Claude Code 2.1.330 in a PTY, evidence in
+`evidence/t037-claude-soft-interrupt.md`)**: the premise this section started from was
+wrong. Esc alone does not background a foreground Bash: it SIGTERMs it, the process
+stays up, nothing wakes the session, and `CLAUDE_AUTO_BACKGROUND_TASKS` changes none of
+that (it only arms the 120 s auto-background timer). `backgroundedByTurnAbort` is set
+only for a plugin's turn abort. What works is **Ctrl+B, then Esc**:
+
+- Ctrl+B moves the running Bash to a background task (`PostToolUse` carries
+  `backgroundTaskId` and `backgroundedByUser`), but is ignored until the command has run
+  about four seconds. Pressing it again every 700 ms is harmless.
+- Esc then ends the turn. It fires no Stop hook, so the engine settles the turn itself.
+- The command runs on and a `<task-notification>` wakes a new turn when it ends.
+- Esc before the model has produced anything puts the turn's prompt back in the composer,
+  and the next paste lands behind it; the engine empties the composer first.
+- Pasting a message (steer) while a command runs does not background it: it is queued
+  until the command ends. So for Claude, steer is no way to cut in on long work.
+
+`softInterrupt` therefore never kills or releases, and a soft interrupt of a command
+younger than about four seconds can take up to that long.
 
 ## R9. Voice instructions
 

@@ -77,8 +77,8 @@ export interface SoftInterruptibleEngine extends Engine {
 export function isSoftInterruptibleEngine(engine: Engine): engine is SoftInterruptibleEngine;
 ```
 
-Implementer: `InteractiveClaudeEngine` (Esc in the TUI, `preserves = true` once R8 is
-verified). Consumer: the voice hub's barge-in policy.
+Implementer: `InteractiveClaudeEngine` (Ctrl+B then Esc in the TUI, `preserves = true`: verified
+in R8, where plain Esc kills the command). Consumer: the voice hub's barge-in policy.
 
 `foregroundWork` is also needed for the steer branch's holding-line rule. OpenCode 2.x
 exposes it as a plain method on its engine, without the soft interrupt.

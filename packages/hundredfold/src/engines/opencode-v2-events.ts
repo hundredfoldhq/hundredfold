@@ -21,6 +21,8 @@
  * Verified against 2.0.29's real event stream and message store.
  */
 
+import type { ForegroundWork } from "../shared/types.js";
+
 /** One event from `GET /api/event`. */
 export interface V2Event {
   type: string;
@@ -206,4 +208,59 @@ function storedToolResult(messageId: string, block: Record<string, unknown>): To
 export function v2ReplyIsDone(message: V2Message): boolean {
   const finish = str(message.finish);
   return Boolean(record(message.time)?.completed) && Boolean(finish) && finish !== "tool-calls" && finish !== "unknown" && finish !== "error";
+}
+
+const DESCRIPTION_MAX = 200;
+
+function clipped(value: unknown): string | null {
+  const text = str(value)?.trim();
+  return text ? text.slice(0, DESCRIPTION_MAX) : null;
+}
+
+/**
+ * The tool calls a turn's own steps have running: from `session.tool.called`, when the tool starts
+ * executing (its input has been streamed by then, and that is the model talking, not work), to
+ * `session.tool.success` or `session.tool.failed`. A tool a step never finished (the step failed or
+ * was aborted) is dropped with the step. Feeds the voice hub's long-work check.
+ */
+export class V2ForegroundTools {
+  private readonly names = new Map<string, string>();
+  private readonly running = new Map<string, ForegroundWork>();
+  private readonly readers: Record<string, (id: string, data: Record<string, unknown>, now: number) => void> = {
+    "session.tool.input.started": (id, data) => {
+      const name = str(data.name);
+      if (name) this.names.set(id, name);
+    },
+    "session.tool.called": (id, data, now) => {
+      const input = record(data.input);
+      this.running.set(id, {
+        tool: this.names.get(id) ?? "tool",
+        startedAt: now,
+        description: clipped(input?.description) ?? clipped(input?.command),
+      });
+    },
+    "session.tool.success": (id) => { this.running.delete(id); },
+    "session.tool.failed": (id) => { this.running.delete(id); },
+  };
+
+  /** One event of the turn's own steps. */
+  onEvent(event: V2Event, now: number = Date.now()): void {
+    const data = event.data ?? {};
+    const id = str(data.id);
+    if (id) this.readers[event.type]?.(id, data, now);
+  }
+
+  /** The call that has run longest. */
+  oldest(): ForegroundWork | null {
+    let oldest: ForegroundWork | null = null;
+    for (const call of this.running.values()) {
+      if (!oldest || call.startedAt < oldest.startedAt) oldest = call;
+    }
+    return oldest ? { ...oldest } : null;
+  }
+
+  /** A step ended, failed or was aborted: no call of it is running any more. */
+  clear(): void {
+    this.running.clear();
+  }
 }
