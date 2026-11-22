@@ -29,7 +29,54 @@ export interface FallbackLink {
  * target followed by its own chain, walked as before; an object is exactly one
  * target.
  */
-export type FallbackChainEntry = string | FallbackLink;
+export type FallbackChainEntry = string | FallbackLink | FallbackGroupEntry;
+
+/** An entry in its object forms: one target, or a group. What an employee's chain holds, and what an editor reads back. */
+export type FallbackWrittenEntry = FallbackLink | FallbackGroupEntry;
+
+/**
+ * A chain entry that is a set of Claude accounts rather than one target. When a
+ * new session starts on an account in the group at the head of its chain, the
+ * gateway picks the member with the most usage headroom; elsewhere the members
+ * are ordinary fallback links ordered by headroom. Each member is an object link
+ * with `engine: claude` and an optional `profile`, never a model.
+ */
+export interface FallbackGroupEntry {
+  group: FallbackLink[];
+}
+
+/** The usage headroom of one account of a group, as the balancer ranks it. */
+export interface AccountHeadroom {
+  /** The per-account store key (`claude`, `claude:<profile key>`). */
+  account: string;
+  label: string;
+  state: "fresh" | "stale" | "unknown" | "exhausted";
+  /** Whole percent left on the tightest applicable window; absent when unknown. */
+  headroomPercent?: number;
+  tightest?: { window: string; usedPercent: number; resetsAt?: string };
+  /** ISO time of the usage sample the headroom came from. */
+  readingAt?: string;
+  /** Its weight in the split of new sessions: its headroom (halved when the reading is stale), 0 at its limit. */
+  weight: number;
+  /** The weight over the sum of weights, in whole percent. */
+  sharePercent: number;
+}
+
+/** What the balancer chose for a session, and the ranking it chose from. */
+export interface AccountPick {
+  /** ISO time. */
+  at: string;
+  trigger: "start" | "switch";
+  /** The subject whose chain holds the group. */
+  source: FallbackChainSource;
+  /** Index of the group's entry in that chain as written. */
+  groupIndex: number;
+  /** The account key the session was pinned to. */
+  picked: string;
+  reason: "weighted" | "only-candidate" | "no-readings" | "all-exhausted";
+  /** With the weights at the time, by headroom, highest first. */
+  candidates: AccountHeadroom[];
+}
 
 /** Why a link was left without trying it, or why the walk moved past it. */
 export type FallbackSkipReason =
@@ -89,6 +136,15 @@ export interface ResolvedFallbackLink extends FallbackLink {
    *  health is read under `opencode/<provider>`. Set on a session's or employee's own link only, and never
    *  pins the session's model. */
   healthProvider?: string;
+  /** Set on a link that came from a balanced group: see {@link FallbackGroupEntry}. */
+  group?: {
+    /** The group's entry index in the chain as written. */
+    index: number;
+    /** The group as config spells it: what an editor writes back. */
+    written: FallbackGroupEntry;
+    /** The ranking input this member was ordered by. */
+    headroom?: AccountHeadroom;
+  };
 }
 
 /** A link a hop passed over. */
@@ -137,6 +193,8 @@ export interface SessionFallbackChainView {
   next: string | null;
   /** Most recent first, at most 20. */
   hops: FallbackHop[];
+  /** What the balancer picked when the session started or switched onto Claude, when it did. */
+  pick?: AccountPick;
 }
 
 /** A Claude profile a chain link may name. */
@@ -177,9 +235,9 @@ export interface FallbackChainSubject {
   /** The target the chain falls back from (the employee's own target; for an engine
    *  or account, its default model). */
   primary: ResolvedFallbackLink | null;
-  /** The chain as written, normalised to links. Null: the subject writes none (an
-   *  employee then inherits; an engine or account has no fallback). */
-  configured: FallbackLink[] | null;
+  /** The chain as written, normalised to links; a group entry is kept whole. Null: the
+   *  subject writes none (an employee then inherits; an engine or account has no fallback). */
+  configured: FallbackWrittenEntry[] | null;
   /** True when `configured` came from string entries, whose own chains expand. */
   legacy: boolean;
   /** What would run, in order, after legacy expansion and de-duplication. */
@@ -191,6 +249,8 @@ export interface FallbackChainSubject {
    *  reconstructs it. */
   source?: Exclude<FallbackChainSource, "session">;
   sourceId?: string;
+  /** An employee or engine subject whose chain has a home group: what a new session would pick now. */
+  startPick?: AccountPick;
   /** What is wrong with the chain the subject wrote. A repeated target is tolerated (the
    *  chain is kept and lists it once); an employee whose YAML chain failed validation at
    *  load inherits instead. Absent when nothing is wrong. */
@@ -231,6 +291,21 @@ export function fallbackLinkOf(entry: unknown): FallbackLink | null {
   const profile = optionalText(entry.profile);
   const model = optionalText(entry.model);
   return { engine, ...(profile ? { profile } : {}), ...(model ? { model } : {}) };
+}
+
+/** Whether the entry is spelled as a group (it carries a `group` key), valid or not. */
+function isGroupShaped(entry: unknown): entry is Record<string, unknown> {
+  return isRecord(entry) && entry.group !== undefined;
+}
+
+/**
+ * The entry as a group, or null when it is not one: its members as links, in the
+ * order written. A member that is not an object link (a string, a nested group)
+ * is left out here; {@link fallbackChainProblems} is what refuses it.
+ */
+export function fallbackGroupOf(entry: unknown): FallbackGroupEntry | null {
+  if (!isRecord(entry) || !Array.isArray(entry.group)) return null;
+  return { group: entry.group.flatMap((member) => (isRecord(member) ? (fallbackLinkOf(member) ?? []) : [])) };
 }
 
 /** Identity of a target: two links with the same key are the same target. */
@@ -336,37 +411,91 @@ function entryProblems(where: string, entry: unknown, ctx: FallbackChainContext)
   return [...engine, ...profileProblems(where, link, ctx), ...modelProblems(where, entry), ...opencodeLinkProblems(where, link, ctx.opencode)];
 }
 
+function groupMemberProblems(at: string, member: unknown, ctx: FallbackChainContext, seen: Set<string>): string[] {
+  if (typeof member === "string") return [`${at} must be a mapping with engine claude and an optional profile, not a string`];
+  if (isGroupShaped(member)) return [`${at}: a group cannot hold another group`];
+  const link = fallbackLinkOf(member);
+  if (!link) return [`${at} must be a mapping with engine claude and an optional profile`];
+  if (link.engine !== "claude") return [`${at}: a group holds Claude accounts only (opencode account groups are a follow-up)`];
+  const problems = [...profileProblems(at, link, ctx), ...(isRecord(member) && member.model !== undefined ? [`${at}: a group member is an account, so it names no model`] : [])];
+  const key = fallbackLinkKey(link);
+  if (seen.has(key)) problems.push(`${at} (${fallbackLinkLabel(link)}) repeats an earlier member of this group: list each account once`);
+  seen.add(key);
+  return problems;
+}
+
+/** What is wrong with a group entry itself: its shape, its size and each member. */
+function groupProblems(at: string, entry: Record<string, unknown>, ctx: FallbackChainContext): string[] {
+  const { group } = entry;
+  if (!Array.isArray(group)) return [`${at}.group must be a list of Claude accounts`];
+  const extra = Object.keys(entry).filter((key) => key !== "group");
+  const problems = [
+    ...(extra.length > 0 ? [`${at} holds only "group"; remove ${extra.map((key) => `"${key}"`).join(", ")}`] : []),
+    ...(group.length < 2 ? [`${at}.group needs at least two accounts to balance between`] : []),
+  ];
+  const seen = new Set<string>();
+  group.forEach((member, index) => problems.push(...groupMemberProblems(`${at}.group[${index}]`, member, ctx, seen)));
+  return problems;
+}
+
+/** The targets one valid entry stands for, with where each is written: the link itself, or each member of a group. */
+function writtenTargets(entry: unknown, at: string): Array<{ link: FallbackLink; at: string; member: boolean }> {
+  const group = fallbackGroupOf(entry);
+  if (group) return group.group.map((link, index) => ({ link, at: `${at}.group[${index}]`, member: true }));
+  const link = fallbackLinkOf(entry);
+  return link ? [{ link, at, member: false }] : [];
+}
+
+interface ChainWalk {
+  where: string;
+  chain: readonly unknown[];
+  ctx: FallbackChainContext;
+  /** Each target seen so far: the entry that holds it and where it is written. */
+  seen: Map<string, { index: number; at: string }>;
+}
+
+/** The own-target and repeated-target problems of one valid entry. A group member may be the chain's own account: that is how balancing is switched on. */
+function targetProblems(walk: ChainWalk, entry: unknown, index: number): string[] {
+  const { where, chain, ctx, seen } = walk;
+  const selfKey = ctx.self ? fallbackLinkKey(ctx.self) : undefined;
+  const problems: string[] = [];
+  for (const { link, at, member } of writtenTargets(entry, `${where}[${index}]`)) {
+    const key = fallbackLinkKey(link);
+    if (key === selfKey && !member) {
+      problems.push(`${at} (${fallbackLinkLabel(link)}) is the target this chain falls back from; give it another profile or model`);
+      continue;
+    }
+    const first = seen.get(key);
+    if (first === undefined) {
+      seen.set(key, { index, at });
+      continue;
+    }
+    const problem = `${at} duplicates ${first.at} (${fallbackLinkLabel(link)}): a chain tries each target once, so list it once`;
+    if (!ctx.onDuplicate?.({ where, chain, index, first: first.index, problem })) problems.push(problem);
+  }
+  return problems;
+}
+
 /**
  * Problems with one chain (empty = valid). Refused: an entry of neither form, an
  * unknown engine, a profile on a non-Claude link or naming no declared account,
  * a model that is not an id, a link that is the chain's own target, and a link
  * listed twice. Distinct targets are all accepted, including the same engine on
- * another profile or model.
+ * another profile or model. A group entry (`{ group: [...] }`) holds at least two
+ * distinct Claude accounts, each a declared profile or the default login, none
+ * naming a model, and no strings or nested groups; its members count as links for
+ * the duplicate rule, and may include the chain's own account.
  */
 export function fallbackChainProblems(where: string, chain: unknown, ctx: FallbackChainContext): string[] {
   if (chain === undefined) return [];
   if (!Array.isArray(chain)) return [`${where} must be a list of fallback targets`];
   const problems: string[] = [];
-  const seen = new Map<string, number>();
-  const selfKey = ctx.self ? fallbackLinkKey(ctx.self) : undefined;
+  const walk: ChainWalk = { where, chain, ctx, seen: new Map() };
   chain.forEach((entry, index) => {
     const at = `${where}[${index}]`;
-    const own = entryProblems(at, entry, ctx);
+    const own = isGroupShaped(entry) ? groupProblems(at, entry, ctx) : entryProblems(at, entry, ctx);
     problems.push(...own);
-    const link = fallbackLinkOf(entry);
-    if (!link || own.length > 0) return;
-    const key = fallbackLinkKey(link);
-    if (key === selfKey) {
-      problems.push(`${at} (${fallbackLinkLabel(link)}) is the target this chain falls back from; give it another profile or model`);
-      return;
-    }
-    const first = seen.get(key);
-    if (first !== undefined) {
-      const problem = `${at} duplicates ${where}[${first}] (${fallbackLinkLabel(link)}): a chain tries each target once, so list it once`;
-      if (!ctx.onDuplicate?.({ where, chain, index, first, problem })) problems.push(problem);
-    } else {
-      seen.set(key, index);
-    }
+    if (own.length === 0) problems.push(...targetProblems(walk, entry, index));
   });
   return problems;
 }

@@ -1,6 +1,8 @@
 import { sessionFallbackChain, type SessionFallbackChainOptions } from "../shared/fallback-chain.js";
 import { effectivePosition, nextFallbackLink } from "../shared/fallback-chain-next.js";
-import type { SessionFallbackChainView } from "../shared/fallback-chain-wire.js";
+import type { AccountPick, FallbackChainSource, ResolvedFallbackLink, SessionFallbackChainView } from "../shared/fallback-chain-wire.js";
+import type { Session } from "../shared/types.js";
+import { readAccountPick } from "./account-pick-meta.js";
 import { metaOf, readFallbackHops, readFallbackRun, sessionAtOwnTarget } from "./fallback-run.js";
 
 /**
@@ -23,6 +25,12 @@ function servedKeyOf(meta: Record<string, unknown>): string | null {
   return typeof key === "string" ? key : null;
 }
 
+/** The recorded pick, only while the chain follows it: not once its chain is gone or lost its group, or the session is off Claude. */
+function followedPick(meta: Session["transportMeta"], source: FallbackChainSource, links: readonly ResolvedFallbackLink[]): AccountPick | undefined {
+  const recorded = readAccountPick(meta);
+  return recorded?.source === source && links.some((link) => link.group) ? recorded : undefined;
+}
+
 export function sessionFallbackChainView(options: SessionFallbackChainOptions): SessionFallbackChainView {
   // A session standing on a stand-in has the chain of the target it was moved off: resolve against that.
   const { source, links } = sessionFallbackChain({ ...options, session: sessionAtOwnTarget(options.session) });
@@ -31,6 +39,7 @@ export function sessionFallbackChainView(options: SessionFallbackChainOptions): 
   const position = effectivePosition(links, run);
   const tried = [...(run?.tried ?? []), links[0]!.key, links[position]!.key];
   const hops = readFallbackHops(meta);
+  const pick = followedPick(options.session.transportMeta, source, links);
   // A session waiting on its own target after the chain ran out has nothing next: the wait is what comes before any new run.
   const ranOut = hops[0]?.to === null && options.session.status === "waiting";
   return {
@@ -40,5 +49,6 @@ export function sessionFallbackChainView(options: SessionFallbackChainOptions): 
     servedBy: servedKeyOf(meta),
     next: ranOut ? null : nextFallbackLink(links, { position, tried }, options.health, options.now)?.link.key ?? null,
     hops,
+    ...(pick ? { pick } : {}),
   };
 }

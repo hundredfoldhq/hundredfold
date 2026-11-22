@@ -75,6 +75,46 @@ chain falls back from, an unknown engine, an undeclared profile and a bad model
 are still load errors; in an employee's YAML they drop that employee's chain
 (it inherits) and are reported as `problems`.
 
+### Balanced groups
+
+An entry may instead be a **group**: a set of Claude accounts the gateway
+orders by remaining usage when the chain is resolved.
+
+```yaml
+engines:
+  claude:
+    accounts:
+      work: { configDir: /home/operator/.claude-work }
+      spare: { configDir: /home/operator/.claude-spare }
+    fallback:
+      - group:
+          - { engine: claude }                 # the default login
+          - { engine: claude, profile: work }
+          - { engine: claude, profile: spare }
+      - { engine: opencode, model: opencode-go/glm-5 }
+```
+
+A group is `{ group: [<link>, ...] }`, written wherever a chain is written: an
+employee's `fallback`, `engines.claude.fallback` and
+`engines.claude.accounts.<name>.fallback`. It is valid when:
+
+- it lists at least two members;
+- every member is a mapping with `engine: claude` and an optional `profile`
+  (an engine other than Claude is refused: a group holds Claude accounts only,
+  and opencode account groups are not supported yet); a member with no profile
+  is the default login;
+- no member names a `model`: a member is an account, and the model is the
+  session's own, or the link rules above for a hop;
+- members are distinct, and every `profile` is a declared account;
+- no member is a string or another group, and the entry holds only `group`.
+
+A member counts as a link for the duplicate rule: a standalone link that
+repeats a member, or a member listed in two groups, is a duplicate (warned and
+listed once at load, refused on a save). A group may list the chain's own
+account, which the rule above forbids for a standalone link; that is how a
+chain says "balance across these accounts, mine included". A chain with no
+group parses, resolves and walks exactly as before.
+
 ### Legacy forms
 
 The string forms keep working and keep their meaning:
@@ -146,6 +186,75 @@ reset, as before.
 - A **new** session whose own target is out of allowance starts on the first
   healthy link instead, with a run that starts there.
 
+
+### Balanced groups at runtime
+
+When a chain is resolved, a group is expanded in place into its members as
+ordinary links, so the walk, health, hop records and the session view keep
+working on exact single targets. Each member link carries `group`: the group's
+entry index in the chain as written, the group as written (`written`, what an
+editor writes back) and the ranking input it was ordered by (`headroom`). The
+subject's own account, when it is a member, stays the own target at index 0 and
+is not listed again.
+
+Members are ordered best first by their **headroom**: 100 minus the highest
+`usedPercent` across the windows that apply, in whole percent (rounded down),
+taken from the newest usage sample recorded for the account. A window that has
+already reset counts as unused. A window named `7d <model>` applies only when
+the session's model is of that family (`7d Opus` for `opus` or `claude-opus-*`);
+`5h`, `7d` and any other window always apply, and every window applies when the
+session's model is unknown. Accounts fall into tiers, best first:
+
+1. fresh readings (at most thirty minutes old, twice the health refresh interval) of healthy accounts;
+2. stale readings of healthy accounts;
+3. accounts with no reading;
+4. exhausted accounts (health says the account is at its limit).
+
+An account that cannot be read is never preferred over one that can. Within a
+tier the order is headroom, highest first, then the order written; among
+exhausted accounts the one that reopens first comes first. This is the order a
+limit tries a group's other members in. Members a session cannot use (an
+undeclared profile, or an account on another host) keep their written order
+after the usable ones and are passed over with their reason. Ordering reads only
+what is on disk and in engine health; nothing calls a provider.
+
+New sessions are not all sent to the best account: they are **spread in
+proportion to headroom**, because usage readings lag and sessions start in
+bursts. Each account has a weight: its headroom for a fresh reading, half its
+headroom for a stale one, 0 with no reading while another account has one (1
+each when none has), and 0 at its limit or with no headroom. Its share of new
+sessions is its weight over the sum, so headroom 60 against 40 splits 60/40, 90
+against 10 splits 90/10, and an exhausted account gets none. A smooth weighted
+round-robin makes this deterministic: each candidate set keeps an in-memory credit
+per account; at each start every credit grows by the account's weight, the
+highest credit wins (ties: the order written) and the winner's credit drops by
+the sum of the weights. A burst therefore splits even inside one reading
+interval. The pick itself is pure; the credit is charged only when a session
+really starts, never by a preview. When every weight is 0 the account that
+reopens first is picked and creation moves the session on to the first healthy
+link after the group.
+
+A group walks as a **set**. When a limit moves a session on and the cursor is on
+a member, or the next untried link is a member, every untried member of that
+block is considered, in the resolved order, before the walk moves past the
+block, wherever a member sits relative to the cursor. The run's tried set is the
+loop guard, so a different ordering between two resolutions can neither skip a
+member nor revisit one.
+
+A group at the head of a chain that holds the subject's own account is that
+subject's **home group**. For an employee or engine subject with one,
+`GET /api/fallback-chains` reports `startPick`: the member a new session would
+be balanced onto now, why (`weighted`, `only-candidate`, `no-readings`,
+`all-exhausted`) and the candidates by headroom with their `weight` and
+`sharePercent`. A group holds a subject's own login only when it names it: the
+default login is `{ engine: claude }`, a profile is `{ engine: claude, profile }`.
+The default login is not a candidate for an employee whose own login is a named
+profile. A session
+the balancer has pinned records its choice in `transportMeta.accountPick` and
+resolves against the chain the group came from (`source`), ahead of the pinned
+account's own chain, so its chain is the pinned account, the group's other
+members by headroom, then the rest of the chain. Pinning new sessions to the
+picked member is a separate step from the chain and the preview described here.
 
 ### Returning to the own target
 
@@ -333,6 +442,9 @@ A session's own target is normally its employee's Claude login. A session create
   `written` form (what an editor writes back) and why it would be skipped.
   `?employee=<name>` adds that employee's chain, with the `source` it comes from.
   The route is the operator's: a department-scoped caller is refused.
+  A group entry appears whole in `configured`; its members appear in `effective`
+  with `group`; an employee or engine subject with a home group also carries
+  `startPick` (`AccountPick`).
 - Engine and account chains are written through `PUT /api/config`; an
   employee's through `PATCH /api/org/employees/<name>` with `fallback` (a list,
   or `null` to inherit).
@@ -340,7 +452,10 @@ A session's own target is normally its employee's Claude login. A session create
 - `GET /api/sessions/<id>`: `fallback.chain` (`SessionFallbackChainView`): the
   links, the position, the next hop, the hops and `servedBy`. A
   department-scoped session reading its own session gets each link's `state`
-  and `until`, but not `usedPercent` or `window`.
+  and `until`, but not `usedPercent` or `window`, and a balanced session's
+  `pick` (its recorded `AccountPick`) and each member's `group.headroom` without
+  `headroomPercent`, `tightest` or `readingAt`.
+- `hundredfold doctor` reports a malformed group in `config.yaml` (it does not load).
 
 ## opencode internal fallback is removed
 

@@ -1,6 +1,6 @@
 import { accountNames } from "./claude-accounts-config.js";
 import { logger } from "./logger.js";
-import { fallbackChainProblems, type FallbackChainDuplicate } from "./fallback-chain-wire.js";
+import { fallbackChainProblems, fallbackGroupOf, type FallbackChainDuplicate } from "./fallback-chain-wire.js";
 import { ENGINE_NAMES } from "./models.js";
 
 /**
@@ -76,4 +76,31 @@ export function duplicateProblemsByChain(engines: unknown): Record<string, strin
     fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, self, onDuplicate });
   }
   return found;
+}
+
+/** Whether a written chain has an entry spelled as a group, valid or not. */
+function holdsGroup(chain: unknown): boolean {
+  return Array.isArray(chain) && chain.some((entry) => typeof entry === "object" && entry !== null && !Array.isArray(entry) && (entry as { group?: unknown }).group !== undefined);
+}
+
+/**
+ * The problems of the engine and account chains that hold a balanced group, by the
+ * config path of the chain, in the wire module's words. Only chains with a group are
+ * judged, and a repeated target is the duplicate report's, not this one's.
+ * A group problem is a load error, so this is what tells an operator whose gateway
+ * refuses to start (or whose save was refused) what to change.
+ */
+export function groupProblemsByChain(engines: unknown): Record<string, string[]> {
+  const profiles = accountNames(engines);
+  const found: Record<string, string[]> = {};
+  for (const { where, chain, self } of configuredChains(engines)) {
+    if (!holdsGroup(chain)) continue;
+    found[where] = fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, self, onDuplicate: () => true });
+  }
+  return found;
+}
+
+/** The number of group entries in the engine and account chains of an `engines` mapping. */
+export function groupCount(engines: unknown): number {
+  return configuredChains(engines).reduce((total, { chain }) => total + (Array.isArray(chain) ? chain.filter((entry) => fallbackGroupOf(entry) !== null).length : 0), 0);
 }
