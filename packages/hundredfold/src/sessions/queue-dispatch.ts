@@ -5,6 +5,8 @@
 export interface QueueDispatch {
   attachments: string[];
   speechDerived: boolean;
+  /** Voice instructions that ride the engine's prompt only (voice/envelope.ts); never the stored message. */
+  voiceEnvelope?: string;
   /** The other operator messages a send-now folded into this row (queue-merge.ts). */
   foldedMessageIds?: string[];
 }
@@ -21,7 +23,8 @@ export function parseDispatchPayload(raw: string | null): QueueDispatch | null {
   if (raw === null) return null;
   const parsed = JSON.parse(raw) as Partial<QueueDispatch>;
   const folded = parsed.foldedMessageIds?.length ? { foldedMessageIds: parsed.foldedMessageIds } : {};
-  return { attachments: parsed.attachments ?? [], speechDerived: parsed.speechDerived === true, ...folded };
+  const voice = typeof parsed.voiceEnvelope === "string" && parsed.voiceEnvelope ? { voiceEnvelope: parsed.voiceEnvelope } : {};
+  return { attachments: parsed.attachments ?? [], speechDerived: parsed.speechDerived === true, ...voice, ...folded };
 }
 
 export function serializeDispatchPayload(dispatch: QueueDispatch | null): string | null {
