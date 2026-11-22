@@ -3,6 +3,14 @@
 Implemented as TypeScript types in `packages/gateway-events/src/voice-protocol.ts`,
 shared by the gateway, the web client and (by mirror) the native client.
 
+## Starting on a new chat
+
+The socket needs a session, so a client on a new chat creates one first: `POST /api/sessions` with `{ "speech": true }` and no `prompt`
+(operator only; every other caller keeps the `400`). The row is created idle, with no message and no turn, and then
+`GET /ws/voice/:sessionId` attaches as below. The first final transcript is delivered as the session's first message through the ordinary
+delivery path and names the session as a typed first message does. When the attachment ends (bye, close, detach, resume window, takeover by
+nothing) and the session still has no message, the gateway deletes it and emits `session:deleted`. A takeover by the same principal does not.
+
 ## Upgrade
 
 `GET /ws/voice/:sessionId` with `Upgrade: websocket`.

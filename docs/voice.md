@@ -135,6 +135,14 @@ The gateway does not ship the models; it downloads them on first use.
 - **Kokoro-82M v1.0** (text-to-speech): Apache-2.0.
 - **Silero VAD**: MIT.
 
+## Starting voice on a new chat
+
+The voice control is on a new chat too, before anything is typed. Tapping it asks for the microphone, creates the chat with the composer's current employee, engine, model and effort, opens it, and attaches voice to it. The first thing you say becomes the chat's first message, and names it the way a typed first message would; nothing is sent to the engine until you speak.
+
+The web does this with `POST /api/sessions` and `{ "speech": true }` and no `prompt`. The gateway accepts that form only from the operator: it creates the chat idle (same employee, engine, model, effort and fallback resolution and the same permission checks as a prompted create, but no message and no turn) and answers `201` with the usual session body. Any other caller, and any request without `speech: true`, still gets `400 prompt or message is required`.
+
+A voice conversation that ends on such a chat before a message was spoken (hang up, a clean close, the ten-minute resume window running out, voice turned off) deletes the empty chat on the gateway, so nothing is left behind. A chat that never gets a voice connection at all (the tab closed between the two requests) stays as an empty chat and can be deleted like any other.
+
 ## What happens when you speak over a long job
 
 Speaking while the assistant is working never stops the work. How the gateway lets your new message through depends on the session's engine:
