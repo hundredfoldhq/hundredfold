@@ -111,6 +111,13 @@ steerable }`, where "preserving" below means `soft && longWork.backgroundable`. 
 | yes | none | — | no | yes | `steer` |
 | yes | none | — | no | no | `interrupt_now` (existing `delivery: "now"`) |
 
+**Unknown foreground work counts as long.** An engine that does not implement
+`foregroundWork` (codex, pi, grok, hermes, musecode, antigravity, opencode 1.x) cannot say
+what is running. While its turn runs, the hub treats it as long, non-backgroundable work
+(`longWork = {tool: "unknown", backgroundable: false}`, age past the threshold), so it
+gets `steer_with_holding` or `queue_with_holding`, never `interrupt_now`. `interrupt_now`
+is only for an engine that reports `foregroundWork() === null`.
+
 If `soft_then_turn`'s soft interrupt returns `ended: false`, the hub re-runs the decision
 with `soft` treated as false (so steer or queue, with the holding line).
 
