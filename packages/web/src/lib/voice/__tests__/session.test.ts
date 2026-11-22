@@ -12,6 +12,7 @@ class Emitter {
   addEventListener(type: string, l: () => void) { (this.listeners.get(type) ?? this.listeners.set(type, new Set()).get(type)!).add(l) }
   removeEventListener(type: string, l: () => void) { this.listeners.get(type)?.delete(l) }
   emit(type: string) { for (const l of [...(this.listeners.get(type) ?? [])]) l() }
+  listenerCount() { let n = 0; for (const set of this.listeners.values()) n += set.size; return n }
 }
 
 class FakeTrack extends Emitter {
@@ -76,9 +77,16 @@ interface Rig {
   micError: { value: unknown }
   clock: { now: number }
   captureStops: ReturnType<typeof vi.fn>
+  /** Pending prompts and worklet loads, when the rig was built to defer them. */
+  micGates: Gate<MediaStream>[]
+  captureGates: Gate<void>[]
 }
 
-function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean }> = {}): Rig {
+interface Gate<T> { open(value: T extends void ? void : T): void; fail(error: unknown): void }
+
+function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; deferMic: boolean; deferCapture: boolean }> = {}): Rig {
+  const micGates: Gate<MediaStream>[] = []
+  const captureGates: Gate<void>[] = []
   const calls: string[] = []
   const sockets: FakeSocket[] = []
   const contexts: FakeSessionContext[] = []
@@ -96,9 +104,12 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
       calls.push("microphone")
       if (micError.value) return Promise.reject(micError.value)
       const track = new FakeTrack(); tracks.push(track)
-      return Promise.resolve({ getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream)
+      const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream
+      if (!options.deferMic) return Promise.resolve(stream)
+      return new Promise<MediaStream>((resolve, reject) => { micGates.push({ open: () => resolve(stream), fail: reject }) })
     },
     startCapture: async (_ctx, stream, onFrame) => {
+      if (options.deferCapture) await new Promise<void>((resolve, reject) => { captureGates.push({ open: resolve, fail: reject }) })
       sink = onFrame
       const track = (stream as unknown as { getAudioTracks(): FakeTrack[] }).getAudioTracks()[0]
       return { track, stop: () => { captureStops(); track.stop() } }
@@ -110,7 +121,7 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     now: () => clock.now,
   }
   const session = new BrowserVoiceSession({ sessionId: "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops }
+  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, micGates, captureGates }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -151,6 +162,109 @@ describe("starting from a tap", () => {
     expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "Microphone permission was denied." })
     expect(r.sockets[0].closed).not.toBeNull()
     expect(r.contexts[0].close).toHaveBeenCalled()
+  })
+})
+
+/** Every microphone track the run asked for is stopped, and none still has a listener. */
+function expectNothingLive(r: Rig) {
+  expect(r.tracks.length).toBeGreaterThan(0)
+  expect(r.tracks.map((t) => t.stopped)).toEqual(r.tracks.map(() => true))
+  expect(r.tracks.map((t) => t.listenerCount())).toEqual(r.tracks.map(() => 0))
+}
+
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+describe("stopping while startup is pending", () => {
+  it("a stop before the worklet loads leaves no live track and no listener", async () => {
+    const r = rig({ deferCapture: true })
+    const starting = r.session.start()
+    await flush()
+    r.session.stop()
+    r.captureGates[0].open()
+    await starting
+    expectNothingLive(r)
+    expect(r.captureStops).toHaveBeenCalled()
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("a worklet that fails to load releases the microphone stream", async () => {
+    const r = rig({ deferCapture: true })
+    const starting = r.session.start()
+    await flush()
+    r.captureGates[0].fail(new Error("worklet blocked"))
+    await starting
+    expectNothingLive(r)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "Microphone unavailable: worklet blocked" })
+  })
+
+  it("a stop while the microphone prompt is open stops the stream once it is granted", async () => {
+    const r = rig({ deferMic: true })
+    const starting = r.session.start()
+    r.session.stop()
+    r.micGates[0].open({} as MediaStream)
+    await starting
+    expectNothingLive(r)
+  })
+
+  it("a stop while a replacement microphone is pending stops that stream too", async () => {
+    const r = rig({ deferMic: true })
+    const starting = r.session.start()
+    r.micGates[0].open({} as MediaStream)
+    await starting
+    r.sockets[0].serverFrame(READY)
+    r.tracks[0].readyState = "ended"
+    const resuming = r.session.resumeFromTap()
+    r.session.stop()
+    r.micGates[1].open({} as MediaStream)
+    await resuming
+    expectNothingLive(r)
+  })
+
+  it("a stale failure does not report or disturb a stopped run", async () => {
+    const r = rig({ deferMic: true })
+    const starting = r.session.start()
+    r.session.stop()
+    r.micGates[0].fail(new DOMException("denied", "NotAllowedError"))
+    await starting
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: null })
+  })
+})
+
+describe("start, stop, start while the first prompt is pending", () => {
+  it("the first run's stream is stopped and does not attach to the second run", async () => {
+    const r = rig({ deferMic: true })
+    const first = r.session.start()
+    r.session.stop()
+    const second = r.session.start()
+    // The first prompt is granted late, after the second start reset the session.
+    r.micGates[0].open({} as MediaStream)
+    await first
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.tracks[0].listenerCount()).toBe(0)
+    // The stale stream is dropped before the worklet: it is never wired into the new run's context.
+    expect(r.captureStops).not.toHaveBeenCalled()
+    expect(r.tracks[1].stopped).toBe(false)
+    r.micGates[1].open({} as MediaStream)
+    await second
+    r.sockets[1].serverFrame(READY)
+    expect(r.session.getSnapshot().status).toBe("on")
+    expect(r.tracks[1].stopped).toBe(false)
+    r.session.stop()
+    expectNothingLive(r)
+  })
+
+  it("the first run's late refusal does not tear down the second run", async () => {
+    const r = rig({ deferMic: true })
+    const first = r.session.start()
+    r.session.stop()
+    const second = r.session.start()
+    r.micGates[0].fail(new DOMException("denied", "NotAllowedError"))
+    await first
+    r.micGates[1].open({} as MediaStream)
+    await second
+    r.sockets[1].serverFrame(READY)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "on", error: null })
+    expect(r.sockets[1].isOpen).toBe(true)
   })
 })
 
@@ -426,6 +540,31 @@ describe("suspension and return", () => {
     r.sockets[1].serverFrame(READY)
     expect(r.sockets[1].frames.map((f) => f.type)).toContain("resume")
     expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+  })
+
+  it.each([
+    [4429, /Too many/],
+    [4404, /no longer exists/],
+    [1006, /Voice connection lost/],
+  ])("a reconnect that fails (close %i) just after the return is its own failure, not another device suspension", async (code, text) => {
+    vi.useFakeTimers()
+    const r = await started()
+    r.doc.set("hidden")
+    r.clock.now += 90_000
+    r.sockets[0].drop(1006)
+    r.doc.set("visible")
+    await vi.advanceTimersByTimeAsync(100)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "suspended", needsTap: true })
+    const tapped = r.session.resumeFromTap()
+    r.clock.now += 500 // still inside the return grace
+    await tapped
+    r.sockets[1].drop(code)
+    const snapshot = r.session.getSnapshot()
+    expect(snapshot.status).toBe("off")
+    expect(snapshot.error).toMatch(text)
+    expect(snapshot.notice).toBeNull()
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.contexts[0].close).toHaveBeenCalled()
   })
 
   it("a tap after the microphone track ended asks for a new microphone inside the tap", async () => {

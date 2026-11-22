@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { validateConfigShape } from "../config.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems } from "../voice-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
 
 const HOME = path.resolve("/tmp/voice-config-test-home");
 const problems = (voice: unknown) => voiceConfigProblems(voice, HOME);
@@ -123,6 +123,29 @@ describe("voiceConfigProblems", () => {
   });
 });
 
+describe("voiceOffReason", () => {
+  const reason = (voice: unknown) => voiceOffReason(voice, HOME);
+
+  it("is null for an absent, empty, disabled or valid block", () => {
+    expect(reason(undefined)).toBeNull();
+    expect(reason({})).toBeNull();
+    expect(reason({ enabled: false, vad: { threshold: 9 } })).toBeNull();
+    expect(reason({ enabled: true })).toBeNull();
+  });
+
+  it("names every bad key when voice is asked for", () => {
+    const text = reason({ enabled: true, vad: { silenceMs: 50 }, mode: "loud" });
+    expect(text).toContain("voice.vad.silenceMs");
+    expect(text).toContain("voice.mode");
+  });
+
+  it("never echoes a URL's user name, password or a literal key", () => {
+    const text = reason({ enabled: true, stt: { provider: "openai-compatible", baseUrl: "https://bob:s3cretpass@host.example", apiKey: "sk-literal-key-123456" } }) ?? "";
+    expect(text).toContain("voice.stt.baseUrl");
+    for (const secret of ["bob", "s3cretpass", "sk-literal-key-123456"]) expect(text).not.toContain(secret);
+  });
+});
+
 describe("validateConfigShape", () => {
   const base = { engines: { default: "claude", claude: {} } };
 
@@ -131,9 +154,15 @@ describe("validateConfigShape", () => {
     expect(validateConfigShape({ ...base, voice: { enabled: true } })).toEqual([]);
   });
 
-  it("refuses a config whose voice block has a problem, naming the key", () => {
-    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
-      expect.stringContaining("voice.vad.silenceMs"),
+  it("does not fail the config over a voice block with a problem: voice goes off instead (FR-025)", () => {
+    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([]);
+    expect(validateConfigShape({ ...base, voice: "on" })).toEqual([]);
+    expect(resolveVoiceConfig({ voice: { enabled: true, vad: { silenceMs: 1 } } }, HOME)).toBeNull();
+  });
+
+  it("still refuses a problem elsewhere in the same config", () => {
+    expect(validateConfigShape({ ...base, gateway: { port: "x" }, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
+      expect.stringContaining("gateway.port"),
     ]);
   });
 });
