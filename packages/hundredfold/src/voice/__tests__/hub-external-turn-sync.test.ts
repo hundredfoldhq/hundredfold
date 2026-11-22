@@ -41,7 +41,9 @@ function writeTranscript(entries: Array<{ type: "user" | "assistant"; text: stri
 
 /** A hub on the real registry, with the sync's own emit teed into it as the gateway wires it. */
 function liveHub(sessionId: string) {
+  // Stored messages carry wall-clock timestamps, so the attachment's start is read from the same clock.
   const clock = new FakeClock();
+  clock.now = () => Date.now();
   const stt = new FakeStt();
   const tts = new FakeTts();
   const merges: string[] = [];
@@ -54,9 +56,7 @@ function liveHub(sessionId: string) {
     deliver: async () => ({ messageId: "unused" }),
     mergeMessageMeta: (id, patch) => { merges.push(id); registry.mergeMessageMeta(id, patch); },
     findReplyMessageId: registry.latestAssistantMessageId,
-    newestMessageCursor: registry.newestMessageCursor,
-    messageCursor: registry.messageCursor,
-    messagesAfterCursor: registry.messagesAfterCursor,
+    externalRepliesSince: registry.externalRepliesSince,
     clock,
     log: { info: () => undefined, warn: () => undefined },
     newId: () => `id${++counter}`,
@@ -68,6 +68,9 @@ function liveHub(sessionId: string) {
   return { hub, socket, emit, tts, merges };
 }
 
+/** The store stamps messages to the millisecond; a report counts as after the attachment only from the next one. */
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
+
 function newClaudeSession(): string {
   return registry.createSession({ engine: "claude", source: "web", sourceRef: `web:voice-external-${++counter}`, prompt: "test" }).id;
 }
@@ -78,6 +81,7 @@ describe("the CLI's own report of finished background work, through the real syn
     registry.insertMessage(id, "user", "run the long build");
     registry.insertMessage(id, "assistant", "It is running in the background.");
     const live = liveHub(id);
+    await tick();
     // Claude Code re-invokes the model when the background command ends: a CLI-native turn, no gateway turn.
     const file = writeTranscript([
       { type: "assistant", text: "The build finished with zero errors. Nothing else to report.", offsetMs: 2_000 },
@@ -96,6 +100,7 @@ describe("the CLI's own report of finished background work, through the real syn
   it("a sync that reconciles a turn the gateway already stored emits, and speaks nothing", async () => {
     const id = newClaudeSession();
     const live = liveHub(id);
+    await tick();
     // The gateway turn: spoken from deltas, then stored.
     live.hub.onEvent("session:started", { sessionId: id });
     live.hub.onEvent("session:delta", { sessionId: id, type: "text", content: "On it." });
@@ -121,11 +126,35 @@ describe("the CLI's own report of finished background work, through the real syn
 
   it("a message stored before the attachment is not spoken when a later sync arrives", async () => {
     const id = newClaudeSession();
-    registry.insertMessage(id, "assistant", "Said before anyone attached.");
+    // The sync stored a report before the attachment began.
+    const before = writeTranscript([{ type: "assistant", text: "Said before anyone attached.", offsetMs: 0 }]);
+    expect(external.syncExternalTurn(id, (() => undefined) as never, { hook_event_name: "Stop", transcript_path: before })).toBe(1);
+    await tick();
     const live = liveHub(id);
     live.emit("session:external-turn", { sessionId: id });
     await settle();
     expect(live.socket.ofType("segment_start")).toEqual([]);
+    live.hub.shutdown();
+  });
+
+  it("is spoken for an attachment that began mid-turn, whose streamed rows are later replaced by the settled one", async () => {
+    const id = newClaudeSession();
+    registry.insertMessage(id, "user", "build it and run the long job");
+    // The turn is streaming: blocks are stored as live partial rows when voice attaches.
+    registry.insertPartialMessage(id, "assistant", "Starting the build.", 1);
+    for (let i = 0; i < 4; i += 1) registry.insertPartialMessage(id, "assistant", `tool ${i}`, 2 + i, "Bash", `tool-${i}`);
+    const live = liveHub(id);
+    await tick();
+    live.hub.onEvent("session:delta", { sessionId: id, type: "text", content: "Started it in the background." });
+    // The turn settles: the live rows are replaced by the one settled reply.
+    registry.deletePartialMessages(id);
+    registry.insertMessage(id, "assistant", "Started it in the background.");
+    live.hub.onEvent("session:completed", { sessionId: id, result: "Started it in the background.", error: null });
+    await settle();
+    const file = writeTranscript([{ type: "assistant", text: "The long job finished.", offsetMs: 2_000 }]);
+    expect(external.syncExternalTurn(id, live.emit as never, { hook_event_name: "Stop", transcript_path: file })).toBe(1);
+    await settle();
+    expect(live.socket.ofType("segment_start").map((f) => f.text)).toEqual(["Started it in the background.", "The long job finished."]);
     live.hub.shutdown();
   });
 });

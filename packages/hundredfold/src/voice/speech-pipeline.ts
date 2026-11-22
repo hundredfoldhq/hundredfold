@@ -53,6 +53,20 @@ export interface CutResult {
   heard: string;
   /** The sentences to speak again from, the first one heard only in part or not at all. */
   unheard: string[];
+  /** The reply the cut belongs to (as `markReply` named it), when it had one. */
+  replyKey?: number;
+  /** `heard`, split by the stored message each sentence belongs to, for a reply made of several stored messages. */
+  heardBy: HeardPart[];
+  /** The stored message of each of `unheard`, in step with it; undefined for a streamed reply. */
+  unheardIds: Array<string | undefined>;
+}
+
+/** What was heard of one stored message of a cut reply. */
+export interface HeardPart {
+  messageId: string | undefined;
+  text: string;
+  /** Every sentence of the message was heard to its end. */
+  complete: boolean;
 }
 
 /** Synthesis of one segment, filled as the provider yields. */
@@ -111,10 +125,10 @@ export class SpeechPipeline {
     this.replyKey = key;
   }
 
-  /** What was spoken of a reply: its sentences that went out to the client. */
-  spokenFor(key: number): string {
+  /** What was spoken of a reply (or of one stored message of it): its sentences that went out to the client. */
+  spokenFor(key: number, messageId?: string): string {
     return this.history
-      .filter((s) => s.replyKey === key && s.sentMs > 0)
+      .filter((s) => s.replyKey === key && s.sentMs > 0 && (messageId === undefined || s.messageId === messageId))
       .map((s) => s.text)
       .join(" ");
   }
@@ -176,8 +190,13 @@ export class SpeechPipeline {
   }
 
   /** Speak these again ahead of anything queued since the cut. */
-  resumeWith(texts: readonly string[]): void {
-    const segments = texts.map((text) => this.newSegment(text));
+  resumeWith(texts: readonly string[], messageIds: ReadonlyArray<string | undefined> = []): void {
+    const segments = texts.map((text, i) => {
+      const segment = this.newSegment(text);
+      const messageId = messageIds[i];
+      if (messageId) segment.messageId = messageId;
+      return segment;
+    });
     this.queue = [...segments, ...this.queue];
     this.kick();
   }
@@ -218,8 +237,9 @@ export class SpeechPipeline {
     const wholeIds = new Set(whole.map((s) => s.id));
     const pending = [...scope, ...this.queue.filter((s) => !s.holding && s.replyKey === key)]
       .filter((s, i, all) => all.indexOf(s) === i && !wholeIds.has(s.id) && s.state !== "cut" && s.state !== "played");
-    const unheard = pending.filter((s) => s.id !== playing?.id || ratio < 1).map((s) => s.text);
-    return { heard, unheard };
+    const unheardSegments = pending.filter((s) => s.id !== playing?.id || ratio < 1);
+    const heardBy = heardParts(scope, wholeIds, playing, ratio);
+    return { heard, unheard: unheardSegments.map((s) => s.text), replyKey: key, heardBy, unheardIds: unheardSegments.map((s) => s.messageId) };
   }
 
   private enqueue(text: string, holding = false, messageId?: string): void {
@@ -357,6 +377,19 @@ export class SpeechPipeline {
 }
 
 /** The leading part of a sentence heard when `ratio` of its audio played, cut at a word. */
+/** What was heard of each stored message of a cut reply, in order; a streamed reply is one part with no message id. */
+function heardParts(scope: readonly Segment[], wholeIds: ReadonlySet<number>, playing: Segment | undefined, ratio: number): HeardPart[] {
+  const parts: HeardPart[] = [];
+  for (const segment of scope) {
+    let part = parts.find((p) => p.messageId === segment.messageId);
+    if (!part) parts.push(part = { messageId: segment.messageId, text: "", complete: true });
+    const heard = wholeIds.has(segment.id) ? segment.text : segment === playing && ratio > 0 ? partOf(segment.text, ratio) : "";
+    part.text = [part.text, heard].filter(Boolean).join(" ");
+    if (!wholeIds.has(segment.id) && !(segment === playing && ratio >= 1)) part.complete = false;
+  }
+  return parts;
+}
+
 export function partOf(text: string, ratio: number): string {
   const words = text.split(/\s+/).filter(Boolean);
   return words.slice(0, Math.floor(words.length * ratio)).join(" ");

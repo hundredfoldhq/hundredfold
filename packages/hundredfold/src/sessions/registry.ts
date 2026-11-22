@@ -2431,36 +2431,27 @@ export function latestAssistantMessageId(sessionId: string, sinceMs: number): st
   return row?.id;
 }
 
-/** A stored message as a voice attachment reads it: insertion order, no mid-turn blocks. */
-export interface StoredReplyRow {
-  /** Insertion order within the table; grows with every row written. */
-  cursor: number;
+/** Stamped on assistant text the transcript sync stored for a reply the engine wrote on its own (no gateway turn streamed it). */
+export const EXTERNAL_TURN_META_KEY = "externalTurn";
+
+/** What a voice attachment reads of such a reply. */
+export interface ExternalReplyRow {
   id: string;
-  role: string;
   content: string;
-  /** A tool-call row rather than text. */
-  toolCall: boolean;
 }
 
-/** Insertion position of the newest stored message of a session, 0 when it has none. */
-export function newestMessageCursor(sessionId: string): number {
-  const row = initDb().prepare("SELECT MAX(rowid) AS cursor FROM messages WHERE session_id = ?").get(sessionId) as { cursor: number | null };
-  return row.cursor ?? 0;
-}
-
-/** Insertion position of one stored message, or undefined for an unknown id. */
-export function messageCursor(messageId: string): number | undefined {
-  const row = initDb().prepare("SELECT rowid AS cursor FROM messages WHERE id = ?").get(messageId) as { cursor: number } | undefined;
-  return row?.cursor;
-}
-
-/** Settled messages of a session stored after `cursor`, oldest first. Live mid-turn blocks (`partial`) are not messages yet. */
-export function messagesAfterCursor(sessionId: string, cursor: number): StoredReplyRow[] {
-  const rows = initDb().prepare(
-    `SELECT rowid AS cursor, id, role, content, tool_call IS NOT NULL AS toolCall FROM messages
-     WHERE session_id = ? AND rowid > ? AND COALESCE(partial, 0) = 0 ORDER BY rowid ASC`,
-  ).all(sessionId, cursor) as Array<{ cursor: number; id: string; role: string; content: string; toolCall: number }>;
-  return rows.map((row) => ({ ...row, toolCall: row.toolCall === 1 }));
+/**
+ * Assistant text the transcript sync stored for the engine's own replies since `sinceMs`, in insertion order. Only
+ * rows the sync stamped: a gateway turn's rows (streamed, settled, error notices) are never among them, and a
+ * timestamp bound needs no cursor that deleted rows could invalidate.
+ */
+export function externalRepliesSince(sessionId: string, sinceMs: number): ExternalReplyRow[] {
+  return initDb().prepare(
+    `SELECT id, content FROM messages
+     WHERE session_id = ? AND role = 'assistant' AND timestamp > ? AND COALESCE(partial, 0) = 0 AND tool_call IS NULL
+       AND json_extract(meta, '$.${EXTERNAL_TURN_META_KEY}') = 1
+     ORDER BY rowid ASC`,
+  ).all(sessionId, sinceMs) as ExternalReplyRow[];
 }
 
 export function getMessages(sessionId: string): SessionMessage[] {

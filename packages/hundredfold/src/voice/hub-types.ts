@@ -73,13 +73,10 @@ export interface VoiceDeliveryResult {
   messageId: string;
 }
 
-/** A stored message as the hub reads it back. */
+/** An assistant reply the engine wrote on its own, as the hub reads it back from the store. */
 export interface StoredReply {
-  cursor: number;
   id: string;
-  role: string;
   content: string;
-  toolCall: boolean;
 }
 
 export interface VoiceLog {
@@ -101,12 +98,8 @@ export interface VoiceHubDeps {
   mergeMessageMeta(messageId: string, patch: JsonObject): void;
   /** The stored assistant message a reply written since `sinceMs` became. */
   findReplyMessageId(sessionId: string, sinceMs: number): string | undefined;
-  /** Where the newest stored message of a session sits in insertion order, 0 when there is none. */
-  newestMessageCursor(sessionId: string): number;
-  /** Where one stored message sits in insertion order; undefined when it is not stored. */
-  messageCursor(messageId: string): number | undefined;
-  /** Settled messages stored after `cursor`, oldest first: what the engine wrote that no gateway turn streamed. */
-  messagesAfterCursor(sessionId: string, cursor: number): StoredReply[];
+  /** Replies the engine wrote on its own (no gateway turn streamed them) stored after `sinceMs`, oldest first. */
+  externalRepliesSince(sessionId: string, sinceMs: number): StoredReply[];
   clock: VoiceClock;
   log: VoiceLog;
   newId(): string;

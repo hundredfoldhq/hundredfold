@@ -15,7 +15,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { MemberPrincipal } from "../accounts/runtime.js";
 import type { ApiContext } from "../gateway/api.js";
-import { getSession, latestAssistantMessageId, mergeMessageMeta, messageCursor, messagesAfterCursor, newestMessageCursor } from "../sessions/registry.js";
+import { getSession, externalRepliesSince, latestAssistantMessageId, mergeMessageMeta } from "../sessions/registry.js";
 import { resolveEnvVar } from "../shared/env-ref.js";
 import { logger } from "../shared/logger.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
@@ -115,9 +115,7 @@ function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
     deliver: (delivery) => voiceDeliveryFor(options.getContext())(delivery),
     mergeMessageMeta: (messageId, patch) => { mergeMessageMeta(messageId, patch); },
     findReplyMessageId: latestAssistantMessageId,
-    newestMessageCursor,
-    messageCursor,
-    messagesAfterCursor,
+    externalRepliesSince,
     clock: systemClock,
     log: logger,
     newId: randomUUID,

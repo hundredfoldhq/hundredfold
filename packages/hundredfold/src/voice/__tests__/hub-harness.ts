@@ -45,8 +45,8 @@ export function createHarness(options: HarnessOptions = {}) {
   const merges: Array<{ id: string; patch: unknown }> = [];
   const warnings: string[] = [];
   let ids = 0;
-  /** The stored transcript as the hub reads it: rows in insertion order, the cursor being the position. */
-  const stored: Array<{ cursor: number; id: string; role: string; content: string; toolCall: boolean }> = [];
+  /** The stored transcript as the hub reads it back; `external` rows are the ones the transcript sync stamped. */
+  const stored: Array<{ id: string; role: string; content: string; toolCall: boolean; external: boolean; timestamp: number }> = [];
   const state = {
     config: baseConfig(options.config) as ResolvedVoiceConfig | null,
     turnRunning: false,
@@ -68,19 +68,17 @@ export function createHarness(options: HarnessOptions = {}) {
     },
     mergeMessageMeta: (id, patch) => { merges.push({ id, patch }); },
     findReplyMessageId: () => state.replyMessage,
-    newestMessageCursor: () => stored[stored.length - 1]?.cursor ?? 0,
-    messageCursor: (id) => stored.find((row) => row.id === id)?.cursor,
-    messagesAfterCursor: (_session, cursor) => stored.filter((row) => row.cursor > cursor),
+    externalRepliesSince: (_session, sinceMs) => stored.filter((row) => row.external && row.role === "assistant" && !row.toolCall && row.timestamp > sinceMs),
     clock,
     log: { info: () => undefined, warn: (message) => { warnings.push(message); } },
     newId: () => `id${++ids}`,
   };
   const hub = new VoiceHub(deps);
 
-  /** Store a message as the gateway would, returning its id. */
-  function store(role: string, content: string, toolCall = false): string {
+  /** Store a message as the gateway would (a turn's own row, not the sync's), returning its id. */
+  function store(role: string, content: string, toolCall = false, external = false, at = clock.now()): string {
     const id = `stored-${stored.length + 1}`;
-    stored.push({ cursor: stored.length + 1, id, role, content, toolCall });
+    stored.push({ id, role, content, toolCall, external, timestamp: at });
     return id;
   }
 
@@ -127,7 +125,7 @@ export function createHarness(options: HarnessOptions = {}) {
     },
     /** What the transcript sync does for a reply the CLI wrote on its own: the rows are stored, then the event is emitted. */
     externalTurn(...texts: string[]): string[] {
-      const ids = texts.map((text) => store("assistant", text));
+      const ids = texts.map((text) => store("assistant", text, false, true, clock.now() + 1));
       h.event("session:external-turn");
       return ids;
     },
