@@ -95,4 +95,6 @@ export interface VoiceHubDeps {
   clock: VoiceClock;
   log: VoiceLog;
   newId(): string;
+  /** Strips any provider key from text that is about to be sent to a client. Absent: text is sent as is. */
+  redact?(text: string): string;
 }

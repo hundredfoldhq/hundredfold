@@ -35,6 +35,22 @@ export interface ResolvedVoiceConfig {
   local: { device: "auto" | "gpu" | "cpu" };
 }
 
+const DEFAULTS = {
+  stt: { provider: "local", model: null as string | null },
+  tts: { provider: "local", model: null as string | null, voice: null as string | null, speed: 1 },
+  vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
+  bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
+  autoBackground: { enabled: true, afterSeconds: 5 },
+  limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 },
+  local: { device: "auto" as ResolvedVoiceConfig["local"]["device"] },
+};
+
+/** `defaults` with every value `given` actually sets laid over it. */
+function section<T extends object>(defaults: T, given: Partial<Record<keyof T, unknown>> | undefined): T {
+  const set = Object.entries(given ?? {}).filter(([key, value]) => value !== undefined && key in defaults);
+  return { ...defaults, ...Object.fromEntries(set) };
+}
+
 /** `null` unless voice is turned on. */
 export function resolveVoiceConfig(config: Pick<HundredfoldConfig, "voice">): ResolvedVoiceConfig | null {
   const voice = config.voice;
@@ -42,31 +58,14 @@ export function resolveVoiceConfig(config: Pick<HundredfoldConfig, "voice">): Re
   return {
     mode: voice.mode ?? "hands-free",
     language: voice.language ?? "en",
-    stt: { provider: voice.stt?.provider ?? "local", model: voice.stt?.model ?? null },
-    tts: {
-      provider: voice.tts?.provider ?? "local",
-      model: voice.tts?.model ?? null,
-      voice: voice.tts?.voice ?? null,
-      speed: voice.tts?.speed ?? 1,
-    },
-    vad: {
-      threshold: voice.vad?.threshold ?? 0.5,
-      minSpeechMs: voice.vad?.minSpeechMs ?? 250,
-      silenceMs: voice.vad?.silenceMs ?? 700,
-      prerollMs: voice.vad?.prerollMs ?? 300,
-    },
-    bargeIn: {
-      enabled: voice.bargeIn?.enabled ?? true,
-      minSpeechMs: voice.bargeIn?.minSpeechMs ?? 250,
-      onsetThreshold: voice.bargeIn?.onsetThreshold ?? 0.02,
-    },
-    autoBackground: { enabled: voice.autoBackground?.enabled ?? true, afterSeconds: voice.autoBackground?.afterSeconds ?? 5 },
+    stt: section(DEFAULTS.stt, voice.stt),
+    tts: section(DEFAULTS.tts, voice.tts),
+    vad: section(DEFAULTS.vad, voice.vad),
+    bargeIn: section(DEFAULTS.bargeIn, voice.bargeIn),
+    autoBackground: section(DEFAULTS.autoBackground, voice.autoBackground),
     prompt: voice.prompt ?? DEFAULT_VOICE_PROMPT,
     holdingLine: voice.holdingLine ?? DEFAULT_HOLDING_LINE,
-    limits: {
-      maxUtteranceSeconds: voice.limits?.maxUtteranceSeconds ?? 60,
-      maxConcurrentAttachments: voice.limits?.maxConcurrentAttachments ?? 4,
-    },
-    local: { device: voice.local?.device ?? "auto" },
+    limits: section(DEFAULTS.limits, voice.limits),
+    local: section(DEFAULTS.local, voice.local),
   };
 }

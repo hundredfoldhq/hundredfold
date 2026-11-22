@@ -190,7 +190,7 @@ export class FakeEngine implements Engine {
   steerOutcome: "steered" | "withdrawn" = "steered";
   steerable: boolean;
   softInterruptPreservesForegroundWork: boolean;
-  constructor(private readonly options: FakeEngineOptions = {}) {
+  constructor(options: FakeEngineOptions = {}) {
     this.steerable = options.steerable ?? false;
     this.softInterruptPreservesForegroundWork = options.soft?.preserves ?? false;
     if (options.soft) {

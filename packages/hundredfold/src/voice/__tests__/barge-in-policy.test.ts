@@ -42,15 +42,12 @@ describe("the barge-in decision table (contracts/providers.md)", () => {
   });
 
   it("never picks interrupt_now while the engine reports a foreground call, in any combination", () => {
-    for (const work of [young, long]) {
-      for (const soft of [null, { preserves: true }, { preserves: false }]) {
-        for (const steerable of [true, false]) {
-          for (const nowMs of [NOW, NOW + 3_000, NOW + 60_000]) {
-            expect(decideBargeIn({ ...base, longWork: work, soft, steerable, nowMs }).kind).not.toBe("interrupt_now");
-          }
-        }
-      }
-    }
+    const softs = [null, { preserves: true }, { preserves: false }];
+    const combos = [young, long].flatMap((longWork) => softs.flatMap((soft) => [true, false].flatMap((steerable) => (
+      [NOW, NOW + 3_000, NOW + 60_000].map((nowMs) => ({ ...base, longWork, soft, steerable, nowMs }))
+    ))));
+    expect(combos).toHaveLength(36);
+    for (const input of combos) expect(decideBargeIn(input).kind).not.toBe("interrupt_now");
   });
 
   it("with the threshold at zero a young call is long at once", () => {

@@ -275,7 +275,7 @@ export class VoiceAttachment {
   private unavailableReason(): string | null {
     for (const provider of [this.providers.stt, this.providers.tts]) {
       const status = provider.status();
-      if (!status.available) return cleanReason(status.reason);
+      if (!status.available) return this.deps.redact ? this.deps.redact(cleanReason(status.reason)) : cleanReason(status.reason);
     }
     return null;
   }

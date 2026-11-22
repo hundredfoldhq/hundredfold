@@ -1115,7 +1115,7 @@ export async function startGateway(
     const reqUrl = req.url || "";
     const pathname = reqUrl.split("?")[0];
     if (rejectUnverifiedIdentifiedUpgradeCaller(req, socket)) return;
-    // A member is default-deny here as in the request handler: `/ws` only, resolved before the operator gate.
+    // A member is default-deny here as in the request handler: `/ws`, and `/ws/voice/:id` on a session they may message (none today), resolved before the operator gate.
     if (routeMemberUpgrade(req, socket, head, { accounts, memberWss, ...(voice ? { voice } : {}) })) return;
     if (authRequiredNow() && authRequiredForRequest("GET", pathname)) {
       const auth = authenticateGatewayRequest(req, gatewayAuthToken, HUNDREDFOLD_HOME);

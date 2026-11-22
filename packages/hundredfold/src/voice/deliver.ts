@@ -33,26 +33,28 @@ export function turnRunningFor(session: Pick<Session, "status">, engine: Engine,
   return "isTurnRunning" in engine ? (engine as { isTurnRunning(id: string): boolean }).isTurnRunning(sessionId) : engine.isAlive(sessionId);
 }
 
+/** Steering needs an engine that can take the input now, and nothing compacting. */
+function steerMode(session: Session, engine: Engine, delivery: VoiceDelivery): VoiceDeliveryMode {
+  const compacting = compactionInFlight(session.id) || isCompactCommand(delivery.text);
+  return isSteerableEngine(engine) && !compacting && engine.canSteer(session.id) ? "steer" : "queue";
+}
+
 /**
- * The mode actually carried out. A turn is cut only when nothing long runs in
- * it, nothing is compacting, the message is no command and the queue is not
- * paused (the same guards a typed "send now" has); steering needs an engine
- * that can take the input now. Anything else waits its turn.
+ * A turn is cut only when nothing long runs in it, nothing is compacting, the message is no command and the
+ * queue is not paused: the same guards a typed "send now" has, and the invariant on top of them.
  */
-function effectiveMode(context: ApiContext, session: Session, engine: Engine, delivery: VoiceDelivery): VoiceDeliveryMode {
-  if (delivery.mode === "steer") {
-    const compacting = compactionInFlight(session.id) || isCompactCommand(delivery.text);
-    return isSteerableEngine(engine) && !compacting && engine.canSteer(session.id) ? "steer" : "queue";
-  }
-  if (delivery.mode !== "interrupt") return "queue";
+function interruptMode(context: ApiContext, session: Session, engine: Engine, delivery: VoiceDelivery): VoiceDeliveryMode {
+  if (!isInterruptibleEngine(engine) || !turnRunningFor(session, engine, session.id)) return "queue";
+  if (foregroundWorkOf(engine, session.id) !== null) return "queue";
   const key = session.sessionKey || session.sourceRef || session.id;
-  const mayCut = isInterruptibleEngine(engine)
-    && turnRunningFor(session, engine, session.id)
-    && foregroundWorkOf(engine, session.id) === null
-    && !compactionInFlight(session.id)
-    && !isCompactCommand(delivery.text)
-    && !context.sessionManager.getQueue().isPaused(key);
-  return mayCut ? "interrupt" : "queue";
+  const blocked = compactionInFlight(session.id) || isCompactCommand(delivery.text) || context.sessionManager.getQueue().isPaused(key);
+  return blocked ? "queue" : "interrupt";
+}
+
+/** The mode actually carried out; anything the guards refuse waits its turn. */
+function effectiveMode(context: ApiContext, session: Session, engine: Engine, delivery: VoiceDelivery): VoiceDeliveryMode {
+  if (delivery.mode === "steer") return steerMode(session, engine, delivery);
+  return delivery.mode === "interrupt" ? interruptMode(context, session, engine, delivery) : "queue";
 }
 
 /** What a typed message does to the session's status before it runs. */
@@ -66,39 +68,48 @@ function readyForMessage(session: Session): Session {
   return getSession(session.id) ?? session;
 }
 
-export async function deliverVoiceMessage(context: ApiContext, delivery: VoiceDelivery): Promise<VoiceDeliveryResult> {
+/** The session and engine a message is for, set up as a typed message would find them. */
+function sessionFor(context: ApiContext, delivery: VoiceDelivery): { session: Session; engine: Engine } {
   const found = getSession(delivery.sessionId);
   if (!found) throw new Error(`session ${delivery.sessionId} not found`);
   if (isTerminalSession(found)) throw new Error(TERMINAL_REFUSES_MESSAGES);
-  let session = maybeRevertEngineOverride(found, undefined, context.getConfig());
+  const session = maybeRevertEngineOverride(found, undefined, context.getConfig());
   const engine = context.sessionManager.getEngine(session.engine);
   if (!engine) throw new Error(`engine ${session.engine} is not available`);
   // A genuine message from the operator is a fresh start, not hop N of a relay.
   sessionCommGuards.clearInboundHop(session.id);
-  session = clearDelegationCompletionContract(session);
+  return { session: clearDelegationCompletionContract(session), engine };
+}
 
-  const mode = effectiveMode(context, session, engine, delivery);
+/** The message and its queue row, accepted together; the id of the message. */
+function acceptMessage(session: Session, delivery: VoiceDelivery, mode: VoiceDeliveryMode): { messageId: string; queueItemId: string } {
   const sessionKey = session.sessionKey || session.sourceRef || session.id;
-  if (mode === "interrupt") supersedeRunningTurn(session);
   const claim = claimIncomingTurn({
     sessionId: session.id, sessionKey, prompt: delivery.text, isNotification: false, role: "user",
     content: delivery.text, meta: delivery.meta,
   });
   if (!claim.messageId) throw new Error("the message could not be recorded");
   endStopOnDeliberateSend(session);
-  session = readyForMessage(session);
+  const queueItemId = enqueueQueueItem(session.id, sessionKey, delivery.text, {
+    messageId: claim.messageId,
+    dispatch: { attachments: [], speechDerived: false, ...(delivery.envelope ? { voiceEnvelope: delivery.envelope } : {}) },
+  });
+  if (mode === "interrupt") mergePendingQueueItems(sessionKey, queueItemId);
+  return { messageId: claim.messageId, queueItemId };
+}
+
+export async function deliverVoiceMessage(context: ApiContext, delivery: VoiceDelivery): Promise<VoiceDeliveryResult> {
+  const { session: found, engine } = sessionFor(context, delivery);
+  const mode = effectiveMode(context, found, engine, delivery);
+  const sessionKey = found.sessionKey || found.sourceRef || found.id;
+  if (mode === "interrupt") supersedeRunningTurn(found);
+  const { messageId, queueItemId } = acceptMessage(found, delivery, mode);
+  const session = readyForMessage(found);
   if (mode === "interrupt" && isInterruptibleEngine(engine)) {
     engine.kill(session.id, USER_MESSAGE_INTERRUPTION_REASON);
     context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
   }
   context.sessionManager.getQueue().clearCancelled(sessionKey);
-
-  const messageId = claim.messageId;
-  const queueItemId = enqueueQueueItem(session.id, sessionKey, delivery.text, {
-    messageId,
-    dispatch: { attachments: [], speechDerived: false, ...(delivery.envelope ? { voiceEnvelope: delivery.envelope } : {}) },
-  });
-  if (mode === "interrupt") mergePendingQueueItems(sessionKey, queueItemId);
   context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
   const enginePrompt = withVoiceEnvelope(delivery.text, delivery.envelope);

@@ -5,8 +5,6 @@ import { createHarness, type Harness } from "./hub-harness.js";
 import { settle, type FakeEngineOptions } from "./fakes.js";
 import type { VoiceAttachment } from "../attachment.js";
 
-const SENTENCES = "Alpha one two three. Beta one two three four. Gamma ends it. ";
-
 /** A reply mid-way: sentence one has gone out, two and three are made but held back by the gate. */
 async function midReply(h: Harness): Promise<void> {
   h.event("session:started");

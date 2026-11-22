@@ -68,6 +68,18 @@ function memoisedConfig(getConfig: () => HundredfoldConfig): () => ResolvedVoice
   };
 }
 
+/** `${NAME}` references in the voice block's `apiKey` settings, and what those variables hold now. */
+function configuredKeys(config: HundredfoldConfig): string[] {
+  const refs = [config.voice?.stt?.apiKey, config.voice?.tts?.apiKey];
+  const names = refs.flatMap((ref) => (typeof ref === "string" ? [...ref.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]) : []));
+  return names.map((name) => process.env[name] ?? "").filter((value) => value.length >= 6);
+}
+
+/** Replaces every configured provider key in `text`: the last line of defence for text a client will read. */
+export function redactorFor(getConfig: () => HundredfoldConfig): (text: string) => string {
+  return (text) => configuredKeys(getConfig()).reduce((out, key) => out.split(key).join("[redacted]"), text);
+}
+
 function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
   return {
     config: memoisedConfig(options.getConfig),
@@ -84,6 +96,7 @@ function hubDeps(options: VoiceRuntimeOptions): VoiceHubDeps {
     clock: systemClock,
     log: logger,
     newId: randomUUID,
+    redact: redactorFor(options.getConfig),
   };
 }
 
