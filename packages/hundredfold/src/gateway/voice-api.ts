@@ -7,7 +7,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { HundredfoldConfig } from "../shared/types.js";
-import { resolveVoiceConfig, type ResolvedVoiceConfig } from "../shared/voice-config.js";
+import { resolveVoiceConfig, voiceOffReason, type ResolvedVoiceConfig } from "../shared/voice-config.js";
 import type { VoiceProviderStatus } from "../voice/provider.js";
 import type { LocalSpeech } from "../voice/providers/local.js";
 import { createSttProvider, createTtsProvider, onVoiceInstallChange, sharedLocalSpeech, type ProviderDeps } from "../voice/providers/registry.js";
@@ -69,7 +69,11 @@ function ttsStatus(resolved: ResolvedVoiceConfig, base: VoiceProviderStatus, voi
 /** The reply to `GET /api/voice/config`. */
 export function voiceConfigResponse(config: { voice?: unknown }, deps: VoiceApiDeps = {}): VoiceConfigResponse {
   const resolved = resolveVoiceConfig(config);
-  if (!resolved) return { enabled: false };
+  if (!resolved) {
+    // Asked for but invalid: say why it is off, naming the keys. Anything else is plain off.
+    const invalid = voiceOffReason(config.voice);
+    return invalid ? { enabled: true, available: false, reason: invalid } : { enabled: false };
+  }
   const local = deps.local ?? sharedLocalSpeech(resolved, deps.home);
   const stt = createSttProvider(resolved, { ...deps, local });
   const tts = createTtsProvider(resolved, { ...deps, local });

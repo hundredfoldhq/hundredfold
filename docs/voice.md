@@ -53,7 +53,7 @@ Measured on a workstation with a 16 GB NVIDIA GPU (and a heavily loaded CPU): Pa
 
 ## Configuration reference
 
-Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reported by name and reason when the configuration loads, and the gateway will not load a configuration with a bad `voice:` block.
+Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reported by name and reason when the configuration loads. A bad `voice:` block does not stop the gateway starting or a reload: the rest of the configuration loads, voice stays off, the gateway logs why, and `GET /api/voice/config` answers `available: false` with a `reason` naming each bad key (the voice control shows it). A reload that makes a running voice block invalid ends open voice conversations the same way turning voice off does.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -71,7 +71,8 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `tts.baseUrl`, `tts.apiKey` | — | As for `stt`. |
 | `vad.threshold` | `0.5` | Speech probability that counts as speech, 0 to 1. |
 | `vad.minSpeechMs` | `250` | Speech must last this long to start an utterance, 50 to 2000. |
-| `vad.silenceMs` | `700` | Silence that ends an utterance, 200 to 5000. |
+| `vad.silenceMs` | `1000` | Silence that ends an utterance, 200 to 5000. A shorter pause than this does not end your turn; lower it for a snappier reply, raise it if the assistant still cuts in on your pauses. |
+| `vad.unfinishedHoldMs` | `800` | Extra silence waited when the words so far look unfinished (they trail off on "and", "the", "to", a comma, "um" and the like), so a pause to think does not end the turn. Speaking again inside it continues the same utterance. It works from the live transcript, so it helps when the words end on such a word ("book a table and"); a pause after a finished-looking sentence is ended by `vad.silenceMs` alone. 0 turns it off, up to 5000. Hands-free only; push-to-talk ends when you release. |
 | `vad.prerollMs` | `300` | Audio kept from before speech was detected, 0 to 1000. |
 | `bargeIn.enabled` | `true` | Whether speaking over the assistant stops it. |
 | `bargeIn.minSpeechMs` | `250` | How long your voice must be heard over playback before playback stops, 50 to 2000. |
@@ -87,7 +88,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
 
-Provider keys are never sent to a browser, in any response, message or error. They are read from the gateway's environment when a provider is created and kept only inside it.
+Provider keys are never sent to a browser, in any response, message or error. The gateway takes each variable an `apiKey` names out of its own environment when the configuration loads and keeps it only inside the gateway: no engine process, tool or shell a model runs inherits it. A variable that only voice needs, such as `VOICE_OPENAI_API_KEY`, is the clearest choice: another tool the gateway starts that expects the same variable will not find it. A `${VAR}` you write elsewhere in `config.yaml` (a realtime key, an MCP server's environment) still resolves it.
 
 ## Providers
 
@@ -100,11 +101,11 @@ Nothing to configure beyond `enabled: true` and the install above.
 ```yaml
 voice:
   enabled: true
-  stt: { provider: openai, apiKey: "${OPENAI_API_KEY}" }
-  tts: { provider: openai, apiKey: "${OPENAI_API_KEY}", voice: marin }
+  stt: { provider: openai, apiKey: "${VOICE_OPENAI_API_KEY}" }
+  tts: { provider: openai, apiKey: "${VOICE_OPENAI_API_KEY}", voice: marin }
 ```
 
-Set `OPENAI_API_KEY` in the environment the gateway runs in. Speech-to-text streams over OpenAI's Realtime transcription session (partial transcripts while you speak); text-to-speech streams `POST /v1/audio/speech` as raw 24 kHz PCM. Voices (`GET /api/voice/config` lists them): `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar`.
+Set `VOICE_OPENAI_API_KEY` in the environment the gateway runs in. Speech-to-text streams over OpenAI's Realtime transcription session (partial transcripts while you speak); text-to-speech streams `POST /v1/audio/speech` as raw 24 kHz PCM. Voices (`GET /api/voice/config` lists them): `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar`.
 
 OpenAI's own documentation, read on 2026-11-22, marks the `/v1/audio/speech` models (`tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`) as retiring on 2027-01-06 with no replacement for that endpoint, and several transcription models on 2027-02-26. Check the current state before relying on them.
 

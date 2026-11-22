@@ -143,8 +143,10 @@ final class VoiceController {
     private func teardown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
-        state.sync { cuePCM = nil }
-        cuePlayer.stop()
+        state.sync {
+            cuePCM = nil
+            cuePlayer.stop()
+        }
         engine.stop()
         if playerAttached {
             engine.detach(player)
@@ -334,18 +336,26 @@ final class VoiceController {
     }
 
     /// Loops `pcm` (PCM16LE mono at 24 kHz) as the sound cue, replacing any cue; empty data stops it.
+    /// The remembered cue and every operation on its node happen under `state`, so a stop from the Rust
+    /// thread cannot interleave with a route-change restart replaying the old cue.
     func setCue(_ pcm: Data) {
-        state.sync { cuePCM = pcm.count >= 2 ? pcm : nil }
-        cuePlayer.stop()
-        playCue()
+        state.sync {
+            cuePCM = pcm.count >= 2 ? pcm : nil
+            cuePlayer.stop()
+            playCueLocked()
+        }
     }
 
-    /// Plays the cue the session last asked for, if any. A node must not be played while the engine is
-    /// stopped (that raises an exception), so in the gap of a route change or interruption this does
-    /// nothing and the restart plays the cue instead.
+    /// Plays the cue the session last asked for, if any. The restart after a route change stops the node,
+    /// and the session only asks again when the wanted cue changes, so the controller replays it itself.
     private func playCue() {
-        guard let pcm = state.sync(execute: { running && interruptedAt == nil ? cuePCM : nil }),
-              engine.isRunning else { return }
+        state.sync { playCueLocked() }
+    }
+
+    /// A node must not be played while the engine is stopped (that raises an exception), so in the gap of
+    /// a route change or interruption this does nothing and the restart plays the cue instead.
+    private func playCueLocked() {
+        guard running, interruptedAt == nil, let pcm = cuePCM, engine.isRunning else { return }
         let frames = pcm.count / 2
         guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frames)),
               let channel = buffer.floatChannelData?[0] else { return }
@@ -361,8 +371,10 @@ final class VoiceController {
     }
 
     func pause() {
-        state.sync { cuePCM = nil }
-        cuePlayer.stop()
+        state.sync {
+            cuePCM = nil
+            cuePlayer.stop()
+        }
         player.pause()
     }
     func resume() { if state.sync(execute: { running }) { player.play() } }

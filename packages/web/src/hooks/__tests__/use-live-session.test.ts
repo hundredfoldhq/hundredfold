@@ -2278,3 +2278,172 @@ describe("a load whose answer cannot be processed", () => {
     expect(result.current.loadRetrying).toBe(true)
   })
 })
+
+describe("a read that answers after the turn completed", () => {
+  const rows = (messages: Message[]) => messages.map((m) => ({ role: m.role, content: m.content, partial: m.partial === true }))
+  const u0 = { id: "u0", role: "user", content: "first question", timestamp: 1 }
+  const a0 = { id: "a0", role: "assistant", content: "first answer", timestamp: 2 }
+  const u1 = { id: "u1", role: "user", content: "second question", timestamp: 3 }
+  const partial1 = { id: "p1", role: "assistant", content: "Partial ans", timestamp: 4, partial: true }
+  const a1 = { id: "a1", role: "assistant", content: "Final answer.", timestamp: 5 }
+
+  /** Full reads are answered in order by the test; the light record refreshes a completion sends are not reads of the transcript. */
+  function queueFullReads() {
+    const answers: Array<(r: unknown) => void> = []
+    const fullReads: Array<Promise<unknown>> = []
+    getSession.mockImplementation((_id: string, options?: { messages?: boolean }) => {
+      if (options?.messages === false) return Promise.resolve({ id: "s", status: "idle" })
+      return fullReads.shift() ?? Promise.reject(new Error("unexpected full read"))
+    })
+    const expectRead = () => {
+      fullReads.push(new Promise((resolve) => { answers.push(resolve) }))
+      return (r: unknown) => answers.shift()!(r)
+    }
+    const nextReadIs = (r: unknown) => { fullReads.push(Promise.resolve(r)) }
+    return { expectRead, nextReadIs }
+  }
+  const settle = () => act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
+  const fullReadCount = () => getSession.mock.calls.filter(([, options]) => (options as { messages?: boolean } | undefined)?.messages !== false).length
+
+  it("keeps the final reply, drops the partial row and shows no turn in flight", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s1", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    // A read sent mid-turn; the turn completes before it answers.
+    const answerLate = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s1" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s1", result: "Final answer." }); await Promise.resolve() })
+    reads.nextReadIs({ id: "s1", status: "idle", messages: [u0, a0, u1, a1] })
+    await act(async () => { answerLate({ id: "s1", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+    ])
+    expect(result.current.session?.status).toBe("idle")
+    expect(result.current.loading).toBe(false)
+    expect(result.current.turnPending).toBe(false)
+    expect(fullReadCount()).toBe(3)
+  })
+
+  it("keeps the history and the final reply when a first load is overtaken by a completion", async () => {
+    const reads = queueFullReads()
+    const answerLate = reads.expectRead()
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s2", { subscribe }))
+    expect(result.current.hydrating).toBe(true)
+
+    await act(async () => { emit("session:completed", { sessionId: "s2", result: "Final answer." }); await Promise.resolve() })
+    reads.nextReadIs({ id: "s2", status: "idle", messages: [u0, a0, u1, a1] })
+    await act(async () => { answerLate({ id: "s2", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+    ])
+    expect(result.current.hydrating).toBe(false)
+    expect(result.current.loading).toBe(false)
+    expect(result.current.turnPending).toBe(false)
+    expect(fullReadCount()).toBe(2)
+  })
+
+  it("keeps the new turn's user row and text when a turn started between the completion and the answer", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s3", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s3", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    const answerLate = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s3" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s3", result: "Final answer." }); await Promise.resolve() })
+    // A turn the user spoke into starts at once (voice): its user row reaches the view only through reads.
+    act(() => { emit("session:started", { sessionId: "s3" }) })
+    const u2 = { id: "u2", role: "user", content: "third question", timestamp: 6 }
+    const partial2 = { id: "p2", role: "assistant", content: "Working on it", timestamp: 7, partial: true }
+    reads.nextReadIs({ id: "s3", status: "running", messages: [u0, a0, u1, a1, u2, partial2] })
+    await act(async () => { answerLate({ id: "s3", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+      { role: "user", content: "third question", partial: false },
+      { role: "assistant", content: "Working on it", partial: true },
+    ])
+    expect(result.current.session?.status).toBe("running")
+    expect(result.current.loading).toBe(true)
+    expect(result.current.turnPending).toBe(true)
+    expect(fullReadCount()).toBe(3)
+  })
+
+  it("applies a read as it is when it answers idle, without a second read", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s4", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s4", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    // Overtaken by a completion, but the read itself already reports the finished turn.
+    const answerLate = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s4" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s4", result: "Final answer." }); await Promise.resolve() })
+    await act(async () => { answerLate({ id: "s4", status: "idle", messages: [u0, a0, u1, a1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+    ])
+    expect(result.current.session?.status).toBe("idle")
+    expect(result.current.turnPending).toBe(false)
+    expect(fullReadCount()).toBe(2)
+  })
+
+  it("applies the second read as it is when another completion overtakes it too, without a third read", async () => {
+    const reads = queueFullReads()
+    reads.nextReadIs({ id: "s5", status: "idle", messages: [u0, a0] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s5", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.beginSend(u1 as Message) })
+
+    const answerFirst = reads.expectRead()
+    act(() => { emit("session:external-turn", { sessionId: "s5" }) })
+    await act(async () => { emit("session:completed", { sessionId: "s5", result: "Final answer." }); await Promise.resolve() })
+    // The first read answers mid-turn, so it is sent again; that second read is out when another completion lands.
+    const answerSecond = reads.expectRead()
+    await act(async () => { answerFirst({ id: "s5", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+    await act(async () => { emit("session:completed", { sessionId: "s5", result: "Another answer." }); await Promise.resolve() })
+    await act(async () => { answerSecond({ id: "s5", status: "running", messages: [u0, a0, u1, partial1] }) })
+    await settle()
+
+    expect(rows(result.current.messages)).toEqual([
+      { role: "user", content: "first question", partial: false },
+      { role: "assistant", content: "first answer", partial: false },
+      { role: "user", content: "second question", partial: false },
+      { role: "assistant", content: "Final answer.", partial: false },
+      { role: "assistant", content: "Another answer.", partial: false },
+    ])
+    // The second read was applied (status from its answer), not sent a third time.
+    expect(result.current.session?.status).toBe("running")
+    expect(fullReadCount()).toBe(3)
+  })
+})

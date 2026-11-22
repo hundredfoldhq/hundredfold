@@ -18,8 +18,12 @@ import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
 import { UtteranceCapture, type FinishedUtterance } from "./utterance-capture.js";
 
 const OPEN = 1;
-/** Close codes after which the attachment ends rather than waiting for the client to come back. */
-const ENDING_CODES = new Set<number>([1000, 1001, VOICE_CLOSE.protocolError, VOICE_CLOSE.accessLost, VOICE_CLOSE.sessionGone, VOICE_CLOSE.inUse, VOICE_CLOSE.limit]);
+/**
+ * Close codes after which the attachment ends rather than waiting for the client to come back. 1009 (a frame over
+ * the size limit) and 1005 (a close with no status) are not a device suspension: the client is not coming back to
+ * this attachment, and waiting would hold its slot against the concurrency limit for the whole resume window.
+ */
+const ENDING_CODES = new Set<number>([1000, 1001, 1005, 1009, VOICE_CLOSE.protocolError, VOICE_CLOSE.accessLost, VOICE_CLOSE.sessionGone, VOICE_CLOSE.inUse, VOICE_CLOSE.limit]);
 /** A reason the provider gave for being unavailable, kept short and free of addresses before it reaches a client. */
 const REASON_MAX = 200;
 
@@ -304,6 +308,7 @@ export class VoiceAttachment {
       vad: this.providers.createVad(),
       language: this.config.language,
       prerollMs: this.config.vad.prerollMs,
+      unfinishedHoldMs: this.config.vad.unfinishedHoldMs,
       maxUtteranceMs: this.config.limits.maxUtteranceSeconds * 1000,
       pushToTalk: this.mode === "push-to-talk",
       clock: this.deps.clock,

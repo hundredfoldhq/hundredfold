@@ -153,7 +153,8 @@ function closed(state: VoiceUiState, action: Extract<VoiceAction, { type: "close
   if (state.status === "suspended") return { ...state, needsTap: true }
   const known = CLOSE_MESSAGES[action.code]
   // A close the gateway already explained with a `detached` frame keeps that explanation.
-  if (!known && state.error) return ended(state, { error: state.error })
+  // Only once it has ended: a live error frame (a failed utterance) is not an explanation of this close.
+  if (!known && state.error && state.status === "off") return ended(state, { error: state.error })
   return ended(state, { error: known ?? "Voice connection lost." })
 }
 
@@ -196,7 +197,8 @@ const FRAME_HANDLERS: FrameHandlers = {
   background: onBackground,
   missed: (state, f) => ({ ...state, notice: missedNotice(f.messageIds.length) }),
   metrics: (state, f) => ({ ...state, ttfaMs: f.ttfaMs ?? state.ttfaMs, syncTick: state.syncTick + 1 }),
-  error: (state, f) => ({ ...state, error: f.message }),
+  // A failed utterance is over: its partial and voice-activity flag must not hold the control on "hearing".
+  error: (state, f) => ({ ...state, error: f.message, partial: "", vadSpeaking: false }),
   detached: (state, f) => ended(state, { error: DETACH_MESSAGES[f.reason] }),
 }
 

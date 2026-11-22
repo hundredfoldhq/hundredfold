@@ -78,10 +78,34 @@ async function call(method: string, pathname: string, voice: unknown, local: Loc
 }
 
 describe("GET /api/voice/config", () => {
-  it("is {enabled:false} when voice is absent, disabled, or has a problem", () => {
+  it("is {enabled:false} when voice is absent or disabled, even with a problem elsewhere in a disabled block", () => {
     expect(voiceConfigResponse(config(undefined))).toEqual({ enabled: false });
     expect(voiceConfigResponse(config({ enabled: false }))).toEqual({ enabled: false });
-    expect(voiceConfigResponse(config({ enabled: true, vad: { threshold: 3 } }))).toEqual({ enabled: false });
+    expect(voiceConfigResponse(config({ enabled: false, vad: { threshold: 3 } }))).toEqual({ enabled: false });
+    expect(voiceConfigResponse(config({ vad: { threshold: 3 } }))).toEqual({ enabled: false });
+  });
+
+  it("is unavailable, with the bad keys named, when voice is on but the block has problems", () => {
+    const reply = voiceConfigResponse(config({ enabled: true, vad: { silenceMs: 50, threshold: 3 } }));
+    expect(reply).toMatchObject({ enabled: true, available: false });
+    expect(reply.reason).toContain("voice.vad.silenceMs");
+    expect(reply.reason).toContain("voice.vad.threshold");
+    expect(voiceConfigResponse(config({ enabled: "yes" }))).toMatchObject({ enabled: true, available: false, reason: expect.stringContaining("voice.enabled") });
+    expect(voiceConfigResponse(config("on"))).toMatchObject({ enabled: true, available: false, reason: expect.stringContaining("voice must be a mapping") });
+  });
+
+  it("names a bad URL or key setting without echoing the URL's user name or the key", () => {
+    const voice = {
+      enabled: true,
+      stt: { provider: "openai-compatible", baseUrl: "https://alice:hunter2secret@speech.example", apiKey: KEY },
+      tts: { provider: "openai-compatible", baseUrl: BASE_URL, apiKey: "${VOICE_API_TEST_KEY}" },
+    };
+    const reply = voiceConfigResponse(config(voice));
+    expect(reply).toMatchObject({ enabled: true, available: false });
+    expect(reply.reason).toContain("voice.stt.baseUrl");
+    expect(reply.reason).toContain("voice.stt.apiKey");
+    const text = JSON.stringify(reply);
+    for (const secret of ["alice", "hunter2secret", KEY, "speech.example"]) expect(text).not.toContain(secret);
   });
 
   it("describes an enabled, installed local setup in the contract's shape", () => {

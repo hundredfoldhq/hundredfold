@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { validateConfigShape } from "../config.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems } from "../voice-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
 
 const HOME = path.resolve("/tmp/voice-config-test-home");
 const problems = (voice: unknown) => voiceConfigProblems(voice, HOME);
@@ -18,7 +18,7 @@ describe("voiceConfigProblems", () => {
     expect(problems({
       enabled: true, mode: "push-to-talk", language: "en-GB",
       stt: { provider: "local", model: "m" }, tts: { provider: "local", voice: "bf_emma", speed: 0.5 },
-      vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, prerollMs: 1000 },
+      vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, unfinishedHoldMs: 5000, prerollMs: 1000 },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
       cues: { enabled: false, volume: 1 },
@@ -43,6 +43,8 @@ describe("voiceConfigProblems", () => {
     ["voice.vad.minSpeechMs", { vad: { minSpeechMs: 49 } }, "voice.vad.minSpeechMs"],
     ["voice.vad.minSpeechMs", { vad: { minSpeechMs: 250.5 } }, "voice.vad.minSpeechMs"],
     ["voice.vad.silenceMs", { vad: { silenceMs: 199 } }, "voice.vad.silenceMs"],
+    ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: -1 } }, "voice.vad.unfinishedHoldMs"],
+    ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: 5001 } }, "voice.vad.unfinishedHoldMs"],
     ["voice.vad.prerollMs", { vad: { prerollMs: 1001 } }, "voice.vad.prerollMs"],
     ["voice.bargeIn.enabled", { bargeIn: { enabled: 1 } }, "voice.bargeIn.enabled"],
     ["voice.bargeIn.minSpeechMs", { bargeIn: { minSpeechMs: 2001 } }, "voice.bargeIn.minSpeechMs"],
@@ -127,6 +129,29 @@ describe("voiceConfigProblems", () => {
   });
 });
 
+describe("voiceOffReason", () => {
+  const reason = (voice: unknown) => voiceOffReason(voice, HOME);
+
+  it("is null for an absent, empty, disabled or valid block", () => {
+    expect(reason(undefined)).toBeNull();
+    expect(reason({})).toBeNull();
+    expect(reason({ enabled: false, vad: { threshold: 9 } })).toBeNull();
+    expect(reason({ enabled: true })).toBeNull();
+  });
+
+  it("names every bad key when voice is asked for", () => {
+    const text = reason({ enabled: true, vad: { silenceMs: 50 }, mode: "loud" });
+    expect(text).toContain("voice.vad.silenceMs");
+    expect(text).toContain("voice.mode");
+  });
+
+  it("never echoes a URL's user name, password or a literal key", () => {
+    const text = reason({ enabled: true, stt: { provider: "openai-compatible", baseUrl: "https://bob:s3cretpass@host.example", apiKey: "sk-literal-key-123456" } }) ?? "";
+    expect(text).toContain("voice.stt.baseUrl");
+    for (const secret of ["bob", "s3cretpass", "sk-literal-key-123456"]) expect(text).not.toContain(secret);
+  });
+});
+
 describe("validateConfigShape", () => {
   const base = { engines: { default: "claude", claude: {} } };
 
@@ -135,9 +160,15 @@ describe("validateConfigShape", () => {
     expect(validateConfigShape({ ...base, voice: { enabled: true } })).toEqual([]);
   });
 
-  it("refuses a config whose voice block has a problem, naming the key", () => {
-    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
-      expect.stringContaining("voice.vad.silenceMs"),
+  it("does not fail the config over a voice block with a problem: voice goes off instead (FR-025)", () => {
+    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([]);
+    expect(validateConfigShape({ ...base, voice: "on" })).toEqual([]);
+    expect(resolveVoiceConfig({ voice: { enabled: true, vad: { silenceMs: 1 } } }, HOME)).toBeNull();
+  });
+
+  it("still refuses a problem elsewhere in the same config", () => {
+    expect(validateConfigShape({ ...base, gateway: { port: "x" }, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
+      expect.stringContaining("gateway.port"),
     ]);
   });
 });
@@ -162,7 +193,7 @@ describe("resolveVoiceConfig", () => {
       mode: "hands-free", language: "en",
       stt: { provider: "local", model: "parakeet-tdt-0.6b-v2", baseUrl: null, apiKeyRef: null },
       tts: { provider: "local", model: "kokoro-v1.0", baseUrl: null, apiKeyRef: null, voice: "af_heart", speed: 1 },
-      vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 700, prerollMs: 300 },
+      vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 1000, unfinishedHoldMs: 800, prerollMs: 300 },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
       cues: { enabled: true, volume: 0.3 },
@@ -186,7 +217,7 @@ describe("resolveVoiceConfig", () => {
     })!;
     expect(resolved.mode).toBe("push-to-talk");
     expect(resolved.tts).toMatchObject({ voice: "bf_emma", speed: 1.25 });
-    expect(resolved.vad).toEqual({ threshold: 0.5, minSpeechMs: 250, silenceMs: 900, prerollMs: 300 });
+    expect(resolved.vad).toEqual({ threshold: 0.5, minSpeechMs: 250, silenceMs: 900, unfinishedHoldMs: 800, prerollMs: 300 });
     expect(resolved.bargeIn).toEqual({ enabled: false, minSpeechMs: 250, onsetThreshold: 0.02 });
     expect(resolved.limits).toEqual({ maxUtteranceSeconds: 60, maxConcurrentAttachments: 2 });
     expect(resolved.local.device).toBe("cpu");

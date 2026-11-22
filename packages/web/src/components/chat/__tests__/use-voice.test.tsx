@@ -311,6 +311,11 @@ describe('tapAction', () => {
     expect(tapAction('listening', false, 'hands-free')).toBe('stop')
   })
 
+  it('a tap while connecting cancels, in push-to-talk too', () => {
+    expect(tapAction('connecting', false, 'hands-free')).toBe('stop')
+    expect(tapAction('connecting', false, 'push-to-talk')).toBe('stop')
+  })
+
   it('in push-to-talk a tap on a running control does nothing: the button is held, the end button stops', () => {
     expect(tapAction('listening', false, 'push-to-talk')).toBe('none')
     expect(tapAction('suspended', false, 'push-to-talk')).toBe('stop')
