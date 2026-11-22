@@ -34,7 +34,7 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `prompt` | string | built-in voice prompt (below) | ≤ 8000 chars |
 | `promptFile` | instance-relative path | — | must stay inside the instance home; `prompt` wins if both |
 | `holdingLine` | string | "Still working on the last thing. I'll come to that as soon as it's done." | ≤ 300 chars |
-| `limits.maxUtteranceSeconds` | integer | `60` | 5 to 600 |
+| `limits.maxUtteranceSeconds` | integer | `60` | 5 to 120 (the sidecar's 4 MB body is about 131 s of 16 kHz PCM16) |
 | `limits.maxConcurrentAttachments` | integer | `4` | 1 to 64 |
 | `local.device` | `auto` \| `gpu` \| `cpu` | `auto` | `auto` = GPU when `nvidia-smi` reports one |
 

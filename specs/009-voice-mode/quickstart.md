@@ -53,7 +53,8 @@ Run guide for proving the feature end to end. Contracts:
 
 ## 5. Long work (US3, SC-005)
 
-1. On a real Claude session: "Run `sleep 90 && echo done-marker`." Wait 10 s (past the
+1. On a real Claude session: "Run `node -e \"setTimeout(()=>console.log('done-marker'),90000)\"` in the foreground."
+   (The CLI refuses a foreground `sleep N && …`.) Wait 10 s (past the
    5 s threshold), then ask "What's two plus two?"
 2. Expect: the answer arrives while the command is still running; a `background` frame
    and chip; about 90 s later the session reports `done-marker` and it is spoken.
