@@ -11,6 +11,11 @@ export interface SessionSettingsOpts {
   carry?: OperatorSettingsCarry;
   /** A department-scoped session: the instruction files above its stage directory, which it must not read. */
   claudeMdExcludes?: string[];
+  /**
+   * Register PostToolUseFailure. Only for a Claude Code that knows the event (see claude-tool-failure-hook.ts):
+   * an older one stops at a Settings Warning dialog on an unknown hook event.
+   */
+  toolFailureHook?: boolean;
 }
 
 interface HookCommand { type: "command"; command: string; }
@@ -35,13 +40,16 @@ interface HookMatcher { matcher?: string; hooks: HookCommand[]; }
 // permissionDecision:"allow" was tested and does NOT dismiss these — hooks
 // cannot pre-approve a circuit breaker — so detecting it here and answering the
 // TUI is the only route. See engines/claude-permission-prompt.ts.
+// A tool that fails (a Bash that exits non-zero, say) fires PostToolUseFailure and no
+// PostToolUse (verified on 2.1.330), so the engine's tracker of running tool calls wants it, but
+// only on a build that knows the event: an unknown one stops startup at a dialog (toolFailureHook).
 // PostCompact is the only signal that a `/compact` has finished: it fires no
 // Stop. Verified on 2.1.283 — PreCompact, SessionStart{source:"compact"}, then
 // PostCompact{trigger:"manual"|"auto"}. The engine settles a `/compact` turn
 // on it (self-compaction queues its resume turn right behind) and treats it as
 // ordinary proof of life otherwise.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | "Notification" | "PostCompact", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | "Notification" | "PostCompact", HookMatcher[]> & { PostToolUseFailure?: HookMatcher[] };
   statusLine?: HookCommand;
   appendSystemPrompt?: string;
   attribution?: unknown;
@@ -89,6 +97,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
       StopFailure: [cmd()],
       PreToolUse: [cmd(), ...(opts.carry?.preToolUse ?? [])],
       PostToolUse: [cmd()],
+      ...(opts.toolFailureHook ? { PostToolUseFailure: [cmd()] } : {}),
       Notification: [cmd()],
       PostCompact: [cmd()],
     },

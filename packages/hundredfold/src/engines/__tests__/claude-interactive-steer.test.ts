@@ -188,6 +188,12 @@ describe("InteractiveClaudeEngine — steering a running turn", () => {
       expect(engine.canSteer("s-blocked")).toBe(false);
       deliver("s-blocked", { hook_event_name: "PostToolUse", tool_name: "Bash" });
       expect(engine.canSteer("s-blocked")).toBe(true);
+      // A call the user refused or that failed ends the dialog too, with PostToolUseFailure and no PostToolUse.
+      deliver("s-blocked", { hook_event_name: "PreToolUse", tool_name: "Bash" });
+      deliver("s-blocked", { hook_event_name: "Notification", notification_type: "permission_prompt" });
+      expect(engine.canSteer("s-blocked")).toBe(false);
+      deliver("s-blocked", { hook_event_name: "PostToolUseFailure", tool_name: "Bash", error: "The user doesn't want to proceed" });
+      expect(engine.canSteer("s-blocked")).toBe(true);
       // An operator message typed into the terminal and queued behind the turn.
       deliver("s-blocked", { hook_event_name: "UserPromptSubmit", prompt: "operator question" });
       expect(engine.canSteer("s-blocked")).toBe(false);
@@ -390,6 +396,21 @@ describe("InteractiveClaudeEngine — steering a running turn", () => {
       // The turn it was meant for was not cut off.
       expect(engine.isTurnRunning("s-swallowed")).toBe(true);
       deliver("s-swallowed", { hook_event_name: "Stop", last_assistant_message: "second answer" });
+      expect((await turn).result).toBe("second answer");
+    });
+
+    it("a tool call that failed is not work in flight: the unacknowledged paste is retried and withdrawn like after a successful one", async () => {
+      const { turn } = await runningTurn("s-failed-tool");
+      // Claude Code fires PostToolUseFailure, and no PostToolUse, for a call that fails.
+      deliver("s-failed-tool", { hook_event_name: "PostToolUseFailure", tool_name: "Bash", error: "Exit code 1" });
+      const crsBefore = crs();
+      const outcome = engine.steer("s-failed-tool", STEER);
+      await vi.advanceTimersByTimeAsync(60_000);
+      // Counted as still running, the tool would hold the CR retries off for the rest of the turn.
+      expect(crs() - crsBefore).toBeGreaterThan(1);
+      expect(await outcome).toBe("withdrawn");
+      expect(cleared()).toBe(true);
+      deliver("s-failed-tool", { hook_event_name: "Stop", last_assistant_message: "second answer" });
       expect((await turn).result).toBe("second answer");
     });
 

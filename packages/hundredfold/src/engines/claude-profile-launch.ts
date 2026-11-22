@@ -1,6 +1,7 @@
 import { operatorSettingsCarry } from "../shared/claude-profile-settings.js";
 import { claudeJsonPathFor, claudeProfileDirExists, claudeProfileMissingMessage, type ClaudeProfile } from "../shared/claude-profile.js";
 import { seedTrust, writeSessionSettings } from "../shared/claude-settings.js";
+import { localClaudeKnowsToolFailureHook } from "../shared/claude-tool-failure-hook.js";
 import { remoteAccountForTarget } from "../shared/engine-account.js";
 import type { ClaudeResetSource } from "../shared/engine-reset-times.js";
 import { logger } from "../shared/logger.js";
@@ -20,15 +21,17 @@ import { sessionScopeDepartment } from "../sessions/session-cwd.js";
  * from its own directory (claude-profile-settings.ts). A department-scoped session
  * skips the instructions in every directory above its stage directory, as a remote one
  * does (`ancestorMemoryExcludes`): the stage directory sits beside the instance home, so
- * the operator's home directory is one of them.
+ * the operator's home directory is one of them. `localBin` is the Claude Code a local
+ * session runs: it also registers PostToolUseFailure when that build knows the event.
  */
-export function writeClaudeSessionSettings(hundredfoldSessionId: string, profile: ClaudeProfile | undefined): string {
+export function writeClaudeSessionSettings(hundredfoldSessionId: string, profile: ClaudeProfile | undefined, localBin?: string): string {
   const department = sessionScopeDepartment(getSession(hundredfoldSessionId));
   return writeSessionSettings(CLAUDE_SETTINGS_DIR, hundredfoldSessionId, {
     sessionId: hundredfoldSessionId,
     relayScript: HOOK_RELAY_SCRIPT,
     statusLineDir: CLAUDE_LIMITS_DIR,
     carry: operatorSettingsCarry(profile ?? null),
+    ...(localBin !== undefined && localClaudeKnowsToolFailureHook(localBin) ? { toolFailureHook: true } : {}),
     ...(department ? { claudeMdExcludes: ancestorMemoryExcludes([departmentStageDir(department), resolvedStageDir(department)]) } : {}),
   });
 }
