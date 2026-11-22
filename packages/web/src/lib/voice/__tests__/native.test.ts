@@ -157,6 +157,30 @@ describe("NativeVoiceSession native_state events", () => {
     expect(voicePhase(session.getSnapshot())).toBe("listening")
   })
 
+  it("paused then running before the gateway was ready goes back to connecting, not on", async () => {
+    const rig = bridge()
+    const session = new NativeVoiceSession(rig.value, { sessionId: "s", mode: "hands-free", origin: ORIGIN })
+    await session.start()
+    rig.send({ type: "native_state", state: "paused", reason: "interruption" })
+    rig.send({ type: "native_state", state: "running" })
+    expect(voicePhase(session.getSnapshot())).toBe("connecting")
+    rig.send(READY)
+    expect(voicePhase(session.getSnapshot())).toBe("listening")
+  })
+
+  it("push-to-talk release is sent once, and only after a press", async () => {
+    const rig = bridge()
+    const session = new NativeVoiceSession(rig.value, { sessionId: "s", mode: "push-to-talk", origin: ORIGIN })
+    await session.start()
+    rig.send(READY)
+    session.pttUp()
+    session.pttDown()
+    session.pttDown()
+    session.pttUp()
+    session.pttUp()
+    expect(rig.value.voicePtt).toHaveBeenCalledTimes(2)
+  })
+
   it("is not a gateway frame: an unknown native_state value is ignored", async () => {
     const { session, send } = await running()
     send({ type: "native_state", state: "exploded" })

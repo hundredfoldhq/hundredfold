@@ -112,6 +112,35 @@ describe('VoiceControl', () => {
     expect(voice.controller?.stop).toHaveBeenCalledTimes(1)
   })
 
+  it('push-to-talk captures the pointer so a release off the button still ends the talk', () => {
+    const voice = withPhase(stateAfter(), { mode: 'push-to-talk' })
+    render(<VoiceControl voice={voice} />)
+    const talk = document.querySelector('[data-voice-control]') as HTMLButtonElement
+    const capture = vi.fn()
+    talk.setPointerCapture = capture
+    fireEvent.pointerDown(talk, { pointerId: 7 })
+    expect(capture).toHaveBeenCalledWith(7)
+    fireEvent.lostPointerCapture(talk)
+    expect(voice.controller?.pttUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('push-to-talk: Space and Enter hold and release, key repeat does not re-press, and blur releases', () => {
+    const voice = withPhase(stateAfter(), { mode: 'push-to-talk' })
+    render(<VoiceControl voice={voice} />)
+    const talk = document.querySelector('[data-voice-control]') as HTMLElement
+    fireEvent.keyDown(talk, { key: ' ' })
+    fireEvent.keyDown(talk, { key: ' ', repeat: true })
+    fireEvent.keyUp(talk, { key: ' ' })
+    expect(voice.controller?.pttDown).toHaveBeenCalledTimes(1)
+    expect(voice.controller?.pttUp).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(talk, { key: 'Enter' })
+    fireEvent.blur(talk)
+    expect(voice.controller?.pttDown).toHaveBeenCalledTimes(2)
+    expect(voice.controller?.pttUp).toHaveBeenCalledTimes(2)
+    fireEvent.keyDown(talk, { key: 'a' })
+    expect(voice.controller?.pttDown).toHaveBeenCalledTimes(2)
+  })
+
   it('push-to-talk releases the key if the pointer is cancelled', () => {
     const voice = withPhase(stateAfter(), { mode: 'push-to-talk' })
     render(<VoiceControl voice={voice} />)

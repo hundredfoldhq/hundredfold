@@ -3,7 +3,7 @@ import type { BackgroundActivity } from '@/lib/api'
 import { api } from '@/lib/api'
 import { gatewayTransport } from '@/lib/gateway-transport'
 import { nativeBridge } from '@/platform/native-bridge'
-import { deriveBackgroundChip, FRESH_CHIP_MEMORY, type BackgroundChip, type ChipMemory } from '@/lib/voice/background-chip'
+import { BACKGROUND_FIRST_READ_GRACE_MS, deriveBackgroundChip, FRESH_CHIP_MEMORY, type BackgroundChip, type ChipMemory } from '@/lib/voice/background-chip'
 import type { VoiceClientConfig } from '@/lib/voice/config'
 import type { VoiceController } from '@/lib/voice/controller'
 import { NativeVoiceSession, nativeVoiceBridge } from '@/lib/voice/native'
@@ -78,6 +78,14 @@ function useNote(): { note: string | null; showNote: (text: string) => void } {
   return { note, showNote: setNote }
 }
 
+/** When the chip next needs a look with no new input: the first-read grace ending, or a finished chip's visible time running out. */
+export function nextChipCheckMs(kind: BackgroundChip['kind'] | undefined, pending: boolean, tasks: VoiceUiState['background'], now: number): number | null {
+  if (kind === 'finished') return 1_000
+  if (kind !== 'running' || pending || tasks.length === 0) return null
+  const since = Math.min(...tasks.map((task) => task.startedAt))
+  return Math.max(50, since + BACKGROUND_FIRST_READ_GRACE_MS - now)
+}
+
 function useBackgroundChip(state: VoiceUiState, controller: VoiceController | null, pending: boolean): BackgroundChip | null {
   const memory = useRef<ChipMemory>(FRESH_CHIP_MEMORY)
   const [, rerender] = useState(0)
@@ -86,8 +94,9 @@ function useBackgroundChip(state: VoiceUiState, controller: VoiceController | nu
   useEffect(() => {
     memory.current = derived.memory
     if (derived.done) controller?.clearBackground()
-    if (derived.chip?.kind !== 'finished') return
-    const timer = setTimeout(() => rerender((n) => n + 1), 1_000)
+    const wait = nextChipCheckMs(derived.chip?.kind, pending, tasks, Date.now())
+    if (wait === null) return
+    const timer = setTimeout(() => rerender((n) => n + 1), wait)
     return () => clearTimeout(timer)
   })
   return derived.chip

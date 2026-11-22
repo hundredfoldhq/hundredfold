@@ -200,8 +200,16 @@ export class BrowserVoiceSession implements VoiceController {
       case "segment_start": this.player?.beginSegment(frame.segmentId); break
       case "segment_end": this.player?.endSegment(frame.segmentId); break
       case "stop_playback": this.player?.flush(); break
+      case "detached": this.onDetached(); break
       default: break
     }
+  }
+
+  /** The gateway ended this attachment: release the microphone and audio now, keeping its reason on screen. */
+  private onDetached(): void {
+    this.closing = true
+    this.socket?.close(1000, "detached")
+    this.teardown()
   }
 
   private onReady(frame: Extract<VoiceServerFrame, { type: "ready" }>): void {

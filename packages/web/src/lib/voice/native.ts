@@ -62,6 +62,7 @@ export function asNativeState(raw: unknown): NativeStateEvent | null {
 export class NativeVoiceSession implements VoiceController {
   private readonly store = new VoiceStore()
   private stopping = false
+  private talking = false
 
   constructor(
     private readonly bridge: NativeVoiceBridge,
@@ -90,6 +91,7 @@ export class NativeVoiceSession implements VoiceController {
   stop(): void {
     if (this.store.snapshot.status === "off") return
     this.stopping = true
+    this.talking = false
     void this.bridge.voiceStop().catch(() => undefined)
     this.store.dispatch({ type: "stopped" })
   }
@@ -99,11 +101,15 @@ export class NativeVoiceSession implements VoiceController {
   }
 
   pttDown(): void {
-    if (this.options.mode === "push-to-talk" && this.store.snapshot.status === "on") void this.bridge.voicePtt({ down: true }).catch(() => undefined)
+    if (this.options.mode !== "push-to-talk" || this.store.snapshot.status !== "on" || this.talking) return
+    this.talking = true
+    void this.bridge.voicePtt({ down: true }).catch(() => undefined)
   }
 
   pttUp(): void {
-    if (this.options.mode === "push-to-talk" && this.store.snapshot.status === "on") void this.bridge.voicePtt({ down: false }).catch(() => undefined)
+    if (!this.talking) return
+    this.talking = false
+    void this.bridge.voicePtt({ down: false }).catch(() => undefined)
   }
 
   /** The shell resumes by itself after a lock or an interruption; there is nothing for a tap to do. */

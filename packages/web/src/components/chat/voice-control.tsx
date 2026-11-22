@@ -132,12 +132,28 @@ function isHeld(voice: UseVoice): boolean {
   return voice.mode === 'push-to-talk' && !idle
 }
 
+const HOLD_KEYS = new Set([' ', 'Enter'])
+
+/**
+ * Hold-to-talk. The pointer is captured so a release anywhere ends the talk,
+ * losing capture, a cancel or focus leaving the button end it too, and Space
+ * or Enter hold it for keyboard users. The controller's `pttUp` is idempotent.
+ */
 function pressProps(voice: UseVoice, held: boolean) {
   if (!held) return { onClick: voice.onTap }
+  const down = () => voice.controller?.pttDown()
+  const up = () => voice.controller?.pttUp()
   return {
-    onPointerDown: () => voice.controller?.pttDown(),
-    onPointerUp: () => voice.controller?.pttUp(),
-    onPointerCancel: () => voice.controller?.pttUp(),
+    onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+      try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* not capturable: the window-level fallbacks below end the talk */ }
+      down()
+    },
+    onPointerUp: up,
+    onPointerCancel: up,
+    onLostPointerCapture: up,
+    onBlur: up,
+    onKeyDown: (e: React.KeyboardEvent) => { if (HOLD_KEYS.has(e.key) && !e.repeat) { e.preventDefault(); down() } },
+    onKeyUp: (e: React.KeyboardEvent) => { if (HOLD_KEYS.has(e.key)) { e.preventDefault(); up() } },
   }
 }
 

@@ -324,10 +324,28 @@ describe("stopping", () => {
     expect(r.contexts[0].close).toHaveBeenCalled()
   })
 
-  it("a detached frame ends voice mode with the gateway's reason", async () => {
+  it("a detached frame ends voice mode with the gateway's reason and releases everything", async () => {
     const r = await started()
     r.sockets[0].serverFrame({ type: "detached", reason: "disabled" })
     expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "Voice was turned off on the gateway." })
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.captureStops).toHaveBeenCalled()
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    expect(r.sockets[0].isOpen).toBe(false)
+    r.emitCapture(frameAt(0.1))
+    expect(r.sockets[0].audio).toHaveLength(0)
+  })
+
+  it("after a detach a tap starts one clean run, not a second one beside the first", async () => {
+    const r = await started()
+    r.sockets[0].serverFrame({ type: "detached", reason: "taken_over" })
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    expect(r.contexts).toHaveLength(2)
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.sockets[0].isOpen).toBe(false)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
   })
 })
 

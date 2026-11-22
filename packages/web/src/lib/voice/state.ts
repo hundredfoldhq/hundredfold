@@ -187,7 +187,7 @@ function frame(state: VoiceUiState, f: VoiceServerFrame, now: number): VoiceUiSt
 function nativeState(state: VoiceUiState, a: ActionOf<"native-state">): VoiceUiState {
   switch (a.state) {
     case "paused": return state.status === "off" ? state : { ...state, status: "paused", notice: PAUSED_NOTICE, vadSpeaking: false, partial: "" }
-    case "running": return state.status === "paused" ? { ...state, status: "on", notice: null } : state
+    case "running": return state.status === "paused" ? { ...state, status: state.ready ? "on" : "connecting", notice: null } : state
     case "stopped": return ended(state, { error: a.reason ? (NATIVE_STOP_ERRORS[a.reason] ?? null) : null })
     case "connecting": return state
   }

@@ -49,7 +49,7 @@ vi.mock('@/lib/voice/native', async () => {
 vi.mock('@/platform/native-bridge', () => ({ nativeBridge: () => undefined }))
 vi.mock('@/lib/gateway-transport', () => ({ gatewayTransport: () => ({ profile: { origin: 'https://gw.example.test' } }) }))
 
-import { tapAction, useVoice } from '../use-voice'
+import { nextChipCheckMs, tapAction, useVoice } from '../use-voice'
 import { resetVoiceConfigCache } from '../use-voice-config'
 
 const ENABLED = { enabled: true, available: true, reason: null, mode: 'hands-free', onset: { threshold: 0.02, minSpeechMs: 250 }, bargeIn: { enabled: true }, install: { state: 'ready', progress: 1 } }
@@ -215,6 +215,27 @@ describe('useVoice', () => {
     await waitFor(() => expect(onSync).toHaveBeenCalledTimes(1))
   })
 
+  it('a running chip whose background work was never seen turns finished after the grace, with no other render', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result } = renderHook(() => useVoice('s1', null))
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const store = (controllers[0] as unknown as { store: { dispatch: (a: unknown) => void } }).store
+      act(() => {
+        store.dispatch({ type: 'connecting', mode: 'hands-free' })
+        store.dispatch({ type: 'frame', now: Date.now(), frame: { type: 'background', taskId: 't1', description: 'run the tests' } })
+      })
+      expect(result.current.chip?.kind).toBe('running')
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_100) })
+      expect(result.current.chip?.kind).toBe('finished')
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000) })
+      expect(result.current.chip).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows a background chip while the session still has background work, then finished', async () => {
     getVoiceConfig.mockResolvedValue(ENABLED)
     const busy = { activeStreams: 0, backgroundAgents: 1, lastActivityAt: new Date().toISOString() }
@@ -228,6 +249,21 @@ describe('useVoice', () => {
     expect(result.current.chip).toEqual({ kind: 'running', label: 'Running in the background: run the tests' })
     rerender({ activity: { activeStreams: 0, lastActivityAt: new Date().toISOString() } as never })
     expect(result.current.chip).toEqual({ kind: 'finished', label: 'Background work finished' })
+  })
+})
+
+describe('nextChipCheckMs', () => {
+  const task = { taskId: 't', description: null, startedAt: 1000 }
+  it('waits out the first-read grace for an unseen running chip, never less than 50 ms', () => {
+    expect(nextChipCheckMs('running', false, [task], 6000)).toBe(10_000)
+    expect(nextChipCheckMs('running', false, [task], 99_000)).toBe(50)
+  })
+  it('needs no check while pending work is reported, or with no chip', () => {
+    expect(nextChipCheckMs('running', true, [task], 6000)).toBeNull()
+    expect(nextChipCheckMs(undefined, false, [], 6000)).toBeNull()
+  })
+  it('re-checks a finished chip every second so it can go away', () => {
+    expect(nextChipCheckMs('finished', false, [task], 6000)).toBe(1000)
   })
 })
 
