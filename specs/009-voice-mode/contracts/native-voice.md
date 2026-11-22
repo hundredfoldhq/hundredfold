@@ -7,7 +7,7 @@ client handles audio itself.
 
 | Command | Input | Result |
 |---|---|---|
-| `voice_start` | `{ target, sessionId, mode }` | `{ ok }`, or an error: `permission_denied`, `not_paired`, `unsupported` |
+| `voice_start` | `{ target, sessionId, mode }` | `{ ok }`, or an error code: `permission-denied`, `not-paired`, `unsupported`, `voice-busy`, `invalid-path`, `invalid-request`, `transport-failed` |
 | `voice_stop` | — | `{ ok }` |
 | `voice_ptt` | `{ down: boolean }` | `{ ok }` |
 | `voice_status` | — | `{ running, state }` |
@@ -27,10 +27,13 @@ so the web learns when voice was stopped from the lock screen or notification, o
 by a system interruption:
 
 ```json
-{ "type": "native_state", "state": "connecting" | "running" | "paused" | "stopped", "reason": "user" | "notification" | "interruption" | "error" | "socket_closed" }
+{ "type": "native_state", "state": "connecting" | "running" | "paused" | "stopped", "reason": "user" | "notification" | "interruption" | "error" | "socket_closed", "code": 4409 }
 ```
 
-`reason` is optional. A gateway never emits `native_state`, so it lives in the web's
+`reason` is optional. `code` is present only with `reason: "socket_closed"` and carries the
+WebSocket close code, so the web can say why: `4409` voice in use by someone else, `4429`
+attachment limit, `4401` access lost, `4404` session gone (see voice-socket.md). Error codes
+follow the shell's existing kebab-case convention for native errors. A gateway never emits `native_state`, so it lives in the web's
 shell types, not in `voice-protocol.ts`.
 
 ## Credentials on Android
