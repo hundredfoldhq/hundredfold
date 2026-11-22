@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startHarness, type Harness } from "./accounts-harness.js";
 import { inviteAndAccept, type Joined } from "./flows-helpers.js";
 
-/** Voice mode's availability for a board member, through the real member router. */
+/** Voice mode is operator-only until board members can message sessions: a member gets the member router's default-deny. */
 
 let h: Harness;
 let pat: Joined;
@@ -12,30 +12,25 @@ beforeEach(async () => {
 }, 60_000);
 afterEach(() => { h.close(); });
 
+const DENIED = { error: "Not available to board members" };
 const operator = { authorization: "Bearer gateway-token-for-account-tests-0123456789" };
-const setVoice = (voice: unknown) => { (h.config as Record<string, unknown>).voice = voice; };
 
-describe("GET /api/member/voice/config", () => {
-  it("answers a member with {enabled:false} while voice is off, as the operator's route does", async () => {
-    const member = await h.request("GET", "/api/member/voice/config", { cookie: pat.cookie });
-    const operatorReply = await h.request("GET", "/api/voice/config", operator);
-    expect(member.status).toBe(200);
-    expect(member.body).toEqual({ enabled: false });
-    expect(operatorReply.body).toEqual(member.body);
+describe("voice routes and a board member", () => {
+  it.each([["GET", "/api/voice/config"], ["POST", "/api/voice/install"]])("%s %s answers a member 403, whether voice is off or on", async (method, url) => {
+    for (const voice of [undefined, { enabled: true }]) {
+      (h.config as Record<string, unknown>).voice = voice;
+      const reply = await h.request(method, url, { cookie: pat.cookie, body: method === "GET" ? undefined : {} });
+      expect(reply.status).toBe(403);
+      expect(reply.body).toEqual(DENIED);
+    }
   });
 
-  it("answers a member exactly what it answers the operator once voice is on, and shows nothing secret", async () => {
-    setVoice({ enabled: true, prompt: "UNIQUE-VOICE-PROMPT", stt: { provider: "openai", apiKey: "${NO_SUCH_VOICE_KEY}" }, tts: { provider: "openai", apiKey: "${NO_SUCH_VOICE_KEY}" } });
-    const member = await h.request("GET", "/api/member/voice/config", { cookie: pat.cookie });
-    const operatorReply = await h.request("GET", "/api/voice/config", operator);
-    expect(member.status).toBe(200);
-    expect(member.body).toMatchObject({ enabled: true, available: false, reason: "OpenAI key not set: NO_SUCH_VOICE_KEY" });
-    expect(member.body).toEqual(operatorReply.body);
-    expect(JSON.stringify(member.body)).not.toContain("UNIQUE-VOICE-PROMPT");
+  it("has no member voice route: /api/member/voice/config is an unknown member path", async () => {
+    expect((await h.request("GET", "/api/member/voice/config", { cookie: pat.cookie })).status).toBe(404);
   });
 
-  it("is still refused at the operator's paths: the member allowlist is unchanged", async () => {
-    expect((await h.request("GET", "/api/voice/config", { cookie: pat.cookie })).status).toBe(403);
-    expect((await h.request("POST", "/api/voice/install", { cookie: pat.cookie, body: {} })).status).toBe(403);
+  it("still serves the operator the same route", async () => {
+    (h.config as Record<string, unknown>).voice = undefined;
+    expect(await h.request("GET", "/api/voice/config", operator)).toMatchObject({ status: 200, body: { enabled: false } });
   });
 });

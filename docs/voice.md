@@ -6,6 +6,8 @@ Voice mode is **off by default**. With no `voice:` block, or `enabled: false`, t
 
 The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.
 
+Voice mode is for the operator. Board members cannot message sessions yet, so they have no chat to speak into: the voice routes answer them "Not available to board members", and a member sees no voice control. It will be offered to members when they can chat with sessions.
+
 ## Pre-installation steps
 
 The built-in local speech installs its own runtime and models the first time you ask for it. Before you do, the machine that runs the gateway needs:

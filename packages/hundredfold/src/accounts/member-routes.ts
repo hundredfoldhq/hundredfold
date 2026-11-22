@@ -1,5 +1,4 @@
 import { revokeAuthSessionsForUser } from "../gateway/auth.js";
-import { voiceConfigResponse } from "../gateway/voice-api.js";
 import { json, matchRoute, notFound, type ParsedRoute } from "../gateway/route-helpers.js";
 import { requireRole, grantedBoard } from "./member-access.js";
 import { accountContext, type MemberRoute, type MemberRouteContext } from "./member-context.js";
@@ -72,8 +71,6 @@ const ownerOnBoard = (run: (ctx: MemberRouteContext, department: string) => void
 
 export const MEMBER_ROUTES: readonly MemberRoute[] = [
   { method: "GET", pattern: "/api/member/me", run: me },
-  // Voice mode's availability: the same reply the operator gets at /api/voice/config, which says nothing about any session. The member router serves /api/member/* only.
-  { method: "GET", pattern: "/api/member/voice/config", run: (ctx) => json(ctx.res, voiceConfigResponse(ctx.deps.getConfig())) },
   { method: "POST", pattern: "/api/member/password", run: changePassword },
   { method: "GET", pattern: "/api/member/sessions", run: listSessions },
   { method: "DELETE", pattern: "/api/member/sessions/:id", run: revokeSession },
