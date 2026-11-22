@@ -499,7 +499,12 @@ suspended and that the finished reply can still be heard.
 - **Who**: the operator and board members. A board member reaches only the sessions the
   board-member rules already let them message. Their connection to the gateway is
   default-deny today (it accepts only the main event stream), so voice needs an explicit,
-  access-checked opening for them.
+  access-checked opening for them. **Found during planning**: board members cannot send
+  messages to any session today. The board-members design keeps chat, and anything that
+  starts or wakes an agent, operator-only. Voice is built on the same "may send messages
+  to this session" check, so it works for a member as soon as member chat exists. Member
+  chat changes the board-member security model and is a separate decision for the
+  operator. SC-011 is met once it exists.
 - **Default providers** (decided at the spec review gate): speech-to-text is NVIDIA
   **Parakeet TDT 0.6B v2** (English). Text-to-speech is **Kokoro-82M**, which leading
   open-model comparisons rate the most natural-sounding small model that also streams
