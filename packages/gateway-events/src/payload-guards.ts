@@ -256,9 +256,6 @@ export const payloadGuards: Record<GatewayEventName, PayloadGuard> = {
       && ["not_installed", "installing", "ready", "failed"].includes(String(value.state))
       && isNumber(value.progress)
       && isOptionalString(value.reason),
-  "stt:download:progress": isProgressPayload,
-  "stt:download:complete": (value) => isRecord(value) && isString(value.model),
-  "stt:download:error": isErrorPayload,
   "talk:audio": (value) =>
     isRecord(value)
       && isString(value.sessionId)

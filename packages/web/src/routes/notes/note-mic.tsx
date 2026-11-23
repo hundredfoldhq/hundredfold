@@ -1,20 +1,18 @@
 import { useEffect, useRef } from "react"
 import { LoaderCircle, Mic } from "@/components/ui/icon"
-import { useGateway } from "@/hooks/use-gateway"
 import { useStt } from "@/hooks/use-stt"
 import { MicWaveform } from "@/components/chat/mic-waveform"
-import { WhisperDownloadModal } from "@/components/stt/whisper-download-modal"
+import { DictationUnavailableModal } from "@/components/stt/dictation-unavailable-modal"
 import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS } from "@/lib/mic-gesture"
 import { cn } from "@/lib/utils"
 
 export function NoteMic({ onTranscript }: { onTranscript: (text: string) => void }) {
-  const { events } = useGateway()
-  const stt = useStt(events, onTranscript)
+  const stt = useStt(onTranscript)
   const downAtRef = useRef<number | null>(null)
   const toggleActiveRef = useRef(false)
 
   useEffect(() => {
-    if (stt.state === "idle" || stt.state === "no-model" || stt.state === "error") {
+    if (stt.state === "idle" || stt.state === "unavailable" || stt.state === "error") {
       toggleActiveRef.current = false
     }
   }, [stt.state])
@@ -48,7 +46,7 @@ export function NoteMic({ onTranscript }: { onTranscript: (text: string) => void
     const downAt = downAtRef.current
     if (downAt === null) return
     downAtRef.current = null
-    if (stt.state === "no-model" || stt.state === "transcribing") return
+    if (stt.state === "unavailable" || stt.state === "transcribing") return
     if (classifyMicGesture(downAt, Date.now(), MIC_HOLD_THRESHOLD_MS) === "hold") {
       void transcribe()
     } else {
@@ -79,17 +77,6 @@ export function NoteMic({ onTranscript }: { onTranscript: (text: string) => void
         data-note-mic-anchor
         className="pointer-events-none absolute bottom-7 left-1/2 z-20 flex -translate-x-1/2 items-center justify-center lg:bottom-6"
       >
-        {stt.languages.length > 1 && (
-          <button
-            type="button"
-            aria-label={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
-            title="Change transcription language"
-            onClick={stt.cycleLanguage}
-            className="pointer-events-auto absolute right-[calc(100%+8px)] flex size-10 items-center justify-center rounded-full glass-tint font-[family-name:var(--font-code)] text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[0.05em] text-[var(--text-secondary)] transition-[scale,color] duration-150 active:scale-[0.96] hover:text-[var(--text-primary)]"
-          >
-            {stt.selectedLanguage}
-          </button>
-        )}
         <button
           type="button"
           aria-label={label}
@@ -134,11 +121,10 @@ export function NoteMic({ onTranscript }: { onTranscript: (text: string) => void
           </div>
         )}
       </div>
-      <WhisperDownloadModal
-        open={stt.state === "no-model"}
-        progress={stt.downloadProgress}
-        onDownload={stt.startDownload}
-        onCancel={stt.dismissDownload}
+      <DictationUnavailableModal
+        open={stt.state === "unavailable"}
+        reason={stt.unavailableReason}
+        onClose={stt.dismissUnavailable}
       />
     </>
   )

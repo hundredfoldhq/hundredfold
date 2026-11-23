@@ -8,9 +8,6 @@ const apiMocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
   getOrg: vi.fn(),
-  sttStatus: vi.fn(),
-  sttUpdateConfig: vi.fn(),
-  sttDownload: vi.fn(),
 }))
 
 const fetchTalkCapability = vi.hoisted(() => vi.fn())
@@ -59,15 +56,6 @@ describe('Settings stale chat controls', () => {
     }, revision: 'rev-1' })
     apiMocks.updateConfig.mockResolvedValue({})
     apiMocks.getOrg.mockResolvedValue({ employees: [] })
-    apiMocks.sttStatus.mockResolvedValue({
-      available: false,
-      model: null,
-      downloading: false,
-      progress: 0,
-      languages: ['en'],
-    })
-    apiMocks.sttUpdateConfig.mockResolvedValue({})
-    apiMocks.sttDownload.mockResolvedValue({})
     fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
   })
 

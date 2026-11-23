@@ -10,9 +10,6 @@ const apiMocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
   getOrg: vi.fn(),
-  sttStatus: vi.fn(),
-  sttUpdateConfig: vi.fn(),
-  sttDownload: vi.fn(),
 }))
 const fetchTalkCapability = vi.hoisted(() => vi.fn())
 const registry = vi.hoisted(() => ({ current: undefined as unknown }))
@@ -70,7 +67,6 @@ beforeEach(() => {
   registry.current = { default: 'claude', engines: { claude: engine('claude'), opencode: engine('opencode') } }
   apiMocks.updateConfig.mockResolvedValue({})
   apiMocks.getOrg.mockResolvedValue({ employees: [] })
-  apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
   fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
   limits.current = {
     generatedAt: new Date().toISOString(), default: 'claude', engines: {},

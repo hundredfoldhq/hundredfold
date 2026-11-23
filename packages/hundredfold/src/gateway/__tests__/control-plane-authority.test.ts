@@ -421,8 +421,6 @@ describe("control-plane writes require operator authority", () => {
     { method: "POST", path: "/api/engine-limits/refresh", body: {}, label: "engine limits refresh" },
     { method: "POST", path: "/api/connectors/reload", body: {}, label: "connector reload" },
     { method: "POST", path: "/api/onboarding", body: { portalName: "Worker Portal" }, label: "onboarding config write" },
-    { method: "POST", path: "/api/stt/download", body: {}, label: "stt model download/config enable" },
-    { method: "PUT", path: "/api/stt/config", body: { languages: ["en"] }, label: "stt config" },
     { method: "DELETE", path: "/api/auth/devices/device-1", body: undefined, label: "auth device revoke" },
   ])("rejects capability-bound workers on $label", async (route) => {
     resetCronJobs();

@@ -18,7 +18,7 @@
  *   90      | the talk situation sheet                           | situation-sheet.tsx
  *   80      | the talk undo strip                                | undo-strip.tsx
  *   70      | notices (the app's and plugins')                   | notices.tsx
- *   60      | the Whisper download modal                         | whisper-download-modal.tsx
+ *   60      | the dictation-unavailable modal                    | dictation-unavailable-modal.tsx
  *   50      | modal dialogs, sheets and the lightbox, with their | dialog-popup.tsx
  *           | scrim (React Aria's modal: the search overlay is   |
  *           | one), fixed widgets, the board's toasts            |

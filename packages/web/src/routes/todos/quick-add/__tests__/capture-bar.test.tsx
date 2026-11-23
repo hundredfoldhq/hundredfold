@@ -24,7 +24,6 @@ let listener: ((event: string, payload: unknown) => void) | undefined
 vi.mock("@/hooks/use-gateway", () => ({
   useGateway: () => ({
     connectionSeq: 1,
-    events: [],
     subscribe: (next: GatewayEventListener) => {
       listener = (event, payload) => next({ event, payload } as GatewayEvent)
       return () => { listener = undefined }
@@ -34,19 +33,14 @@ vi.mock("@/hooks/use-gateway", () => ({
 
 const stt = vi.hoisted(() => ({
   state: "idle" as string,
-  available: true,
-  downloadProgress: null as number | null,
+  unavailableReason: null as string | null,
   analyser: null,
-  languages: ["en"],
-  selectedLanguage: "en",
   error: null as string | null,
-  cycleLanguage: vi.fn(),
   handleMicClick: vi.fn(),
   startRecording: vi.fn(),
   stopRecording: vi.fn<() => Promise<string | null>>(),
   cancelRecording: vi.fn(),
-  startDownload: vi.fn(),
-  dismissDownload: vi.fn(),
+  dismissUnavailable: vi.fn(),
   dismissError: vi.fn(),
 }))
 vi.mock("@/hooks/use-stt", () => ({ useStt: vi.fn(() => stt) }))

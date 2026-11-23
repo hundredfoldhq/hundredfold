@@ -66,7 +66,6 @@ function stragglerReadRoutes(): RouteSpec[] {
     { method: "GET", path: "/api/logs", label: "logs" },
     { method: "GET", path: "/api/connectors", label: "connectors" },
     { method: "GET", path: "/api/onboarding", label: "onboarding" },
-    { method: "GET", path: "/api/stt/status", label: "stt status" },
     { method: "GET", path: "/api/tts", label: "tts status" },
     { method: "GET", path: `/api/files/${fileId}/meta`, label: "file metadata" },
     { method: "GET", path: `/api/files/${fileId}`, label: "file content" },

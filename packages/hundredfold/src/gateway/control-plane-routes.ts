@@ -24,8 +24,6 @@ const OPERATOR_ONLY_ROUTES: ReadonlyArray<readonly [method: string, route: strin
   ["GET", "/api/hooks/runs/:id", "board hook run detail"],
   ["POST", "/api/hooks/:name/enabled", "board hook enable toggle"],
   ["POST", "/api/connectors/reload", "connector reload"],
-  ["POST", "/api/stt/download", "STT model download/config enable"],
-  ["PUT", "/api/stt/config", "STT config update"],
   ["POST", "/api/voice/install", "voice speech install"],
   ["DELETE", "/api/sessions/:id", "session delete"],
   ["PUT", "/api/sessions/:id", "session metadata/model update"],

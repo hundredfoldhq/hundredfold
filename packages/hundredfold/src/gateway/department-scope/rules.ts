@@ -134,7 +134,6 @@ export const REFUSED_ROUTES: Readonly<Record<string, string>> = {
   "/api/plugins*": "plugins",
   "/api/talk*": "talk control",
   "/api/tts": "talk control",
-  "/api/stt*": "talk control",
   "/api/voice*": "voice control",
   "/api/terminals*": "terminals",
   "/api/todo-captures*": "the operator's capture inbox",

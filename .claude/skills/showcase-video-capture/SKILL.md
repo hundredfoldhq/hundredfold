@@ -73,7 +73,7 @@ For a capture-only sandbox, a small Node server is usually enough:
   - `GET /api/org/departments/:name/board`
   - `GET /api/cron`
   - `GET /api/logs`
-  - `GET /api/stt/status`
+  - `GET /api/voice/config`
   - `GET /api/talk/status`
 
 - WebSocket:

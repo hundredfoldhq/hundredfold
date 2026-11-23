@@ -121,14 +121,6 @@ export interface RealtimeProvider {
   usage(): RealtimeUsage;
 }
 
-export interface SttConfig {
-  enabled?: boolean;
-  model?: string;
-  /** @deprecated Use `languages` instead. Kept for backwards compat. */
-  language?: string;
-  languages?: string[];
-}
-
 export interface TalkConfig {
   /** @deprecated The Talk orchestrator is retired. Kept for patch-release source compatibility. */
   enabled?: boolean;

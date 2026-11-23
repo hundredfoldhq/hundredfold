@@ -164,7 +164,7 @@ All session writes require operator authentication.
 | `POST /api/talk/proactive/:id/ack` | idempotently record completed/interrupted cue delivery |
 | `GET /api/talk/config` | safe provider/setup availability probe |
 
-`GET/POST /api/tts` and `POST /api/stt/transcribe` remain text-chat read-aloud
+`GET/POST /api/tts` and `POST /api/voice/transcribe` remain text-chat read-aloud
 and dictation features. They are not part of a realtime Talk turn.
 
 ## Cost accounting

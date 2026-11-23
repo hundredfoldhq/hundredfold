@@ -94,9 +94,6 @@ export interface GatewayEventMap {
   "cron:reloaded": Record<string, never>
   "cron:run-finished": { jobId: string; status: "success" | "error" }
   "engines:updated": Record<string, never>
-  "stt:download:progress": { progress: number }
-  "stt:download:complete": { model: string }
-  "stt:download:error": { error: string }
   "talk:audio": { sessionId: string; seq: number; mime: string; dataBase64: string; last?: boolean }
   "talk:tts:download:progress": { progress: number }
   "talk:tts:download:complete": Record<string, never>
@@ -142,9 +139,6 @@ export const GATEWAY_EVENTS = {
   cronReloaded: "cron:reloaded",
   cronRunFinished: "cron:run-finished",
   enginesUpdated: "engines:updated",
-  sttDownloadProgress: "stt:download:progress",
-  sttDownloadComplete: "stt:download:complete",
-  sttDownloadError: "stt:download:error",
   talkAudio: "talk:audio",
   talkTtsDownloadProgress: "talk:tts:download:progress",
   talkTtsDownloadComplete: "talk:tts:download:complete",
