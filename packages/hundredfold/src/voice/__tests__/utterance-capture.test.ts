@@ -158,6 +158,7 @@ describe("UtteranceCapture, holding an unfinished utterance", () => {
     vad.end();
     expect(stt.last().ended).toBe(true);
     expect(log.filter((l) => l.startsWith("start:"))).toEqual(["start:u1"]);
+    expect(log.filter((l) => l.startsWith("vad:"))).toEqual(["vad:true", "vad:false", "vad:true", "vad:false"]);
   });
 
   it("ends at once when the words read as finished, when the hold is off, or when nothing was heard", () => {
