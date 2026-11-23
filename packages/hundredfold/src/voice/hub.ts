@@ -6,7 +6,7 @@
  * One attachment per session. The same principal taking over detaches the old
  * socket; another principal is refused 4409; the cap refuses 4429. A client
  * that vanishes without saying goodbye (a phone locking) leaves its attachment
- * suspended for `RESUME_WINDOW_MS`, collecting replies.
+ * suspended for `RESUME_WINDOW_MS`, collecting replies, unless a new attachment needs its slot.
  */
 import { VOICE_CLOSE } from "../shared/gateway-events.js";
 import { VoiceAttachment } from "./attachment.js";
@@ -66,7 +66,7 @@ export class VoiceHub {
     if (!config) return this.refuseDisabled(socket);
     const existing = this.attachments.get(request.sessionId);
     if (existing) return this.replace(existing, socket, request);
-    if (this.attachments.size >= config.limits.maxConcurrentAttachments) {
+    if (this.attachments.size >= config.limits.maxConcurrentAttachments && !this.evictOldestSuspended()) {
       socket.close(VOICE_CLOSE.limit, "limit");
       return null;
     }
@@ -144,6 +144,21 @@ export class VoiceHub {
     });
     this.attachments.set(request.sessionId, attachment);
     return attachment;
+  }
+
+  /**
+   * Room for a new attachment: a suspended one has no client and may be waiting out its whole resume window (a
+   * dropped connection leaves one behind), so the longest-suspended is let go before a live one is refused.
+   */
+  private evictOldestSuspended(): boolean {
+    let oldest: VoiceAttachment | undefined;
+    for (const attachment of this.attachments.values()) {
+      const since = attachment.suspendedSince;
+      if (since !== null && (!oldest || since < (oldest.suspendedSince ?? Infinity))) oldest = attachment;
+    }
+    if (!oldest) return false;
+    oldest.expire();
+    return true;
   }
 
   /** The socket of an attachment closed: it ends or waits for its client. */

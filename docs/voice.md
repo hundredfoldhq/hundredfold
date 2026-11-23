@@ -134,7 +134,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `stylePrompt` | — | Your own directions for how spoken replies sound, added to the voice instructions on every voice turn, in the browser and the app. At most 2000 characters; empty or unset changes nothing. It is read on each turn, so a config reload applies it to the next spoken turn, even in a conversation already open (no gateway restart). Also editable in Settings, under Voice style, once voice mode is on. Example below. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
 | `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). The offline local models need GPU memory that grows with the length: about 3.5 GB in all for a minute of speech and 5 to 7 GB for two minutes, most of it kept after the run. On a GPU that other programs share, a long utterance can fail with "the GPU ran out of memory"; lower this limit, use the streaming model (its memory does not grow with the utterance), or free the GPU. |
-| `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
+| `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. A chat whose connection dropped and has not come back does not count against a new one: it is let go when the limit is reached. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
 
 ### Voice style

@@ -284,20 +284,19 @@ describe("a second cut on a replay", () => {
 });
 
 describe("which reply the sentences belong to", () => {
-  it("a report that joins a pass after a gateway reply came and went is still part of the pass", async () => {
+  it("a gateway reply that starts jumps over an unheard report, and a report after it is a pass of its own", async () => {
     const h = createHarness();
-    const { socket, attachment } = h.connect();
+    const { socket } = h.connect();
     h.state.turnRunning = true;
     const [one] = h.externalTurn(REPLY);
     await settle();
+    socket.clear();
     await h.reply("Hi there.");
     const [two] = h.externalTurn(REPORT_TWO);
     await settle();
-    socket.clear();
-    bargeIn(attachment, 2, 0);
-    await noWordsFollow(h);
-    expect(texts(socket)).toEqual([BETA, GAMMA, "Delta report two.", "Epsilon ends it."]);
-    expect(lastPatch(h, one)).toEqual({ voice: { spokenText: REPLY } });
+    expect(socket.ofType("stop_playback").map((f) => f.reason)).toEqual(["new_reply", "new_reply"]);
+    expect(texts(socket)).toEqual(["Hi there.", "Delta report two.", "Epsilon ends it."]);
+    expect(lastPatch(h, one)).toEqual({ voice: { spokenText: null, interrupted: true } });
     expect(lastPatch(h, two)).toEqual({ voice: { spokenText: REPORT_TWO } });
   });
 

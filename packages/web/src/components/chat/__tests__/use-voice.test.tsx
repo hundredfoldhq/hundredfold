@@ -145,6 +145,42 @@ describe('useVoice', () => {
     expect(controllers[0].stop).toHaveBeenCalledTimes(1)
   })
 
+  it('starts, stops and starts again as often as asked in one chat, and then in another, with no reload', async () => {
+    getVoiceConfig.mockResolvedValue(ENABLED)
+    const { result, rerender } = renderHook(({ id }) => useVoice(id, null), { initialProps: { id: 's1' } })
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    const first = controllers[0]
+    for (let run = 1; run <= 3; run += 1) {
+      expect(result.current.phase).toBe('off')
+      act(() => { result.current.onTap() })
+      expect(first.start).toHaveBeenCalledTimes(run)
+      await waitFor(() => expect(result.current.phase).toBe('connecting'))
+      act(() => { result.current.onTap() })
+      expect(first.stop).toHaveBeenCalledTimes(run)
+      await waitFor(() => expect(result.current.phase).toBe('off'))
+    }
+    // The same controller served every run: nothing was rebuilt, so nothing could be left held by an earlier one.
+    expect(controllers).toHaveLength(1)
+    expect(result.current.controller).toBe(first)
+
+    rerender({ id: 's2' })
+    await waitFor(() => expect(result.current.enabled).toBe(true))
+    const second = controllers.at(-1)!
+    expect(second).not.toBe(first)
+    expect(result.current.phase).toBe('off')
+    act(() => { result.current.onTap() })
+    expect(second.start).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(result.current.phase).toBe('connecting'))
+    act(() => { result.current.onTap() })
+    await waitFor(() => expect(result.current.phase).toBe('off'))
+
+    // Back in the first chat: a fresh controller, and it starts again.
+    rerender({ id: 's1' })
+    const third = controllers.at(-1)!
+    act(() => { result.current.onTap() })
+    expect(third.start).toHaveBeenCalledTimes(1)
+  })
+
   it('creates the browser session with the configured mode and barge-in', async () => {
     getVoiceConfig.mockResolvedValue({ ...ENABLED, mode: 'push-to-talk', bargeIn: { enabled: false } })
     const { result } = renderHook(() => useVoice('s1', null))

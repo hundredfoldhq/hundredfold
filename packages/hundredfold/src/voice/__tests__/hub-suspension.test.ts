@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RESUME_WINDOW_MS } from "../hub.js";
-import { createHarness, OPERATOR, SESSION, type Harness } from "./hub-harness.js";
+import { createHarness, OPERATOR, playedAll, SESSION, type Harness } from "./hub-harness.js";
 import { settle } from "./fakes.js";
 
 /** The client vanishes with no goodbye, as a locked phone's page does. */
@@ -233,6 +233,8 @@ describe("long work moved to the background (FR-015, FR-016)", () => {
     h.event("session:started");
     h.delta("text", "Two plus two is four. ");
     h.event("session:completed", { result: "", error: null });
+    await settle();
+    playedAll(socket, attachment); // heard, long before the command finishes
     h.event("session:started");
     h.delta("text", "The command finished with done-marker. ");
     h.event("session:completed", { result: "", error: null });

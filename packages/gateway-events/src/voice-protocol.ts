@@ -154,10 +154,13 @@ export interface VoiceTranscriptFrame {
   final: boolean
 }
 
-/** The gateway heard speech over playback before the client's onset detector did. */
+/**
+ * Stop playing now and drop what is buffered. `speech`: the gateway heard speech over playback before the client's
+ * onset detector did. `new_reply`: a newer reply is about to be spoken, so the older one is abandoned.
+ */
 export interface VoiceStopPlaybackFrame {
   type: "stop_playback"
-  reason: "speech"
+  reason: "speech" | "new_reply"
 }
 
 export interface VoiceTurnFrame {
