@@ -171,21 +171,11 @@ export class UtteranceCapture {
   private onVad({ kind, atMs }: VadEvent): void {
     if (this.closed || this.options.pushToTalk) return;
     if (kind === "reset") return this.onReset(atMs);
-    if (kind === "end") {
-      this.options.events.onVad(false);
-      // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
-      if (!this.capturing?.catchUp && this.holdEnd()) return;
-      this.closeOpen(this.capturing?.catchUp ? this.catchUpEnd(atMs) : this.written);
-      this.ignoringUntilEnd = false;
-      return;
-    }
+    if (kind === "end") return this.onVadEnd(atMs);
     // Speech resumed inside a hold: the same utterance goes on.
     const resumed = this.cancelHold !== null && this.capturing !== null;
     this.clearHold();
-    if (resumed) {
-      this.options.events.onVad(true);
-      return;
-    }
+    if (resumed) return this.options.events.onVad(true);
     const fromByte = Math.max(0, atMs * BYTES_PER_MS);
     // The VAD does not start twice without an end between, and a replaced detector says so (a reset), so this is a fallback
     // for one that did not: what was open stops where this speech begins (never past what was written).
@@ -196,6 +186,15 @@ export class UtteranceCapture {
     }
     this.options.events.onVad(true);
     if (!this.ignoringUntilEnd) this.onVadStart(fromByte);
+  }
+
+  private onVadEnd(atMs: number): void {
+    this.options.events.onVad(false);
+    const catchUp = this.capturing?.catchUp;
+    // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
+    if (!catchUp && this.holdEnd()) return;
+    this.closeOpen(catchUp ? this.catchUpEnd(atMs) : this.written);
+    this.ignoringUntilEnd = false;
   }
 
   /**
