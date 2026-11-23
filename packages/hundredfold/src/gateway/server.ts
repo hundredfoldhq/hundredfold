@@ -88,7 +88,6 @@ import { MIME_TYPES } from "./static-mime.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { createShellTerminalEngine } from "../terminals/shell-engine.js";
 import { isTerminalSession } from "../terminals/session.js";
-import { createTalkProactiveGatewayEmit } from "./talk-proactive-events.js";
 import { createVoiceRuntime } from "../voice/runtime.js";
 
 import { startWsHeartbeat, trackHeartbeat } from "./ws-heartbeat.js";
@@ -840,8 +839,7 @@ export async function startGateway(
     operatorAuthenticated: (req) =>
       verifyGatewayAuth(req.headers, gatewayAuthToken, HUNDREDFOLD_HOME) || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig, { upgradeHandshake: true })),
   });
-  const talkEmit = createTalkProactiveGatewayEmit(initDb(), broadcast);
-  const emit = voice ? voice.wrapEmit(talkEmit) : talkEmit;
+  const emit = voice ? voice.wrapEmit(broadcast) : broadcast;
   sessionManager.setGatewayEmitter(emit);
   // In-process Todo writes (cron mints, session-lifecycle reconciles)
   // reach the dashboard through the same company:changed lane the routes use.

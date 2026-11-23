@@ -24,7 +24,7 @@ describe("comment operation identity", () => {
       author: "operator",
       authorKind: "operator" as const,
       origin: "talk" as const,
-      idempotencyKey: "talk:session-1:provider-call-1",
+      idempotencyKey: "provider:session-1:call-1",
     };
 
     const first = comments.addComment(input);

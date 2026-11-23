@@ -1,7 +1,7 @@
 /** The gateway → browser event protocol: the event map, its names, and the runtime that
  *  decodes a frame. The JSON-only shapes those events carry live in ./payloads.js,
  *  and the per-event payload guards in ./payload-guards.js. */
-import type { CompanyChangedEvent, JsonObject, JsonValue, MessageMediaWire, TalkProactiveCuePayload } from "./payloads.js"
+import type { CompanyChangedEvent, JsonObject, JsonValue, MessageMediaWire } from "./payloads.js"
 export type * from "./payloads.js"
 export * from "./voice-protocol.js"
 
@@ -97,11 +97,6 @@ export interface GatewayEventMap {
   "stt:download:progress": { progress: number }
   "stt:download:complete": { model: string }
   "stt:download:error": { error: string }
-  "talk:audio": { sessionId: string; seq: number; mime: string; dataBase64: string; last?: boolean }
-  "talk:tts:download:progress": { progress: number }
-  "talk:tts:download:complete": Record<string, never>
-  "talk:tts:download:error": { error: string }
-  "talk:proactive-cue": TalkProactiveCuePayload
   /** The local speech install (voice mode): where it is, 0 to 1, and why it failed. */
   "voice:install": { state: "not_installed" | "installing" | "ready" | "failed"; progress: number; reason?: string }
 }
@@ -145,11 +140,6 @@ export const GATEWAY_EVENTS = {
   sttDownloadProgress: "stt:download:progress",
   sttDownloadComplete: "stt:download:complete",
   sttDownloadError: "stt:download:error",
-  talkAudio: "talk:audio",
-  talkTtsDownloadProgress: "talk:tts:download:progress",
-  talkTtsDownloadComplete: "talk:tts:download:complete",
-  talkTtsDownloadError: "talk:tts:download:error",
-  talkProactiveCue: "talk:proactive-cue",
   voiceInstall: "voice:install",
 } as const satisfies Record<string, GatewayEventName>
 

@@ -177,10 +177,10 @@ describe("claimIncomingTurn — dedupe identity", () => {
     expect(reg.getMessages(session.id)).toHaveLength(2);
   });
 
-  it("binds a durable Talk turn after settlement and rejects changed replay input", () => {
-    const session = reg.createSession({ engine: "claude", source: "web", sourceRef: "web:durable-talk" });
+  it("binds a durable turn after settlement and rejects changed replay input", () => {
+    const session = reg.createSession({ engine: "claude", source: "web", sourceRef: "web:durable-turn" });
     const input = {
-      ...turn(session, "keep this approach", "talk:session-1:provider-call-1"),
+      ...turn(session, "keep this approach", "provider:session-1:call-1"),
       role: "user",
       content: "keep this approach",
       queueVisibility: "visible" as const,

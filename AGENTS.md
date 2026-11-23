@@ -295,7 +295,7 @@ change to how it looks is faulted against these rules.
 - The palette is written once per token in `routes/glass-identity.css`, as `light-dark(<light>,
   <dark>)`; the root's `color-scheme` picks the side. Only what `light-dark()` cannot take
   (shadows, gradients) keeps a block per theme. `globals.css` holds no colour.
-- A token that script reads back (`getComputedStyle`: the Talk orb, the title bar's `--bg`) is
+- A token that script reads back (`getComputedStyle`: the title bar's `--bg`) is
   registered with `@property` in `globals.css`, or it reads back as the literal `light-dark(...)`.
 - HeroUI's own default theme and variants file are not imported. `routes/heroui-bridge.css` defines
   every variable HeroUI components read from Hundredfold's tokens, so a theme or accent change moves a

@@ -11,8 +11,6 @@ export type {
   GatewayEvent,
   GatewayEventMap,
   GatewayEventName,
-  TalkProactiveCuePayload,
-  TalkProactiveUiEffect,
 } from "@hundredfold/gateway-events";
 
 // Voice mode wire protocol (specs/009-voice-mode/contracts/voice-socket.md). The

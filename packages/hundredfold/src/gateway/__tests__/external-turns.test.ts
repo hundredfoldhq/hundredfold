@@ -99,7 +99,7 @@ describe("readTranscriptTail", () => {
       { type: "user", text: "<task-notification><result>done</result></task-notification>", ts: iso(10_000), originKind: "task-notification" },
       { type: "user", text: "📩 Employee \"worker\" replied in child session child-1.\n\nTo read the full reply: GET /api/sessions/child-1?last=20", ts: iso(9_500) },
       { type: "user", text: "⚠️ Employee \"worker\" (child session child-1) hit an error and could not finish: failed", ts: iso(9_400) },
-      { type: "user", text: "📩 Thread \"worker\" reported back.\n\nReply preview:\ndone\n\nTo follow up, delegate to this thread via /api/talk/delegate.", ts: iso(9_300) },
+      { type: "user", text: "📩 Thread \"worker\" reported back.\n\nReply preview:\ndone\n\nTo follow up, delegate to this thread via /api/delegations.", ts: iso(9_300) },
       { type: "user", text: "tool result text", ts: iso(9_000), sourceTool: true },
       { type: "user", text: "system continuation", ts: iso(8_000), promptSource: "system" },
       { type: "assistant", text: "No response requested.", ts: iso(7_000), synthetic: true },

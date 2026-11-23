@@ -10,9 +10,8 @@ import type { ServerResponse } from "node:http";
  *
  * route-helpers.ts states the rule in prose — "a module that rolls its own
  * `send` drops the gzip/br negotiation" — but nothing enforced it, and
- * five modules (heartbeat-api, talk-api, talk-turn-api,
- * talk-tts-api, files) each grew a private `send`/`json` writing `Content-Type`
- * and nothing else. That is invisible from every existing test: the JSON is
+ * several modules (heartbeat-api, tts-api, files, among others) each grew a private
+ * `send`/`json` writing `Content-Type` and nothing else. That is invisible from every existing test: the JSON is
  * right, the status is right, and the only thing wrong is that a 40 KB run
  * list crosses the wire uncompressed. So this file asserts on the wire.
  *
@@ -118,12 +117,6 @@ const FIXTURE_REL = "files/domain-router-response-owner-fixture.md";
 const FIXTURE_TEXT = "The quick brown fox jumps over the lazy dog.\n".repeat(30);
 let fixtureResolvedPath = "";
 
-// The cheapest large talk body there is: the 404 echoes the requested id back,
-// and nothing upstream of it touches provider config or mints a credential. The
-// id is long *on purpose* — that length is what carries the response past
-// MIN_COMPRESS_BYTES; shorter, and the route is correctly left uncompressed.
-const LONG_TALK_ID = "talk-session-that-was-never-opened-".repeat(32);
-
 beforeAll(() => {
   const absolute = path.resolve(FILES_DIR, path.basename(FIXTURE_REL));
   fs.mkdirSync(FILES_DIR, { recursive: true });
@@ -149,14 +142,6 @@ describe("domain routers negotiate compression through the shared json helper", 
       tooLarge: false,
       binary: false,
       content: FIXTURE_TEXT,
-    });
-  });
-
-  it("compresses a large GET /api/talk/sessions/:id response", async () => {
-    const cap = await call("GET", `/api/talk/sessions/${LONG_TALK_ID}`);
-
-    expectBrotli(cap, 404, {
-      error: `Talk session ${LONG_TALK_ID} does not exist: it was closed or never opened.`,
     });
   });
 });
