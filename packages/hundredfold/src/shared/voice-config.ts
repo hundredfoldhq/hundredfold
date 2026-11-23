@@ -8,6 +8,7 @@
  * defaults resolver (`resolveVoiceConfig`) live beside it.
  */
 import path from "node:path";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "@hundredfold/gateway-events";
 import { HUNDREDFOLD_HOME } from "./paths.js";
 import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
@@ -26,7 +27,7 @@ export interface VoiceSttConfig {
 export interface VoiceTtsConfig extends VoiceSttConfig {
   /** Provider default when absent; for `local`, the operator's chosen Kokoro voice. */
   voice?: string;
-  /** Playback speed multiplier, 0.5 to 2. Defaults to 1. */
+  /** Speaking rate multiplier for spoken replies, 0.5 to 2 (1 is natural). Defaults to 1; a change applies to the next sentence spoken, with no restart. */
   speed?: number;
 }
 
@@ -207,7 +208,7 @@ function sideProblems(prefix: string, raw: unknown): { problems: string[]; side:
 
 function ttsProblems(tts: Obj | undefined): string[] {
   if (!tts) return [];
-  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [0.5, 2], false)];
+  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [VOICE_SPEED_MIN, VOICE_SPEED_MAX], false)];
 }
 
 function vadProblems(vad: Obj | undefined): string[] {
@@ -363,7 +364,7 @@ function resolveSide(raw: Obj, kind: "stt" | "tts"): ResolvedVoiceSide {
 function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
   const tts = sub(voice, "tts");
   const side = resolveSide(tts, "tts");
-  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", 1) };
+  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", VOICE_SPEED_DEFAULT) };
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {

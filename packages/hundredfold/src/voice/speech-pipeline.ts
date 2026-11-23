@@ -10,7 +10,7 @@
  */
 import type { TtsProvider } from "./provider.js";
 import { VOICE_OUTPUT_SAMPLE_RATE, type VoiceServerFrame } from "../shared/gateway-events.js";
-import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, pcmPieces } from "./pcm.js";
+import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, Pcm16TimeStretcher, pcmPieces } from "./pcm.js";
 import { SpeakableSplitter, speakableSentence } from "./speakable-splitter.js";
 
 export interface SpeechSink {
@@ -43,7 +43,8 @@ export interface PipelineOptions {
   tts: TtsProvider;
   sink: SpeechSink;
   voice: string | null;
-  speed: number;
+  /** Speaking-rate multiplier; a function is asked for each sentence, so a change applies to the next one. */
+  speed: number | (() => number);
   language: string;
   /** The first audio frame of a segment went out. */
   onAudio?: (segment: Segment) => void;
@@ -350,22 +351,39 @@ export class SpeechPipeline {
   }
 
   private async synthesise(segment: Segment, job: Job, signal: AbortSignal): Promise<void> {
-    const { tts, voice, speed, language } = this.options;
+    const { tts, voice, language } = this.options;
     const resampler = new Pcm16Resampler(tts.sampleRate, VOICE_OUTPUT_SAMPLE_RATE);
+    const { speed, stretcher } = this.pace();
     try {
       const request = { ...(voice ? { voice } : {}), speed, language, signal };
       for await (const chunk of tts.synthesize(segment.text, request)) {
         if (signal.aborted) return;
-        const pcm = resampler.push(chunk);
-        if (pcm.length > 0) job.chunks.push(pcm);
-        this.wake(job);
+        const resampled = resampler.push(chunk);
+        this.addAudio(job, stretcher ? stretcher.push(resampled) : resampled);
       }
+      if (stretcher && !signal.aborted) this.addAudio(job, stretcher.flush());
     } catch (error) {
       if (!signal.aborted) job.error = error;
     } finally {
       job.done = true;
       this.wake(job);
     }
+  }
+
+  /**
+   * The speed to ask the provider for, and the stretch that makes it up when the provider cannot. The provider is
+   * asked whenever it applies the speed; otherwise it is asked for the natural pace and the audio is stretched here.
+   */
+  private pace(): { speed: number; stretcher: Pcm16TimeStretcher | null } {
+    const { speed, tts } = this.options;
+    const wanted = typeof speed === "function" ? speed() : speed;
+    if (tts.honoursSpeed !== false || wanted === 1) return { speed: wanted, stretcher: null };
+    return { speed: 1, stretcher: new Pcm16TimeStretcher(wanted) };
+  }
+
+  private addAudio(job: Job, pcm: Buffer): void {
+    if (pcm.length > 0) job.chunks.push(pcm);
+    this.wake(job);
   }
 
   /** Let every sender waiting on a job see that the generation moved on. */

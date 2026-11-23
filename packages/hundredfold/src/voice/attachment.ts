@@ -74,7 +74,7 @@ export class VoiceAttachment {
     this.mode = init.config.mode;
     this.voice = new ReplyVoice({
       sessionId: init.sessionId,
-      pipeline: { tts: init.providers.tts, voice: init.config.tts.voice, speed: init.config.tts.speed, language: init.config.language },
+      pipeline: { tts: init.providers.tts, voice: init.config.tts.voice, speed: () => this.liveSpeed(), language: init.config.language },
       send: (frame) => this.send(frame),
       sendAudio: (frame) => this.sendBinary(frame),
       deps: init.deps,
@@ -85,6 +85,11 @@ export class VoiceAttachment {
       sttProvider: init.providers.stt.id, operator: init.principal.kind === "operator", live: () => !this.ended, send: (frame) => this.send(frame),
       onBackgrounded: (tasks) => this.announce(tasks.map((task) => ({ id: task.taskId, description: task.description }))),
     });
+  }
+
+  /** The speaking rate as the config stands now, so a change in settings applies to the next sentence without ending voice mode. */
+  private liveSpeed(): number {
+    return (this.deps.config() ?? this.config).tts.speed;
   }
 
   get suspended(): boolean {

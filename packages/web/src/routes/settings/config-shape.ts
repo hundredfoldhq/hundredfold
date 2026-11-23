@@ -89,6 +89,12 @@ export interface Config {
     turnDetection?: string | { type?: string; [key: string]: unknown }
     noiseReduction?: string
   }
+  /** Voice mode. Only the speaking rate has a control here; the rest is edited in the file. */
+  voice?: {
+    enabled?: boolean
+    tts?: { speed?: number; [key: string]: unknown }
+    [key: string]: unknown
+  }
   portal?: {
     companyName?: string
     companyPrefix?: string
