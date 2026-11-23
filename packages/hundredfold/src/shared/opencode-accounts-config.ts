@@ -154,6 +154,13 @@ export function declaredOpencodeAccounts(config: { engines?: { opencode?: { acco
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** The names under `engines.opencode.accounts`, valid or not: what an opencode group member's `profile` is checked against. */
+export function opencodeAccountNames(engines: unknown): Set<string> {
+  const opencode = isMapping(engines) ? engines.opencode : undefined;
+  const accounts = isMapping(opencode) ? opencode.accounts : undefined;
+  return new Set(isMapping(accounts) ? Object.keys(accounts) : []);
+}
+
 /** The declared account whose provider id is `provider`, if any. */
 export function opencodeAccountByProvider(config: Parameters<typeof declaredOpencodeAccounts>[0], provider: string): OpencodeAccount | undefined {
   return declaredOpencodeAccounts(config).find((account) => account.provider === provider);

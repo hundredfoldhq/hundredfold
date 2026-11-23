@@ -47,11 +47,11 @@ describe("the sentences of a group", () => {
     expect(check([{ group: [WORK, SPARE], engine: "claude", model: "x" }])).toEqual(['fallback[0] holds only "group"; remove "engine", "model"']);
   });
 
-  it("refuses an engine other than Claude, with the opencode follow-up wording", () => {
-    expect(check([{ group: [WORK, { engine: "opencode", model: "opencode-go/glm" }] }])).toEqual([
-      "fallback[0].group[1]: a group holds Claude accounts only (opencode account groups are a follow-up)",
-    ]);
-    expect(check([{ group: [{ engine: "codex" }, WORK] }])).toEqual(["fallback[0].group[0]: a group holds Claude accounts only (opencode account groups are a follow-up)"]);
+  it("refuses a group whose members are not on one engine, and an engine a group cannot hold", () => {
+    expect(check([{ group: [WORK, { engine: "opencode", model: "opencode-go/glm" }] }])).toEqual(["fallback[0].group: a group's members all run on one engine"]);
+    expect(check([{ group: [{ engine: "codex" }, WORK] }])).toEqual(["fallback[0].group: a group's members all run on one engine"]);
+    expect(check([{ group: [{ engine: "codex" }, { engine: "pi" }] }])).toEqual(["fallback[0].group: a group's members all run on one engine"]);
+    expect(check([{ group: [{ engine: "codex" }, { engine: "codex", model: "x" }] }])).toEqual(["fallback[0].group: a group holds Claude or opencode accounts only"]);
   });
 
   it("refuses a member that names a model", () => {
@@ -111,7 +111,7 @@ describe("where a group may be written", () => {
   it("refuses a malformed group in either place with the wire sentence", () => {
     expect(shape({ fallback: [{ group: [WORK] }] })).toEqual(["engines.claude.fallback[0].group needs at least two accounts to balance between"]);
     expect(shape({ accounts: { work: { configDir: "/srv/operator/.claude-work", fallback: [{ group: [WORK, { engine: "opencode" }] }] }, spare: ACCOUNTS.spare } }))
-      .toEqual(["engines.claude.accounts.work.fallback[0].group[1]: a group holds Claude accounts only (opencode account groups are a follow-up)"]);
+      .toEqual(["engines.claude.accounts.work.fallback[0].group: a group's members all run on one engine"]);
   });
 
   it("a duplicate with a standalone link loads (it is warned and de-duplicated) but is reported", () => {

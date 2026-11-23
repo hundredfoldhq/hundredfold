@@ -17,6 +17,35 @@ const STATE_WORD: Record<AccountHeadroom["state"], string> = {
   exhausted: "at its limit",
 }
 
+const OPENCODE_KEY_PREFIX = "opencode/"
+
+/** Whether a pick's account key is an opencode account's (`opencode/<provider>`); a Claude key never starts this way. */
+export function isOpencodeAccountKey(key: string): boolean {
+  return key.startsWith(OPENCODE_KEY_PREFIX)
+}
+
+/** The engine whose accounts a pick chose between: opencode for `opencode/<provider>` keys, Claude for every other key (local, and a remote host's `claude@user@host[:profile]`). */
+export function pickEngine(pick: Pick<AccountPick, "picked" | "candidates">): "claude" | "opencode" {
+  return isOpencodeAccountKey(pick.picked) || pick.candidates.some((c) => isOpencodeAccountKey(c.account)) ? "opencode" : "claude"
+}
+
+/**
+ * An account key as a person reads it, for the one case the gateway sent no label to show instead:
+ * `opencode/opencode-go-b` is "opencode · opencode-go-b", and a remote Claude login
+ * `claude@ops@build:spare` is "spare (ops@build)" ("ops@build" for the host's own login).
+ */
+export function accountKeyText(key: string): string {
+  if (isOpencodeAccountKey(key)) return `opencode · ${key.slice(OPENCODE_KEY_PREFIX.length)}`
+  const remote = /^claude@([^:]+)(?::(.+))?$/.exec(key)
+  if (remote) return remote[2] ? `${remote[2]} (${remote[1]})` : remote[1]
+  return key
+}
+
+/** One candidate's name: the label the gateway gave it, else its key made readable. */
+export function candidateLabel(candidate: Pick<AccountHeadroom, "account" | "label">): string {
+  return candidate.label || accountKeyText(candidate.account)
+}
+
 /** The state of one account in words. */
 export function stateText(state: AccountHeadroom["state"]): string {
   return STATE_WORD[state] ?? state
@@ -74,9 +103,10 @@ export function pickedCandidate(pick: AccountPick): AccountHeadroom | undefined 
   return pick.candidates.find((c) => c.account === pick.picked)
 }
 
-/** The picked account's name: its label, else its account key. */
+/** The picked account's name: its label, else its account key made readable. */
 export function pickedLabel(pick: AccountPick): string {
-  return pickedCandidate(pick)?.label ?? pick.picked
+  const picked = pickedCandidate(pick)
+  return picked ? candidateLabel(picked) : accountKeyText(pick.picked)
 }
 
 function versus(others: AccountHeadroom[], picked: AccountHeadroom | undefined): string {
@@ -84,7 +114,8 @@ function versus(others: AccountHeadroom[], picked: AccountHeadroom | undefined):
   return others
     .map((other) => {
       const clause = clauseOf(other)
-      return numbers ? `${other.label} ${clause.replace(/^share /, "")}`.trim() : `${other.label}${clause ? ` (${clause})` : ""}`
+      const name = candidateLabel(other)
+      return numbers ? `${name} ${clause.replace(/^share /, "")}`.trim() : `${name}${clause ? ` (${clause})` : ""}`
     })
     .join(", ")
 }
@@ -116,7 +147,7 @@ export function pickReasonText(pick: AccountPick): string {
 /** When and why the balancer ran: "At session start, 14:02". */
 export function pickTriggerText(pick: AccountPick): string {
   const when = formatReset(pick.at)
-  const what = pick.trigger === "switch" ? "On a switch to Claude" : "At session start"
+  const what = pick.trigger === "switch" ? `On a switch to ${pickEngine(pick) === "opencode" ? "opencode" : "Claude"}` : "At session start"
   return when ? `${what}, ${when}` : what
 }
 

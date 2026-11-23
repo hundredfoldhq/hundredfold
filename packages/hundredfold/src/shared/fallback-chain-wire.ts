@@ -35,12 +35,13 @@ export type FallbackChainEntry = string | FallbackLink | FallbackGroupEntry;
 export type FallbackWrittenEntry = FallbackLink | FallbackGroupEntry;
 
 /**
- * A chain entry that is a set of Claude accounts rather than one target. At the
- * head of a chain whose group holds the session's own account, new sessions are
- * spread across the members in proportion to their usage headroom (a weighted
- * split, not the single best). As fallback, the members are tried most headroom
- * first. Each member is an object link with `engine: claude` and an optional
- * `profile`, never a model.
+ * A chain entry that is a set of accounts rather than one target: all Claude
+ * accounts, or all opencode accounts. At the head of a chain whose group holds
+ * the session's own account, new sessions are spread across the members in
+ * proportion to their usage headroom (a weighted split, not the single best). As
+ * fallback, the members are tried most headroom first. Each member is an object
+ * link with `engine: claude` and an optional `profile`, or `engine: opencode`
+ * and the `profile` naming a declared opencode account; never a model.
  */
 export interface FallbackGroupEntry {
   group: FallbackLink[];
@@ -48,7 +49,7 @@ export interface FallbackGroupEntry {
 
 /** The usage headroom of one account of a group, as the balancer ranks it. */
 export interface AccountHeadroom {
-  /** The per-account store key (`claude`, `claude:<profile key>`). */
+  /** The per-account store key (`claude`, `claude:<profile key>`, or an opencode account's `opencode/<provider>`). */
   account: string;
   label: string;
   state: "fresh" | "stale" | "unknown" | "exhausted";
@@ -346,6 +347,10 @@ export interface FallbackChainContext {
   engines: readonly string[];
   /** Declared account names under `engines.claude.accounts`. */
   profiles: ReadonlySet<string>;
+  /** Declared account names under `engines.opencode.accounts`: what an opencode group member's `profile` is checked against. Absent: the names are not checked. */
+  opencodeProfiles?: ReadonlySet<string>;
+  /** The engine the chain's own target runs on, where it is known (an employee's engine; an engine or account chain's own). Absent: taken from `self`, and unchecked when neither is known. An opencode group is valid only where this is opencode. */
+  ownEngine?: string;
   /** The target the chain falls back from, where it is known: a link equal to it
    *  is refused. For an engine default it is `{engine}`, for an account
    *  `{engine: "claude", profile}`. */
@@ -412,20 +417,53 @@ function entryProblems(where: string, entry: unknown, ctx: FallbackChainContext)
   return [...engine, ...profileProblems(where, link, ctx), ...modelProblems(where, entry), ...opencodeLinkProblems(where, link, ctx.opencode)];
 }
 
-function groupMemberProblems(at: string, member: unknown, ctx: FallbackChainContext, seen: Set<string>): string[] {
+/** The refusals of one opencode group member: it names its account with `profile`, a declared opencode account, and no model. */
+function opencodeMemberProblems(at: string, member: unknown, link: FallbackLink, ctx: FallbackChainContext): string[] {
+  if (link.profile === undefined) return [`${at}: an opencode group member names its account with profile`];
+  const modelNamed = isRecord(member) && member.model !== undefined ? [`${at}: a group member is an account, so it names no model`] : [];
+  const unknown = ctx.opencodeProfiles && !ctx.opencodeProfiles.has(link.profile) ? [`${at}: profile "${link.profile}" names no account under engines.opencode.accounts`] : [];
+  return [...unknown, ...modelNamed];
+}
+
+/** `mixed`: the group's members are not on one engine, which is the one problem reported for them (what each would need as its engine's member is moot). */
+/** What the member's own engine asks of it: a Claude account is a declared profile or the default login, an opencode account a declared one named by `profile`; neither names a model. */
+function memberEngineProblems(at: string, member: unknown, link: FallbackLink, ctx: FallbackChainContext): string[] {
+  if (link.engine === "opencode") return opencodeMemberProblems(at, member, link, ctx);
+  if (link.engine !== "claude") return [];
+  return [...profileProblems(at, link, ctx), ...(isRecord(member) && member.model !== undefined ? [`${at}: a group member is an account, so it names no model`] : [])];
+}
+
+function groupMemberProblems(at: string, member: unknown, ctx: FallbackChainContext, seen: Set<string>, mixed: boolean): string[] {
   if (typeof member === "string") return [`${at} must be a mapping with engine claude and an optional profile, not a string`];
   if (isGroupShaped(member)) return [`${at}: a group cannot hold another group`];
   const link = fallbackLinkOf(member);
   if (!link) return [`${at} must be a mapping with engine claude and an optional profile`];
-  if (link.engine !== "claude") return [`${at}: a group holds Claude accounts only (opencode account groups are a follow-up)`];
-  const problems = [...profileProblems(at, link, ctx), ...(isRecord(member) && member.model !== undefined ? [`${at}: a group member is an account, so it names no model`] : [])];
+  const own = mixed ? [] : memberEngineProblems(at, member, link, ctx);
   const key = fallbackLinkKey(link);
-  if (seen.has(key)) problems.push(`${at} (${fallbackLinkLabel(link)}) repeats an earlier member of this group: list each account once`);
+  if (seen.has(key)) own.push(`${at} (${fallbackLinkLabel(link)}) repeats an earlier member of this group: list each account once`);
   seen.add(key);
-  return problems;
+  return own;
 }
 
-/** What is wrong with a group entry itself: its shape, its size and each member. */
+/** The engines the members of a group run on, in the order first written (members that are not links are the members' own problem). */
+function groupEngines(group: readonly unknown[]): string[] {
+  return [...new Set(group.flatMap((member) => (isGroupShaped(member) ? [] : (fallbackLinkOf(member)?.engine ?? []))))];
+}
+
+/** What a group's engines say of the group as a whole: one engine, Claude or opencode, and an opencode group only where the chain's own target runs on opencode. */
+function groupEngineProblems(at: string, group: readonly unknown[], ctx: FallbackChainContext): string[] {
+  const engines = groupEngines(group);
+  if (engines.length > 1) return [`${at}: a group's members all run on one engine`];
+  const [engine] = engines;
+  if (engine !== undefined && engine !== "claude" && engine !== "opencode") return [`${at}: a group holds Claude or opencode accounts only`];
+  const own = ctx.ownEngine ?? ctx.self?.engine;
+  if (engine === "opencode" && own !== undefined && own !== "opencode") {
+    return [`${at}: an opencode group balances an opencode session's own model; put it in an opencode employee's chain or engines.opencode.fallback`];
+  }
+  return [];
+}
+
+/** What is wrong with a group entry itself: its shape, its size, its engine and each member. */
 function groupProblems(at: string, entry: Record<string, unknown>, ctx: FallbackChainContext): string[] {
   const { group } = entry;
   if (!Array.isArray(group)) return [`${at}.group must be a list of Claude accounts`];
@@ -433,9 +471,11 @@ function groupProblems(at: string, entry: Record<string, unknown>, ctx: Fallback
   const problems = [
     ...(extra.length > 0 ? [`${at} holds only "group"; remove ${extra.map((key) => `"${key}"`).join(", ")}`] : []),
     ...(group.length < 2 ? [`${at}.group needs at least two accounts to balance between`] : []),
+    ...groupEngineProblems(`${at}.group`, group, ctx),
   ];
   const seen = new Set<string>();
-  group.forEach((member, index) => problems.push(...groupMemberProblems(`${at}.group[${index}]`, member, ctx, seen)));
+  const mixed = groupEngines(group).length > 1;
+  group.forEach((member, index) => problems.push(...groupMemberProblems(`${at}.group[${index}]`, member, ctx, seen, mixed)));
   return problems;
 }
 
@@ -483,9 +523,11 @@ function targetProblems(walk: ChainWalk, entry: unknown, index: number): string[
  * a model that is not an id, a link that is the chain's own target, and a link
  * listed twice. Distinct targets are all accepted, including the same engine on
  * another profile or model. A group entry (`{ group: [...] }`) holds at least two
- * distinct Claude accounts, each a declared profile or the default login, none
- * naming a model, and no strings or nested groups; its members count as links for
- * the duplicate rule, and may include the chain's own account.
+ * distinct accounts of one engine, none naming a model, and no strings or nested
+ * groups: Claude accounts (each a declared profile or the default login), or opencode
+ * accounts (each naming a declared account with `profile`), the latter only in a chain
+ * whose own target runs on opencode. Its members count as links for the duplicate
+ * rule, and may include the chain's own account.
  */
 export function fallbackChainProblems(where: string, chain: unknown, ctx: FallbackChainContext): string[] {
   if (chain === undefined) return [];

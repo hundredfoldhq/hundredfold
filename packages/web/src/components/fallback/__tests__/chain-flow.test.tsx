@@ -281,3 +281,33 @@ describe('resolveForFlow, a group entry', () => {
     expect(out[1].group?.headroom).toBeUndefined()
   })
 })
+
+/* A group of opencode accounts: its members are named by account, and the account that serves the chain's
+ * own model is the start node's, not a member. */
+describe('resolveForFlow, a group of opencode accounts', () => {
+  const ACCOUNTS = [{ name: 'go-a', provider: 'opencode-go' }, { name: 'go-b', provider: 'opencode-go-b' }, { name: 'go-c', provider: 'opencode-go-c' }]
+  const self = { engine: 'opencode', model: 'opencode-go/glm-5' }
+  const written = { group: [{ engine: 'opencode', profile: 'go-a' }, { engine: 'opencode', profile: 'go-b' }, { engine: 'opencode', profile: 'go-c' }] }
+
+  it('names each member by its account and leaves the own account to the start node', () => {
+    const [own, ...members] = resolveForFlow(self, [written], undefined, undefined, ACCOUNTS)
+
+    expect(own.engine).toBe('opencode')
+    expect(members.map((m) => m.label)).toEqual(['opencode · go-b', 'opencode · go-c'])
+    expect(members.every((m) => m.group?.index === 0)).toBe(true)
+  })
+
+  it('keeps every member while the declared accounts are not known', () => {
+    const [, ...members] = resolveForFlow(self, [written], undefined, undefined, undefined)
+
+    expect(members.map((m) => m.label)).toEqual(['opencode · go-a', 'opencode · go-b', 'opencode · go-c'])
+  })
+
+  it('draws the members as one group node', () => {
+    const links = resolveForFlow(self, [written], undefined, undefined, ACCOUNTS)
+    const graph = buildChainFlow({ links }, 'horizontal')
+
+    expect(graph.nodes).toHaveLength(2)
+    expect(graph.nodes[1].data.label).toBe('Balanced group')
+  })
+})
