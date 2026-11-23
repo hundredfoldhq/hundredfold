@@ -3849,7 +3849,11 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       const body = _parsed.body as any;
       const prompt = body.prompt || body.message;
-      const promptError = messageBodyError(prompt, "prompt or message");
+      // A spoken start has nothing to say yet: only the operator's `speech: true`
+      // spawn may omit the first message, and the session then waits for it.
+      // Every other caller keeps the 400.
+      const speechStart = !prompt && body.speech === true && resolveScopedWriteCallerIdentity(req, context).kind === "operator";
+      const promptError = speechStart ? undefined : messageBodyError(prompt, "prompt or message");
       if (promptError) return badRequest(res, promptError);
       // GRS-017a identity seam: a spawn carrying x-hundredfold-caller-session (the hundredfold
       // MCP server run by another session) is auto-linked as that session's
@@ -3898,6 +3902,7 @@ export async function handleApiRequest(
         attachments: body.attachments,
         interactive: body.mode === "interactive",
         speech: body.speech === true,
+        awaitFirstMessage: speechStart,
       });
       if (!spawned.ok) return spawned.status === 403 ? json(res, { error: spawned.error }, 403) : badRequest(res, spawned.error);
       if (spawnCaller.kind === "session" && body.parentSessionId === spawnCaller.callerId) armChildWatch(spawnCaller.callerId);

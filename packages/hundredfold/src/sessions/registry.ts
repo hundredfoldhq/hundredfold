@@ -678,6 +678,7 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  promptExcerpt?: string | null;
   archivedAt?: string | null;
   userId?: string | null;
 }
@@ -792,6 +793,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.lastError !== undefined) {
     sets.push('last_error = ?');
     values.push(updates.lastError);
+  }
+  if (updates.promptExcerpt !== undefined) {
+    sets.push('prompt_excerpt = ?');
+    values.push(updates.promptExcerpt);
   }
   if (updates.title !== undefined) {
     sets.push('title = ?');

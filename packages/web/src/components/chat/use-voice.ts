@@ -5,7 +5,7 @@ import { gatewayTransport } from '@/lib/gateway-transport'
 import { nativeBridge } from '@/platform/native-bridge'
 import { BACKGROUND_FIRST_READ_GRACE_MS, deriveBackgroundChip, FRESH_CHIP_MEMORY, type BackgroundChip, type ChipMemory } from '@/lib/voice/background-chip'
 import type { VoiceClientConfig } from '@/lib/voice/config'
-import type { VoiceController } from '@/lib/voice/controller'
+import { awaitsClaim, claimHandoff, dropHandoff, HANDOFF_GRACE_MS, wasAdopted, isClaimed, releaseClaim, type VoiceController, type VoiceSessionStarter } from '@/lib/voice/controller'
 import { NativeVoiceSession, nativeVoiceBridge } from '@/lib/voice/native'
 import { BrowserVoiceSession } from '@/lib/voice/session'
 import { INITIAL_VOICE_STATE, voicePhase, type VoicePhase, type VoiceUiState } from '@/lib/voice/state'
@@ -21,7 +21,7 @@ export function browserVoiceProblem(): string | null {
   return 'Voice mode needs a secure (HTTPS) connection and a browser that can use the microphone.'
 }
 
-function createController(config: EnabledConfig, sessionId: string): VoiceController | null {
+function createController(config: EnabledConfig, sessionId: string | VoiceSessionStarter): VoiceController | null {
   const native = nativeVoiceBridge(nativeBridge())
   if (native) return new NativeVoiceSession(native, { sessionId, mode: config.mode, origin: gatewayTransport().profile.origin })
   if (browserVoiceProblem()) return null
@@ -32,7 +32,7 @@ const NO_STATE = () => INITIAL_VOICE_STATE
 const NO_SUBSCRIBE = () => () => undefined
 
 export interface UseVoice {
-  /** The control exists: voice is enabled on the gateway and this is a chat that exists. */
+  /** The control exists: voice is enabled on the gateway and this is a chat that exists, or a new chat voice can create. */
   enabled: boolean
   /** Why the control cannot start, in words a person can act on. Null when it can. */
   unavailable: string | null
@@ -102,12 +102,51 @@ function useBackgroundChip(state: VoiceUiState, controller: VoiceController | nu
   return derived.chip
 }
 
-function useController(config: EnabledConfig | null, sessionId: string | null | undefined): VoiceController | null {
+/** The controller a pane already holds, or one handed over from the pane it replaces, for this chat. */
+function carriedOver(sessionId: string | null | undefined, held: VoiceController | null): VoiceController | null {
+  if (!sessionId) return null
+  if (held?.boundSessionId?.() === sessionId) { dropHandoff(held); return held }
+  return claimHandoff(sessionId) ?? null
+}
+
+function pickController(
+  config: EnabledConfig | null, sessionId: string | null | undefined, newChat: VoiceSessionStarter | null | undefined, held: VoiceController | null,
+): VoiceController | null {
+  if (!config || !config.available) return null
+  const target = sessionId || newChat
+  return carriedOver(sessionId, held) ?? (target ? createController(config, target) : null)
+}
+
+/**
+ * The controller for the chat in the pane. On a new chat it is made with a way to create the chat on the first tap; once
+ * the pane is bound to the chat it created, that same controller carries on (a new one would stop the conversation).
+ */
+function useController(
+  config: EnabledConfig | null,
+  sessionId: string | null | undefined,
+  newChat: VoiceSessionStarter | null | undefined,
+): VoiceController | null {
+  const held = useRef<VoiceController | null>(null)
+  // Only the chat and the config decide the controller; the starter is read at tap time through its own ref.
   const controller = useMemo(
-    () => (config && config.available && sessionId ? createController(config, sessionId) : null),
-    [config, sessionId],
+    () => pickController(config, sessionId, newChat, held.current),
+    [config, sessionId, Boolean(newChat)],
   )
-  useEffect(() => () => controller?.dispose(), [controller])
+  held.current = controller
+  useEffect(() => {
+    if (controller) releaseClaim(controller)
+    // A pane that remounts onto the chat its controller created has claimed it: it carries on in the new pane.
+    return () => {
+      if (!controller || isClaimed(controller)) return
+      if (!awaitsClaim(controller)) { controller.dispose(); return }
+      // Offered but not yet claimed: the pane that replaces this one may mount a moment after this one goes.
+      setTimeout(() => {
+        if (wasAdopted(controller)) return
+        dropHandoff(controller)
+        controller.dispose()
+      }, HANDOFF_GRACE_MS)
+    }
+  }, [controller])
   return controller
 }
 
@@ -168,10 +207,11 @@ export function useVoice(
   sessionId: string | null | undefined,
   backgroundActivity: BackgroundActivity | null | undefined,
   onSync?: () => void,
+  newChat?: VoiceSessionStarter | null,
 ): UseVoice {
   const { config, refresh } = useVoiceConfig()
   const enabledConfig = config.enabled ? config : null
-  const controller = useController(enabledConfig, sessionId)
+  const controller = useController(enabledConfig, sessionId, newChat)
   const state = useSyncExternalStore(controller?.subscribe ?? NO_SUBSCRIBE, controller?.getSnapshot ?? NO_STATE)
   useSync(state.syncTick, onSync)
   const { note, showNote } = useNote()
@@ -182,7 +222,7 @@ export function useVoice(
   const tap = { config: enabledConfig, controller, unavailable: facts.unavailable, phase, needsTap: state.needsTap, showNote, refresh }
   return {
     ...facts,
-    enabled: enabledConfig !== null && Boolean(sessionId),
+    enabled: enabledConfig !== null && (Boolean(sessionId) || Boolean(newChat)),
     state, phase, controller, chip, note, showNote,
     onTap: () => handleTap(tap),
   }
