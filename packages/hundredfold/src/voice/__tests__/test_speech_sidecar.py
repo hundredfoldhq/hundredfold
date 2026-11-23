@@ -718,6 +718,8 @@ class FakeOfflineAsr:
         self.asr = self
 
     def recognize(self, samples, sample_rate=16000):
+        if self.failure:
+            raise self.failure
         self.plain.append(samples.size)
         return f"plain {samples.size}"
 
@@ -772,12 +774,24 @@ class ParakeetOnnxTests(unittest.TestCase):
 
     def test_running_out_of_gpu_memory_is_reported_as_that_and_other_failures_pass_through(self):
         model, fake = self.build(["CUDAExecutionProvider"])
-        fake.failure = RuntimeError("Non-zero status code returned while running Conv node. bfc_arena.cc:360 Failed to allocate memory for requested buffer of size 27346944")
-        with self.assertRaisesRegex(RuntimeError, r"GPU ran out of memory on 55 s of audio"):
-            model.recognize(self.seconds(55))
+        for message in (
+            "Non-zero status code returned while running Conv node. bfc_arena.cc:360 Failed to allocate memory for requested buffer of size 27346944",
+            "CUBLAS failure 3: CUBLAS_STATUS_ALLOC_FAILED ; GPU=0 ; hostname=x ; expr=cublasGemmEx",
+            "CUDA failure 2: out of memory ; GPU=0",
+        ):
+            with self.subTest(message=message):
+                fake.failure = RuntimeError(message)
+                with self.assertRaisesRegex(RuntimeError, r"GPU ran out of memory on 55 s of audio"):
+                    model.recognize(self.seconds(55))
         fake.failure = ValueError("bad input")
         with self.assertRaisesRegex(ValueError, "bad input"):
             model.recognize(self.seconds(3))
+
+    def test_the_cpu_path_reports_its_own_errors_unchanged(self):
+        model, fake = self.build(["CPUExecutionProvider"])
+        fake.failure = RuntimeError("std::bad_alloc: out of memory")
+        with self.assertRaisesRegex(RuntimeError, r"^std::bad_alloc: out of memory$"):
+            model.recognize(self.seconds(2))
 
 
 class LanguageTests(unittest.TestCase):

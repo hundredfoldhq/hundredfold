@@ -318,8 +318,9 @@ class ParakeetOnnx(SttModel):
             result = next(self._asr.asr.recognize_batch(samples[None, :], np.array([real], dtype=np.int64)))
             return str(result.text).strip()
         except Exception as error:
-            if _out_of_memory(error):
-                # The encoder's memory grows with the length of the audio (about 3.5 GB in all for 55 s, 5 to 7 GB for 130 s) and
+            if self._pad_to and _out_of_memory(error):
+                # Only the GPU path: the CPU's own errors are reported as they are.
+                # The encoder's memory grows with the length of the audio (about 3.5 GB in all for a minute, 5 to 7 GB for two) and
                 # onnxruntime keeps what it took; when other programs hold most of the GPU, a long utterance does not fit.
                 raise RuntimeError(f"the GPU ran out of memory on {real / VAD_SAMPLE_RATE:.0f} s of audio; other programs are probably holding it") from error
             raise
