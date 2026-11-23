@@ -122,7 +122,7 @@ export class ReplyVoice {
       ...this.passes.filter((p) => !p.closed).map((p) => p.id),
       ...this.finished.map((r) => r.id),
       ...(this.reply ? [this.reply.id] : []),
-    ].sort((a, b) => a - b));
+    ]);
     const result = this.pipeline.cut(segmentId, playedMs, open);
     this.lastCut = result;
     this.pipeline.hold();
@@ -177,12 +177,23 @@ export class ReplyVoice {
     this.pipeline.release();
     for (const pass of dropped) this.recordNothingHeard(pass);
     this.recordUnheardOthers(cut);
-    const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
+    const pass = this.passCutOn(cut, heard);
     if (cut && pass) return this.recordPassHeard(cut.heardBy, pass);
-    const reply = this.reply ?? this.last;
+    // The reply the cut fell in, which is not always the newest: another may have been sent behind it.
+    const reply = this.replyFor(cut?.replyKey) ?? this.reply ?? this.last;
     if (!reply) return;
     reply.heard = heard;
-    // A reply still being written has no stored message of its own yet: it is told when its turn ends.
+    this.tellOrDefer(reply);
+  }
+
+  /** The report pass the cut fell in, if the words said are what the cut heard. */
+  private passCutOn(cut: CutResult | null, heard: string): Reply | undefined {
+    if (!cut || cut.heard !== heard || cut.replyKey === undefined) return undefined;
+    return this.passes.find((p) => p.id === cut.replyKey);
+  }
+
+  /** A reply still being written has no stored message of its own yet: it is told when its turn ends. */
+  private tellOrDefer(reply: Reply): void {
     if (reply === this.reply) this.pendingMeta = reply;
     else this.safeApplyMeta(reply);
   }
@@ -198,13 +209,17 @@ export class ReplyVoice {
         this.recordPassHeard(other.heardBy, report);
         continue;
       }
-      const reply = this.finished.find((r) => r.id === other.replyKey) ?? (this.reply?.id === other.replyKey ? this.reply : undefined);
+      const reply = this.replyFor(other.replyKey);
       if (!reply) continue;
       reply.heard = other.heardBy.map((part) => part.text).filter(Boolean).join(" ");
-      // A reply still being written has no stored message of its own yet: it is told when its turn ends.
-      if (reply === this.reply) this.pendingMeta = reply;
-      else this.safeApplyMeta(reply);
+      this.tellOrDefer(reply);
     }
+  }
+
+  /** The gateway reply with this id, finished or still being written. */
+  private replyFor(id: number | undefined): Reply | undefined {
+    if (id === undefined) return undefined;
+    return this.finished.find((r) => r.id === id) ?? (this.reply?.id === id ? this.reply : undefined);
   }
 
   markPlayed(segmentId: number): void {
