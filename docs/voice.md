@@ -43,7 +43,7 @@ The container image does not include Python, so the local providers do not run i
 
 3. Watch `GET /api/voice/config`: `install.state` goes `not_installed` → `installing` (with `progress` from 0 to 1) → `ready`, or `failed` with a `reason`. A `voice:install` event carries the same state to the browser as it changes. `available: false` always comes with a `reason` a person can act on ("Python 3.10+ with venv and pip not found", "OpenAI key not set: OPENAI_API_KEY").
 
-The speech process starts when voice is first used, stays warm for 10 minutes after the last use, and is stopped when the gateway stops. If it dies it is started again on the next use, at most once every 30 seconds. Starting it loads the models and runs one warm-up decode and synthesis, which takes several seconds on a GPU and longer on a cold disk; speech in the first seconds after voice mode opens, while the models load, may not be transcribed.
+The speech process starts when voice is first used, stays warm for 10 minutes after the last use, and is stopped when the gateway stops. If it dies it is started again on the next use, at most once every 30 seconds. Starting it loads the models and runs one warm-up decode and synthesis, which takes several seconds on a GPU and longer on a cold disk.
 
 Changing `local.device` between `cpu` and `gpu` needs a new install (a different runtime package and a different Parakeet model); the config reply says `not_installed` until you run it again.
 
@@ -135,6 +135,14 @@ The gateway does not ship the models; it downloads them on first use.
 - **Parakeet TDT 0.6B v2** (speech-to-text): NVIDIA's model, converted to ONNX by a third party under CC-BY-4.0; see NVIDIA's model card for its community model licence.
 - **Kokoro-82M v1.0** (text-to-speech): Apache-2.0.
 - **Silero VAD**: MIT.
+
+## Starting voice on a new chat
+
+The voice control is on a new chat too, before anything is typed. Tapping it asks for the microphone, creates the chat with the composer's current employee, engine, model and effort, opens it, and attaches voice to it. The first thing you say becomes the chat's first message, and names it the way a typed first message would (a first message typed instead names it the same way); nothing is sent to the engine until you speak.
+
+The web does this with `POST /api/sessions` and `{ "speech": true }` and no `prompt`. The gateway accepts that form only from the operator: it creates the chat idle (same employee, engine, model, effort and fallback resolution and the same permission checks as a prompted create, but no message and no turn) and answers `201` with the usual session body. Any other caller, and any request without `speech: true`, still gets `400 prompt or message is required`.
+
+A voice conversation that ends on such a chat before a message was spoken (hang up, a clean close, the ten-minute resume window running out, voice turned off) deletes the empty chat on the gateway, so nothing is left behind. A chat that never gets a voice connection at all (the tab closed between the two requests) stays as an empty chat and can be deleted like any other.
 
 ## What happens when you speak over a long job
 

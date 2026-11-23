@@ -27,7 +27,7 @@ import { withEngineHealth } from "../shared/engine-health.js";
 import { withInternalFallback } from "../engines/opencode-internal-fallback.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
-import { transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
+import { metaWithoutPickForModel, transportMetaWithoutPickNumbers } from "../sessions/account-pick-meta.js";
 import { fallbackPreviewFor, parseFallbackModeParam, parseFallbackModePatch, withFallbackView } from "./session-fallback-api.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget } from "../sessions/fallback-target.js";
@@ -99,6 +99,7 @@ export {
   foldPartialText,
   normalizeBlockDeltaForTurn,
 } from "../sessions/partial-stream.js";
+import { getLiveStreamBlock } from "../sessions/partial-stream.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { spawnCwd } from "../sessions/session-cwd.js";
 import { sessionScopeDepartment } from "../sessions/session-scope.js";
@@ -1912,9 +1913,19 @@ export async function handleApiRequest(
       const page = includeMessages && lastN > 0
         ? getMessagePage(params.id, { limit: lastN })
         : null;
-      const messages = includeMessages
+      const storedMessages = includeMessages
         ? page ? page.messages : getMessages(params.id)
         : [];
+      // While a turn runs, the text block it is streaming comes from the turn's writer
+      // and is read in the same tick as the rows: the stored row of that block trails
+      // the stream by up to one flush, and a view opened now lines the live deltas up
+      // against this text by their offsets.
+      const liveStream = includeMessages && session.status === "running"
+        ? getLiveStreamBlock(session.id, session.attemptToken)
+        : null;
+      const messages = liveStream?.messageId
+        ? storedMessages.map((message) => message.id === liveStream.messageId ? { ...message, content: liveStream.text } : message)
+        : storedMessages;
 
       // Backfill from Claude Code's JSONL transcript if our DB has no messages.
       // Run async + transactional so the GET doesn't block on multi-MB JSONL
@@ -1936,6 +1947,7 @@ export async function handleApiRequest(
       return json(res, withFallbackView({
         ...serializeSessionResponse(session, context),
         ...(includeMessages ? { messages } : {}),
+        ...(liveStream ? { liveStream } : {}),
         ...(page ? { messagesPage: { hasOlder: page.hasOlder } } : {}),
       }, session, context, resolveScopedCaller(resolveScopedWriteCallerIdentity(req, context)) !== null));
     }
@@ -2000,7 +2012,12 @@ export async function handleApiRequest(
           defaultModel: engineConfigForPatch.model,
         });
         if (!patch.ok) return badRequest(res, patch.error || "invalid model/effort");
-        if (patch.updates?.model !== undefined) updates.model = patch.updates.model;
+        if (patch.updates?.model !== undefined) {
+          updates.model = patch.updates.model;
+          // A model named on an opencode session is an account the operator chose: the balancer's pick no longer describes it.
+          const unpicked = metaWithoutPickForModel(session, patch.updates.model);
+          if (unpicked) updates.transportMeta = unpicked;
+        }
         if (patch.updates?.effortLevel !== undefined) updates.effortLevel = patch.updates.effortLevel;
       }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
@@ -3849,7 +3866,11 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       const body = _parsed.body as any;
       const prompt = body.prompt || body.message;
-      const promptError = messageBodyError(prompt, "prompt or message");
+      // A spoken start has nothing to say yet: only the operator's `speech: true`
+      // spawn may omit the first message, and the session then waits for it.
+      // Every other caller keeps the 400.
+      const speechStart = !prompt && body.speech === true && resolveScopedWriteCallerIdentity(req, context).kind === "operator";
+      const promptError = speechStart ? undefined : messageBodyError(prompt, "prompt or message");
       if (promptError) return badRequest(res, promptError);
       // GRS-017a identity seam: a spawn carrying x-hundredfold-caller-session (the hundredfold
       // MCP server run by another session) is auto-linked as that session's
@@ -3898,6 +3919,7 @@ export async function handleApiRequest(
         attachments: body.attachments,
         interactive: body.mode === "interactive",
         speech: body.speech === true,
+        awaitFirstMessage: speechStart,
       });
       if (!spawned.ok) return spawned.status === 403 ? json(res, { error: spawned.error }, 403) : badRequest(res, spawned.error);
       if (spawnCaller.kind === "session" && body.parentSessionId === spawnCaller.callerId) armChildWatch(spawnCaller.callerId);

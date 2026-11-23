@@ -90,7 +90,8 @@ and `reason` values are specified in `specs/009-voice-mode/contracts/native-voic
 A web UI that is suspended or gone does not end the session. On Android, BACK at the
 app root moves the task to the background instead of finishing the activity (finishing
 it aborts the process), so the session keeps running, and removing the task from
-recents ends the session cleanly (`bye`, close 1000). A page reload cannot reattach to a running session yet.
+recents ends the session cleanly (`bye`, close 1000). A page reload cannot reattach to a
+running session yet.
 
 ### Platform status
 

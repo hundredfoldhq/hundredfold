@@ -100,6 +100,12 @@ export interface VoiceHubDeps {
   findReplyMessageId(sessionId: string, sinceMs: number): string | undefined;
   /** Replies the engine wrote on its own (no gateway turn streamed them) stored after `sinceMs`, oldest first. */
   externalRepliesSince(sessionId: string, sinceMs: number): StoredReply[];
+  /**
+   * A voice conversation ended on a session. A session made for a spoken start
+   * that never received a message is deleted here, server-side, so a closed
+   * tab leaves nothing behind. Absent: nothing is discarded.
+   */
+  discardIfEmptySpokenStart?(sessionId: string): void;
   clock: VoiceClock;
   log: VoiceLog;
   newId(): string;

@@ -6,7 +6,7 @@ import { SettingsSelect } from "../shared"
 import type { EnginesResponse } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import { ChainModelSelect } from "./chain-model-select"
-import { isGroupItem, itemLabel, noModelLabel, profileOptionsFor, withEngine, withModel, withProfile, type ChainItem } from "./chain-links"
+import { isGroupItem, itemLabel, noModelLabel, profileOptionsFor, withEngine, withModel, withProfile, type ChainItem, type OpencodeAccountRef } from "./chain-links"
 import { GroupTarget } from "./chain-group"
 
 /** A row's icon button: ghost, at the 34px the rows are laid out for. */
@@ -35,6 +35,8 @@ export interface RowFields {
   knownProfiles?: string[]
   /** How the picker names an account that is not just its name (a remote one carries its host). */
   profileLabels?: Record<string, string>
+  /** The declared opencode accounts: what an opencode group's members are ticked from and checked against. Absent: the editor offers no opencode group and checks no account name. */
+  opencodeAccounts?: OpencodeAccountRef[]
   /** The engine the chain falls back from: where "Same model" is meant. */
   ownEngine: string | undefined
   /** "Claude chain", "Claude · work chain": names the chain in every control. */

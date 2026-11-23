@@ -298,6 +298,11 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   ];
 }
 
+/** Whether the config asks for voice: anything but an object whose `enabled` is absent or `false`. A block that asks for it may still be invalid. */
+export function asksForVoice(voice: unknown): boolean {
+  return !(isObject(voice) && (voice.enabled === undefined || voice.enabled === false));
+}
+
 /**
  * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
  * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
@@ -306,17 +311,18 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
 export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
   const problems = voiceConfigProblems(voice, home);
   if (problems.length === 0) return null;
-  if (isObject(voice) && (voice.enabled === undefined || voice.enabled === false)) return null;
+  if (!asksForVoice(voice)) return null;
   return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
 }
 
 /**
  * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
- * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while voice is off, so a
- * variable a disabled block names stays where it is.
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while the config does not
+ * ask for voice, so a variable a disabled block names stays where it is. A block that asks for voice but is invalid
+ * (`enabled: "yes"`) still withholds them: voice is off for that reason, not because nobody wanted it.
  */
 export function voiceKeyEnvNames(voice: unknown): string[] {
-  if (!isObject(voice) || voice.enabled !== true) return [];
+  if (!isObject(voice) || !asksForVoice(voice)) return [];
   const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
   return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
 }

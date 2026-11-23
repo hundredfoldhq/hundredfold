@@ -165,7 +165,10 @@ function EngineRow({ label, on, onPick }: { label: string; on: boolean; onPick: 
   )
 }
 
-type OpencodeRows = { accounts: OpencodeAccountChoice[]; shown: string | undefined; hasOther: boolean; onChoose: (account: string | undefined) => void }
+/** What an opencode account's row says when new sessions of the chat's subject are balanced from it. */
+export const OPENCODE_BALANCED_LABEL = 'balanced by headroom'
+
+type OpencodeRows = { accounts: OpencodeAccountChoice[]; shown: string | undefined; hasOther: boolean; /** The account new sessions are balanced from: its row says so. */ balanced?: string; onChoose: (account: string | undefined) => void }
 
 /** opencode, listed once per declared account (and once for the models no account serves, if there are any). */
 function opencodeRowsOf(opencode: OpencodeRows, engine: string) {
@@ -174,7 +177,7 @@ function opencodeRowsOf(opencode: OpencodeRows, engine: string) {
   return [
     ...(opencode.hasOther ? [<EngineRow key="opencode" label={`${name} · Other providers`} on={on && opencode.shown === undefined} onPick={() => opencode.onChoose(undefined)} />] : []),
     ...opencode.accounts.map((a) => (
-      <EngineRow key={`opencode:${a.name}`} label={`${name} · ${a.label}`} on={on && opencode.shown === a.name} onPick={() => opencode.onChoose(a.name)} />
+      <EngineRow key={`opencode:${a.name}`} label={`${name} · ${a.label}${opencode.balanced === a.name ? ` · ${OPENCODE_BALANCED_LABEL}` : ''}`} on={on && opencode.shown === a.name} onPick={() => opencode.onChoose(a.name)} />
     )),
   ]
 }

@@ -1,12 +1,37 @@
 // A stand-in for speech_sidecar.py that speaks the same stdio framing. Behaviour is chosen
-// with FAKE (nopong, nostt, partial-error, die-on-tts, badframe, nohello, error-hello); FAKE_LOG names a file that
-// receives one line per request, so a test can see what the sidecar was sent.
+// with FAKE (nopong, nostt, partial-error, die-on-tts, badframe, nohello, error-hello, marker-vad); FAKE_MARKER=1 turns the marker VAD on in any mode; FAKE_LOG names a file that
+// receives one line per request, so a test can see what the sidecar was sent. FAKE_STALL_AT=n with FAKE_STALL_MS=m makes it
+// stop answering anything (it busy-waits, so no pong) for m ms when its nth vad.audio arrives.
 import fs from "node:fs";
 
 const mode = process.env.FAKE ?? "";
 const log = process.env.FAKE_LOG;
 let pending = Buffer.alloc(0);
 const cancelled = new Set();
+// marker-vad: a VAD that calls a 20 ms frame loud when its first sample is at least LOUD, with the real endpointer's rules
+// (start moved back by prerollMs, end after silenceMs of quiet, end.atMs at the last loud frame). Offsets count every byte.
+const LOUD = 1000;
+const vads = new Map();
+let audioFrames = 0;
+const marker = mode === "marker-vad" || process.env.FAKE_MARKER === "1";
+
+function markerVad(header, body) {
+  const v = vads.get(header.stream) ?? { offset: 0, preroll: 0, silence: 700, speaking: false, quiet: 0, lastLoudEnd: 0 };
+  vads.set(header.stream, v);
+  for (let at = 0; at + 640 <= body.length; at += 640, v.offset += 640) {
+    const loud = body.readInt16LE(at) >= LOUD;
+    if (loud && !v.speaking) {
+      v.speaking = true;
+      send({ op: "vad.event", stream: header.stream, kind: "start", atMs: Math.max(0, v.offset / 32 - v.preroll) });
+    }
+    if (loud) { v.quiet = 0; v.lastLoudEnd = (v.offset + 640) / 32; continue; }
+    v.quiet += 20;
+    if (v.speaking && v.quiet >= v.silence) {
+      v.speaking = false;
+      send({ op: "vad.event", stream: header.stream, kind: "end", atMs: v.lastLoudEnd });
+    }
+  }
+}
 
 function send(header, body = Buffer.alloc(0)) {
   const raw = Buffer.from(JSON.stringify(header));
@@ -27,7 +52,12 @@ function handle(header, body) {
       if (mode === "badframe") return process.stdout.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]));
       if (mode !== "nopong") send({ op: "pong", n: header.n });
       return;
+    case "vad.open":
+      if (marker) vads.set(header.stream, { offset: 0, preroll: header.prerollMs, silence: header.silenceMs, speaking: false, quiet: 0, lastLoudEnd: 0 });
+      return;
     case "vad.audio":
+      if (Number(process.env.FAKE_STALL_AT) === ++audioFrames) for (const until = Date.now() + Number(process.env.FAKE_STALL_MS ?? 0); Date.now() < until;);
+      if (marker) return markerVad(header, body);
       return send({ op: "vad.event", stream: header.stream, kind: body.length === 2 ? "end" : "start", atMs: body.length });
     case "stt.partial":
     case "stt.final":

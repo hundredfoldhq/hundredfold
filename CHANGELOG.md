@@ -17,10 +17,12 @@
   - **Providers, per direction:** a free local default that runs on the gateway machine (Parakeet TDT 0.6B v2 for speech-to-text, Kokoro-82M for text-to-speech, Silero for voice activity detection), OpenAI, or any server with the OpenAI audio API. The local models install on first use from the web UI or `POST /api/voice/install`. They need Python 3.10+, and an NVIDIA GPU for the fast path (about 6 GB free disk; CPU works, slower). The pre-installation steps are in `docs/voice.md`.
   - **Locked phone screen:** the Hundredfold mobile app keeps listening, speaking and accepting interruptions with the screen locked, with a lock-screen Stop control. The Android build is tested; the iOS code is written to the same contract but needs a Mac with Xcode to build. Mobile browsers recover after a lock instead and speak the replies that finished meanwhile.
   - **New:** the `/ws/voice/:sessionId` socket, `GET /api/voice/config`, `POST /api/voice/install`, `voice:install` in `@hundredfold/gateway-events`, `meta.voice` on spoken messages, and `meta.externalTurn` on assistant rows the transcript sync stores for replies the engine wrote outside a gateway turn. Board members are refused voice for now, because members cannot message sessions yet. **On upgrade:** nothing until you add a `voice:` block; see `docs/voice.md`.
-- **A fallback chain can spread new sessions across several Claude accounts by their remaining allowance.** A chain entry may now be a group of Claude accounts. When the group is the first entry of a session's chain and holds the account the session would run on, each new session goes to one of the group's accounts, chosen in proportion to its usage headroom (100 minus its tightest limit window's use: two accounts at 60 and 40 headroom take about 60% and 40% of new sessions, 90 and 10 about 90% and 10%, an account at its limit none). The split is a deterministic weighted round-robin that counts each start at once, so a burst of starts (a board walk, a plan starting several children) splits across the accounts instead of landing on the one that looked best. The session then stays on that account for its life, so its prompt cache stays warm: nothing re-picks on a later turn, a resume or a restart. If the account hits a limit, the session falls back through the group's other accounts, most headroom first, then the rest of the chain, and returns to its own account at the reset. A deliberate switch onto Claude that names no account picks again; one that names an account uses it.
+- **A fallback chain can spread new sessions across several accounts by their remaining allowance.** A chain entry may now be a group of Claude accounts, or of declared opencode accounts. When the group is the first entry of a session's chain and holds the account the session would run on, each new session goes to one of the group's accounts, chosen in proportion to its usage headroom (100 minus its tightest limit window's use: two accounts at 60 and 40 headroom take about 60% and 40% of new sessions, 90 and 10 about 90% and 10%, an account at its limit none). The split is a deterministic weighted round-robin that counts each start at once, so a burst of starts (a board walk, a plan starting several children) splits across the accounts instead of landing on the one that looked best. The session then stays on that account for its life, so its prompt cache stays warm: nothing re-picks on a later turn, a resume or a restart. If the account hits a limit, the session falls back through the group's other accounts, most headroom first, then the rest of the chain, and returns to its own account at the reset. A deliberate switch onto Claude that names no account picks again; one that names an account uses it.
   - **Where it shows:** the chain editor and flow diagram in Settings show a group as one link with each account's headroom, and the diagram says where a new session would start and with what share; a session's chip says which account it was started on and why; a new chat on a balanced chain defaults to "Balanced (by headroom)".
   - **Usage data:** the choice reads the per-account usage readings the gateway already takes every 15 minutes. A reading older than 30 minutes counts at half weight, an account with no reading gets none while another account has one, and if no account has a reading the split is even. Choosing never calls a provider.
-  - **Not covered:** opencode accounts in a group (refused when the config loads), and sessions of employees that run on a remote host, whose group acts only as fallback links.
+  - **opencode accounts:** a group at the head of an opencode employee's `fallback` or of `engines.opencode.fallback` names declared accounts by `profile`. A member stands for the session's own model key on that account's provider, and the pick pins the session by its model (`opencode-go-b/glm-5`), since the model is the only account setting opencode has. Headroom comes from each account's usage history, which the engine-health refresh writes from the provider's own meter. A model named on another account's provider is a chosen account and is not balanced. See `docs/engines-opencode.md`.
+  - **Remote employees:** a remote employee's home group now balances its new sessions across the logins declared for its own `user@host`, using the usage readings the gateway already takes over SSH. The pick is kept in the session's `transportMeta.remoteAccountPin` and honoured only while the employee still runs on that `user@host`. See `docs/fallback-chains.md` ("Remote sessions and remote accounts").
+  - **Not covered:** asking for `engine: opencode` on an employee that runs on Claude starts on the engine's model without balancing.
   - **On upgrade, operators must update their chains to get balancing.** Existing fixed-order chains load and behave exactly as before and get no balancing. To balance, edit each employee's `fallback` and `engines.claude.fallback` / `engines.claude.accounts.<name>.fallback`, putting the accounts in a group as the first entry:
 
     ```yaml
@@ -39,6 +41,40 @@
     ```
 
     The group must hold the account the employee runs as (its own login, or the declared account whose directory is its `claudeConfigDir`). See `docs/fallback-chains.md`.
+
+    For opencode accounts, declare the built-in provider too, so the group can name it:
+
+    ```yaml
+    # before: every new opencode session bills the built-in Go workspace
+    engines:
+      opencode:
+        model: opencode-go/glm-5
+        accounts:
+          go-b: { provider: opencode-go-b, base: opencode-go, keyEnv: OPENCODE_GO_B_API_KEY }
+        fallback:
+          - { engine: opencode, model: opencode-go-b/glm-5 }
+
+    # after: new sessions are spread across both workspaces by headroom
+    engines:
+      opencode:
+        model: opencode-go/glm-5
+        accounts:
+          go-a: { provider: opencode-go }
+          go-b: { provider: opencode-go-b, base: opencode-go, keyEnv: OPENCODE_GO_B_API_KEY }
+        fallback:
+          - group:
+              - { engine: opencode, profile: go-a }
+              - { engine: opencode, profile: go-b }
+    ```
+
+    A remote employee's chain needs no change. Before, a group of its host's logins only ranked them as fallback links, and every new session started on the employee's own login. Now new sessions are spread across them by headroom:
+
+    ```yaml
+    fallback:
+      - group:
+          - { engine: claude }                       # the employee's own login on its host
+          - { engine: claude, profile: host-spare }  # declared with remoteHost: the same user@host
+    ```
 - **A Todo's parent can now be changed after creation.** `PUT /api/work-items/:id/parent` with `{ "parentId": "<Todo id>" }` makes a Todo a sub-task of another, and `{ "parentId": null }` detaches a sub-task to a root; the Todo's own sub-tasks move with it and `rootId` and `depth` are recomputed for the whole subtree. Agents do the same with `parentId` on `edit_work_item`. It needs the standing that assigns a Todo, over the Todo and over the new parent, and the change is recorded in the history of the Todo, the Todos that moved with it and both parents.
   - **Refused:** a cycle, a closed parent, a subtree that would pass the depth cap of 3, a root that still sits in a sprint (take it out first), a finished Todo leaving a closed sprint or anything joining one, a move across a non-open department's boundary or into an archived one, and a Todo in review going under a parent whose owner would not be told.
   - **Review:** a Todo's review is addressed from its parent when read, so a detached sub-task is the operator's to review and a Todo made a sub-task is its new parent owner's.

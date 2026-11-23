@@ -2,6 +2,7 @@ import { accountNames } from "./claude-accounts-config.js";
 import { logger } from "./logger.js";
 import { fallbackChainProblems, fallbackGroupOf, type FallbackChainDuplicate } from "./fallback-chain-wire.js";
 import { ENGINE_NAMES } from "./models.js";
+import { opencodeAccountNames } from "./opencode-accounts-config.js";
 
 /**
  * Duplicate chain entries are refused when a config is written (PUT /api/config, the
@@ -70,10 +71,11 @@ export function unchangedDuplicates(existing: unknown): DuplicateTolerance {
  */
 export function duplicateProblemsByChain(engines: unknown): Record<string, string[]> {
   const profiles = accountNames(engines);
+  const opencodeProfiles = opencodeAccountNames(engines);
   const found: Record<string, string[]> = {};
   for (const { where, chain, self } of configuredChains(engines)) {
     const onDuplicate = ({ problem }: FallbackChainDuplicate): boolean => { (found[where] ??= []).push(problem); return true; };
-    fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, self, onDuplicate });
+    fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, opencodeProfiles, self, onDuplicate });
   }
   return found;
 }
@@ -92,10 +94,11 @@ function holdsGroup(chain: unknown): boolean {
  */
 export function groupProblemsByChain(engines: unknown): Record<string, string[]> {
   const profiles = accountNames(engines);
+  const opencodeProfiles = opencodeAccountNames(engines);
   const found: Record<string, string[]> = {};
   for (const { where, chain, self } of configuredChains(engines)) {
     if (!holdsGroup(chain)) continue;
-    found[where] = fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, self, onDuplicate: () => true });
+    found[where] = fallbackChainProblems(where, chain, { engines: ENGINE_NAMES, profiles, opencodeProfiles, self, onDuplicate: () => true });
   }
   return found;
 }

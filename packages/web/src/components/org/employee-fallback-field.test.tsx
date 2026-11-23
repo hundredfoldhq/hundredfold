@@ -13,6 +13,11 @@ vi.mock("@/hooks/use-fallback-chains", async (importActual) => ({
   ...(await importActual<typeof import("@/hooks/use-fallback-chains")>()),
   useFallbackChains: () => ({ data: chains.current }),
 }))
+const declaredOpencode = vi.hoisted(() => ({ current: undefined as unknown }))
+vi.mock("@/components/chat/use-opencode-accounts", async (importActual) => ({
+  ...(await importActual<typeof import("@/components/chat/use-opencode-accounts")>()),
+  useDeclaredOpencodeAccounts: () => declaredOpencode.current,
+}))
 
 import { EmployeeFallbackField, EmployeeFallbackRow, EmployeeFallbackSummary } from "./employee-fallback-field"
 import { sameChain } from "./employee-fallback"
@@ -272,5 +277,41 @@ describe("EmployeeFallbackSummary", () => {
     render(<EmployeeFallbackSummary employee={EMP} />)
 
     expect(document.querySelector("[data-employee-fallback-summary]")).toBeNull()
+  })
+})
+
+describe("an opencode employee's custom chain", () => {
+  const OC: Employee = { ...EMP, engine: "opencode", model: "opencode-go/glm-5", claudeProfile: null }
+  const ACCOUNTS = [{ name: "go-a", label: "go-a", provider: "opencode-go" }, { name: "go-b", label: "go-b", provider: "opencode-go-b" }]
+  const GROUP = { group: [{ engine: "opencode", profile: "go-a" }, { engine: "opencode", profile: "go-b" }] }
+
+  beforeEach(() => { declaredOpencode.current = ACCOUNTS })
+
+  it("offers a balanced opencode group, ticked from the declared opencode accounts", () => {
+    const onChange = vi.fn()
+    render(<EmployeeFallbackField employee={OC} engine="opencode" value={[{ engine: "codex" }]} onChange={onChange} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Add a balanced opencode group to the Writer chain" }))
+
+    expect(onChange).toHaveBeenLastCalledWith([{ engine: "codex" }, GROUP])
+  })
+
+  it("does not offer one to a Claude employee", () => {
+    render(<EmployeeFallbackField employee={EMP} engine="claude" value={[{ engine: "codex" }]} onChange={() => {}} />)
+
+    expect(screen.queryByRole("button", { name: /balanced opencode group/ })).toBeNull()
+  })
+
+  it("does not call a valid group wrong before the declared accounts have been read", () => {
+    declaredOpencode.current = undefined
+    const { container } = render(<EmployeeFallbackField employee={OC} engine="opencode" value={[GROUP]} onChange={() => {}} />)
+
+    expect(container.querySelector("[data-chain-problem]")).toBeNull()
+  })
+
+  it("says so for an account the gateway does not declare, once they are read", () => {
+    render(<EmployeeFallbackField employee={OC} engine="opencode" value={[{ group: [{ engine: "opencode", profile: "go-a" }, { engine: "opencode", profile: "go-z" }] }]} onChange={() => {}} />)
+
+    expect(screen.getAllByRole("alert").map((a) => a.textContent).join(" ")).toContain('profile "go-z" names no account under engines.opencode.accounts')
   })
 })
