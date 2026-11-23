@@ -75,6 +75,7 @@ function countPicks(accounts, described) {
     expectEqual("transportMeta.accountPick is the pick", recordedPick(one.session)?.picked, one.pick.picked);
     // The own login writes no pin; the other account is pinned with its directory on the host.
     expectEqual(`the pin of a session picked onto ${account}`, one.pin, account === "A" ? undefined : { account: accounts.keys.B, configDir: accounts.dirs.B });
+    expectEqual("a remote pin never sets the gateway-side claudeConfigDir", one.session.claudeConfigDir ?? null, null);
     expectEqual("the host ran the first turn with the picked account's directory", one.ranWith, accounts.dirs[account]);
     counts[account] += 1;
   }
@@ -86,7 +87,9 @@ function expectShimUsed(h) {
   expectTrue("the stand-in ssh answered the host's commands", h.shimCalls().length > 0, "no call reached the shim: the gateway used another ssh");
   expectEqual("the stand-in ssh refused nothing", h.shimRefusals(), []);
   // The host's profile probe names the system-wide Claude policy directories; the shim keeps them inside the remote home.
-  expectTrue("the profile probe's system paths were kept inside the remote home", h.shimCalls().some((call) => call.rewrote), "no call named a system policy directory, so the probe did not run as expected");
+  const targets = h.shimCalls().flatMap((call) => call.rewroteTo ?? []);
+  expectTrue("the profile probe's system paths were kept inside the remote home", targets.length > 0, "no call named a system policy directory, so the probe did not run as expected");
+  expectTrue("every rewrite points inside the remote home", targets.every((target) => target.startsWith(`${h.layout.remote.home}/`)), JSON.stringify([...new Set(targets)]));
 }
 
 /** distribution: headroom 60/40 splits ten spaced sessions 6/4, and a member with no headroom gets none of four, each within ±1. */
@@ -126,6 +129,7 @@ async function groupHop(h) {
     expectEqual(`one hop, to ${to}`, chainHops(session).length, 1);
     // The pin is the session's own account: the hop does not move it.
     expectEqual("the pin is still the pick's", pinOf(session), from === "B" ? { account: accounts.keys.B, configDir: accounts.dirs.B } : undefined);
+    expectEqual("the gateway-side claudeConfigDir stays unset", session.claudeConfigDir ?? null, null);
     expectEqual("session status", session.status, "idle");
   }
   expectShimUsed(h);
@@ -159,6 +163,7 @@ async function stickiness(h) {
   expectEqual("every turn ran with B's directory", [...new Set(rows.map((row) => row.profileDir))], [accounts.dirs.B]);
   expectEqual("no hop", chainHops(last), []);
   expectEqual("the pin survived the restart", pinOf(last), pinOf(first));
+  expectEqual("the gateway-side claudeConfigDir stays unset", last.claudeConfigDir ?? null, null);
   expectEqual("no re-pick: the pick is the one made at the start", recordedPick(last), recordedPick(first));
   expectShimUsed(h);
 }
@@ -183,6 +188,7 @@ async function returnToPinned(h) {
   const after = await h.settled(id);
   expectEqual("the next turn ran with B's directory again", h.rowsFor(tag).at(-1).profileDir, accounts.dirs.B);
   expectEqual("position, pick and pin", [after.fallback?.chain?.position, pickOf(after)?.picked, pinOf(after)], [0, accounts.keys.B, { account: accounts.keys.B, configDir: accounts.dirs.B }]);
+  expectEqual("the gateway-side claudeConfigDir stays unset", after.claudeConfigDir ?? null, null);
   expectShimUsed(h);
 }
 

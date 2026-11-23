@@ -38,6 +38,7 @@ const refuse = (reason) => {
   process.exit(255);
 };
 
+const GATEWAY_OPTIONS = /^(BatchMode|ConnectTimeout|EscapeChar|ExitOnForwardFailure|LogLevel|ServerAliveCountMax|ServerAliveInterval)=[A-Za-z0-9_.-]+$/;
 // ssh's own option grammar, for the flags the gateway uses: -T/-tt, -o K=V, -R/-L spec, then `--`, the destination, the command words.
 const reverse = [];
 let tty = false;
@@ -47,7 +48,11 @@ for (; index < args.length; index += 1) {
   if (arg === "--") { index += 1; break; }
   if (arg === "-T") continue;
   if (arg === "-tt" || arg === "-t") { tty = true; continue; }
-  if (arg === "-o") { index += 1; continue; }
+  if (arg === "-o") {
+    const option = args[index + 1] ?? "";
+    if (!GATEWAY_OPTIONS.test(option)) refuse(`unsupported ssh -o option ${option.split("=")[0]}`);
+    index += 1; continue;
+  }
   if (arg === "-R") { reverse.push(args[index + 1] ?? ""); index += 1; continue; }
   if (arg === "-L") { index += 1; continue; }
   refuse(`unsupported ssh option ${arg}`);
@@ -55,12 +60,13 @@ for (; index < args.length; index += 1) {
 const destination = args[index];
 const words = args.slice(index + 1);
 if (!destination || words.length === 0) refuse("no destination or no command");
-if (!/^[A-Za-z0-9._-]+@127\.0\.0\.1$/.test(destination)) refuse(`${destination} is not user@127.0.0.1: the shim reaches nothing else`);
+if (!/^[A-Za-z0-9_][A-Za-z0-9._-]*@127\.0\.0\.1$/.test(destination)) refuse(`${destination} is not user@127.0.0.1: the shim reaches nothing else`);
 // The host's own system directories are inside its home: a command that names one (the gateway's profile probe reads the
 // system-wide Claude policy directories) is pointed at the temporary copy, so nothing outside the verification root is read.
 const original = words.join(" ");
 const command = (config.rewrite ?? []).reduce((text, [from, to]) => text.split(from).join(to), original);
-append(config.log, { destination, tty, reverse, commandLength: command.length, rewrote: command !== original });
+const rewroteTo = (config.rewrite ?? []).filter(([from]) => original.includes(from)).map(([, to]) => to);
+append(config.log, { destination, tty, reverse, commandLength: command.length, rewrote: command !== original, rewroteTo });
 
 /** `-R port:127.0.0.1:port`: a listener on the tunnel port that pipes each connection to the gateway's port, both loopback. */
 const servers = reverse.map((spec) => {
