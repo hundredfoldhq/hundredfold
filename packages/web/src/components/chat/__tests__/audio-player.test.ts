@@ -1,11 +1,11 @@
 /**
- * Hundredfold Talk — TalkAudioPlayer tests (turn-boundary re-arm + suspended-context resume).
+ * WavChunkPlayer tests (turn-boundary re-arm + suspended-context resume).
  *
  * jsdom has no WebAudio, so we install a minimal fake AudioContext that records
  * scheduled buffer sources and resume() calls.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { TalkAudioPlayer } from "../audio-player"
+import { WavChunkPlayer } from "../audio-player"
 
 // Ordered log of lifecycle events, to assert resume-before-start across turns.
 const events: string[] = []
@@ -47,9 +47,6 @@ class FakeAudioContext {
   }
   static last: FakeAudioContext | null = null
   static initialState: "running" | "suspended" = "running"
-  createAnalyser() {
-    return { fftSize: 0, smoothingTimeConstant: 0, connect: vi.fn() } as unknown as AnalyserNode
-  }
   createGain() {
     return { gain: { value: 1 }, connect: vi.fn() } as unknown as GainNode
   }
@@ -63,11 +60,11 @@ class FakeAudioContext {
   }
 }
 
-// A tiny valid base64 payload (decode is faked, so contents don't matter).
-const B64 = btoa("wavchunk")
+// A tiny WAV-shaped payload (decode is faked, so contents don't matter).
+const chunk = () => new TextEncoder().encode("wavchunk").buffer as ArrayBuffer
 
 /** Drain the player's internal decode/resume promise chain. */
-async function settle(player: TalkAudioPlayer) {
+async function settle(player: WavChunkPlayer) {
   for (let i = 0; i < 5; i++) {
     await (player as unknown as { chain: Promise<void> }).chain
     await Promise.resolve()
@@ -87,14 +84,14 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe("TalkAudioPlayer turn boundaries", () => {
+describe("WavChunkPlayer turn boundaries", () => {
   it("schedules a new turn's first frame after the previous turn's last:true", async () => {
-    const player = new TalkAudioPlayer()
+    const player = new WavChunkPlayer()
     // Turn 1: two frames, the second carries last:true.
-    player.enqueue(0, "audio/wav", B64, false)
-    player.enqueue(1, "audio/wav", B64, true)
+    player.enqueueBuffer(chunk(), false)
+    player.enqueueBuffer(chunk(), true)
     // Turn 2: first frame (seq resets to 0) — must NOT be stuck behind the latch.
-    player.enqueue(0, "audio/wav", B64, false)
+    player.enqueueBuffer(chunk(), false)
     await settle(player)
 
     const ctx = FakeAudioContext.last!
@@ -106,9 +103,9 @@ describe("TalkAudioPlayer turn boundaries", () => {
 
   it("resumes a suspended context (awaited) before scheduling", async () => {
     FakeAudioContext.initialState = "suspended"
-    const player = new TalkAudioPlayer()
-    player.enqueue(0, "audio/wav", B64, true) // turn 1 (single frame)
-    player.enqueue(0, "audio/wav", B64, false) // turn 2 first frame
+    const player = new WavChunkPlayer()
+    player.enqueueBuffer(chunk(), true) // turn 1 (single frame)
+    player.enqueueBuffer(chunk(), false) // turn 2 first frame
     await settle(player)
 
     const ctx = FakeAudioContext.last!
@@ -124,11 +121,11 @@ describe("TalkAudioPlayer turn boundaries", () => {
   })
 
   it("goes idle after a turn drains, then re-arms for the next turn", async () => {
-    const player = new TalkAudioPlayer()
+    const player = new WavChunkPlayer()
     const idle = vi.fn()
     player.onIdle(idle)
 
-    player.enqueue(0, "audio/wav", B64, true) // single-frame turn 1
+    player.enqueueBuffer(chunk(), true) // single-frame turn 1
     await settle(player)
     const ctx = FakeAudioContext.last!
     // Simulate playback finishing.
@@ -137,21 +134,21 @@ describe("TalkAudioPlayer turn boundaries", () => {
     expect(player.playing).toBe(false)
 
     // Next turn arrives after idle — re-arms and schedules.
-    player.enqueue(0, "audio/wav", B64, false)
+    player.enqueueBuffer(chunk(), false)
     await settle(player)
     expect(ctx.sources).toHaveLength(2)
     expect(ctx.sources[1].start).toHaveBeenCalledTimes(1)
     expect(player.playing).toBe(true)
   })
 
-  // Regression: read-aloud / talk "pause" must actually silence audio. A pause
+  // Regression: read-aloud "pause" must actually silence audio. A pause
   // routes through reset(); before the fix reset() cleared the queue but left
   // already-scheduled sources playing to completion ("pause keeps playing").
   it("reset() stops every scheduled/playing source (pause is immediate)", async () => {
-    const player = new TalkAudioPlayer()
-    player.enqueue(0, "audio/wav", B64, false)
-    player.enqueue(1, "audio/wav", B64, false)
-    player.enqueue(2, "audio/wav", B64, true)
+    const player = new WavChunkPlayer()
+    player.enqueueBuffer(chunk(), false)
+    player.enqueueBuffer(chunk(), false)
+    player.enqueueBuffer(chunk(), true)
     await settle(player)
 
     const ctx = FakeAudioContext.last!

@@ -6,7 +6,7 @@
  * What is never spoken: fenced code, table rows, paths, links, ids, markdown
  * marks (the last three by `toSpeakable`). It stays in the chat as text.
  */
-import { toSpeakable } from "../talk/speakable.js";
+import { toSpeakable } from "./speakable.js";
 
 /** A sentence ends at a terminator followed by space, or at a line break (as `splitTtsSentences`). */
 const BOUNDARY = /(?<=[.!?…])\s+|\n+/g;

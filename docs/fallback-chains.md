@@ -349,8 +349,7 @@ members by headroom, then the rest of the chain.
 
 Every way a session starts on Claude goes through the same pick
 (`pinAccountAtCreation`): a new chat, a spawn, a delegation, a Todo wake or
-dispatch, a Todo capture, a connector-routed session and a Talk hand-off or
-delegation. The session starts on the member it picks, stored where a chosen
+dispatch, a Todo capture, a connector-routed session. The session starts on the member it picks, stored where a chosen
 profile already lives (`claudeConfigDir`; a pick equal to the employee's own login
 stores nothing, so that row is as it was before groups), and records the pick in
 `transportMeta.accountPick`. A caller that names a profile (`engine:

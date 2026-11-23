@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it } from "vitest";
  *
  * The tree shape was added to this route rather than to a new one, so the first
  * thing this suite pins is that the DEFAULT response did not move: the Todo
- * page's own live/dispatcher derivations and the talk surface both read the
+ * page's own live/dispatcher derivations both read the
  * flat array, and a widened default would break them silently.
  */
 

@@ -228,12 +228,12 @@ export function summarizeOlder(
 //   • it is NOT cron-triggered (source 'cron' or sourceRef 'cron:…'), AND
 //   • it is top-level — `parentSessionId` is empty (delegated/spawned CHILD
 //     sessions carry their parent's id and are hidden), AND
-//   • its source is a human-facing entry point (web / slack / talk).
+//   • its source is a human-facing entry point (web / slack, and `talk` for stored rows).
 // The source allowlist means any unknown/internal source is hidden by default.
 // ---------------------------------------------------------------------------
 
 /** Sources that represent a human starting a conversation directly. */
-export const FOCUSED_SOURCES = new Set(['web', 'slack', 'talk'])
+export const FOCUSED_SOURCES = new Set(['web', 'slack', 'talk']) // `talk` covers stored rows from the retired assistant
 
 export interface FocusableSession {
   source?: string

@@ -4,7 +4,6 @@ import { createRoot } from 'react-dom/client'
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, type RouteObject } from 'react-router-dom'
 import { ClientProviders } from './routes/client-providers'
 import { ContributedRoute, reservedSegments } from './routes/contributed-route'
-import { registerTalkNavigator } from './components/talk/tools/router-handle'
 import { registerHostNavigator } from './plugins/sdk/host-bridge'
 import { lazyRoute } from './lib/lazy-route'
 import { registerRoutePrefetch } from './lib/route-prefetch'
@@ -44,7 +43,6 @@ const FilePage = lazyRoute(() => import('./routes/file/page'), 'file')
 const MorePage = lazyRoute(() => import('./routes/more/page'), 'more')
 const InvitePage = lazyRoute(() => import('./routes/auth/invite-page'), 'invite')
 const ResetPage = lazyRoute(() => import('./routes/auth/reset-page'), 'reset')
-const TalkOrbHarnessPage = lazyRoute(() => import('./routes/talk-orb-harness/page'), 'talk-orb-harness')
 
 registerRoutePrefetch('/', ChatPage.prefetch)
 registerRoutePrefetch('/cron', CronPage.prefetch)
@@ -135,10 +133,6 @@ const routeElements: Partial<Record<AppRouteId, ReactNode>> = {
   "skill-detail": <SkillDetailPage />,
   file: <FilePage />,
   more: <MorePage />,
-  // The orb bench is screenshot-verified on built sandboxes, never on a dev
-  // server pointed at a live gateway, so it has to survive the build. It is a
-  // lazy route: nothing of it loads until someone types the path.
-  "talk-orb": <TalkOrbHarnessPage />,
 }
 
 // Redirect routes resolve at the ROUTER level so they never commit an
@@ -181,16 +175,10 @@ const router = createBrowserRouter([
   },
 ])
 
-// The Talk tool surface is driven by a voice transport rather than a render, so
-// it navigates through the router directly instead of a hook. The promise is
-// handed back rather than dropped: it is what tells the tool surface the route
-// has actually landed, which is the only honest end for its latency clock.
-registerTalkNavigator((path) => router.navigate(path))
-
 // A plugin navigates from an event handler or a backend callback rather than
-// from a render, so it reaches the router through a module-level handle for the
-// same reason Talk does. The promise is dropped rather than handed back: unlike
-// the voice surface, a plugin has no latency clock to time against the landing.
+// from a render, so it reaches the router through a module-level handle. The
+// promise is dropped rather than handed back: a plugin has no latency clock to
+// time against the landing.
 registerHostNavigator((path) => void router.navigate(path))
 
 /**

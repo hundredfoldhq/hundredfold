@@ -343,7 +343,7 @@ import { loadRawTranscript, loadTranscriptMessages } from "./claude-transcript-l
 import { claudeProfileFromDir, type ClaudeProfile } from "../shared/claude-profile.js";
 import { declaredAccountByKey } from "../shared/claude-accounts-config.js";
 import { claudeAccountKey } from "../shared/engine-account.js";
-import { handleTalkApi } from "./talk-api.js";
+import { handleTtsApi } from "./tts-api.js";
 import { handleVoiceApi } from "./voice-api.js";
 import { onboardingNeeded, applyEngineChoice, personalizeOperatingManual } from "./onboarding-policy.js";
 import {
@@ -1300,14 +1300,7 @@ export async function handleApiRequest(
     // FR-010: a session of a department-scoped employee reaches only its department (department-scope/gate.ts).
     if (identifiedCaller && await handleScopedCaller(req, res, { method, pathname, url }, resolveScopedWriteCallerIdentity(req, context), scopedGateDeps(context))) return;
     pathname = url.pathname; // the gate shows a Todo outside the caller's department to the route as an unknown id
-    if (await handleTalkApi(req, res, { method, pathname, url }, {
-      getConfig: context.getConfig, caller: resolveScopedWriteCallerIdentity(req, context),
-      context,
-      runHandoff: (session, prompt) => {
-        const engine = context.sessionManager.getEngine(session.engine);
-        if (engine) dispatchWebSessionRun(session, prompt, engine, context);
-      },
-    })) return;
+    if (await handleTtsApi(req, res, pathname, context.getConfig())) return;
     if (!identifiedCaller && rejectUnverifiedIdentifiedApiCaller(req, res, method, pathname, context)) return;
     if (await handleHeartbeatApi(req, res, { method, pathname, url }, { resolveCaller: () => resolveScopedWriteCallerIdentity(req, context) })) return;
     if (await handleSelfCompactionApi(req, res, { method, pathname, url }, {

@@ -92,16 +92,16 @@ for (const sibling of fs.readdirSync(path.join(gatewayEventsRoot, "dist"))) {
   fs.copyFileSync(path.join(gatewayEventsRoot, "dist", sibling), target);
 }
 
-// 5. Copy the Talk assets tsc does not emit (Markdown + Python live beside the
+// 5. Copy the read-aloud assets tsc does not emit (the Kokoro sidecar is Python beside its
 //    TypeScript). Missing files are not an error: they are optional extras.
-const talkSource = path.join(packageRoot, "src", "talk");
-const talkTarget = path.join(dist, "src", "talk");
-fs.mkdirSync(talkTarget, { recursive: true });
+const ttsSource = path.join(packageRoot, "src", "tts");
+const ttsTarget = path.join(dist, "src", "tts");
+fs.mkdirSync(ttsTarget, { recursive: true });
 let copied = 0;
 try {
-  for (const entry of fs.readdirSync(talkSource)) {
+  for (const entry of fs.readdirSync(ttsSource)) {
     if (!/\.(md|py)$/i.test(entry)) continue;
-    fs.copyFileSync(path.join(talkSource, entry), path.join(talkTarget, entry));
+    fs.copyFileSync(path.join(ttsSource, entry), path.join(ttsTarget, entry));
     copied += 1;
   }
 } catch (error) {
@@ -126,4 +126,4 @@ try {
 const removedOnPurpose = new Set([`${embeddedGatewayEventsRuntime}.map`, `${embeddedGatewayEventsDeclaration}.map`]);
 assertFilesExist(emittedFiles.filter((file) => !removedOnPurpose.has(file)));
 assertRelativeImportsResolve([path.join(dist, "bin"), path.join(dist, "src")]);
-console.log(`build: compiled to dist/, embedded gateway protocol, copied ${copied} talk and voice asset(s)`);
+console.log(`build: compiled to dist/, embedded gateway protocol, copied ${copied} read-aloud and voice asset(s)`);

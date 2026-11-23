@@ -50,7 +50,7 @@ export function currentConfigRevision(configPath: string = CONFIG_PATH): string 
  * Whether a PUT is writing over a config it has not seen.
  *
  * A request with no header is not stale — it opted out, and that is deliberate:
- * partial PUTs that touch one key (the Talk voice-setup card) never read the
+ * partial PUTs that touch one key never read the
  * document they are merging into, so there is no revision they could send and
  * nothing they could clobber by not sending one.
  */

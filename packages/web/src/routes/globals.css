@@ -278,8 +278,8 @@
   [data-theme="system"] { color-scheme: light; }
 }
 
-/* Custom properties that script reads back with getComputedStyle (the talk
-   orb paints them onto a canvas, the PWA titlebar copies --bg). A registered
+/* Custom properties that script reads back with getComputedStyle (the PWA
+   titlebar copies --bg). A registered
    <color> resolves light-dark() into a plain colour at computed-value time;
    an unregistered one would hand script the literal "light-dark(...)" text.
    Firefox resolves a registered token against the PARENT's color-scheme, so a
@@ -287,15 +287,6 @@
    read these; Chromium resolves them against the element itself. */
 @property --bg { syntax: "<color>"; inherits: true; initial-value: transparent; }
 @property --system-red { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-core { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-base { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-bloom { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-lobe-a { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-lobe-b { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-lobe-c { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-shadow { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-specular { syntax: "<color>"; inherits: true; initial-value: transparent; }
-@property --orb-rim { syntax: "<color>"; inherits: true; initial-value: transparent; }
 /* Motion curves and the tab bar height; the palette is in glass-identity.css. */
 :root, [data-theme] {
   --tab-bar-height: 56px;
@@ -737,47 +728,6 @@ h1, h2, h3, h4, h5, h6 {
 @media (min-width: 64rem) {
   .hundredfold-large-title { animation: none; display: block; opacity: 1; transform: none; }
   .hundredfold-inline-title { display: none; animation: none; }
-}
-
-/* ============================================
-   Talk focus mark
-   The orb scrolls something into view and marks it for the length of the
-   gesture, so "that one" has a referent. Transient by design: it is an answer,
-   not chrome, and nothing about it survives. Drawn on an ::after overlay so the
-   target's own box is untouched — which is why a talk target has to be an
-   element that can host a positioning context.
-   ============================================ */
-
-.talk-focus { position: relative; }
-.talk-focus::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  border-radius: var(--radius-lg);
-  background: var(--accent-fill);
-  box-shadow: 0 0 0 2px var(--talk-focus-ring);
-  pointer-events: none;
-  opacity: 0;
-  animation: hundredfold-talk-focus 1600ms var(--ease-smooth) both;
-}
-/* The undo strip's arrival. Transform and opacity only, so it never lands on
-   the compositor's slow path over a page that is still doing something. The
-   strip drops the animation outright under reduced motion, so there is nothing
-   to soften here. */
-@keyframes hundredfold-undo-rise {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes hundredfold-talk-focus {
-  0% { opacity: 0; transform: scale(0.985); }
-  10% { opacity: 1; transform: scale(1); }
-  72% { opacity: 1; transform: scale(1); }
-  100% { opacity: 0; transform: scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  /* The global reset collapses every animation to 0.01ms, which would flash the
-     mark and lose it. It holds still for its whole life instead. */
-  .talk-focus::after { animation: none; opacity: 1; }
 }
 
 /* Outbound follow-ups reuse the comms arrival rhythm without borrowing the

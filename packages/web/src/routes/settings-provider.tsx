@@ -28,9 +28,6 @@ interface SettingsContextValue {
   setOperatorName: (name: string | null) => void
   setOperatorEmoji: (emoji: string | null) => void
   setLanguage: (language: string) => void
-  setTalkOrb: (enabled: boolean) => void
-  setTalkOrbVariant: (variant: HundredfoldSettings["talkOrbVariant"]) => void
-  setTalkOrbIntensity: (intensity: HundredfoldSettings["talkOrbIntensity"]) => void
   setTextScale: (textScale: HundredfoldSettings["textScale"]) => void
   setTransparency: (transparency: HundredfoldSettings["transparency"]) => void
   setEmployeeOverride: (employeeId: string, override: EmployeeOverride) => void
@@ -51,9 +48,6 @@ const SettingsContext = createContext<SettingsContextValue>({
   setOperatorName: () => {},
   setOperatorEmoji: () => {},
   setLanguage: () => {},
-  setTalkOrb: () => {},
-  setTalkOrbVariant: () => {},
-  setTalkOrbIntensity: () => {},
   setTextScale: () => {},
   setTransparency: () => {},
   setEmployeeOverride: () => {},
@@ -187,11 +181,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     },
     [update],
   )
-  // The Talk knobs are all the same setter with a different key, so they are
-  // written once. The ones above coerce their input and stay spelled out.
-  const setTalkOrb = useField(update, "talkOrb")
-  const setTalkOrbVariant = useField(update, "talkOrbVariant")
-  const setTalkOrbIntensity = useField(update, "talkOrbIntensity")
+  // A plain field is one setter with a different key. The ones above coerce
+  // their input and stay spelled out.
   const setTransparency = useField(update, "transparency")
 
   const setTextScale = useCallback(
@@ -257,9 +248,6 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         setOperatorName,
         setOperatorEmoji,
         setLanguage,
-        setTalkOrb,
-        setTalkOrbVariant,
-        setTalkOrbIntensity,
         setTextScale,
         setTransparency,
         setEmployeeOverride,

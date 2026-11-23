@@ -29,8 +29,7 @@ export const OPEN_COLUMN_ORDER: readonly WorkItemStatusWire[] = [
 ]
 
 /** Whether a column belongs on a board carrying this status filter. A URL that
- *  names one status (`?status=executing`, which is what the Talk orb's
- *  open_todos writes) is a board of that one column; `open` and `all` keep every
+ *  names one status (`?status=executing`) is a board of that one column; `open` and `all` keep every
  *  column, closed ones included, for the rail to page. */
 export function isColumnInStatusFilter(filter: StatusFilter, status: WorkItemStatusWire): boolean {
   return filter === "open" || filter === "all" || filter === status

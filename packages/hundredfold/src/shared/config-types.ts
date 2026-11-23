@@ -15,7 +15,7 @@ import type { ClaudeAccountConfig } from "./claude-accounts-config.js";
 import type { FallbackChainEntry } from "./fallback-chain-wire.js";
 import type { EngineName } from "./models.js";
 import type { MusecodeEngineConfig } from "./musecode-config.js";
-import type { RealtimeConfig, SttConfig, TalkConfig } from "./voice.js";
+import type { SttConfig, TalkConfig } from "./voice.js";
 import type { VoiceConfig } from "./voice-config.js";
 import type {
   ConnectorInstance,
@@ -284,12 +284,10 @@ export interface HundredfoldConfig {
   /** Read-aloud TTS (`/api/tts` + Kokoro) — optional, off unless configured. */
   talk?: TalkConfig;
   /**
-   * Speech-to-speech realtime provider — optional, off unless configured. A
-   * sibling of `talk` rather than a child of it, because `talk`'s
-   * enabled/engine/orchestratorModel fields are retired-orchestrator residue
-   * slated for removal.
+   * @deprecated The speech-to-speech assistant was removed. The key is still accepted so an older
+   * config.yaml loads and saves unchanged; nothing reads it, and a key inside it is still redacted.
    */
-  realtime?: RealtimeConfig;
+  realtime?: unknown;
   /** Voice mode: spoken conversation with a chat session (STT, the session's engine, TTS). Off unless enabled. */
   voice?: VoiceConfig;
   /**

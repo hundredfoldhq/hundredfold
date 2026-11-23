@@ -7,8 +7,7 @@ export type CronLens = "jobs" | "week"
 
 /**
  * The cron page's lens and job filter, held in the URL rather than in component
- * state, so the view is shareable and can be reached by a link — which is what
- * lets the Talk orb open "the disabled jobs" without reaching into the page.
+ * state, so the view is shareable and can be reached by a link.
  *
  * Both defaults are the absent param, and both setters replace rather than push
  * so the back button behaves exactly as it did when these were `useState`.

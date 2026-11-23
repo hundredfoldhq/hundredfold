@@ -7,7 +7,6 @@ import { useSkills } from '@/hooks/use-skills'
 import { WhisperDownloadModal } from '@/components/stt/whisper-download-modal'
 import { MicWaveform } from './mic-waveform'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
-import { useChatComposerControl } from './chat-composer-control'
 import { composerCardPresentation } from './chat-composer-presentation'
 import { useChatDraft } from './use-chat-draft'
 import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS, resolveSendTap, resolveTranscriptLanding } from './armed-send'
@@ -530,11 +529,6 @@ export function ChatInput({
     }
   }
   sendTextRef.current = sendText
-
-  useChatComposerControl({
-    sessionId, isActive, textareaRef, disabledRef, submittingRef, valueRef, speechRef,
-    pendingAttachmentsRef, sendTextRef, setValue, setSendArmed, setShowMentions, setShowCommands,
-  })
 
   function handleSubmit(flipDelivery = false) {
     void sendText(value, pendingAttachments, deliveryForSend(sendDelivery, flipDelivery))

@@ -1,7 +1,7 @@
 /**
  * Hands the gateway's events to the voice hub as they are emitted (FR-005): an
  * attached session's reply text and tool calls, its turn ending, its background
- * work. A decorator on `emit`, after the talk-proactive one, that never changes
+ * work. A decorator on `emit` that never changes
  * what the rest of the gateway sees: the original emit runs first and a failure
  * in voice is logged, not thrown.
  *

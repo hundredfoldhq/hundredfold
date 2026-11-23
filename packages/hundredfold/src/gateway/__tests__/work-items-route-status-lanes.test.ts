@@ -152,7 +152,7 @@ describe("the coordinator's done lane", () => {
     expect(reg.isCoordinatorSession(session)).toBe(false);
   });
 
-  it("treats web, Talk and chat-connector top-level sessions as the coordinator", () => {
+  it("treats web, stored talk-source and chat-connector top-level sessions as the coordinator", () => {
     for (const source of ["web", "talk", "telegram", "slack"]) {
       expect(reg.isCoordinatorSession(coordinatorSession({ source, sourceRef: `${source}:chat-${++n}` }))).toBe(true);
     }

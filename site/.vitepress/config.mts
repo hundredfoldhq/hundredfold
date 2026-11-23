@@ -32,9 +32,6 @@ const EXCLUDED_DOC_DIRS = ['plans', 'qa', 'superpowers', 'design', 'adr']
 const EXCLUDED_DOC_FILES = [
   'codename-compatibility.md', // how a fork survives a change of codename
   'platform.md', // typed platform intents: a code contract for contributors
-  'realtime-providers.md', // dated vendor billing research
-  'talk-control-coverage.md', // generated route inventory
-  'talk-session-runtime.md', // internal design of the Talk runtime
   'workspace-deliverables.md', // internal build-pipeline design
 ]
 

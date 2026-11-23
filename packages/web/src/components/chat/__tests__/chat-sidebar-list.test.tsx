@@ -184,7 +184,7 @@ describe('scheduled link-row', () => {
 })
 
 describe('automated sessions and the Team directory', () => {
-  const OWN = webSession('own-1', 'Talk Orb Refinement')
+  const OWN = webSession('own-1', 'Settings Refinement')
   const CHILD = webSession('child-1', 'IMPLEMENT PHASE — round 1', {
     employee: 'hundredfold-dev',
     parentSessionId: 'own-1',
@@ -196,7 +196,7 @@ describe('automated sessions and the Team directory', () => {
     renderSidebar()
     // Default mode is All: the child is findable as a flat recency row AND
     // inside its Team group (the grouped view keeps full per-employee history).
-    expect(screen.getByText('Talk Orb Refinement')).toBeTruthy()
+    expect(screen.getByText('Settings Refinement')).toBeTruthy()
     expect(screen.getByText('IMPLEMENT PHASE — round 1')).toBeTruthy()
     expect(screen.getByText('Team')).toBeTruthy()
     expect(screen.getByText('Hundredfold Dev')).toBeTruthy()
@@ -207,7 +207,7 @@ describe('automated sessions and the Team directory', () => {
     sidebarData.sessions = [OWN, CHILD]
 
     renderSidebar()
-    expect(screen.getByText('Talk Orb Refinement')).toBeTruthy()
+    expect(screen.getByText('Settings Refinement')).toBeTruthy()
     expect(screen.queryByText('IMPLEMENT PHASE — round 1')).toBeNull()
     expect(screen.queryByText('Hundredfold Dev')).toBeNull()
   })

@@ -2,10 +2,14 @@
  * Declared write provenance for Todo mutations.
  *
  * The gateway authenticates the principal, not the surface: a write issued by a
- * talk tool arrives as the same authenticated operator as a click in the web UI,
+ * voice assistant arrives as the same authenticated operator as a click in the web UI,
  * so without this the audit log cannot tell them apart. A request may DECLARE
  * the surface it came from in `X-Hundredfold-Origin`, and the work-item write routes
  * fold the declaration into the event they append.
+ *
+ * `talk` is the retired assistant's surface and nothing in Hundredfold sends it any more. It stays
+ * in the allowlist because stored events carry it (they read back as written, never filtered by
+ * this list) and because a header an older client still sends is harmless audit colour.
  *
  * It is audit colour, never authority — nothing is granted or withheld on it, so
  * a forged header buys a caller nothing but a wrong label on their own write.

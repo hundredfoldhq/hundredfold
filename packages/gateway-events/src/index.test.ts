@@ -3,25 +3,6 @@ import { describe, expect, it } from "vitest"
 import { decodeGatewayEvent } from "./index.js"
 
 describe("decodeGatewayEvent", () => {
-  it("accepts bounded proactive Talk cue events", () => {
-    expect(decodeGatewayEvent({
-      event: "talk:proactive-cue",
-      payload: {
-        receiptId: "receipt-1",
-        talkSessionId: "talk-1",
-        topicId: "topic-1",
-        disposition: "spoken",
-        urgency: "urgent",
-        summary: "A related chat failed.",
-        uiEffect: { type: "refresh", target: "chat:chat-1" },
-      },
-    })).not.toBeNull()
-    expect(decodeGatewayEvent({
-      event: "talk:proactive-cue",
-      payload: { receiptId: "receipt-1", talkSessionId: "talk-1", topicId: null, disposition: "loud" },
-    })).toBeNull()
-  })
-
   it("accepts a local speech install frame, with or without a reason, and rejects an unknown state", () => {
     const failed = { state: "failed", progress: 0.4, reason: "disk full" }
     expect(decodeGatewayEvent({ event: "voice:install", payload: failed })).toEqual({ event: "voice:install", payload: failed })

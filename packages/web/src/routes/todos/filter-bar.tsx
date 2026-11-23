@@ -319,7 +319,7 @@ export function FilterBar({
             onRemove={() => onChange({ ...filters, department: undefined })}
           />
         )}
-        {/* Talk deep-links `?q=`. Without the old field there is nothing else
+        {/* A link can carry `?q=`. Without the old field there is nothing else
             on the board that shows it is set, or clears it. */}
         {filters.q && <BoardActiveChip label={`Matching "${filters.q}"`} onRemove={() => onChange({ ...filters, q: undefined })} />}
 

@@ -584,7 +584,7 @@ describe("callback delivery identity", () => {
     ["source attempt", { sourceAttempt: "attempt-2" }],
     ["source outcome", { sourceOutcome: "failed" }],
     ["source version", { sourceVersion: 2 }],
-    ["delivery kind", { deliveryKind: "talk-attachment" }],
+    ["delivery kind", { deliveryKind: "attachment" }],
   ])("keeps a distinct %s deliverable exactly once", (_label, overrides) => {
     const first = registry.claimSessionDelivery(callbackInput());
     const distinct = registry.claimSessionDelivery(callbackInput(overrides));

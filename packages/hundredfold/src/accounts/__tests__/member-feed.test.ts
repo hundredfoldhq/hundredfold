@@ -105,7 +105,7 @@ describe("a member's socket hears only re-serialised Todo changes on its own boa
     expect(opsSocket.frames.map((f) => f.payload.id)).toContain(todo.id);
   });
 
-  it("an assignment by any writer (delegation, Talk, the route) that moves a root off the board removes the card", async () => {
+  it("an assignment by any writer (delegation, the route) that moves a root off the board removes the card", async () => {
     const { assignWorkItem } = await import("../../work-items/assignment.js");
     const todo = store.createWorkItem({ title: "Assigned in code", department: "ops" });
     opsSocket.frames.length = 0; designSocket.frames.length = 0;

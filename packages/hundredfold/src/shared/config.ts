@@ -106,50 +106,7 @@ export function validateConfigShape(config: unknown, options: { tolerateDuplicat
   }
 
   // `voice` is deliberately not checked here: its problems keep voice off, they do not fail the config (FR-025).
-  problems.push(...validateRealtime(c.realtime));
-
-  return problems;
-}
-
-/** The two `realtime` fields with a closed set of values. Everything else in the
- *  block is a free string the provider itself refuses if it is wrong. */
-const REALTIME_NOISE_REDUCTION = ["near_field", "far_field"];
-/** The bare strings `RealtimeTurnDetection` accepts. `semantic_vad` is not one
- *  of them: it is only valid as `{ type: semantic_vad }`, because it carries an
- *  eagerness. The message below says so rather than leaving the operator to
- *  discover it when a session fails to open. */
-const REALTIME_TURN_DETECTION_NAMES = ["server_vad", "none"];
-const REALTIME_TURN_DETECTION_TYPES = ["server_vad", "semantic_vad"];
-
-/**
- * Shape-check the `realtime` block.
- *
- * A bad value here does not fail until a voice session is opened — which is a
- * billed call — so it is caught at the same boundary as every other config
- * mistake, in the same words. `turnDetection` is either one of the shorthand
- * names or a tuned mapping, which is what `RealtimeTurnDetection` says.
- */
-function validateRealtime(realtime: unknown): string[] {
-  if (realtime === undefined) return [];
-  if (typeof realtime !== "object" || realtime === null || Array.isArray(realtime)) {
-    return ["realtime must be a mapping"];
-  }
-  const problems: string[] = [];
-  const r = realtime as Record<string, unknown>;
-
-  for (const key of ["provider", "model", "apiKey", "voice"]) {
-    if (r[key] !== undefined && typeof r[key] !== "string") {
-      problems.push(`realtime.${key} must be a string (got ${typeof r[key]})`);
-    }
-  }
-
-  if (r.noiseReduction !== undefined && !REALTIME_NOISE_REDUCTION.includes(r.noiseReduction as string)) {
-    problems.push(
-      `realtime.noiseReduction must be one of: ${REALTIME_NOISE_REDUCTION.join(", ")} (got ${JSON.stringify(r.noiseReduction)})`,
-    );
-  }
-
-  problems.push(...validateTurnDetection(r.turnDetection));
+  // `realtime` is a retired block and is not checked either: it is accepted whatever it holds.
 
   return problems;
 }
@@ -165,21 +122,6 @@ function validateKnowledgeShape(knowledge: unknown): string[] {
     }
   }
   return problems;
-}
-
-function validateTurnDetection(turn: unknown): string[] {
-  if (turn === undefined) return [];
-  const named = `one of: ${REALTIME_TURN_DETECTION_NAMES.join(", ")}, or a mapping with type: ${REALTIME_TURN_DETECTION_TYPES.join(" | ")}`;
-  if (typeof turn === "string") {
-    if (REALTIME_TURN_DETECTION_NAMES.includes(turn)) return [];
-    return [`realtime.turnDetection must be ${named} (got ${JSON.stringify(turn)})`];
-  }
-  if (typeof turn !== "object" || turn === null || Array.isArray(turn)) {
-    return [`realtime.turnDetection must be ${named} (got ${Array.isArray(turn) ? "an array" : typeof turn})`];
-  }
-  const type = (turn as Record<string, unknown>).type;
-  if (typeof type === "string" && REALTIME_TURN_DETECTION_TYPES.includes(type)) return [];
-  return [`realtime.turnDetection.type must be one of: ${REALTIME_TURN_DETECTION_TYPES.join(", ")} (got ${JSON.stringify(type)})`];
 }
 
 export function loadConfig(): HundredfoldConfig {
