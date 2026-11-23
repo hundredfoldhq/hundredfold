@@ -593,14 +593,6 @@ describe("switching away from a streaming chat and back", () => {
     expect(shown(result.current)).toEqual([WORDS.slice(0, 9).join(""), "tool:Read", "It says hello."])
   })
 
-  it("shows the tool call once when it lands before the read does", async () => {
-    const { gateway, result, back } = await leaveAndReturn(WORDS.slice(5, 9), "after")
-    act(() => { gateway.tool("Read") })
-    await act(async () => { back.resolve(gateway.read()) })
-    await settle()
-    expect(shown(result.current)).toEqual([WORDS.slice(0, 9).join(""), "tool:Read"])
-  })
-
   it("drops the cached text for a turn that is between blocks when the read comes back", async () => {
     const gateway = new FakeGateway()
     answerLaterReadsAtOnce(gateway)
@@ -623,6 +615,99 @@ describe("switching away from a streaming chat and back", () => {
     expect(shown(result.current)).toEqual([WORDS.slice(0, 9).join(""), "tool:Read"])
     act(() => { gateway.word("Next ") })
     expect(shown(result.current)).toEqual([WORDS.slice(0, 9).join(""), "tool:Read", "Next "])
+  })
+
+  it("does not store the cached text as a row when a tool call lands before the read does", async () => {
+    const { gateway, result, back } = await leaveAndReturn(WORDS.slice(5, 9), "after")
+    act(() => { gateway.tool("Read") })
+    // The read holds the stored rows: until it lands the view shows the call alone, not a second copy of the text.
+    expect(shown(result.current)).toEqual(["tool:Read"])
+    await act(async () => { back.resolve(gateway.read()) })
+    await settle()
+    expect(shown(result.current)).toEqual([WORDS.slice(0, 9).join(""), "tool:Read"])
+  })
+
+  it.each([
+    ["a block the gateway sent out of band", (gateway: FakeGateway) => gateway.outOfBand("Plan")],
+    ["a block of the turn's own stream", (gateway: FakeGateway) => gateway.emit("session:delta", {
+      type: "block", content: "Plan", streamBlock: gateway.block, block: { op: "put", block: { id: "tb", type: "task-list", version: 1, payload: { title: "Plan", items: [] } } },
+    })],
+  ])("leaves the cached text for the read when %s lands first", async (_name, land) => {
+    const { gateway, result, back } = await leaveAndReturn(WORDS.slice(5, 9), "after")
+    act(() => { land(gateway) })
+    // Not stored as a row of its own: the cached text is still the streaming text.
+    expect(result.current.streamingText).toBe("Let me check the file ")
+    expect(result.current.messages.filter((m) => m.role === "assistant" && m.content === "Let me check the file ")).toEqual([])
+    await act(async () => { back.resolve(gateway.read()) })
+    await settle()
+    expect(result.current.streamingText).toBe(WORDS.slice(0, 9).join(""))
+    expect(result.current.messages.filter((m) => m.role === "assistant" && m.content.startsWith("Let me check"))).toEqual([])
+  })
+
+  it("stores the cached text as the row it is once something else was added to it", async () => {
+    __cacheLiveSessionSnapshotForTests("s1", {
+      messages: [{ id: "u1", role: "user", content: "look at the repo", timestamp: 1 }],
+      streamingText: "Let me check",
+      loading: true,
+      turnPending: true,
+      session: { status: "running" },
+      liveContextTokens: null,
+      backgroundActivity: null,
+      streamStamped: true,
+    })
+    const read = deferred<unknown>()
+    getSession.mockImplementation(() => read.promise)
+    const gateway = new FakeGateway()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe: gateway.subscribe }))
+    await settle()
+    // A delta no block or offset places is appended: the text is no longer the one that was cached.
+    act(() => { gateway.emit("session:delta", { type: "text", content: " the file" }) })
+    expect(result.current.streamingText).toBe("Let me check the file")
+    act(() => { gateway.tool("Read") })
+    expect(shown(result.current)).toEqual(["Let me check the file", "tool:Read"])
+  })
+
+  it("stores the cached text as the row it is when a snapshot says the same", async () => {
+    __cacheLiveSessionSnapshotForTests("s1", {
+      messages: [{ id: "u1", role: "user", content: "look at the repo", timestamp: 1 }],
+      streamingText: "Let me check",
+      loading: true,
+      turnPending: true,
+      session: { status: "running" },
+      liveContextTokens: null,
+      backgroundActivity: null,
+      streamStamped: true,
+    })
+    const read = deferred<unknown>()
+    getSession.mockImplementation(() => read.promise)
+    const gateway = new FakeGateway()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe: gateway.subscribe }))
+    await settle()
+    // The engine's own snapshot of the answer is authoritative, even when it equals the cached text.
+    act(() => { gateway.emit("session:delta", { type: "text_snapshot", content: "Let me check" }) })
+    act(() => { gateway.tool("Read") })
+    expect(shown(result.current)).toEqual(["Let me check", "tool:Read"])
+  })
+
+  it("keeps the text of an unstamped stream through a switch away and back", async () => {
+    const gateway = new FakeGateway()
+    getSession.mockResolvedValue({ status: "running", messages: [{ id: "u1", role: "user", content: "look at the repo", timestamp: 1 }] })
+    const { result, rerender } = renderHook(({ id }) => useLiveSession(id, { subscribe: gateway.subscribe }), { initialProps: { id: "s1" } })
+    await settle()
+    for (const chunk of ["Let ", "me ", "check"]) act(() => { gateway.emit("session:delta", { type: "text", content: chunk }) })
+    await settle()
+    expect(result.current.streamingText).toBe("Let me check")
+
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    rerender({ id: "s2" })
+    await settle()
+    getSession.mockResolvedValue({ status: "running", messages: [{ id: "u1", role: "user", content: "look at the repo", timestamp: 1 }], liveStream: null })
+    rerender({ id: "s1" })
+    await settle()
+    // Nothing placed that text, so no read can replace it: it stays, and the call after it stores it.
+    expect(result.current.streamingText).toBe("Let me check")
+    act(() => { gateway.tool("Read") })
+    expect(shown(result.current)).toEqual(["Let me check", "tool:Read"])
   })
 
   it("keeps text a gateway did not stamp, as it always was", async () => {
