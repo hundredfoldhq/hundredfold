@@ -161,14 +161,6 @@ function isBackgroundActivity(value: unknown): boolean {
     && isString(value.lastActivityAt)
 }
 
-function isProgressPayload(value: unknown): boolean {
-  return isRecord(value) && isNumber(value.progress)
-}
-
-function isErrorPayload(value: unknown): boolean {
-  return isRecord(value) && isString(value.error)
-}
-
 type PayloadGuard = (value: unknown) => boolean
 
 /**
