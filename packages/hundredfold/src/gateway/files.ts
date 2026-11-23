@@ -46,6 +46,26 @@ export function sanitizeUploadFilename(name: string): string {
   return base;
 }
 
+/**
+ * Atomically claim an unused filename in `dir`: the first free of `name`,
+ * `name-2`, `name-3`, ... (suffix before the extension). The empty file is
+ * created exclusively, so concurrent uploads of the same name cannot take the
+ * same slot; callers then write or rename over the placeholder they own.
+ */
+export function claimUniqueUploadPath(dir: string, name: string): string {
+  const ext = path.extname(name);
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  for (let n = 1; ; n++) {
+    const candidate = path.join(dir, n === 1 ? name : `${stem}-${n}${ext}`);
+    try {
+      fs.closeSync(fs.openSync(candidate, "wx"));
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+}
+
 /** Restrict a sessionId to a safe single path segment (no separators / traversal). */
 export function sanitizeSessionId(id: string): string {
   // Drop separators/unsafe chars, then strip leading dots so no "."/".." segment survives.
@@ -595,7 +615,12 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     ? uploadDir(result.sessionId!)
     : path.join(FILES_DIR, result.id);
   await fs.promises.mkdir(storageDir, { recursive: true });
-  const storagePath = path.join(storageDir, safeName);
+  // Session uploads share one directory per day, so two same-named files (every
+  // pasted clipboard image is "image.png") must not overwrite each other.
+  const storagePath = sessionScoped
+    ? claimUniqueUploadPath(storageDir, safeName)
+    : path.join(storageDir, safeName);
+  const storedName = path.basename(storagePath);
   await fs.promises.writeFile(storagePath, result.buffer);
 
   const mimetype = mimeFromFilename(safeName);
@@ -604,7 +629,7 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
   const dimensions = mimetype.startsWith("image/") ? await readImageDimensions(result.buffer) : null;
   const meta = insertFile({
     id: result.id,
-    filename: safeName,
+    filename: storedName,
     size: result.buffer.length,
     mimetype,
     // For session uploads, record the absolute on-disk path so download + path-injection can find it.
@@ -910,7 +935,7 @@ export function rehomeAttachmentsToSession(fileIds: unknown, sessionId: string):
     const current = path.join(FILES_DIR, meta.id, meta.filename);
     if (!fs.existsSync(current)) continue; // already session-scoped or missing
     fs.mkdirSync(destDir, { recursive: true });
-    const dest = path.join(destDir, sanitizeUploadFilename(meta.filename));
+    const dest = claimUniqueUploadPath(destDir, sanitizeUploadFilename(meta.filename));
     try {
       fs.renameSync(current, dest);
     } catch (err) {
