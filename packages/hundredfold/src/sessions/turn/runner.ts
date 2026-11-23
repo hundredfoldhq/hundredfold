@@ -88,7 +88,7 @@ async function runTurnOnce(input: TurnInput, surface: TurnSurface): Promise<Turn
     plan,
     surface,
     heartbeat: armTurnHeartbeat(sessionId, input.attemptToken),
-    partialStream: createPartialStreamWriter(sessionId),
+    partialStream: createPartialStreamWriter(sessionId, input.attemptToken),
     turnStartedAt: Date.now(),
     terminalFields,
   };

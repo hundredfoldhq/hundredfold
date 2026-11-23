@@ -89,8 +89,10 @@ export interface Config {
     turnDetection?: string | { type?: string; [key: string]: unknown }
     noiseReduction?: string
   }
-  /** Voice mode. Only `cues` is edited here; the rest of the block is config.yaml's. */
+  /** Voice mode. Only the speaking rate and the cue settings have controls here; the rest is edited in the file. */
   voice?: {
+    enabled?: boolean
+    tts?: { speed?: number; [key: string]: unknown }
     cues?: { enabled?: boolean; volume?: number }
     [key: string]: unknown
   }

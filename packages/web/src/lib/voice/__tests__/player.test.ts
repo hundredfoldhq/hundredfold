@@ -160,3 +160,40 @@ describe("VoicePlayer flush", () => {
     expect(ctx.sources.at(-1)!.startedAt!).toBeLessThan(1.1)
   })
 })
+
+describe("VoicePlayer at a non-default speaking speed", () => {
+  // The gateway makes the audio faster, so a sentence arrives shorter and plays at the clock's own rate. The played
+  // share the gateway uses to decide what was heard is then a share of the shorter audio, with no rate to correct for.
+  const NORMAL = 24_000 // 1.0 s of the sentence at speed 1
+  const FAST = 16_000 // the same sentence at 1.5x: 0.667 s
+
+  it("reports the played time of the audio it was given, not of the length it would have had at speed 1", () => {
+    player.beginSegment(1)
+    player.enqueue(1, pcm(FAST))
+    const start = ctx.sources[0].startedAt!
+    ctx.currentTime = start + 0.2
+    expect(player.position()).toEqual({ segmentId: 1, playedMs: 200 })
+    ctx.currentTime = start + 5
+    // Past the end it is capped at the audio's own length.
+    expect(player.position().playedMs).toBe(667)
+  })
+
+  it("a barge-in cut half way through a fast sentence reports half of the fast sentence", () => {
+    player.beginSegment(1)
+    player.enqueue(1, pcm(FAST))
+    ctx.currentTime = ctx.sources[0].startedAt! + FAST / 24_000 / 2
+    expect(player.flush()).toEqual({ segmentId: 1, playedMs: 333 })
+    player.beginSegment(2)
+    player.enqueue(2, pcm(NORMAL))
+    ctx.currentTime = ctx.sources[1].startedAt! + 0.5
+    expect(player.flush()).toEqual({ segmentId: 2, playedMs: 500 })
+  })
+
+  it("reports a fast segment played when its shorter audio has run out", () => {
+    player.beginSegment(1)
+    player.enqueue(1, pcm(FAST))
+    player.endSegment(1)
+    ctx.sources[0].finish()
+    expect(played).toEqual([1])
+  })
+})

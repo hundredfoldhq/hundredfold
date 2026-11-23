@@ -277,10 +277,12 @@ describe("the chains API subjects", () => {
     const open = { scoped: false, remote: false };
     expect(employeeSubject(env, dev, open).startPick).toMatchObject({ source: "engine", picked: key("B") });
     expect(employeeSubject(env, { ...dev, fallback: [GROUP] }, open).startPick).toMatchObject({ source: "employee" });
-    // A login outside the group, a group that is not first, a remote employee and a non-Claude employee have none.
+    // A login outside the group, a group that is not first, a remote employee whose own login is not in it (the local profiles
+    // are no logins on its host) and a non-Claude employee have none. A remote employee's own pick: fallback-chain-subjects-remote.test.ts.
     expect(employeeSubject(env, { ...dev, fallback: [{ group: [{ engine: "claude", profile: "A" }, { engine: "claude", profile: "B" }] }] }, open)).not.toHaveProperty("startPick");
     expect(employeeSubject(env, { ...dev, fallback: [TAIL, GROUP] }, open)).not.toHaveProperty("startPick");
-    expect(employeeSubject(env, dev, { scoped: false, remote: true, host: "u@h" })).not.toHaveProperty("startPick");
+    const remote = { ...dev, remoteHost: "build-host", remoteUser: "me", remoteCwd: "/srv/work/dev", fallback: [{ group: [{ engine: "claude", profile: "A" }, { engine: "claude", profile: "B" }] }] };
+    expect(employeeSubject(env, remote, { scoped: false, remote: true, host: "me@build-host" })).not.toHaveProperty("startPick");
     expect(employeeSubject(env, { ...dev, engine: "opencode", model: "x/y", fallback: [GROUP] }, open)).not.toHaveProperty("startPick");
   });
 

@@ -35,6 +35,11 @@ final class VoiceController {
     private let cuePlayer = AVAudioPlayerNode()
     /// Serial queue guarding all mutable state below.
     private let state = DispatchQueue(label: "run.hundredfold.voice.state")
+    /// Serialises `start` and `stop` end to end. Rust calls both from its own threads: a
+    /// `start` arriving while a `stop` is still inside `teardown` would otherwise pass the
+    /// `running` check (already false) and build a new engine that the old teardown then
+    /// removes the tap from, stops and detaches. Taken before `state`, never inside it.
+    private let lifecycle = NSLock()
     private let clock = DispatchTime.now()
 
     private let captureFormat = AVAudioFormat(
@@ -79,6 +84,8 @@ final class VoiceController {
     }
 
     func start(handsFree: Bool) -> Bool {
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
         guard !state.sync(execute: { running }) else { return false }
         let session = AVAudioSession.sharedInstance()
         do {
@@ -128,6 +135,8 @@ final class VoiceController {
     }
 
     func stop() {
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
         state.sync {
             running = false
             generation += 1

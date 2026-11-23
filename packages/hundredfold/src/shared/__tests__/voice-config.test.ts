@@ -1,5 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN, VOICE_SPEED_PRESETS } from "@hundredfold/gateway-events";
 import { validateConfigShape } from "../config.js";
 import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
 
@@ -239,5 +240,29 @@ describe("resolveVoiceConfig", () => {
   it("lets an inline prompt win over promptFile, and resolves promptFile inside the home", () => {
     expect(resolve({ enabled: true, prompt: "Be brief.", promptFile: "p.md" })).toMatchObject({ prompt: "Be brief.", promptFile: null });
     expect(resolve({ enabled: true, promptFile: "voice/p.md" })).toMatchObject({ prompt: DEFAULT_VOICE_PROMPT, promptFile: path.join(HOME, "voice", "p.md") });
+  });
+
+  describe("the speaking rate", () => {
+    it("is 1 when unset, and a voice block with no tts block, or an empty one, still loads", () => {
+      expect(resolve({ enabled: true })!.tts.speed).toBe(1);
+      expect(resolve({ enabled: true, tts: {} })!.tts.speed).toBe(1);
+      expect(voiceConfigProblems({ enabled: true, tts: { voice: "af_heart" } }, HOME)).toEqual([]);
+    });
+
+    it("accepts every preset the settings offer and both ends of the range", () => {
+      for (const speed of [...VOICE_SPEED_PRESETS.map((preset) => preset.speed), VOICE_SPEED_MIN, VOICE_SPEED_MAX]) {
+        expect(voiceConfigProblems({ enabled: true, tts: { speed } }, HOME)).toEqual([]);
+        expect(resolve({ enabled: true, tts: { speed } })!.tts.speed).toBe(speed);
+      }
+      expect(VOICE_SPEED_PRESETS.map((preset) => preset.label)).toEqual(["Slower", "Normal", "Faster", "Fastest"]);
+      expect(VOICE_SPEED_PRESETS.find((preset) => preset.label === "Normal")!.speed).toBe(VOICE_SPEED_DEFAULT);
+    });
+
+    it.each([0, 0.49, 2.01, 5, -1, Number.NaN, Infinity, "1.5", null, true])("rejects %s, naming the key, the range and what it got", (speed) => {
+      const problems = voiceConfigProblems({ enabled: true, tts: { speed } }, HOME);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatch(/^voice\.tts\.speed must be a number from 0\.5 to 2 \(got /);
+      expect(resolve({ enabled: true, tts: { speed } })).toBeNull();
+    });
   });
 });

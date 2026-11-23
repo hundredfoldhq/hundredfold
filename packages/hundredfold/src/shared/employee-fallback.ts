@@ -6,6 +6,7 @@ import { fallbackChainProblems, fallbackGroupOf, fallbackLinkOf, employeeProfile
 import type { DuplicateTolerance } from "./fallback-chain-load.js";
 import { logger } from "./logger.js";
 import { ENGINE_NAMES } from "./models.js";
+import { declaredOpencodeAccounts } from "./opencode-accounts-config.js";
 import { isRemoteTarget, resolveRemoteClaudeConfigDir, sshDestination } from "./remote-target.js";
 import type { Employee, HundredfoldConfig } from "./types.js";
 
@@ -46,9 +47,11 @@ export function employeeFallbackProblems(config: HundredfoldConfig | undefined, 
   if (!Array.isArray(chain)) return ["fallback must be a list of fallback targets"];
   const strings = chain.flatMap((entry, index) => typeof entry === "string"
     ? [`fallback[${index}] must be a mapping with engine, profile and model: the engine-name and claude:<name> strings are for engine and account chains`] : []);
-  const named = chain.flatMap((entry) => entryLinks(entry)).map((link) => link.profile).filter((profile): profile is string => profile !== undefined);
-  const profiles = config ? accountNames(config.engines) : new Set(named);
-  const ctx = { engines: ENGINE_NAMES, profiles, onDuplicate };
+  const links = chain.flatMap((entry) => entryLinks(entry));
+  const named = (engine: string): Set<string> => new Set(links.filter((link) => link.engine === engine).flatMap((link) => link.profile ?? []));
+  const profiles = config ? accountNames(config.engines) : named("claude");
+  const opencodeProfiles = config ? new Set(declaredOpencodeAccounts(config).map((account) => account.name)) : named("opencode");
+  const ctx = { engines: ENGINE_NAMES, profiles, opencodeProfiles, ownEngine: employee.engine, onDuplicate };
   if (!config) return [...strings, ...fallbackChainProblems("fallback", chain, ctx)];
   // A link with no model runs the employee's own model on its own engine, so it is the own target as well: check both spellings.
   // A remote employee on a declared account also reaches its own login by naming no profile at all.

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ENGINE_LIMITS_DIR } from "./paths.js";
+import { isOpencodeAccountKey } from "./fallback-chain-opencode-group.js";
 import type { EngineLimitEngineSnapshot } from "./types.js";
 
 /**
@@ -44,9 +45,12 @@ export const USAGE_HISTORY_MAX_SAMPLES = 2_500;
 export const USAGE_HISTORY_PATH = path.join(ENGINE_LIMITS_DIR, "claude-usage-history.json");
 
 /** Each account's own history (FR-071): the default account keeps today's
- *  file; every other account gets one beside it, named by its account key. */
+ *  file; every other Claude account gets one beside it, named by its account key.
+ *  An opencode account (`opencode/<provider>`, kept by `opencode-usage-history.ts`)
+ *  gets `opencode-usage-history.<key>.json`: the Claude names do not change. */
 export function usageHistoryPath(account = "claude"): string {
   if (account === "claude") return USAGE_HISTORY_PATH;
+  if (isOpencodeAccountKey(account)) return path.join(ENGINE_LIMITS_DIR, `opencode-usage-history.${encodeURIComponent(account)}.json`);
   return path.join(ENGINE_LIMITS_DIR, `claude-usage-history.${encodeURIComponent(account)}.json`);
 }
 
@@ -107,7 +111,11 @@ function sameHistory(a: readonly UsageSample[], b: readonly UsageSample[]): bool
  *  a history that cannot be written must not cost it. */
 export function recordClaudeUsageSample(snapshot: EngineLimitEngineSnapshot, nowMs = Date.now(), file: string = USAGE_HISTORY_PATH): void {
   const sample = sampleFromSnapshot(snapshot, nowMs);
-  if (!sample) return;
+  if (sample) recordUsageSample(sample, file);
+}
+
+/** Append a sample already built to a history file, with the same collapse, retention and cap. Never throws. */
+export function recordUsageSample(sample: UsageSample, file: string): void {
   try {
     const history = readClaudeUsageHistory(0, file);
     const next = appendSample(history, sample);

@@ -8,6 +8,7 @@
  * defaults resolver (`resolveVoiceConfig`) live beside it.
  */
 import path from "node:path";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "@hundredfold/gateway-events";
 import { HUNDREDFOLD_HOME } from "./paths.js";
 import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
@@ -26,7 +27,7 @@ export interface VoiceSttConfig {
 export interface VoiceTtsConfig extends VoiceSttConfig {
   /** Provider default when absent; for `local`, the operator's chosen Kokoro voice. */
   voice?: string;
-  /** Playback speed multiplier, 0.5 to 2. Defaults to 1. */
+  /** Speaking rate multiplier for spoken replies, 0.5 to 2 (1 is natural). Defaults to 1; a change applies to the next sentence spoken, with no restart. */
   speed?: number;
 }
 
@@ -218,7 +219,7 @@ function sideProblems(prefix: string, raw: unknown): { problems: string[]; side:
 
 function ttsProblems(tts: Obj | undefined): string[] {
   if (!tts) return [];
-  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [0.5, 2], false)];
+  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [VOICE_SPEED_MIN, VOICE_SPEED_MAX], false)];
 }
 
 function vadProblems(vad: Obj | undefined): string[] {
@@ -315,6 +316,11 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   ];
 }
 
+/** Whether the config asks for voice: anything but an object whose `enabled` is absent or `false`. A block that asks for it may still be invalid. */
+export function asksForVoice(voice: unknown): boolean {
+  return !(isObject(voice) && (voice.enabled === undefined || voice.enabled === false));
+}
+
 /**
  * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
  * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
@@ -323,17 +329,18 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
 export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
   const problems = voiceConfigProblems(voice, home);
   if (problems.length === 0) return null;
-  if (isObject(voice) && (voice.enabled === undefined || voice.enabled === false)) return null;
+  if (!asksForVoice(voice)) return null;
   return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
 }
 
 /**
  * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
- * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while voice is off, so a
- * variable a disabled block names stays where it is.
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while the config does not
+ * ask for voice, so a variable a disabled block names stays where it is. A block that asks for voice but is invalid
+ * (`enabled: "yes"`) still withholds them: voice is off for that reason, not because nobody wanted it.
  */
 export function voiceKeyEnvNames(voice: unknown): string[] {
-  if (!isObject(voice) || voice.enabled !== true) return [];
+  if (!isObject(voice) || !asksForVoice(voice)) return [];
   const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
   return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
 }
@@ -374,7 +381,7 @@ function resolveSide(raw: Obj, kind: "stt" | "tts"): ResolvedVoiceSide {
 function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
   const tts = sub(voice, "tts");
   const side = resolveSide(tts, "tts");
-  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", 1) };
+  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", VOICE_SPEED_DEFAULT) };
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {

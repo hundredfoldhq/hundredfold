@@ -7,11 +7,10 @@ import { opencodeAccountChoices, type OpencodeAccountChoice } from './opencode-a
 const NONE: OpencodeAccountChoice[] = []
 
 /**
- * The declared opencode accounts the chat pickers list apart. Read from the limits route (the only
- * place that names built-in accounts, whose models the registry does not mark), narrowed to opencode.
- * Advisory: a failed or absent read, or no declared account, yields none and the pickers render as before.
+ * The declared opencode accounts, or `undefined` until they have been read (or when the read failed or the
+ * gateway sends none): a caller that checks account names against them must not treat "not read yet" as "none declared".
  */
-export function useOpencodeAccounts(enabled: boolean): OpencodeAccountChoice[] {
+export function useDeclaredOpencodeAccounts(enabled: boolean): OpencodeAccountChoice[] | undefined {
   const { data } = useQuery({
     queryKey: queryKeys.engineLimits('opencode'),
     queryFn: () => api.getEngineLimits('opencode'),
@@ -19,5 +18,14 @@ export function useOpencodeAccounts(enabled: boolean): OpencodeAccountChoice[] {
     retry: false,
     staleTime: 60_000,
   })
-  return useMemo(() => (data ? opencodeAccountChoices(data) : NONE), [data])
+  return useMemo(() => (data?.accounts?.opencode ? opencodeAccountChoices(data) : undefined), [data])
+}
+
+/**
+ * The declared opencode accounts the chat pickers list apart. Read from the limits route (the only
+ * place that names built-in accounts, whose models the registry does not mark), narrowed to opencode.
+ * Advisory: a failed or absent read, or no declared account, yields none and the pickers render as before.
+ */
+export function useOpencodeAccounts(enabled: boolean): OpencodeAccountChoice[] {
+  return useDeclaredOpencodeAccounts(enabled) ?? NONE
 }

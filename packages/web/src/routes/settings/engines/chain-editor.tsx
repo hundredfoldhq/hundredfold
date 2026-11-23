@@ -3,7 +3,7 @@ import type { FallbackLink } from "@hundredfold/fallback-chain-wire"
 import { Plus } from "@/components/ui/icon"
 import { Button } from "@/components/ui/button"
 import { engineDisplayName } from "@/lib/engine-names"
-import { blankGroup, blankLink, moveLink, removeLink, replaceLink, selfSpellings, type ChainContext, type ChainItem } from "./chain-links"
+import { blankGroup, blankLink, moveLink, offersOpencodeGroup, removeLink, replaceLink, selfSpellings, type ChainContext, type ChainItem } from "./chain-links"
 import { rowProblemsWithHost, type HostProblem } from "./chain-problems"
 import { ChainRow, type RowFields } from "./chain-row"
 import { rowShift, useChainDrag } from "./use-chain-drag"
@@ -97,8 +97,8 @@ function useChainMoves(links: ChainItem[], onChange: (links: ChainItem[]) => voi
   }
 }
 
-/** The two ways to grow a chain: a target, or a balanced group of Claude accounts. */
-function AddButtons({ chainName, onAddLink, onAddGroup }: { chainName: string; onAddLink: () => void; onAddGroup: () => void }) {
+/** The ways to grow a chain: a target, a balanced group of Claude accounts, and where the gateway accepts one, a balanced group of opencode accounts. */
+function AddButtons({ chainName, onAddLink, onAddGroup, onAddOpencodeGroup }: { chainName: string; onAddLink: () => void; onAddGroup: () => void; onAddOpencodeGroup?: () => void }) {
   return (
     <div className="mt-[var(--space-2)] flex flex-wrap gap-[var(--space-1)]">
       <Button variant="secondary" size="sm" aria-label={`Add a target to the ${chainName}`} onClick={onAddLink}>
@@ -109,6 +109,12 @@ function AddButtons({ chainName, onAddLink, onAddGroup }: { chainName: string; o
         <Plus size={14} aria-hidden />
         Add a balanced group
       </Button>
+      {onAddOpencodeGroup && (
+        <Button variant="secondary" size="sm" aria-label={`Add a balanced opencode group to the ${chainName}`} onClick={onAddOpencodeGroup}>
+          <Plus size={14} aria-hidden />
+          Add a balanced opencode group
+        </Button>
+      )}
     </div>
   )
 }
@@ -119,7 +125,12 @@ export function ChainEditor(props: ChainEditorProps) {
   const { chainName, ownEngine, self, where, links, expanded, fields, waitsAs, serverProblems = [], hostProblem, onChange } = props
   const moves = useChainMoves(links, onChange)
   const { drag, listRef, liftPointerDown, reducedMotion } = useChainDrag(moves.move)
-  const ctx: ChainContext = { engines: Object.values(fields.registry.engines), profiles: fields.knownProfiles ?? fields.profiles }
+  const ctx: ChainContext = {
+    engines: Object.values(fields.registry.engines),
+    profiles: fields.knownProfiles ?? fields.profiles,
+    ownEngine,
+    ...(fields.opencodeAccounts ? { opencodeProfiles: fields.opencodeAccounts.map((account) => account.name) } : {}),
+  }
   const selves = selfSpellings(self)
   const problems = rowProblemsWithHost(where, links, ctx, selves, hostProblem)
   const rowFields: RowFields = { ...fields, ownEngine, chainName }
@@ -152,7 +163,7 @@ export function ChainEditor(props: ChainEditorProps) {
         </div>
       )}
       <GeneralProblems problems={unshownProblems(problems, serverProblems)} />
-      <AddButtons chainName={chainName} onAddLink={() => onChange([...links, blankLink(ctx, links, selves)])} onAddGroup={() => onChange([...links, blankGroup(ctx, links)])} />
+      <AddButtons chainName={chainName} onAddLink={() => onChange([...links, blankLink(ctx, links, selves)])} onAddGroup={() => onChange([...links, blankGroup(ctx, links)])} onAddOpencodeGroup={offersOpencodeGroup(ownEngine, ctx, links) ? () => onChange([...links, blankGroup(ctx, links, "opencode")]) : undefined} />
     </div>
   )
 }
