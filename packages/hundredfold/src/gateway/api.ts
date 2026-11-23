@@ -166,6 +166,7 @@ import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_K
 import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
+import { accountEmailOf, requestAccountId } from "../accounts/request-account.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
 import { signOutUserSession } from "../accounts/logout.js";
 import type { AccountsRuntime } from "../accounts/runtime.js";
@@ -1930,8 +1931,13 @@ export async function handleApiRequest(
         });
       }
 
+      // Who the session is attributed to, for the instance's own callers: an email is not for a scoped session's eyes.
+      const attribution = resolveScopedWriteCallerIdentity(req, context).kind === "operator"
+        ? { userEmail: accountEmailOf(session.userId, context.accounts) }
+        : {};
       return json(res, withFallbackView({
         ...serializeSessionResponse(session, context),
+        ...attribution,
         ...(includeMessages ? { messages } : {}),
         ...(liveStream ? { liveStream } : {}),
         ...(page ? { messagesPage: { hasOlder: page.hasOlder } } : {}),
@@ -2140,7 +2146,7 @@ export async function handleApiRequest(
       let newSessionId: string | null = null;
       try {
         // 1. Duplicate session + messages in the registry
-        const { session: newSession, messageCount } = duplicateSession(params.id);
+        const { session: newSession, messageCount } = duplicateSession(params.id, undefined, requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts));
         newSessionId = newSession.id;
 
         // 2. Fork the engine session (Claude/Codex). For Claude, route through
@@ -2913,6 +2919,10 @@ export async function handleApiRequest(
         actor: workItemActor(caller),
         // The Dispatcher hands the Todo on with the presser's standing.
         ...(caller.kind === "session" ? { transportMeta: { [DISPATCH_PRESSED_BY_META_KEY]: caller.callerId } } : {}),
+        // The Dispatcher is a root: it carries whoever pressed the button, the account or the pressing session's own.
+        userId: caller.kind === "session"
+          ? getSession(caller.callerId)?.userId ?? undefined
+          : requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts),
         emitProjectionEvent: (id, action) => emitTodoProjectionEvent(context, id, action),
       });
       return json(res, started.body, started.status);
@@ -3738,6 +3748,8 @@ export async function handleApiRequest(
           replyContext: { source: "web" },
           employee: employeeName ?? null,
           parentSessionId,
+          // A delegation asked for from the dashboard is the signed-in account's; from a tool it inherits its parent's.
+          userId: requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts),
           model: selection.model,
           effortLevel: selection.effortLevel,
           fallbackMode,
@@ -3888,7 +3900,10 @@ export async function handleApiRequest(
       // Opt-in SSO identity capture: when an auth proxy fronts the gateway and
       // `gateway.userHeader` is configured, persist the forwarded identity on the
       // session. Unset config → undefined → stored as NULL (single-user no-op).
-      const userId = resolveUserHeader(req.headers, config.gateway.userHeader);
+      // Otherwise the account the request's device was signed in with; a spawn from a tool carries neither
+      // and inherits its parent's.
+      const userId = resolveUserHeader(req.headers, config.gateway.userHeader)
+        ?? requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts);
       const spawned = await spawnSession(context, {
         prompt,
         employee: employeeName,

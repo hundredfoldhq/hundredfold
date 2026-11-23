@@ -547,6 +547,13 @@ export function promptExcerptOf(prompt: string | undefined): string | undefined 
   return flat.length > 140 ? flat.slice(0, 139).trimEnd() + '…' : flat;
 }
 
+/** The account a session's parent is attributed to: a child with no account of its own carries its parent's, so a person's whole tree is theirs. A root (cron, hook, workflow) has no parent and stays unattributed. */
+function parentUserId(db: Database.Database, parentSessionId: string | undefined): string | null {
+  if (!parentSessionId) return null;
+  const row = db.prepare('SELECT user_id FROM sessions WHERE id = ?').get(parentSessionId) as { user_id: string | null } | undefined;
+  return row?.user_id ?? null;
+}
+
 export function createSession(opts: CreateSessionOpts & { prompt?: string; portalName?: string }): Session {
   const db = initDb();
   const now = new Date().toISOString();
@@ -559,6 +566,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
   const transportMeta = opts.transportMeta ? JSON.stringify(opts.transportMeta) : null;
   // FR-008: a scoped employee's session is bound to its department, once, here, whatever path created it.
   const scopeDepartment = scopedDepartmentOf(opts.employee);
+  const userId = opts.userId ?? parentUserId(db, opts.parentSessionId);
 
   const stmt = db.prepare(`
     INSERT INTO sessions (
@@ -587,7 +595,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     title,
     promptExcerpt,
     opts.parentSessionId ?? null,
-    opts.userId ?? null,
+    userId,
     opts.effortLevel ?? null,
     opts.fallbackMode ?? null,
     opts.fallbackTarget ? JSON.stringify(opts.fallbackTarget) : null,
@@ -617,7 +625,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     archivedAt: null,
     parentSessionId: opts.parentSessionId ?? null,
     scopeDepartment,
-    userId: opts.userId ?? null,
+    userId,
     effortLevel: opts.effortLevel ?? null,
     fallbackMode: opts.fallbackMode ?? null,
     fallbackTarget: opts.fallbackTarget ?? null,
@@ -2244,7 +2252,7 @@ function copiedTransportMeta(meta: JsonObject | null): string | null {
  * Duplicate a session and all its messages, returning a new session with a fresh ID.
  * Does NOT fork the engine session — the caller handles that separately.
  */
-export function duplicateSession(sourceId: string, newTitle?: string): { session: Session; messageCount: number } {
+export function duplicateSession(sourceId: string, newTitle?: string, userId?: string): { session: Session; messageCount: number } {
   const db = initDb();
   const source = getSession(sourceId);
   if (!source) throw new Error(`Session ${sourceId} not found`);
@@ -2265,10 +2273,10 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
       INSERT INTO sessions (
         id, engine, engine_session_id, source, source_ref, connector, session_key,
         reply_context, message_id, transport_meta,
-        employee, model, title, parent_session_id, effort_level, fallback_mode, fallback_target, claude_config_dir, status,
+        employee, model, title, parent_session_id, user_id, effort_level, fallback_mode, fallback_target, claude_config_dir, status,
         total_cost, total_turns, created_at, last_activity, scope_department
       )
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?)
     `).run(
       newId,
       source.engine,
@@ -2282,6 +2290,7 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
       source.employee,
       source.model,
       title,
+      userId ?? source.userId ?? null,
       source.effortLevel,
       source.fallbackMode,
       source.fallbackTarget ? JSON.stringify(source.fallbackTarget) : null,
