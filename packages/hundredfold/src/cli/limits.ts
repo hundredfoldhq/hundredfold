@@ -3,7 +3,7 @@ import { loadConfig } from "../shared/config.js";
 import { HUNDREDFOLD_HOME } from "../shared/paths.js";
 import { collectEngineLimits } from "../shared/engine-limits.js";
 import { refreshGrokModels, refreshPiModels, refreshHermesModels, refreshOpencodeModels, refreshMusecodeModels } from "../shared/models.js";
-import type { EngineLimitBucket, EngineLimitEngineSnapshot, EngineLimitWindow } from "../shared/types.js";
+import type { EngineLimitBucket, EngineLimitEngineSnapshot, EngineLimitWindow, ProviderUsage } from "../shared/types.js";
 import type { EngineLimitAccountSnapshot } from "../shared/engine-limits-accounts.js";
 import type { OpencodeAccountLimitSnapshot } from "../shared/engine-limits-opencode-accounts.js";
 import { opencodeDiscoveryEnv } from "../engines/opencode-launch.js";
@@ -37,13 +37,36 @@ function formatWindow(window: EngineLimitWindow): string {
   return `${window.name}${duration}: ${used} used${formatReset(window)}`;
 }
 
-function printBuckets(buckets: readonly EngineLimitBucket[]): void {
-  console.log("  Buckets:");
+/**
+ * The ledger buckets worth printing beside a provider reading: with a reading, the covered provider's own are
+ * dropped (they would sit beside it as a second, contradictory figure); without one they stay, as an estimate.
+ */
+function bucketsBesideUsage(buckets: readonly EngineLimitBucket[] | undefined, usage: ProviderUsage | undefined): EngineLimitBucket[] {
+  const all = buckets ?? [];
+  const covered = usage?.status === "ok" ? usage.provider : undefined;
+  return covered === undefined ? [...all] : all.filter((bucket) => !bucket.id.startsWith(`${covered}/`));
+}
+
+function printBuckets(buckets: readonly EngineLimitBucket[], usage?: ProviderUsage): void {
+  console.log(usage?.status === "unavailable" ? "  Buckets (local estimate from this gateway's own turns):" : "  Buckets:");
   for (const bucket of buckets) {
     const label = bucket.name && bucket.name !== bucket.id ? `${bucket.id} (${bucket.name})` : bucket.id;
     const parts = (bucket.windows ?? [bucket.primary, bucket.secondary]).filter(Boolean).map((w) => formatWindow(w!));
     console.log(`    - ${label}${bucket.planType ? `, plan ${bucket.planType}` : ""}`);
     for (const part of parts) console.log(`      ${part}`);
+  }
+}
+
+/** What the provider itself reports of the plan's usage, or why it cannot. */
+function printProviderUsage(usage: ProviderUsage): void {
+  if (usage.status !== "ok") {
+    console.log(`  Provider usage: unavailable (${usage.unavailable?.message ?? "no reading"})`);
+    return;
+  }
+  console.log(`  Provider usage (${usage.source}):`);
+  for (const window of usage.windows ?? []) console.log(`    - ${formatWindow(window)}${window.limited ? " (rate limited)" : ""}`);
+  if (usage.monthlyLimitUsd !== undefined && usage.consumedUsd !== undefined && usage.remainingUsd !== undefined) {
+    console.log(`    - month: $${usage.consumedUsd} of $${usage.monthlyLimitUsd} used, $${usage.remainingUsd} left`);
   }
 }
 
@@ -54,13 +77,17 @@ function printEngine(engine: EngineLimitEngineSnapshot): void {
   if (engine.accountPlan) console.log(`  Plan: ${engine.accountPlan}`);
   if (engine.defaultModel) console.log(`  Default model: ${engine.defaultModel}`);
 
-  if (engine.windows?.length) {
-    console.log("  Limits:");
-    for (const window of engine.windows) console.log(`    - ${formatWindow(window)}`);
+  // opencode's own windows are the ledger's estimate of the default provider: the provider's reading, when it has one, replaces them.
+  const shownWindows = engine.providerUsage?.status === "ok" ? [] : (engine.windows ?? []);
+  if (shownWindows.length) {
+    console.log(engine.providerUsage ? "  Limits (local estimate from this gateway's own turns):" : "  Limits:");
+    for (const window of shownWindows) console.log(`    - ${formatWindow(window)}`);
   }
+  if (engine.providerUsage) printProviderUsage(engine.providerUsage);
 
   // A lone bucket is worth printing when the top-level windows are not its own.
-  if (engine.buckets?.length && (engine.buckets.length > 1 || !engine.windows?.length)) printBuckets(engine.buckets);
+  const buckets = bucketsBesideUsage(engine.buckets, engine.providerUsage);
+  if (buckets.length && (buckets.length > 1 || !shownWindows.length)) printBuckets(buckets, engine.providerUsage);
 
   if (engine.credits) {
     const creditBits = [
@@ -109,7 +136,10 @@ function printAccount(engineName: string, account: EngineLimitAccountSnapshot): 
     console.log("  Limits:");
     for (const window of account.windows) console.log(`    - ${formatWindow(window)}`);
   }
-  if (account.buckets?.length) printBuckets(account.buckets);
+  if (isOpencodeAccount(account) && account.providerUsage) printProviderUsage(account.providerUsage);
+  const accountUsage = isOpencodeAccount(account) ? account.providerUsage : undefined;
+  const buckets = bucketsBesideUsage(account.buckets, accountUsage);
+  if (buckets.length) printBuckets(buckets, accountUsage);
   if (account.exhausted) console.log(`  Exhausted${account.exhausted.until ? ` until ${formatTime(account.exhausted.until)}` : ""}`);
   if (isOpencodeAccount(account) && account.lastFailure) {
     const { class: failureClass, at, reason } = account.lastFailure;

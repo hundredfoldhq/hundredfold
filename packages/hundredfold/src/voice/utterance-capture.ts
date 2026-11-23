@@ -19,6 +19,7 @@ import { VOICE_INPUT_SAMPLE_RATE } from "../shared/gateway-events.js";
 import type { SttProvider, SttStream, VadEvent, VadStream } from "./provider.js";
 import type { VoiceClock, CancelTimer } from "./hub-types.js";
 import { VAD_HOLD_MS } from "./sidecar/client.js";
+import { looksUnfinished } from "./unfinished-speech.js";
 
 /** Bytes of PCM16 mono at the input rate per millisecond. */
 const BYTES_PER_MS = (VOICE_INPUT_SAMPLE_RATE * 2) / 1000;
@@ -60,6 +61,8 @@ export interface CaptureOptions {
   vad: VadStream;
   language: string;
   prerollMs: number;
+  /** Extra silence waited after the VAD's end when the transcript so far looks unfinished; 0 or absent: none. */
+  unfinishedHoldMs?: number;
   maxUtteranceMs: number;
   /** The VAD's trailing silence: what a live utterance holds past the end of speech, and a catch-up one is given. */
   tailMs?: number;
@@ -97,6 +100,8 @@ export class UtteranceCapture {
   private ignoringUntilEnd = false;
   private pttHeld = false;
   private closed = false;
+  /** Set while the VAD said speech ended but the words so far look unfinished, so the end is held. */
+  private cancelHold: CancelTimer | null = null;
 
   constructor(private readonly options: CaptureOptions) {
     options.vad.on((event) => this.onVad(event));
@@ -122,7 +127,10 @@ export class UtteranceCapture {
       open.stream.write(pcm);
       open.audioMs += pcm.length / BYTES_PER_MS;
     }
-    if (open.audioMs >= this.options.maxUtteranceMs) this.cutForLength(open);
+    if (open.audioMs < this.options.maxUtteranceMs) return;
+    // Silence counted during a hold is not speech running long: the utterance has already ended, so it ends normally.
+    if (this.cancelHold) this.endSpeech();
+    else this.cutForLength(open);
   }
 
   pttDown(): void {
@@ -142,6 +150,7 @@ export class UtteranceCapture {
   close(): void {
     this.closed = true;
     this.options.vad.close();
+    this.clearHold();
     for (const open of [...this.awaiting, ...(this.capturing ? [this.capturing] : [])]) this.discard(open);
     this.capturing = null;
     this.awaiting.clear();
@@ -164,8 +173,17 @@ export class UtteranceCapture {
     if (kind === "reset") return this.onReset(atMs);
     if (kind === "end") {
       this.options.events.onVad(false);
+      // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
+      if (!this.capturing?.catchUp && this.holdEnd()) return;
       this.closeOpen(this.capturing?.catchUp ? this.catchUpEnd(atMs) : this.written);
       this.ignoringUntilEnd = false;
+      return;
+    }
+    // Speech resumed inside a hold: the same utterance goes on.
+    const resumed = this.cancelHold !== null && this.capturing !== null;
+    this.clearHold();
+    if (resumed) {
+      this.options.events.onVad(true);
       return;
     }
     const fromByte = Math.max(0, atMs * BYTES_PER_MS);
@@ -186,7 +204,8 @@ export class UtteranceCapture {
    * a catch-up one is cut from its start to it. What the new detector reports from now on starts at or after it.
    */
   private onReset(atMs: number): void {
-    if (this.capturing || this.ignoringUntilEnd) this.options.events.onVad(false);
+    // A held utterance already told the client its speech ended.
+    if ((this.capturing && !this.cancelHold) || this.ignoringUntilEnd) this.options.events.onVad(false);
     this.closeOpen(Math.min(this.written, Math.max(0, atMs * BYTES_PER_MS)));
     this.ignoringUntilEnd = false;
   }
@@ -266,7 +285,26 @@ export class UtteranceCapture {
     if (spanMs >= this.options.maxUtteranceMs || fromByte < this.written - this.ringBytes) this.cutForLength(open);
   }
 
+  /** Wait a little longer before ending an utterance whose words so far look unfinished. */
+  private holdEnd(): boolean {
+    const open = this.capturing;
+    const hold = this.options.unfinishedHoldMs ?? 0;
+    if (!open || hold <= 0 || !looksUnfinished(open.partial)) return false;
+    this.clearHold();
+    this.cancelHold = this.options.clock.setTimeout(() => {
+      this.cancelHold = null;
+      if (!this.closed && this.capturing === open) this.endSpeech();
+    }, hold);
+    return true;
+  }
+
+  private clearHold(): void {
+    this.cancelHold?.();
+    this.cancelHold = null;
+  }
+
   private endSpeech(toByte = this.written): void {
+    this.clearHold();
     const open = this.capturing;
     if (!open) return;
     this.capturing = null;

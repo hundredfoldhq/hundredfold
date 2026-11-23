@@ -6,7 +6,7 @@ import { FakeClock, FakeStt, FakeVad } from "./fakes.js";
 /** 20 ms of 16 kHz PCM16 mono. */
 const FRAME = Buffer.alloc(640, 3);
 
-function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; tailMs?: number; vadLagMs?: number } = {}) {
+function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?: number; tailMs?: number; vadLagMs?: number; unfinishedHoldMs?: number } = {}) {
   const clock = new FakeClock();
   const stt = new FakeStt();
   const vad = new FakeVad();
@@ -14,7 +14,7 @@ function make(over: { pushToTalk?: boolean; prerollMs?: number; maxUtteranceMs?:
   const finals: FinishedUtterance[] = [];
   let n = 0;
   const capture = new UtteranceCapture({
-    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, maxUtteranceMs: over.maxUtteranceMs ?? 60_000, tailMs: over.tailMs, vadLagMs: over.vadLagMs,
+    stt, vad, language: "en", prerollMs: over.prerollMs ?? 300, unfinishedHoldMs: over.unfinishedHoldMs, maxUtteranceMs: over.maxUtteranceMs ?? 60_000, tailMs: over.tailMs, vadLagMs: over.vadLagMs,
     pushToTalk: over.pushToTalk ?? false, clock, newId: () => `u${++n}`,
     events: {
       onVad: (s) => log.push(`vad:${s}`),
@@ -126,6 +126,118 @@ describe("UtteranceCapture, hands-free", () => {
     stt.last().final("late");
     feed(2);
     expect(log.filter((l) => l.startsWith("final"))).toEqual([]);
+  });
+});
+
+describe("UtteranceCapture, holding an unfinished utterance", () => {
+  it("does not end on the VAD's end while the words so far trail off, then ends after the hold", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("I would like to book a table and");
+    vad.end();
+    expect(stt.last().ended).toBe(false);
+    expect(log).toContain("vad:false");
+    clock.advance(799);
+    expect(stt.last().ended).toBe(false);
+    clock.advance(1);
+    expect(stt.last().ended).toBe(true);
+  });
+
+  it("speech resuming inside the hold continues the same utterance", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("I would like to book a table,");
+    vad.end();
+    clock.advance(500);
+    vad.start(900);
+    expect(stt.streams).toHaveLength(1);
+    clock.advance(2000); // the old hold must be gone
+    expect(stt.last().ended).toBe(false);
+    feed(10);
+    stt.last().partial("I would like to book a table, for four.");
+    vad.end();
+    expect(stt.last().ended).toBe(true);
+    expect(log.filter((l) => l.startsWith("start:"))).toEqual(["start:u1"]);
+  });
+
+  it("ends at once when the words read as finished, when the hold is off, or when nothing was heard", () => {
+    for (const [hold, partial] of [[800, "Book me a table."], [0, "Book me a table and"], [800, ""]] as const) {
+      const { vad, stt, feed } = make({ prerollMs: 0, unfinishedHoldMs: hold });
+      vad.start(0); feed(10);
+      if (partial) stt.last().partial(partial);
+      vad.end();
+      expect(stt.last().ended).toBe(true);
+    }
+  });
+
+  it("close during a hold leaves nothing running", () => {
+    const { vad, stt, feed, clock, capture } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(10);
+    stt.last().partial("and");
+    vad.end();
+    capture.close();
+    clock.advance(5000);
+    expect(stt.last().ended).toBe(false);
+  });
+
+  it("a hold that runs into the length limit ends the utterance normally and does not swallow the next one", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, maxUtteranceMs: 400, unfinishedHoldMs: 800 });
+    vad.start(0); feed(15);
+    stt.last().partial("and the");
+    vad.end();
+    feed(10); // 200 ms of silence inside the hold crosses the limit
+    expect(log.filter((l) => l.startsWith("toolong"))).toEqual([]);
+    expect(stt.last().ended).toBe(true);
+    clock.advance(2000);
+    feed(20);
+    vad.start(1500);
+    expect(log).toContain("start:u2");
+    expect(stt.streams).toHaveLength(2);
+  });
+
+  it("a catch-up utterance is never held: it ends where the VAD says", () => {
+    const { vad, stt, capture, clock } = make({ prerollMs: 100, tailMs: 100, unfinishedHoldMs: 800 });
+    for (let i = 0; i < 400; i += 1) capture.write(marked(i + 1)); // 8 s written while the sidecar loads
+    vad.start(1000); // catch-up
+    stt.last().partial("and");
+    vad.end(2000);
+    expect(stt.last().ended).toBe(true);
+    expect(given(stt.last())).toEqual(range(1000 / 20 + 1, 2100 / 20 + 1));
+    clock.advance(5000);
+    expect(stt.streams).toHaveLength(1);
+  });
+
+  it("a reset during a hold ends the held utterance without a second end of speech", () => {
+    const { vad, stt, feed, clock, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("and the");
+    vad.end();
+    vad.reset();
+    expect(stt.last().ended).toBe(true);
+    expect(log.filter((l) => l === "vad:false")).toHaveLength(1);
+    clock.advance(5000);
+    vad.start(); feed(5);
+    expect(log).toContain("start:u2");
+  });
+
+  it("a hold left behind by a failed stream does not swallow the next start", () => {
+    const { vad, stt, feed, log } = make({ prerollMs: 0, unfinishedHoldMs: 800 });
+    vad.start(0); feed(20);
+    stt.last().partial("and");
+    vad.end();
+    stt.last().emit({ type: "error", message: "stream failed" });
+    expect(log).toContain("failed:u1");
+    vad.start(); feed(5);
+    expect(log).toContain("start:u2");
+    expect(stt.streams).toHaveLength(2);
+  });
+
+  it("push-to-talk is never held", () => {
+    const { stt, feed, capture } = make({ pushToTalk: true, unfinishedHoldMs: 800 });
+    capture.pttDown(); feed(5);
+    stt.last().partial("and");
+    capture.pttUp();
+    expect(stt.last().ended).toBe(true);
   });
 });
 

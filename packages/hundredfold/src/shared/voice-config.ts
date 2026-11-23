@@ -45,8 +45,10 @@ export interface VoiceConfig {
     threshold?: number;
     /** Defaults to 250. */
     minSpeechMs?: number;
-    /** Silence that ends an utterance. Defaults to 700. */
+    /** Silence that ends an utterance. Defaults to 1000. */
     silenceMs?: number;
+    /** Extra silence waited when the words so far look unfinished (0 turns it off). Defaults to 800. */
+    unfinishedHoldMs?: number;
     /** Audio kept from before speech started. Defaults to 300. */
     prerollMs?: number;
   };
@@ -122,7 +124,7 @@ export interface ResolvedVoiceConfig {
   language: string;
   stt: ResolvedVoiceSide;
   tts: ResolvedVoiceSide & { voice: string; speed: number };
-  vad: { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number };
+  vad: { threshold: number; minSpeechMs: number; silenceMs: number; unfinishedHoldMs: number; prerollMs: number };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
   /** The inline prompt, or the built-in one. */
@@ -214,6 +216,7 @@ function vadProblems(vad: Obj | undefined): string[] {
     ...inRange("voice.vad.threshold", vad.threshold, [0, 1], false),
     ...inRange("voice.vad.minSpeechMs", vad.minSpeechMs, [50, 2000], true),
     ...inRange("voice.vad.silenceMs", vad.silenceMs, [200, 5000], true),
+    ...inRange("voice.vad.unfinishedHoldMs", vad.unfinishedHoldMs, [0, 5000], true),
     ...inRange("voice.vad.prerollMs", vad.prerollMs, [0, 1000], true),
   ];
 }
@@ -364,7 +367,7 @@ function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {
-  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 700), prerollMs: setting(vad, "prerollMs", 300) };
+  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 1000), unfinishedHoldMs: setting(vad, "unfinishedHoldMs", 800), prerollMs: setting(vad, "prerollMs", 300) };
 }
 
 function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {

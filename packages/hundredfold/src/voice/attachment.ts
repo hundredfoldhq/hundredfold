@@ -327,6 +327,7 @@ export class VoiceAttachment {
       vad: this.providers.createVad(),
       language: this.config.language,
       prerollMs: this.config.vad.prerollMs,
+      unfinishedHoldMs: this.config.vad.unfinishedHoldMs,
       maxUtteranceMs: this.config.limits.maxUtteranceSeconds * 1000,
       tailMs: this.config.vad.silenceMs,
       vadLagMs: vadLagFor(this.config.vad.minSpeechMs),

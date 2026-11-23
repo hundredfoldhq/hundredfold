@@ -29,7 +29,12 @@ async function describe(h, started) {
   return out;
 }
 
-/** Starts `count` sessions on the group's employee, `spacingMs` apart (0: all at once), each with its own ledger tag. */
+/**
+ * Starts `count` sessions on the group's employee, `spacingMs` apart (0: all at once), each with its own ledger tag.
+ * @param {any} h
+ * @param {number} count
+ * @param {{ spacingMs?: number, engine?: string }} [options]
+ */
 async function startSessions(h, count, { spacingMs = SPACING_MS, engine } = {}) {
   const employee = h.layout.employees.onA;
   const begin = async () => {

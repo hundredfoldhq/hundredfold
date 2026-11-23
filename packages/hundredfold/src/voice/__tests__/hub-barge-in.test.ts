@@ -126,6 +126,27 @@ describe("barge-in (US2)", () => {
     expect(h.merges).toEqual([{ id: "assistant-1", patch: { voice: { spokenText: "", interrupted: true } } }]);
   });
 
+  it("the unfinished-speech hold delays only the end of an utterance: speaking over a reply still stops playback at once, and a trailing-off barge-in is answered once the hold passes", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    await midReply(h);
+    socket.clear();
+    h.vad().start();
+    expect(socket.ofType("stop_playback")).toEqual([{ type: "stop_playback", reason: "speech" }]);
+    bargeIn(attachment, 1, 20);
+    h.audio(attachment, 10);
+    h.stt.last().partial("wait, I meant the");
+    h.vad().end();
+    await settle();
+    expect(h.stt.last().ended).toBe(false);
+    h.clock.advance(800);
+    expect(h.stt.last().ended).toBe(true);
+    h.stt.last().final("wait, I meant the other one");
+    await settle();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0].envelope).toContain("interrupted");
+  });
+
   it("a stop when nothing is playing is not a barge-in", async () => {
     const h = createHarness();
     const { attachment } = h.connect();

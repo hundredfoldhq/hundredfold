@@ -911,6 +911,30 @@ export interface EngineLimitWindow {
   resetsAtIso?: string;
 }
 
+/** Why a provider's own usage reading is missing. A fixed code and fixed copy: never the provider's body, never a credential. */
+export type ProviderUsageReasonCode =
+  | "no-key" | "key-expired" | "unauthorized" | "no-subscription" | "forbidden" | "rate-limited" | "http-error" | "network" | "timeout" | "bad-response";
+
+/**
+ * What a provider reports of its own plan usage for one credential (OpenCode Go's usage endpoint), as opposed to what
+ * hundredfold metered from its own turn ledger. `windows` are the provider's, with its percentages: when `status` is
+ * `unavailable` there are none, and the card says why instead of showing a zero nobody measured.
+ */
+export interface ProviderUsage {
+  /** The provider id this reading is for; its ledger buckets are the ones it replaces. */
+  provider?: string;
+  source: string;
+  status: "ok" | "unavailable";
+  fetchedAt: string;
+  /** 5h / 7d / 30d, as the provider reports them. `limited` is the provider's own rate-limited flag for the window. */
+  windows?: (EngineLimitWindow & { limited?: boolean })[];
+  /** Dollar figures, only when a monthly allowance is configured for the provider: the provider reports percentages, not dollars. */
+  monthlyLimitUsd?: number;
+  consumedUsd?: number;
+  remainingUsd?: number;
+  unavailable?: { code: ProviderUsageReasonCode; message: string };
+}
+
 export interface EngineLimitContext {
   usedPercent?: number;
   remainingPercent?: number;
@@ -959,6 +983,8 @@ export interface EngineLimitEngineSnapshot {
   unsupportedReason?: string;
   error?: string;
   stale?: boolean;
+  /** The provider's own usage for the engine's default model's provider (opencode's built-in OpenCode Go provider), when no declared account covers it. */
+  providerUsage?: ProviderUsage;
 }
 
 export interface EngineLimitsResponse {
