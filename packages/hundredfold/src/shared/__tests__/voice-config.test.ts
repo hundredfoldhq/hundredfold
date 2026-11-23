@@ -1,7 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN, VOICE_SPEED_PRESETS } from "@hundredfold/gateway-events";
 import { validateConfigShape } from "../config.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, resolveVoiceConfig, voiceConfigProblems } from "../voice-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_LOCAL_STT_MODEL, DEFAULT_VOICE_PROMPT, LOCAL_STT_MODELS, localSttModel, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
 
 const HOME = path.resolve("/tmp/voice-config-test-home");
 const problems = (voice: unknown) => voiceConfigProblems(voice, HOME);
@@ -17,7 +18,7 @@ describe("voiceConfigProblems", () => {
   it("accepts every key at its default and at both ends of its range", () => {
     expect(problems({
       enabled: true, mode: "push-to-talk", language: "en-GB",
-      stt: { provider: "local", model: "m" }, tts: { provider: "local", voice: "bf_emma", speed: 0.5 },
+      stt: { provider: "local", model: "parakeet-unified-en-0.6b" }, tts: { provider: "local", voice: "bf_emma", speed: 0.5 },
       vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, unfinishedHoldMs: 5000, prerollMs: 1000 },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
@@ -125,6 +126,29 @@ describe("voiceConfigProblems", () => {
   });
 });
 
+describe("voiceOffReason", () => {
+  const reason = (voice: unknown) => voiceOffReason(voice, HOME);
+
+  it("is null for an absent, empty, disabled or valid block", () => {
+    expect(reason(undefined)).toBeNull();
+    expect(reason({})).toBeNull();
+    expect(reason({ enabled: false, vad: { threshold: 9 } })).toBeNull();
+    expect(reason({ enabled: true })).toBeNull();
+  });
+
+  it("names every bad key when voice is asked for", () => {
+    const text = reason({ enabled: true, vad: { silenceMs: 50 }, mode: "loud" });
+    expect(text).toContain("voice.vad.silenceMs");
+    expect(text).toContain("voice.mode");
+  });
+
+  it("never echoes a URL's user name, password or a literal key", () => {
+    const text = reason({ enabled: true, stt: { provider: "openai-compatible", baseUrl: "https://bob:s3cretpass@host.example", apiKey: "sk-literal-key-123456" } }) ?? "";
+    expect(text).toContain("voice.stt.baseUrl");
+    for (const secret of ["bob", "s3cretpass", "sk-literal-key-123456"]) expect(text).not.toContain(secret);
+  });
+});
+
 describe("validateConfigShape", () => {
   const base = { engines: { default: "claude", claude: {} } };
 
@@ -133,10 +157,61 @@ describe("validateConfigShape", () => {
     expect(validateConfigShape({ ...base, voice: { enabled: true } })).toEqual([]);
   });
 
-  it("refuses a config whose voice block has a problem, naming the key", () => {
-    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
-      expect.stringContaining("voice.vad.silenceMs"),
+  it("does not fail the config over a voice block with a problem: voice goes off instead (FR-025)", () => {
+    expect(validateConfigShape({ ...base, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([]);
+    expect(validateConfigShape({ ...base, voice: "on" })).toEqual([]);
+    expect(resolveVoiceConfig({ voice: { enabled: true, vad: { silenceMs: 1 } } }, HOME)).toBeNull();
+  });
+
+  it("still refuses a problem elsewhere in the same config", () => {
+    expect(validateConfigShape({ ...base, gateway: { port: "x" }, voice: { enabled: true, vad: { silenceMs: 1 } } })).toEqual([
+      expect.stringContaining("gateway.port"),
     ]);
+  });
+});
+
+describe("the local speech-to-text model", () => {
+  it("is one of the known models; the first is the default", () => {
+    expect(LOCAL_STT_MODELS).toEqual(["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"]);
+    expect(DEFAULT_LOCAL_STT_MODEL).toBe("parakeet-tdt-0.6b-v2");
+    for (const model of LOCAL_STT_MODELS) expect(problems({ stt: { provider: "local", model } })).toEqual([]);
+    expect(problems({ stt: { model: "parakeet-unified-en-0.6b" } })).toEqual([]); // the provider defaults to local
+  });
+
+  it("refuses a name it does not know, naming the choices, rather than silently running the default", () => {
+    const [problem, ...rest] = problems({ stt: { provider: "local", model: "parakeet-unified-en-0.6" } });
+    expect(rest).toEqual([]);
+    expect(problem).toContain("voice.stt.model must be one of parakeet-tdt-0.6b-v2, parakeet-unified-en-0.6b, parakeet-unified-en-0.6b-streaming");
+    expect(problems({ stt: { model: "whisper-1" } })).toHaveLength(1);
+  });
+
+  it("is not checked for the hosted providers, whose model names are theirs", () => {
+    expect(problems({ stt: { provider: "openai-compatible", baseUrl: "http://localhost:8000", model: "Systran/faster-whisper-large-v3" } })).toEqual([]);
+    expect(problems({ stt: { provider: "openai", model: "gpt-live-transcribe" } })).toEqual([]);
+  });
+
+  it("is not checked on the text-to-speech side, where the local model is not selectable", () => {
+    expect(problems({ tts: { provider: "local", model: "kokoro-v1.0" } })).toEqual([]);
+  });
+
+  it("reports an empty name once", () => {
+    expect(problems({ stt: { model: "" } })).toHaveLength(1);
+  });
+
+  it("resolves to the default when none is set, and to the chosen one when set", () => {
+    expect(resolveVoiceConfig({ voice: { enabled: true } }, HOME)?.stt.model).toBe("parakeet-tdt-0.6b-v2");
+    expect(resolveVoiceConfig({ voice: { enabled: true, stt: { model: "parakeet-unified-en-0.6b" } } }, HOME)?.stt.model).toBe("parakeet-unified-en-0.6b");
+  });
+
+  it("is turned off with the rest of voice when the name is unknown", () => {
+    expect(resolveVoiceConfig({ voice: { enabled: true, stt: { model: "nope" } } }, HOME)).toBeNull();
+  });
+
+  it("localSttModel picks the model the sidecar loads: the chosen one only when the local provider does the transcription", () => {
+    expect(localSttModel({ provider: "local", model: "parakeet-unified-en-0.6b" })).toBe("parakeet-unified-en-0.6b");
+    expect(localSttModel({ provider: "openai-compatible", model: "parakeet-unified-en-0.6b" })).toBe(DEFAULT_LOCAL_STT_MODEL);
+    expect(localSttModel({ provider: "local", model: "parakeet-unified-en-0.6b-streaming" })).toBe("parakeet-unified-en-0.6b-streaming");
+    expect(localSttModel({ provider: "local", model: "unknown" })).toBe(DEFAULT_LOCAL_STT_MODEL);
   });
 });
 
@@ -203,5 +278,29 @@ describe("resolveVoiceConfig", () => {
   it("lets an inline prompt win over promptFile, and resolves promptFile inside the home", () => {
     expect(resolve({ enabled: true, prompt: "Be brief.", promptFile: "p.md" })).toMatchObject({ prompt: "Be brief.", promptFile: null });
     expect(resolve({ enabled: true, promptFile: "voice/p.md" })).toMatchObject({ prompt: DEFAULT_VOICE_PROMPT, promptFile: path.join(HOME, "voice", "p.md") });
+  });
+
+  describe("the speaking rate", () => {
+    it("is 1 when unset, and a voice block with no tts block, or an empty one, still loads", () => {
+      expect(resolve({ enabled: true })!.tts.speed).toBe(1);
+      expect(resolve({ enabled: true, tts: {} })!.tts.speed).toBe(1);
+      expect(voiceConfigProblems({ enabled: true, tts: { voice: "af_heart" } }, HOME)).toEqual([]);
+    });
+
+    it("accepts every preset the settings offer and both ends of the range", () => {
+      for (const speed of [...VOICE_SPEED_PRESETS.map((preset) => preset.speed), VOICE_SPEED_MIN, VOICE_SPEED_MAX]) {
+        expect(voiceConfigProblems({ enabled: true, tts: { speed } }, HOME)).toEqual([]);
+        expect(resolve({ enabled: true, tts: { speed } })!.tts.speed).toBe(speed);
+      }
+      expect(VOICE_SPEED_PRESETS.map((preset) => preset.label)).toEqual(["Slower", "Normal", "Faster", "Fastest"]);
+      expect(VOICE_SPEED_PRESETS.find((preset) => preset.label === "Normal")!.speed).toBe(VOICE_SPEED_DEFAULT);
+    });
+
+    it.each([0, 0.49, 2.01, 5, -1, Number.NaN, Infinity, "1.5", null, true])("rejects %s, naming the key, the range and what it got", (speed) => {
+      const problems = voiceConfigProblems({ enabled: true, tts: { speed } }, HOME);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatch(/^voice\.tts\.speed must be a number from 0\.5 to 2 \(got /);
+      expect(resolve({ enabled: true, tts: { speed } })).toBeNull();
+    });
   });
 });

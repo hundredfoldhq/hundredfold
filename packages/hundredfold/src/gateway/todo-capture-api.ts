@@ -134,7 +134,7 @@ async function startCapture(req: HttpRequest, res: ServerResponse, context: ApiC
     sessionKey,
     replyContext: { source: "web" },
     employee: shaper.name,
-    model: shaper.model,
+    model: pin.model ?? shaper.model,
     effortLevel: shaper.effortLevel,
     prompt: visible,
     title: "Quick capture",

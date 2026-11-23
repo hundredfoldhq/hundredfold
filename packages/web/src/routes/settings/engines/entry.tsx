@@ -21,7 +21,7 @@ import {
   type EnginesConfig,
   type SessionsFallbackConfig,
 } from "./chain-model"
-import { linksOfEntries, writeLinks } from "./chain-links"
+import { linksOfEntries, writeLinks, type OpencodeAccountRef } from "./chain-links"
 import { chainNameOf } from "./chain-editor"
 import { mapConfigValue, type ServedModels } from "./model-map-model"
 import type { EnginesResponse } from "@/lib/api"
@@ -42,6 +42,11 @@ interface SectionContext {
   onChange: EnginesSectionProps["onChange"]
 }
 
+/** The declared opencode accounts as the chain editors and diagrams read them: name and provider, as config states them. */
+function declaredOpencodeAccounts(ctx: SectionContext): OpencodeAccountRef[] {
+  return opencodeAccounts(ctx.engines).map(([name, a]) => ({ name, provider: a.provider ?? name }))
+}
+
 function bodyForEngine(name: string, ctx: SectionContext): ChainBodyProps {
   return {
     entries: chainEntriesFor(ctx.engines, name),
@@ -52,7 +57,7 @@ function bodyForEngine(name: string, ctx: SectionContext): ChainBodyProps {
     self: { engine: name },
     where: `engines.${name}.fallback`,
     waitsAs: name === "claude" ? "Claude" : chainNameOf(name).replace(/ chain$/, ""),
-    fields: { registry: ctx.registry, profiles: accountNames(ctx.engines), knownProfiles: allAccountNames(ctx.engines) },
+    fields: { registry: ctx.registry, profiles: accountNames(ctx.engines), knownProfiles: allAccountNames(ctx.engines), opencodeAccounts: declaredOpencodeAccounts(ctx) },
     onChange: (links) => ctx.onChange(["engines", name, "fallback"], writeLinks(chainEntriesFor(ctx.engines, name), links)),
   }
 }
@@ -67,7 +72,7 @@ function bodyForAccount(account: string, ctx: SectionContext): ChainBodyProps {
     self: { engine: "claude", profile: account },
     where: `engines.claude.accounts.${account}.fallback`,
     waitsAs: `Claude · ${account}`,
-    fields: { registry: ctx.registry, profiles: accountNames(ctx.engines), knownProfiles: allAccountNames(ctx.engines) },
+    fields: { registry: ctx.registry, profiles: accountNames(ctx.engines), knownProfiles: allAccountNames(ctx.engines), opencodeAccounts: declaredOpencodeAccounts(ctx) },
     onChange: (links) => ctx.onChange(["engines", "claude", "accounts", account, "fallback"], writeLinks(accountEntriesFor(ctx.engines, account), links)),
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VOICE_AUDIO_HEADER_BYTES, VOICE_AUDIO_KIND } from "../../shared/gateway-events.js";
-import { audioFrameHeader, MAX_OUTPUT_PCM_BYTES, pcmDurationMs, Pcm16Resampler, pcmPieces } from "../pcm.js";
+import { audioFrameHeader, MAX_OUTPUT_PCM_BYTES, pcmDurationMs, Pcm16Resampler, Pcm16TimeStretcher, pcmPieces } from "../pcm.js";
 
 function ramp(samples: number, scale = 100): Buffer {
   const buf = Buffer.alloc(samples * 2);
@@ -76,5 +76,68 @@ describe("downstream framing", () => {
 
   it("counts milliseconds of audio", () => {
     expect(pcmDurationMs(48_000, 24_000)).toBe(1000);
+  });
+});
+
+/** A 24 kHz tone with a voice-like second harmonic, `ms` long. */
+function tone(hz: number, ms: number): Buffer {
+  const samples = Math.round((24_000 * ms) / 1000);
+  const buf = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i += 1) {
+    const t = i / 24_000;
+    buf.writeInt16LE(Math.round(8000 * Math.sin(2 * Math.PI * hz * t) + 3000 * Math.sin(4 * Math.PI * hz * t)), i * 2);
+  }
+  return buf;
+}
+
+/** Rising zero crossings per second: the pitch of a clean tone. */
+function pitchOf(pcm: Buffer): number {
+  let crossings = 0;
+  for (let i = 1; i < pcm.length / 2; i += 1) if (pcm.readInt16LE((i - 1) * 2) < 0 && pcm.readInt16LE(i * 2) >= 0) crossings += 1;
+  return crossings / (pcm.length / 2 / 24_000);
+}
+
+function stretch(input: Buffer, speed: number, chunkBytes = input.length): Buffer {
+  const stretcher = new Pcm16TimeStretcher(speed);
+  const out: Buffer[] = [];
+  for (let at = 0; at < input.length; at += chunkBytes) out.push(stretcher.push(input.subarray(at, at + chunkBytes)));
+  out.push(stretcher.flush());
+  return Buffer.concat(out);
+}
+
+describe("Pcm16TimeStretcher", () => {
+  it.each([0.8, 1.25, 1.5, 2])("makes audio %sx as long and keeps the pitch", (speed) => {
+    const input = tone(180, 2000);
+    const out = stretch(input, speed);
+    const ratio = out.length / input.length;
+    expect(ratio).toBeGreaterThan((1 / speed) * 0.96);
+    expect(ratio).toBeLessThan((1 / speed) * 1.06);
+    expect(Math.abs(pitchOf(out) - 180)).toBeLessThan(12);
+  });
+
+  it("gives the same audio however the input is split into chunks, even mid-sample", () => {
+    const input = tone(150, 800);
+    const whole = stretch(input, 1.5);
+    expect(stretch(input, 1.5, 4001).equals(whole)).toBe(true);
+    expect(stretch(input, 1.5, 7).equals(whole)).toBe(true);
+  });
+
+  it("does not clip or add a click at the seams of a loud tone", () => {
+    const out = stretch(tone(200, 1000), 1.5);
+    let peak = 0;
+    let biggestStep = 0;
+    for (let i = 0; i < out.length / 2; i += 1) {
+      peak = Math.max(peak, Math.abs(out.readInt16LE(i * 2)));
+      if (i > 0) biggestStep = Math.max(biggestStep, Math.abs(out.readInt16LE(i * 2) - out.readInt16LE((i - 1) * 2)));
+    }
+    expect(peak).toBeLessThan(14_000);
+    expect(biggestStep).toBeLessThan(4000);
+  });
+
+  it("returns nothing for no input, and a short input still comes out", () => {
+    expect(stretch(Buffer.alloc(0), 1.5)).toHaveLength(0);
+    const short = stretch(tone(200, 20), 1.5);
+    expect(short.length).toBeGreaterThan(0);
+    expect(short.length).toBeLessThan(tone(200, 20).length * 1.5);
   });
 });

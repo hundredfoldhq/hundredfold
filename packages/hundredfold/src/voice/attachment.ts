@@ -6,20 +6,24 @@
  */
 import type { VoiceBackgrounding, VoiceClientFrame, VoiceDetachReason, VoiceMode, VoiceServerFrame } from "../shared/gateway-events.js";
 import {
-  VOICE_CLOSE, VOICE_INPUT_SAMPLE_RATE, VOICE_MAX_INPUT_FRAME_BYTES, VOICE_OUTPUT_SAMPLE_RATE, VOICE_PROTOCOL_VERSION,
+  VOICE_CLOSE, VOICE_INPUT_SAMPLE_RATE, VOICE_KEEPALIVE_MS, VOICE_MAX_INPUT_FRAME_BYTES, VOICE_OUTPUT_SAMPLE_RATE, VOICE_PROTOCOL_VERSION,
 } from "../shared/gateway-events.js";
 import { isSteerableEngine, isSoftInterruptibleEngine, type Engine } from "../shared/types.js";
 import { isBackgroundTasksSource } from "../shared/session-waits.js";
 import { BargeIn, type BargeInState } from "./barge-in.js";
 import { Dispatcher } from "./dispatcher.js";
-import type { VoiceHubDeps, VoicePrincipal, VoiceProviderSet, VoiceSocket } from "./hub-types.js";
+import type { CancelTimer, VoiceHubDeps, VoicePrincipal, VoiceProviderSet, VoiceSocket } from "./hub-types.js";
 import { ReplyVoice } from "./reply-voice.js";
 import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
-import { UtteranceCapture, type FinishedUtterance } from "./utterance-capture.js";
+import { UtteranceCapture, vadLagFor, type FinishedUtterance } from "./utterance-capture.js";
 
 const OPEN = 1;
-/** Close codes after which the attachment ends rather than waiting for the client to come back. */
-const ENDING_CODES = new Set<number>([1000, 1001, VOICE_CLOSE.protocolError, VOICE_CLOSE.accessLost, VOICE_CLOSE.sessionGone, VOICE_CLOSE.inUse, VOICE_CLOSE.limit]);
+/**
+ * Close codes after which the attachment ends rather than waiting for the client to come back. 1009 (a frame over
+ * the size limit) and 1005 (a close with no status) are not a device suspension: the client is not coming back to
+ * this attachment, and waiting would hold its slot against the concurrency limit for the whole resume window.
+ */
+const ENDING_CODES = new Set<number>([1000, 1001, 1005, 1009, VOICE_CLOSE.protocolError, VOICE_CLOSE.accessLost, VOICE_CLOSE.sessionGone, VOICE_CLOSE.inUse, VOICE_CLOSE.limit]);
 /** A reason the provider gave for being unavailable, kept short and free of addresses before it reaches a client. */
 const REASON_MAX = 200;
 
@@ -55,6 +59,7 @@ export class VoiceAttachment {
   private byeReceived = false;
   private ended = false;
   private suspendedAt: number | null = null;
+  private cancelKeepalive: CancelTimer | null = null;
   private readonly announced = new Set<string>();
 
   constructor(init: AttachmentInit) {
@@ -69,7 +74,7 @@ export class VoiceAttachment {
     this.mode = init.config.mode;
     this.voice = new ReplyVoice({
       sessionId: init.sessionId,
-      pipeline: { tts: init.providers.tts, voice: init.config.tts.voice, speed: init.config.tts.speed, language: init.config.language },
+      pipeline: { tts: init.providers.tts, voice: init.config.tts.voice, speed: () => this.liveSpeed(), language: init.config.language },
       send: (frame) => this.send(frame),
       sendAudio: (frame) => this.sendBinary(frame),
       deps: init.deps,
@@ -80,6 +85,11 @@ export class VoiceAttachment {
       sttProvider: init.providers.stt.id, operator: init.principal.kind === "operator", live: () => !this.ended, send: (frame) => this.send(frame),
       onBackgrounded: (tasks) => this.announce(tasks.map((task) => ({ id: task.taskId, description: task.description }))),
     });
+  }
+
+  /** The speaking rate as the config stands now, so a change in settings applies to the next sentence without ending voice mode. */
+  private liveSpeed(): number {
+    return (this.deps.config() ?? this.config).tts.speed;
   }
 
   get suspended(): boolean {
@@ -113,6 +123,7 @@ export class VoiceAttachment {
   onSocketClosed(socket: VoiceSocket, code: number): void {
     if (this.ended || this.socket !== socket) return;
     this.socket = null;
+    this.stopKeepalive();
     if (this.byeReceived || ENDING_CODES.has(code)) return this.finish();
     this.suspend();
   }
@@ -142,6 +153,7 @@ export class VoiceAttachment {
   private finish(): void {
     if (this.ended) return;
     this.ended = true;
+    this.stopKeepalive();
     this.capture?.close();
     this.voice.close();
     this.onEnd(this);
@@ -234,6 +246,22 @@ export class VoiceAttachment {
       this.voice.unsuspend();
     }
     this.send(this.readyFrame());
+    this.startKeepalive();
+  }
+
+  /** A `keepalive` frame every interval while a socket is attached, so the client can tell a quiet connection from a dead one. */
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    const tick = (): void => {
+      this.send({ type: "keepalive" });
+      this.cancelKeepalive = this.deps.clock.setTimeout(tick, VOICE_KEEPALIVE_MS);
+    };
+    this.cancelKeepalive = this.deps.clock.setTimeout(tick, VOICE_KEEPALIVE_MS);
+  }
+
+  private stopKeepalive(): void {
+    this.cancelKeepalive?.();
+    this.cancelKeepalive = null;
   }
 
   private onFrame(frame: Exclude<VoiceClientFrame, { type: "hello" }>): void {
@@ -270,6 +298,7 @@ export class VoiceAttachment {
       onset: { threshold: this.config.bargeIn.onsetThreshold, minSpeechMs: this.config.bargeIn.minSpeechMs },
       backgrounding: this.backgrounding(),
       limits: { maxUtteranceSeconds: this.config.limits.maxUtteranceSeconds },
+      keepaliveMs: VOICE_KEEPALIVE_MS,
     };
   }
 
@@ -305,6 +334,8 @@ export class VoiceAttachment {
       prerollMs: this.config.vad.prerollMs,
       unfinishedHoldMs: this.config.vad.unfinishedHoldMs,
       maxUtteranceMs: this.config.limits.maxUtteranceSeconds * 1000,
+      tailMs: this.config.vad.silenceMs,
+      vadLagMs: vadLagFor(this.config.vad.minSpeechMs),
       pushToTalk: this.mode === "push-to-talk",
       clock: this.deps.clock,
       newId: () => this.deps.newId(),

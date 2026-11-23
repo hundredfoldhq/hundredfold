@@ -98,7 +98,7 @@ function startDelegateSession(input: TalkDelegationInput, key: string): { sessio
     sessionKey: key,
     replyContext: { source: "web" },
     employee: input.employee.name,
-    model: input.employee.model,
+    model: pin.model ?? input.employee.model,
     effortLevel: input.employee.effortLevel,
     parentSessionId: input.sourceSessionId,
     fallbackMode,

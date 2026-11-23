@@ -36,6 +36,8 @@ export interface ModelPickerProps {
   accounts?: OpencodeAccountChoice[]
   /** An account pick that changes the selection (the new-chat selector moves to one of its models). Absent, picking an account only browses it. */
   onPickAccount?: (account: string | undefined) => void
+  /** The declared opencode account new sessions are balanced from (new chat only): its row says so. */
+  balancedAccount?: string
 }
 
 /** Which panel is showing inside the one surface: 'main' (models) or 'engine' (the engine list). Switching swaps the
@@ -87,7 +89,7 @@ function EngineSwitchRow({ canSwitch, onSwitch, onRefresh }: { canSwitch: boolea
  * render it, so they search and list models the same way. It owns navigation and
  * search; what a pick means (apply at once, or just browse) is the parent's.
  */
-export function ModelPicker({ registry, engine, modelId, onPickEngine, onPickModel, isEngineAllowed, keepOpenOnPick, onBack, children, profiles, profile, balanced, onPickProfile, accounts, onPickAccount }: ModelPickerProps) {
+export function ModelPicker({ registry, engine, modelId, onPickEngine, onPickModel, isEngineAllowed, keepOpenOnPick, onBack, children, profiles, profile, balanced, onPickProfile, accounts, onPickAccount, balancedAccount }: ModelPickerProps) {
   const engines = engineList(registry).filter((e) => !isEngineAllowed || isEngineAllowed(e.name))
   const oc = useOpencodeScope({ registry, engines, engine, modelId, accounts })
   const list = useModelList(registry, engine, modelId, oc.filter)
@@ -133,6 +135,6 @@ export function ModelPicker({ registry, engine, modelId, onPickEngine, onPickMod
       />
     </>
   ) : (
-    <EnginePanel engines={engines} engine={engine} onBack={() => nav.goToPanel('main')} onChoose={chooseEngine} onRefresh={refreshModels} profiles={profiles} profile={profile} balanced={balanced} onChooseProfile={onPickProfile ? chooseProfile : undefined} opencode={oc.rows.length > 0 ? { accounts: oc.rows, shown: oc.shown, hasOther: oc.hasOther, onChoose: chooseAccount } : undefined} />
+    <EnginePanel engines={engines} engine={engine} onBack={() => nav.goToPanel('main')} onChoose={chooseEngine} onRefresh={refreshModels} profiles={profiles} profile={profile} balanced={balanced} onChooseProfile={onPickProfile ? chooseProfile : undefined} opencode={oc.rows.length > 0 ? { accounts: oc.rows, shown: oc.shown, hasOther: oc.hasOther, balanced: balancedAccount, onChoose: chooseAccount } : undefined} />
   )
 }

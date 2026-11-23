@@ -18,8 +18,25 @@ export const VOICE_AUDIO_KIND = 1
 export const VOICE_AUDIO_HEADER_BYTES = 8
 export const VOICE_INPUT_SAMPLE_RATE = 16_000
 export const VOICE_OUTPUT_SAMPLE_RATE = 24_000
+/** The speaking-rate multiplier for spoken replies (`voice.tts.speed`): 1 is the voice's natural pace. */
+export const VOICE_SPEED_MIN = 0.5
+export const VOICE_SPEED_MAX = 2
+export const VOICE_SPEED_DEFAULT = 1
+/** The named speeds the settings offer; any value in range is accepted from the config file. */
+export const VOICE_SPEED_PRESETS = [
+  { label: "Slower", speed: 0.8 },
+  { label: "Normal", speed: 1 },
+  { label: "Faster", speed: 1.25 },
+  { label: "Fastest", speed: 1.5 },
+] as const
 /** Largest binary frame a client may send. */
 export const VOICE_MAX_INPUT_FRAME_BYTES = 4096
+/**
+ * How often the gateway sends a `keepalive` frame while a client is attached.
+ * Browsers cannot see protocol-level ws pings, so a client that wants to notice
+ * a half-open connection needs a message it can observe.
+ */
+export const VOICE_KEEPALIVE_MS = 10_000
 
 export type VoiceMode = "hands-free" | "push-to-talk"
 export type VoiceClientKind = "web" | "native"
@@ -102,6 +119,17 @@ export interface VoiceReadyFrame {
   onset: VoiceOnsetSettings
   backgrounding: VoiceBackgrounding
   limits: { maxUtteranceSeconds: number }
+  /**
+   * The gateway sends a `keepalive` frame this often. A client may treat the
+   * connection as lost when nothing at all has arrived for a few intervals.
+   * Absent from gateways that predate keepalives: no watchdog then.
+   */
+  keepaliveMs?: number
+}
+
+/** Sent every `ready.keepaliveMs` so a client can tell a quiet connection from a dead one. Carries no state. */
+export interface VoiceKeepaliveFrame {
+  type: "keepalive"
 }
 
 /** The gateway's voice activity state, for the UI. */
@@ -208,6 +236,7 @@ export type VoiceServerFrame =
   | VoiceMetricsFrame
   | VoiceErrorFrame
   | VoiceDetachedFrame
+  | VoiceKeepaliveFrame
 
 /** WebSocket close codes the gateway uses on `/ws/voice`. */
 export const VOICE_CLOSE = {

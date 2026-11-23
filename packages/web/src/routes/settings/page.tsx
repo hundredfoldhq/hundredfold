@@ -1373,6 +1373,8 @@ export default function SettingsPage() {
                 capability={voiceCapability}
                 onChange={updateConfig}
                 talkOrbOn={settings.talkOrb}
+                spokenSpeed={config.voice?.tts?.speed}
+                voiceModeOn={config.voice?.enabled === true}
               />
 
               {config.voice?.enabled === true && (

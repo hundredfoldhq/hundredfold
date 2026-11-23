@@ -169,3 +169,27 @@ impl GatewayFrame {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_keepalive_frame_is_an_unknown_type_the_client_ignores() {
+        assert_eq!(
+            GatewayFrame::parse(r#"{"type":"keepalive"}"#),
+            Some(GatewayFrame::Other)
+        );
+    }
+
+    #[test]
+    fn ready_with_a_keepalive_interval_parses_as_before() {
+        let text = r#"{"type":"ready","protocol":1,"input":{"encoding":"pcm16","sampleRate":16000},"output":{"encoding":"pcm16","sampleRate":24000},"keepaliveMs":10000}"#;
+        let Some(GatewayFrame::Ready(ready)) = GatewayFrame::parse(text) else {
+            panic!("ready did not parse");
+        };
+        assert_eq!(ready.protocol, 1);
+        assert!(ready.input_ok && ready.output_ok);
+        assert_eq!(ready.onset, Onset::default());
+    }
+}

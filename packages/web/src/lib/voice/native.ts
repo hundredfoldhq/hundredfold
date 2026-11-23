@@ -1,11 +1,12 @@
 import type { VoiceMode } from "@hundredfold/gateway-events"
 import type { HundredfoldNativeBridge, NativeStateEvent } from "@/platform/native-bridge"
 import { parseServerFrame } from "./socket"
-import { VoiceStore, type VoiceController } from "./controller"
+import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import type { VoiceUiState } from "./state"
 
 export interface NativeVoiceOptions {
-  sessionId: string
+  /** The chat, or how to create one when the control is on a new chat. */
+  sessionId: string | VoiceSessionStarter
   mode: VoiceMode
   origin: string
 }
@@ -72,11 +73,17 @@ export class NativeVoiceSession implements VoiceController {
   private stopping = false
   private talking = false
 
+  private session: string | null
+
   constructor(
     private readonly bridge: NativeVoiceBridge,
     private readonly options: NativeVoiceOptions,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.session = typeof options.sessionId === "string" ? options.sessionId : null
+  }
+
+  boundSessionId = (): string | null => this.session
 
   getSnapshot = (): VoiceUiState => this.store.snapshot
   subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
@@ -86,9 +93,33 @@ export class NativeVoiceSession implements VoiceController {
     this.stopping = false
     this.talking = false
     this.store.dispatch({ type: "connecting", mode: this.options.mode })
-    // The shell command is invoked inside the tap; its result is awaited afterwards.
+    if (this.session === null) return this.createThenStart()
+    return this.startShell(this.session)
+  }
+
+  /** A new chat: the shell needs the id, so the session is created first and the shell started on it. */
+  private async createThenStart(): Promise<void> {
+    const starter = this.options.sessionId as VoiceSessionStarter
+    let id: string
+    try {
+      id = await starter.create()
+    } catch (error) {
+      this.store.dispatch({ type: "failed", message: error instanceof Error && error.message ? error.message : GENERIC_START_ERROR })
+      return
+    }
+    if (this.stopping || this.store.snapshot.status === "off") {
+      starter.discard(id)
+      return
+    }
+    this.session = id
+    starter.bind(id, this)
+    return this.startShell(id)
+  }
+
+  private startShell(sessionId: string): Promise<void> {
+    // The shell command is invoked inside the tap when the chat exists; its result is awaited afterwards.
     const started = this.bridge.voiceStart(
-      { target: { origin: this.options.origin }, sessionId: this.options.sessionId, mode: this.options.mode },
+      { target: { origin: this.options.origin }, sessionId, mode: this.options.mode },
       (raw) => this.onForwarded(raw),
     )
     return started.then(
@@ -101,6 +132,7 @@ export class NativeVoiceSession implements VoiceController {
     if (this.store.snapshot.status === "off") return
     this.stopping = true
     this.talking = false
+    dropHandoff(this)
     void this.bridge.voiceStop().catch(() => undefined)
     this.store.dispatch({ type: "stopped" })
   }

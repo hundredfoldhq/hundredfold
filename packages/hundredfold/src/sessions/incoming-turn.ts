@@ -5,6 +5,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { initDb } from '../shared/db.js';
 import { insertMessage, type MessageMedia } from './registry.js';
+import { nameSpokenStartFromMessage } from './awaiting-first-message.js';
 import type { JsonObject } from '../shared/types.js';
 import { lateralSendPrefix, withdrawOwnSend, type SupersedeOutcome } from './queued-send-supersede.js';
 
@@ -190,5 +191,8 @@ export function claimIncomingTurn(turn: IncomingTurn): IncomingTurnClaim {
     const messageId = insertMessage(turn.sessionId, turn.role, turn.content, turn.media, undefined, presetId, turn.meta);
     return acceptedClaim(db, turn, queueItemId, messageId);
   });
-  return claim.immediate();
+  const accepted = claim.immediate();
+  // The first message of a spoken-start session names it, however it arrived (typed or spoken).
+  if (turn.role === 'user' && !turn.isNotification && !accepted.deduplicated) nameSpokenStartFromMessage(turn.sessionId, turn.content);
+  return accepted;
 }

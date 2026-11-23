@@ -3,9 +3,9 @@
 ## `voice:` in `config.yaml`
 
 Type `VoiceConfig` in `packages/hundredfold/src/shared/voice-config.ts`. The validator
-`voiceConfigProblems(voice)` is wired into the config loader beside the other
-`*Problems`. While there is any problem, voice stays off and each problem names the key
-(FR-025). `resolveVoiceConfig(config)` returns `null` unless `enabled === true`, and
+`voiceConfigProblems(voice)` is not part of the config's shape validation, so a bad block
+never stops the gateway starting or a reload. While there is any problem, voice stays off, the
+loader logs each problem naming its key (FR-025), and `GET /api/voice/config` says why (below). `resolveVoiceConfig(config)` returns `null` unless `enabled === true`, and
 otherwise a `ResolvedVoiceConfig` with every default filled.
 
 | Key | Type | Default | Validation |
@@ -14,7 +14,7 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `mode` | `hands-free` \| `push-to-talk` | `hands-free` | enum |
 | `language` | string | `en` | BCP-47-ish `^[a-z]{2,3}(-[A-Za-z0-9]+)*$`; `local` accepts only `en*` |
 | `stt.provider` | `local` \| `openai` \| `openai-compatible` | `local` | known id |
-| `stt.model` | string | provider default (`local`: `parakeet-tdt-0.6b-v2`; `openai`: the current transcription model, named in the docs) | non-empty |
+| `stt.model` | string | provider default (`local`: `parakeet-tdt-0.6b-v2`; `openai`: the current transcription model, named in the docs) | non-empty; for `local`, one of `parakeet-tdt-0.6b-v2`, `parakeet-unified-en-0.6b`, `parakeet-unified-en-0.6b-streaming` |
 | `stt.baseUrl` | URL | — | required for `openai-compatible`; http(s) only |
 | `stt.apiKey` | string | — | must be a `${VAR}` reference; a literal is refused with a message telling how to move it to the environment |
 | `tts.provider` | as `stt.provider` | `local` | |
@@ -94,9 +94,13 @@ Enabled:
 the local sidecar's first-run bootstrap. `available: false` carries a `reason` a person
 can act on ("Python 3.10+ not found", "OpenAI key not set: OPENAI_API_KEY").
 
+When the config asks for voice (`enabled: true`, or an `enabled` that is not a boolean) but the `voice` block has problems, voice is off and the body is `{ "enabled": true, "available": false, "reason": "Voice is off because config.yaml has problems in voice: <each problem, naming its key, joined by \"; \">" }`, with none of the other fields. The reason never carries a key or a URL's user name. A block with `enabled: false` (or no `enabled`) is `{ "enabled": false }` whatever else it holds. A reload that makes a running voice block invalid ends open attachments with `detached {reason: "disabled"}` as turning voice off does.
+
 When the config says `enabled: true` but the gateway started with voice off (voice is set up only at boot, so turning it on needs a restart), the body is the same with `available: false` and `reason: "Restart the gateway to turn voice on"`. When voice was running and the config then turns it off, the body is `{ "enabled": false }`, a new `/ws/voice` upgrade is refused as when voice is off, and open attachments get `detached {reason: "disabled"}`.
 
 Never present: any key, any base URL, the prompt text.
+
+The gateway takes the environment variables named by the enabled block's `apiKey` settings out of its own environment at load and withholds them from every engine child process (as for opencode account keys); only its voice providers read them.
 
 `POST /api/voice/install` (operator only) starts the local bootstrap if it has not run;
 it is idempotent and returns the same `install` object.

@@ -10,7 +10,7 @@
  */
 import type { TtsProvider } from "./provider.js";
 import { VOICE_OUTPUT_SAMPLE_RATE, type VoiceServerFrame } from "../shared/gateway-events.js";
-import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, pcmPieces } from "./pcm.js";
+import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, Pcm16TimeStretcher, pcmPieces } from "./pcm.js";
 import { SpeakableSplitter, speakableSentence } from "./speakable-splitter.js";
 
 export interface SpeechSink {
@@ -33,13 +33,18 @@ export interface Segment {
   replyKey?: number;
   /** Milliseconds of audio sent to the client for this segment so far. */
   sentMs: number;
+  /** The segment this one speaks again after a barge-in cut it: once this has been sent, that one no longer counts. */
+  replaces?: number;
+  /** Where it fell in what the client was sent (so in what it plays), set when its audio starts: a replay jumps ahead of the queue, so ids do not say. */
+  sentOrder?: number;
 }
 
 export interface PipelineOptions {
   tts: TtsProvider;
   sink: SpeechSink;
   voice: string | null;
-  speed: number;
+  /** Speaking-rate multiplier; a function is asked for each sentence, so a change applies to the next one. */
+  speed: number | (() => number);
   language: string;
   /** The first audio frame of a segment went out. */
   onAudio?: (segment: Segment) => void;
@@ -85,6 +90,7 @@ export class SpeechPipeline {
   private readonly history: Segment[] = [];
   private jobs = new Map<number, Job>();
   private nextId = 1;
+  private sentCount = 0;
   private replyKey: number | undefined;
   private seq = 0;
   private generation = 0;
@@ -93,6 +99,8 @@ export class SpeechPipeline {
   private running = false;
   private closed = false;
   private idleWaiters: Array<() => void> = [];
+  /** The sentences the last cut left unheard, in order: what a resume with those texts speaks again. */
+  private cutUnheard: Segment[] = [];
 
   constructor(private readonly options: PipelineOptions) {}
 
@@ -128,7 +136,8 @@ export class SpeechPipeline {
   /** What was spoken of a reply (or of one stored message of it): its sentences that went out to the client. */
   spokenFor(key: number, messageId?: string): string {
     return this.history
-      .filter((s) => s.replyKey === key && s.sentMs > 0 && (messageId === undefined || s.messageId === messageId))
+      .filter((s) => s.replyKey === key && s.sentMs > 0 && !this.replayed(s) && (messageId === undefined || s.messageId === messageId))
+      .sort(byOrder)
       .map((s) => s.text)
       .join(" ");
   }
@@ -154,6 +163,17 @@ export class SpeechPipeline {
       || this.history.some((s) => !s.holding && (s.state === "queued" || s.state === "synthesising" || s.state === "sent"));
   }
 
+  /** Whether the reply's own sentences are queued, being made, or sent and not yet reported played. */
+  hasUnplayedFor(key: number): boolean {
+    return this.queue.some((s) => s.replyKey === key)
+      || this.history.some((s) => s.replyKey === key && (s.state === "queued" || s.state === "synthesising" || s.state === "sent"));
+  }
+
+  /** Whether speaking is held, as after a cut, awaiting what follows it. */
+  isHeld(): boolean {
+    return this.held;
+  }
+
   /** The client reported a segment played in full. */
   markPlayed(segmentId: number): void {
     const segment = this.history.find((s) => s.id === segmentId);
@@ -172,10 +192,13 @@ export class SpeechPipeline {
     this.abort = new AbortController();
     this.wakeAll();
     this.jobs = new Map();
-    const result = this.heardAndUnheard(segmentId, playedMs);
+    const { result, wholeIds, unheard } = this.heardAndUnheard(segmentId, playedMs);
     for (const segment of this.history) {
-      if (segment.state === "queued" || segment.state === "synthesising" || segment.state === "sent") segment.state = "cut";
+      // What was heard to its end stays heard, so a later cut of the replay still counts it.
+      if (wholeIds.has(segment.id)) segment.state = "played";
+      else if (segment.state === "queued" || segment.state === "synthesising" || segment.state === "sent") segment.state = "cut";
     }
+    this.cutUnheard = unheard;
     this.queue = [];
     this.splitter.reset();
     this.notifyIdle();
@@ -185,16 +208,20 @@ export class SpeechPipeline {
   /** Sentences held since a cut are dropped: the new turn will bring its own reply. */
   discardQueued(): void {
     this.queue = [];
+    this.cutUnheard = [];
     this.splitter.reset();
     this.notifyIdle();
   }
 
   /** Speak these again ahead of anything queued since the cut. */
   resumeWith(texts: readonly string[], messageIds: ReadonlyArray<string | undefined> = []): void {
+    const unheard = this.cutUnheard;
+    this.cutUnheard = [];
     const segments = texts.map((text, i) => {
       const segment = this.newSegment(text);
       const messageId = messageIds[i];
       if (messageId) segment.messageId = messageId;
+      if (unheard[i]?.text === text) segment.replaces = unheard[i].id;
       return segment;
     });
     this.queue = [...segments, ...this.queue];
@@ -225,21 +252,40 @@ export class SpeechPipeline {
     return [...spoken].reverse().find((s) => s.state !== "queued")?.replyKey ?? spoken[spoken.length - 1]?.replyKey;
   }
 
-  private heardAndUnheard(segmentId: number | null, playedMs: number): CutResult {
+  /** A cut sentence whose replay, or the replay of that replay, has gone out: only the replay counts. */
+  private replayed(segment: Segment): boolean {
+    return this.history.some((s) => s.replaces === segment.id && (s.sentMs > 0 || this.replayed(s)));
+  }
+
+  /** What a cut left to say, in the order it will be said: what was sent and not heard, then the queue. */
+  private pendingInOrder(scope: readonly Segment[], key: number | undefined, wholeIds: ReadonlySet<number>): Segment[] {
+    const candidates = [...scope, ...this.queue.filter((s) => !s.holding && s.replyKey === key)]
+      .filter((s, i, all) => all.indexOf(s) === i && !wholeIds.has(s.id) && s.state !== "cut" && s.state !== "played");
+    const queued = (s: Segment) => { const at = this.queue.indexOf(s); return at < 0 ? Infinity : at; };
+    return [
+      ...candidates.filter((s) => s.sentOrder !== undefined).sort(byOrder),
+      ...candidates.filter((s) => s.sentOrder === undefined).sort((a, b) => queued(a) - queued(b)),
+    ];
+  }
+
+  private heardAndUnheard(segmentId: number | null, playedMs: number): { result: CutResult; wholeIds: Set<number>; unheard: Segment[] } {
     const key = this.replyOfCut(segmentId);
     // Only the interrupted reply: sentences of earlier replies, and holding lines, are neither heard of it nor resumed.
-    const scope = this.history.filter((s) => !s.holding && s.replyKey === key);
+    // A sentence already spoken again is not of it twice.
+    const scope = this.history.filter((s) => !s.holding && s.replyKey === key && !this.replayed(s));
     const sent = scope.filter((s) => s.state === "sent" || s.state === "played");
-    const whole = sent.filter((s) => (segmentId === null ? s.state === "played" : s.id < segmentId));
     const playing = segmentId === null ? undefined : sent.find((s) => s.id === segmentId);
+    // Heard whole: played before the playing one, in the order the client plays them.
+    const before = (s: Segment) => (segmentId === null ? s.state === "played" : playing ? (s.sentOrder ?? 0) < (playing.sentOrder ?? 0) : s.id < segmentId);
+    const whole = sent.filter(before).sort(byOrder);
     const ratio = playing && playing.sentMs > 0 ? Math.min(1, Math.max(0, playedMs / playing.sentMs)) : 0;
     const heard = [...whole.map((s) => s.text), ...(playing ? [partOf(playing.text, ratio)] : [])].filter(Boolean).join(" ");
     const wholeIds = new Set(whole.map((s) => s.id));
-    const pending = [...scope, ...this.queue.filter((s) => !s.holding && s.replyKey === key)]
-      .filter((s, i, all) => all.indexOf(s) === i && !wholeIds.has(s.id) && s.state !== "cut" && s.state !== "played");
+    const pending = this.pendingInOrder(scope, key, wholeIds);
     const unheardSegments = pending.filter((s) => s.id !== playing?.id || ratio < 1);
     const heardBy = heardParts(scope, wholeIds, playing, ratio);
-    return { heard, unheard: unheardSegments.map((s) => s.text), replyKey: key, heardBy, unheardIds: unheardSegments.map((s) => s.messageId) };
+    const result: CutResult = { heard, unheard: unheardSegments.map((s) => s.text), replyKey: key, heardBy, unheardIds: unheardSegments.map((s) => s.messageId) };
+    return { result, wholeIds, unheard: unheardSegments };
   }
 
   private enqueue(text: string, holding = false, messageId?: string): void {
@@ -305,22 +351,39 @@ export class SpeechPipeline {
   }
 
   private async synthesise(segment: Segment, job: Job, signal: AbortSignal): Promise<void> {
-    const { tts, voice, speed, language } = this.options;
+    const { tts, voice, language } = this.options;
     const resampler = new Pcm16Resampler(tts.sampleRate, VOICE_OUTPUT_SAMPLE_RATE);
+    const { speed, stretcher } = this.pace();
     try {
       const request = { ...(voice ? { voice } : {}), speed, language, signal };
       for await (const chunk of tts.synthesize(segment.text, request)) {
         if (signal.aborted) return;
-        const pcm = resampler.push(chunk);
-        if (pcm.length > 0) job.chunks.push(pcm);
-        this.wake(job);
+        const resampled = resampler.push(chunk);
+        this.addAudio(job, stretcher ? stretcher.push(resampled) : resampled);
       }
+      if (stretcher && !signal.aborted) this.addAudio(job, stretcher.flush());
     } catch (error) {
       if (!signal.aborted) job.error = error;
     } finally {
       job.done = true;
       this.wake(job);
     }
+  }
+
+  /**
+   * The speed to ask the provider for, and the stretch that makes it up when the provider cannot. The provider is
+   * asked whenever it applies the speed; otherwise it is asked for the natural pace and the audio is stretched here.
+   */
+  private pace(): { speed: number; stretcher: Pcm16TimeStretcher | null } {
+    const { speed, tts } = this.options;
+    const wanted = typeof speed === "function" ? speed() : speed;
+    if (tts.honoursSpeed !== false || wanted === 1) return { speed: wanted, stretcher: null };
+    return { speed: 1, stretcher: new Pcm16TimeStretcher(wanted) };
+  }
+
+  private addAudio(job: Job, pcm: Buffer): void {
+    if (pcm.length > 0) job.chunks.push(pcm);
+    this.wake(job);
   }
 
   /** Let every sender waiting on a job see that the generation moved on. */
@@ -355,6 +418,7 @@ export class SpeechPipeline {
     const { sink } = this.options;
     if (!started) {
       segment.state = "sent";
+      segment.sentOrder = ++this.sentCount;
       sink.json({ type: "segment_start", segmentId: segment.id, messageId: segment.messageId ?? null, text: segment.text });
     }
     for (const piece of pcmPieces(pcm)) {
@@ -371,10 +435,15 @@ export class SpeechPipeline {
   private finishSegment(segment: Segment, job: Job, started: boolean): void {
     if (job.error !== undefined) this.options.onSynthesisError?.(job.error);
     if (started) this.options.sink.json({ type: "segment_end", segmentId: segment.id });
-    else if (segment.state !== "cut") segment.state = "played";
+    else if (segment.state !== "cut") {
+      segment.state = "played";
+      segment.sentOrder = ++this.sentCount;
+    }
     this.jobs.delete(segment.id);
   }
 }
+
+const byOrder = (a: Segment, b: Segment): number => (a.sentOrder ?? 0) - (b.sentOrder ?? 0);
 
 /** What was heard of each stored message of a cut reply, in order; a streamed reply is one part with no message id. */
 function heardParts(scope: readonly Segment[], wholeIds: ReadonlySet<number>, playing: Segment | undefined, ratio: number): HeardPart[] {

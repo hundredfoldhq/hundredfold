@@ -5,6 +5,7 @@ import { CALLBACK_DELIVERY_SELECT } from "./callback-delivery-query.js";
 import { pendingCompletionBatch } from "./completion-batching.js";
 import { withoutCatchUpMarkers } from "./sync-markers.js";
 import { isClaudeAccount } from "../shared/engine-account.js";
+import { metaWithRemoteAccountPin, type RemoteAccountPin } from "./remote-account-pin.js";
 import { legacyThreadRef, threadSlot, withLegacySlotMoved, withoutAccountOverride } from "./session-account.js";
 export { coalescePendingParentCompletionQueueItems } from "./completion-batching.js";
 export { shouldHoldParentCompletionQueueDispatch, listReleasableParentCompletionQueuesForSource } from "./completion-drain.js";
@@ -678,6 +679,7 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  promptExcerpt?: string | null;
   archivedAt?: string | null;
   userId?: string | null;
 }
@@ -792,6 +794,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.lastError !== undefined) {
     sets.push('last_error = ?');
     values.push(updates.lastError);
+  }
+  if (updates.promptExcerpt !== undefined) {
+    sets.push('prompt_excerpt = ?');
+    values.push(updates.promptExcerpt);
   }
   if (updates.title !== undefined) {
     sets.push('title = ?');
@@ -1284,6 +1290,8 @@ export interface SwitchSessionTargetOptions {
   lastSwitch?: JsonObject;
   /** The account balancer's record, written in the same write: set by an engine-only switch onto Claude that picked an account, `null` removes an earlier one (the switch pinned a profile), absent leaves it. */
   accountPick?: AccountPick | null;
+  /** A remote employee's account pin, written in the same write: a pin set by an engine-only switch onto Claude that picked a remote account, `null` removes an earlier one (the switch picked the employee's own login), absent leaves it. */
+  remoteAccountPin?: RemoteAccountPin | null;
 }
 
 /** The in-turn write fence: the attempt that owns the running turn. */
@@ -1338,7 +1346,8 @@ function targetRefs(session: Session, opts: SwitchSessionTargetOptions, nextDir:
     // Parked under the account it ran on; the switch drops any override, so the target reads the session's own account.
     else if (Object.keys(current).length > 0) refs[leftSlot] = current;
   }
-  const own = { ...was, claudeConfigDir: nextDir };
+  // The target reads the account the switch leaves the row on: the profile it names and the remote pin it writes.
+  const own = { ...was, claudeConfigDir: nextDir, transportMeta: metaWithRemoteAccountPin(metaOf(was) as JsonObject, opts.remoteAccountPin) ?? null };
   const targetSlot = threadSlot(own, opts.engine);
   // A pre-account row keeps its own account's thread under `claude`. Another account never inherits it: it is re-keyed to
   // the account it belongs to, and only a target on that same account reads it by the old spelling.
@@ -1383,7 +1392,7 @@ function switchedMeta(session: Session, opts: SwitchSessionTargetOptions, target
   if (opts.lastSwitch) meta.lastSwitch = opts.lastSwitch;
   if (opts.accountPick) meta.accountPick = opts.accountPick as unknown as JsonObject;
   else if (opts.accountPick === null) delete meta.accountPick;
-  return meta as JsonObject;
+  return (metaWithRemoteAccountPin(meta as JsonObject, opts.remoteAccountPin) ?? meta) as JsonObject;
 }
 
 function switchFields(session: Session, opts: SwitchSessionTargetOptions, fenced: boolean): { fields: UpdateSessionFields; claudeConfigDir: string | null } {

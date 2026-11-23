@@ -3,6 +3,14 @@
 Implemented as TypeScript types in `packages/gateway-events/src/voice-protocol.ts`,
 shared by the gateway, the web client and (by mirror) the native client.
 
+## Starting on a new chat
+
+The socket needs a session, so a client on a new chat creates one first: `POST /api/sessions` with `{ "speech": true }` and no `prompt`
+(operator only; every other caller keeps the `400`). The row is created idle, with no message and no turn, and then
+`GET /ws/voice/:sessionId` attaches as below. The first final transcript is delivered as the session's first message through the ordinary
+delivery path and names the session as a typed first message does. When the attachment ends (bye, close, detach, resume window, takeover by
+nothing) and the session still has no message, the gateway deletes it and emits `session:deleted`. A takeover by the same principal does not.
+
 ## Upgrade
 
 `GET /ws/voice/:sessionId` with `Upgrade: websocket`.
@@ -10,6 +18,8 @@ shared by the gateway, the web client and (by mirror) the native client.
 | Condition | Result |
 |---|---|
 | voice absent or disabled | socket destroyed (no route), as for an unknown path |
+| voice switched off after the upgrade was accepted | `detached {reason: "disabled"}`, then closed `1000` with reason `disabled` |
+| no credential at all | 403 with a neutral "Authentication is required." |
 | operator: `verifyGatewayAuth`, or a same-origin browser when auth is not required (the `/ws/pty` rule) | accepted |
 | member cookie: `memberMayUpgrade` allows `/ws/voice/:id` **and** the member may send messages to the session | accepted, joins the member socket sweep |
 | cross-origin browser | 403 (`rejectCrossOriginUpgrade`) |
@@ -41,7 +51,7 @@ shared by the gateway, the web client and (by mirror) the native client.
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}` | after `hello` |
+| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
 | `vad` | `speaking: boolean` | the gateway's VAD state (UI only) |
 | `transcript` | `utteranceId`, `text`, `final` | partial or final |
 | `stop_playback` | `reason: "speech"` | the gateway's VAD heard speech over playback before the client's onset did |
@@ -53,12 +63,15 @@ shared by the gateway, the web client and (by mirror) the native client.
 | `missed` | `messageIds: string[]` | replies that finished while the client was suspended; their speech follows |
 | `metrics` | `utteranceId`, `sttMs`, `ttfaMs \| null` | per exchange |
 | `error` | `code`, `message`, `utteranceId?` | `bad_frame`, `utterance_too_long`, `stt_failed`, `tts_failed`, `dispatch_failed`, `speech_unavailable`, `internal` |
+| `keepalive` | | every `ready.keepaliveMs` while attached; no state, only proof of life (browsers cannot see ws pings). A client that saw `keepaliveMs` may treat the connection as lost after 2.5 intervals with no message of any kind. Additive: no protocol version bump |
 | `detached` | `reason` | `taken_over`, `session_gone`, `disabled`, `access_lost`, `shutdown` |
 
 ## Close codes
 
-`1000` normal (`bye`), `1001` shutdown, `4401` access lost, `4404` session gone, `4409`
+`1000` normal (`bye`, and reason `unavailable` after an `error` with code `speech_unavailable`: a provider is down, so the attachment is refused at `hello`), `1001` shutdown, `4401` access lost, `4404` session gone, `4409`
 in use by another principal, `4429` attachment limit, `4400` protocol error.
+
+A close the gateway sees as `1000`, `1001`, `1005` (no status), `1009` (oversize frame) or any `44xx` above ends the attachment. Any other close without a `bye` (a dropped connection, `1006`) suspends it for the resume window.
 
 ## Invariants (tested)
 

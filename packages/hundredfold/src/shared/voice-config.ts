@@ -8,7 +8,9 @@
  * defaults resolver (`resolveVoiceConfig`) live beside it.
  */
 import path from "node:path";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "@hundredfold/gateway-events";
 import { HUNDREDFOLD_HOME } from "./paths.js";
+import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
 
 export interface VoiceSttConfig {
@@ -25,7 +27,7 @@ export interface VoiceSttConfig {
 export interface VoiceTtsConfig extends VoiceSttConfig {
   /** Provider default when absent; for `local`, the operator's chosen Kokoro voice. */
   voice?: string;
-  /** Playback speed multiplier, 0.5 to 2. Defaults to 1. */
+  /** Speaking rate multiplier for spoken replies, 0.5 to 2 (1 is natural). Defaults to 1; a change applies to the next sentence spoken, with no restart. */
   speed?: number;
 }
 
@@ -91,6 +93,16 @@ export interface VoiceConfig {
 export const VOICE_STT_PROVIDERS = ["local", "openai", "openai-compatible"] as const;
 export type VoiceProviderId = (typeof VOICE_STT_PROVIDERS)[number];
 
+/** The speech-to-text models the built-in local provider can run, as `voice.stt.model` names them. The first is the default. */
+export const LOCAL_STT_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"] as const;
+export type LocalSttModelId = (typeof LOCAL_STT_MODELS)[number];
+export const DEFAULT_LOCAL_STT_MODEL: LocalSttModelId = LOCAL_STT_MODELS[0];
+
+/** The local model a resolved config runs: `stt.model` when the local provider does the speech-to-text, else the default (the sidecar loads one regardless, for the other local halves). */
+export function localSttModel(stt: { provider: string; model: string }): LocalSttModelId {
+  return stt.provider === "local" && (LOCAL_STT_MODELS as readonly string[]).includes(stt.model) ? (stt.model as LocalSttModelId) : DEFAULT_LOCAL_STT_MODEL;
+}
+
 /** Spoken-conversation instructions sent with the first voice turn (contracts/voice-config.md). */
 export const DEFAULT_VOICE_PROMPT =
   "You are in a spoken conversation. Your replies are converted to speech. Answer in short, natural sentences and lead with the answer. " +
@@ -105,7 +117,7 @@ export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come 
 
 /** Per provider: the model and voice used when the config names none. */
 export const VOICE_PROVIDER_DEFAULTS: Record<VoiceProviderId, { sttModel: string; ttsModel: string; ttsVoice: string }> = {
-  local: { sttModel: "parakeet-tdt-0.6b-v2", ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
+  local: { sttModel: DEFAULT_LOCAL_STT_MODEL, ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
   openai: { sttModel: "gpt-live-transcribe", ttsModel: "gpt-4o-mini-tts", ttsVoice: "marin" },
   "openai-compatible": { sttModel: "whisper-1", ttsModel: "tts-1", ttsVoice: "alloy" },
 };
@@ -199,6 +211,8 @@ function providerSideProblems(prefix: string, side: Obj): string[] {
   const provider = side.provider ?? "local";
   const problems = oneOf(`${prefix}.provider`, side.provider, VOICE_STT_PROVIDERS);
   problems.push(...nonEmptyString(`${prefix}.model`, side.model), ...apiKeyProblems(`${prefix}.apiKey`, side.apiKey));
+  // The local speech-to-text provider runs a fixed set of models; any other name would silently run the default.
+  if (prefix === "voice.stt" && provider === "local" && typeof side.model === "string" && side.model.trim() !== "") problems.push(...oneOf(`${prefix}.model`, side.model, LOCAL_STT_MODELS));
   if (provider === "local" && side.baseUrl !== undefined) problems.push(`${prefix}.baseUrl is not used by the local provider; remove it`);
   else problems.push(...baseUrlProblems(`${prefix}.baseUrl`, side.baseUrl, provider === "openai-compatible"));
   return problems;
@@ -211,7 +225,7 @@ function sideProblems(prefix: string, raw: unknown): { problems: string[]; side:
 
 function ttsProblems(tts: Obj | undefined): string[] {
   if (!tts) return [];
-  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [0.5, 2], false)];
+  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [VOICE_SPEED_MIN, VOICE_SPEED_MAX], false)];
 }
 
 function vadProblems(vad: Obj | undefined): string[] {
@@ -277,7 +291,8 @@ function languageProblems(language: unknown, providers: unknown[]): string[] {
 
 /**
  * Problems with the `voice` block, each naming its key. Voice stays off while any
- * exists. `home` is the instance home `promptFile` must stay inside.
+ * exists; they are not part of `validateConfigShape`, so a bad block never stops the
+ * gateway starting or a reload (see `voiceOffReason`). `home` is the instance home `promptFile` must stay inside.
  */
 export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_HOME): string[] {
   if (voice === undefined || voice === null) return [];
@@ -302,6 +317,49 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   ];
 }
 
+/** Whether the config asks for voice: anything but an object whose `enabled` is absent or `false`. A block that asks for it may still be invalid. */
+export function asksForVoice(voice: unknown): boolean {
+  return !(isObject(voice) && (voice.enabled === undefined || voice.enabled === false));
+}
+
+/**
+ * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
+ * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
+ * key or a URL's user name: the validator's messages do not echo them.
+ */
+export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
+  const problems = voiceConfigProblems(voice, home);
+  if (problems.length === 0) return null;
+  if (!asksForVoice(voice)) return null;
+  return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
+}
+
+/**
+ * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while the config does not
+ * ask for voice, so a variable a disabled block names stays where it is. A block that asks for voice but is invalid
+ * (`enabled: "yes"`) still withholds them: voice is off for that reason, not because nobody wanted it.
+ */
+export function voiceKeyEnvNames(voice: unknown): string[] {
+  if (!isObject(voice) || !asksForVoice(voice)) return [];
+  const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
+  return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
+}
+
+let lastWarned = "";
+
+/**
+ * Log the voice block's problems when they change. They do not fail the config (FR-025): voice stays off
+ * and the rest of the gateway carries on. `loadConfig` is polled, so one bad key must not flood the log.
+ */
+export function warnAboutVoiceProblems(voice: unknown): void {
+  const reason = voiceOffReason(voice);
+  const key = reason ?? "";
+  if (key === lastWarned) return;
+  lastWarned = key;
+  if (reason) logger.warn(`config voice: ${reason}`);
+}
+
 const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
 
 /** `source[key]`, or `fallback` when the key is absent: the one place a default is applied. */
@@ -324,7 +382,7 @@ function resolveSide(raw: Obj, kind: "stt" | "tts"): ResolvedVoiceSide {
 function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
   const tts = sub(voice, "tts");
   const side = resolveSide(tts, "tts");
-  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", 1) };
+  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", VOICE_SPEED_DEFAULT) };
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {

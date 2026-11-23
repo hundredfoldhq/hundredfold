@@ -13,6 +13,7 @@ import { startsOnPreferredEngine } from "./session-fallback.js";
 import type { SessionFallbackMode } from "../shared/session-fallback-config.js";
 import type { AccountPick } from "../shared/fallback-chain-wire.js";
 import { metaWithAccountPick, pinAccountAtCreation, type AccountPin } from "./account-pin.js";
+import { metaWithRemoteAccountPin } from "./remote-account-pin.js";
 
 /** What a routed turn brought with it about where the session should run. */
 export interface NewSessionEnginePreference {
@@ -78,18 +79,23 @@ function healthyStart(
   // remote gate then refuses — a session that looks started and can never run.
   // Scoped to the machine this session will actually run on: a login that
   // died on the gateway is no reason to move a remote employee's session.
-  const health = substituteHealth(engineHealthForTarget(readEngineHealth(), preference.employee), preference.employee, { claudeConfigDir: pin.claudeConfigDir ?? null });
+  const health = substituteHealth(engineHealthForTarget(readEngineHealth(), preference.employee), preference.employee, { claudeConfigDir: pin.claudeConfigDir ?? null, transportMeta: metaWithRemoteAccountPin(undefined, pin.remoteAccountPin ?? undefined) ?? null });
   // Installed where the session will run: a remote employee's on its host.
   const destination = isRemoteTarget(preference.employee) ? sshDestination(preference.employee) : undefined;
   const registry = availabilityRegistry(getModelRegistry(config), (candidate) => engines.has(candidate) && engineInstalledWhereRun(config, candidate, destination));
   return rerouteAtCreation({
-    config, employee: preference.employee, engine: preferred, model: preference.employee?.model, registry, health, scope: startScope(destination), pin,
+    config, employee: preference.employee, engine: preferred, model: pin.model ?? preference.employee?.model, registry, health, scope: startScope(destination), pin,
   });
 }
 
 /** What the pin adds to the session being created: the profile directory it runs on, and the pick the caller charges once the row exists. */
 function pinnedFields(pin: AccountPin): { claudeConfigDir?: string; accountPick?: AccountPick } {
   return { ...(pin.claudeConfigDir ? { claudeConfigDir: pin.claudeConfigDir } : {}), ...(pin.accountPick ? { accountPick: pin.accountPick } : {}) };
+}
+
+/** The model an opencode session the balancer pinned runs on: the same key on the picked account's provider. It is the session's only where it starts on the engine it preferred. */
+function pinnedModel(pin: AccountPin): { model?: string } {
+  return pin.model === undefined ? {} : { model: pin.model };
 }
 
 /**
@@ -111,7 +117,7 @@ export function newSessionEngineSelection(
   const pin = pinAccountAtCreation({ config, employee: preference.employee, engine: preferred, model: preference.model ?? preference.employee?.model });
   const meta = metaWithAccountPick(transportMeta ?? undefined, pin);
   const choice = healthyStart(config, engines, preference, preferred, pin);
-  if (!choice) return { engine: preferred, ...inheritedDefaults(preference, false), ...(meta ? { transportMeta: meta } : {}), ...pinnedFields(pin) };
+  if (!choice) return { engine: preferred, ...inheritedDefaults(preference, false), ...pinnedModel(pin), ...(meta ? { transportMeta: meta } : {}), ...pinnedFields(pin) };
   logger.info(`Engine "${preferred}" is out of allowance — starting this session on "${choice.engine}" instead, until ${choice.reroute.until.toISOString()}`);
   return {
     engine: choice.engine,
