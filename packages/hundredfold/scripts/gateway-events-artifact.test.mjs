@@ -45,3 +45,25 @@ test("embedded gateway protocol runtime matches its exported declarations", asyn
   assert.deepEqual(protocol.decodeGatewayEvent(frame), frame);
   assert.equal(protocol.isGatewayEvent(frame), true);
 });
+
+test("no compiled runtime module imports the workspace protocol package", () => {
+  // @hundredfold/gateway-events is a devDependency: the published package carries it
+  // only as the embedded src/shared/gateway-events.js. A runtime import of the package
+  // name from any other module fails to load once installed from the tarball.
+  const distSrc = path.join(packageRoot, "dist", "src");
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".js")) {
+        const source = fs.readFileSync(full, "utf8");
+        if (/(?:from|import)\s*\(?\s*["']@hundredfold\/gateway-events["']/.test(source)) {
+          offenders.push(path.relative(packageRoot, full));
+        }
+      }
+    }
+  };
+  walk(distSrc);
+  assert.deepEqual(offenders, [], "import these through src/shared/gateway-events.ts instead");
+});
