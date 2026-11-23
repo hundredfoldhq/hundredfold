@@ -95,6 +95,18 @@ describe("same-named uploads in one session", () => {
     expect(m3.filename).toBe("image.png");
   });
 
+  it("a failed re-home leaves no empty placeholder behind", () => {
+    // A directory where the file should be makes renameSync fail (not EXDEV).
+    const dir = path.join(paths.FILES_DIR, "bad1");
+    fs.mkdirSync(path.join(dir, "broken.png"), { recursive: true });
+    reg.insertFile({ id: "bad1", filename: "broken.png", size: 0, mimetype: "image/png", path: null });
+    files.rehomeAttachmentsToSession(["bad1"], "sess-fail");
+
+    expect(reg.getFile("bad1")!.path).toBeNull();
+    const destDir = files.uploadDir("sess-fail");
+    expect(fs.existsSync(destDir) ? fs.readdirSync(destDir) : []).toEqual([]);
+  });
+
   it("session-scoped multipart uploads of the same name land in distinct files", async () => {
     async function post(bytes: string) {
       const boundary = "mar-same-name-boundary";

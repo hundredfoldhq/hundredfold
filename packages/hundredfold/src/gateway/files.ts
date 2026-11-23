@@ -944,6 +944,7 @@ export function rehomeAttachmentsToSession(fileIds: unknown, sessionId: string):
         fs.copyFileSync(current, dest);
         fs.rmSync(current, { force: true });
       } else {
+        fs.rmSync(dest, { force: true }); // drop the empty placeholder claimed above
         logger.warn(`Failed to re-home attachment ${id}: ${err instanceof Error ? err.message : String(err)}`);
         continue;
       }
