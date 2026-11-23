@@ -12,9 +12,6 @@ const apiMocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
   getOrg: vi.fn(),
-  sttStatus: vi.fn(),
-  sttUpdateConfig: vi.fn(),
-  sttDownload: vi.fn(),
 }))
 const ApiError = vi.hoisted(() => class ApiError extends Error {
   status: number
@@ -68,9 +65,6 @@ beforeEach(() => {
   apiMocks.getConfig.mockResolvedValue({ config: { logging: { level: 'info' } }, revision: 'rev-1' })
   apiMocks.updateConfig.mockResolvedValue({})
   apiMocks.getOrg.mockResolvedValue({ employees: [] })
-  apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
-  apiMocks.sttUpdateConfig.mockResolvedValue({})
-  apiMocks.sttDownload.mockResolvedValue({})
 })
 
 describe('config revision', () => {

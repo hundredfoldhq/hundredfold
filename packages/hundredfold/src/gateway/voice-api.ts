@@ -5,6 +5,8 @@
  * a base URL or the prompt.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { DICTATION_SAMPLE_RATE, MAX_DICTATION_BYTES, dictationUnavailableReason, transcribePcm } from "../voice/dictation.js";
+import { BodyTooLargeError, readBodyRaw } from "./http-helpers.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { HundredfoldConfig } from "../shared/types.js";
 import { resolveVoiceConfig, voiceOffReason, type ResolvedVoiceConfig } from "../shared/voice-config.js";
@@ -13,7 +15,7 @@ import type { LocalSpeech } from "../voice/providers/local.js";
 import { createSttProvider, createTtsProvider, onVoiceInstallChange, sharedLocalSpeech, type ProviderDeps } from "../voice/providers/registry.js";
 import { findPythonCached, voicePaths, helloModels, resolveDevice, type InstallStatus } from "../voice/sidecar/bootstrap.js";
 import { readKokoroVoices } from "../voice/voices-file.js";
-import { json, type ParsedRoute } from "./route-helpers.js";
+import { json, serverError, type ParsedRoute } from "./route-helpers.js";
 
 /** OpenAI's built-in speech voices (public information about the provider), for a picker. */
 export const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"];
@@ -111,7 +113,7 @@ export interface VoiceApiOptions extends VoiceApiDeps {
 }
 
 /** Handle `/api/voice/*`; false for anything else so the dispatcher carries on. */
-export async function handleVoiceApi(_req: IncomingMessage, res: ServerResponse, route: ParsedRoute, options: VoiceApiOptions): Promise<boolean> {
+export async function handleVoiceApi(req: IncomingMessage, res: ServerResponse, route: ParsedRoute, options: VoiceApiOptions): Promise<boolean> {
   if (route.pathname === "/api/voice/config" && route.method === "GET") {
     if (options.emit) broadcastInstall(options.emit);
     json(res, voiceConfigResponse(options.getConfig(), options));
@@ -120,7 +122,62 @@ export async function handleVoiceApi(_req: IncomingMessage, res: ServerResponse,
   if (route.pathname === "/api/voice/install" && route.method === "POST") {
     return startInstall(res, options);
   }
+  if (route.pathname === "/api/voice/transcribe" && route.method === "POST") {
+    return transcribeRecording(req, res, route, options);
+  }
   return false;
+}
+
+const TOO_LONG = "Recording too long (20 minutes at most)";
+
+/** Why the posted recording cannot be transcribed, with the status to answer with; null when it can. */
+function recordingProblem(pcm: Buffer): { status: number; message: string } | null {
+  if (pcm.length === 0) return { status: 400, message: "No audio data" };
+  if (pcm.length > MAX_DICTATION_BYTES) return { status: 413, message: TOO_LONG };
+  if (pcm.length % 2 !== 0) return { status: 400, message: `Audio must be 16-bit PCM mono at ${DICTATION_SAMPLE_RATE} Hz` };
+  return null;
+}
+
+/** The recording in the request, or the reply that refuses it. A declared length over the limit is refused before the body is read, and a body that outgrows it is no longer buffered. */
+async function readRecording(req: IncomingMessage): Promise<{ pcm: Buffer } | { status: number; message: string }> {
+  if (Number(req.headers["content-length"]) > MAX_DICTATION_BYTES) return { status: 413, message: TOO_LONG };
+  let pcm: Buffer;
+  try {
+    pcm = await readBodyRaw(req, { maxBytes: MAX_DICTATION_BYTES });
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return { status: 413, message: TOO_LONG };
+    throw error;
+  }
+  return recordingProblem(pcm) ?? { pcm };
+}
+
+/**
+ * `POST /api/voice/transcribe`: dictation. The body is the whole recording as PCM16LE mono at 16 kHz (the browser
+ * decodes its own capture to that); `?language=` overrides `voice.language`. It runs on voice mode's speech-to-text
+ * provider, so it answers 409 while voice is off or its provider is not ready.
+ */
+async function transcribeRecording(req: IncomingMessage, res: ServerResponse, route: ParsedRoute, options: VoiceApiOptions): Promise<boolean> {
+  const config = options.getConfig();
+  const resolved = resolveVoiceConfig(config);
+  const unavailable = dictationUnavailableReason(config, options);
+  if (!resolved || unavailable) {
+    json(res, { error: unavailable ?? "Voice mode is not enabled" }, 409);
+    return true;
+  }
+  const recording = await readRecording(req);
+  if (!("pcm" in recording)) {
+    json(res, { error: recording.message }, recording.status);
+    return true;
+  }
+  const abort = new AbortController();
+  res.on("close", () => { if (!res.writableEnded) abort.abort(); });
+  const language = route.url.searchParams.get("language")?.trim() || resolved.language;
+  try {
+    json(res, { text: await transcribePcm(createSttProvider(resolved, options), recording.pcm, { language, signal: abort.signal }) });
+  } catch (error) {
+    if (!abort.signal.aborted) serverError(res, `Transcription failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return true;
 }
 
 function startInstall(res: ServerResponse, options: VoiceApiOptions): boolean {

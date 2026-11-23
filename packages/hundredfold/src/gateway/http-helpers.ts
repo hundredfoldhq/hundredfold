@@ -112,12 +112,32 @@ export function readBody(req: HttpRequest, opts: ReadBodyOpts = {}): Promise<str
   });
 }
 
-export function readBodyRaw(req: HttpRequest): Promise<Buffer> {
+/** The body as bytes. With `maxBytes`, a longer one rejects with `BodyTooLargeError` and is no longer buffered (see `readBody`). */
+export function readBodyRaw(req: HttpRequest, opts: ReadBodyOpts = {}): Promise<Buffer> {
   const peeked = peekedBody(req);
-  if (peeked !== undefined) return Promise.resolve(Buffer.from(peeked));
+  if (peeked !== undefined) {
+    return opts.maxBytes !== undefined && Buffer.byteLength(peeked) > opts.maxBytes ? Promise.reject(new BodyTooLargeError()) : Promise.resolve(Buffer.from(peeked));
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    const max = opts.maxBytes;
+    const onData = (chunk: Buffer) => {
+      total += chunk.length;
+      if (max !== undefined && total > max) {
+        // Same as readBody: stop buffering, keep discarding so the 413 can be delivered, cut off a sender that never stops.
+        req.off("data", onData);
+        chunks.length = 0;
+        req.on("data", (later: Buffer) => {
+          total += later.length;
+          if (total > max * 8) req.destroy();
+        });
+        reject(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    };
+    req.on("data", onData);
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });

@@ -161,14 +161,6 @@ function isBackgroundActivity(value: unknown): boolean {
     && isString(value.lastActivityAt)
 }
 
-function isProgressPayload(value: unknown): boolean {
-  return isRecord(value) && isNumber(value.progress)
-}
-
-function isErrorPayload(value: unknown): boolean {
-  return isRecord(value) && isString(value.error)
-}
-
 type PayloadGuard = (value: unknown) => boolean
 
 /**
@@ -233,7 +225,4 @@ export const payloadGuards: Record<GatewayEventName, PayloadGuard> = {
       && ["not_installed", "installing", "ready", "failed"].includes(String(value.state))
       && isNumber(value.progress)
       && isOptionalString(value.reason),
-  "stt:download:progress": isProgressPayload,
-  "stt:download:complete": (value) => isRecord(value) && isString(value.model),
-  "stt:download:error": isErrorPayload,
 }

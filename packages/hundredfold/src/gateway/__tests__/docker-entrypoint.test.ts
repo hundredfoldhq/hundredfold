@@ -141,13 +141,6 @@ describe.skipIf(process.platform === "win32")("Docker entrypoint runtime cleanup
     }
   });
 
-  it("keeps shared STT state inside the persisted Hundredfold home volume", () => {
-    const source = fs.readFileSync(dockerfile, "utf-8");
-
-    expect(source).toContain("ENV HUNDREDFOLD_STT_SETTINGS=/home/node/.hundredfold/stt.json");
-    expect(source).toContain("ENV HUNDREDFOLD_STT_MODELS_DIR=/home/node/.hundredfold/models/whisper");
-  });
-
   it("keeps Codex auth state inside its persisted volume", () => {
     const source = fs.readFileSync(dockerfile, "utf-8");
     const compose = fs.readFileSync(composeFile, "utf-8");

@@ -16,12 +16,8 @@ import type {
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse, stripTelegramMarkdown } from "./format.js";
 import { logger } from "../../shared/logger.js";
-import { STT_SETTINGS_FILE, TMP_DIR } from "../../shared/paths.js";
-import { getEffectiveSttSettings } from "../../stt/settings-store.js";
-import {
-  transcribe as sttTranscribe,
-  getModelPath,
-} from "../../stt/stt.js";
+import { TMP_DIR } from "../../shared/paths.js";
+import { DictationError, liveDictationUnavailableReason, transcribeAudioFile } from "../../voice/dictation.js";
 
 import { createTelegramAuth, type TelegramAuth } from "./auth.js";
 import { scrubUnauthorizedTelegramAuth } from "./auth-message.js";
@@ -47,7 +43,6 @@ export class TelegramConnector implements Connector {
     attachments: true,
   };
 
-  private readonly sttConfig?: TelegramConnectorConfig["stt"];
   private sttChain: Promise<unknown> = Promise.resolve();
   private sttPending = 0;
 
@@ -59,7 +54,6 @@ export class TelegramConnector implements Connector {
       config.allowFrom && config.allowFrom.length > 0
         ? new Set(config.allowFrom)
         : null;
-    this.sttConfig = config.stt;
     if (config.telegramAuth?.enabled === true) {
       this.auth = createTelegramAuth(this.bot, config.telegramAuth, this.allowedUsers);
     }
@@ -212,20 +206,14 @@ export class TelegramConnector implements Connector {
         (telegramMsg as any).video_note;
 
       if (voiceLike) {
-        const settings = getEffectiveSttSettings(this.sttConfig, STT_SETTINGS_FILE, logger.warn);
-        let unavailable: string | null = null;
-        if (!settings.enabled) {
-          unavailable = "voice transcription is not enabled on this gateway";
-        } else if (!getModelPath(settings.model)) {
-          unavailable = `STT model '${settings.model}' is not downloaded`;
-        }
+        const unavailable = liveDictationUnavailableReason();
 
         if (unavailable) {
           logger.warn(`[telegram] Dropping voice message: ${unavailable}`);
           try {
             await this.bot.sendMessage(
               telegramMsg.chat.id,
-              `⚠️ Couldn't transcribe your voice message — ${unavailable}. Please type instead.`,
+              `⚠️ Couldn't transcribe your voice message — ${unavailable.charAt(0).toLowerCase()}${unavailable.slice(1)}. Please type instead.`,
             );
           } catch {
             /* non-fatal */
@@ -233,9 +221,7 @@ export class TelegramConnector implements Connector {
           return;
         }
 
-        const language = settings.languages.length === 1 ? settings.languages[0] : "auto";
-
-        // Serialize transcriptions: parallel whisper-cli runs OOM on small hosts.
+        // Serialize transcriptions: the local speech engine decodes one recording at a time.
         // If another transcription is already in flight, send a one-line ack so
         // the user doesn't sit through ~duration × queue position in silence.
         this.sttPending++;
@@ -257,7 +243,7 @@ export class TelegramConnector implements Connector {
             /* non-fatal */
           }
           logger.info(
-            `[telegram] Transcribing voice message (${voiceLike.duration}s, lang=${language})`,
+            `[telegram] Transcribing voice message (${voiceLike.duration}s)`,
           );
           const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-stt-"));
           try {
@@ -265,7 +251,7 @@ export class TelegramConnector implements Connector {
               voiceLike.file_id,
               tmpDir,
             );
-            return await sttTranscribe(localPath, settings.model, language);
+            return await transcribeAudioFile(localPath);
           } finally {
             try {
               fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -290,7 +276,9 @@ export class TelegramConnector implements Connector {
           try {
             await this.bot.sendMessage(
               telegramMsg.chat.id,
-              "⚠️ Couldn't transcribe your voice message. Please try again or type instead.",
+              err instanceof DictationError
+                ? `⚠️ Couldn't transcribe your voice message — ${err.message}. Please type instead.`
+                : "⚠️ Couldn't transcribe your voice message. Please try again or type instead.",
             );
           } catch {
             /* non-fatal */

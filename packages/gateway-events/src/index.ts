@@ -94,9 +94,6 @@ export interface GatewayEventMap {
   "cron:reloaded": Record<string, never>
   "cron:run-finished": { jobId: string; status: "success" | "error" }
   "engines:updated": Record<string, never>
-  "stt:download:progress": { progress: number }
-  "stt:download:complete": { model: string }
-  "stt:download:error": { error: string }
   /** The local speech install (voice mode): where it is, 0 to 1, and why it failed. */
   "voice:install": { state: "not_installed" | "installing" | "ready" | "failed"; progress: number; reason?: string }
 }
@@ -137,9 +134,6 @@ export const GATEWAY_EVENTS = {
   cronReloaded: "cron:reloaded",
   cronRunFinished: "cron:run-finished",
   enginesUpdated: "engines:updated",
-  sttDownloadProgress: "stt:download:progress",
-  sttDownloadComplete: "stt:download:complete",
-  sttDownloadError: "stt:download:error",
   voiceInstall: "voice:install",
 } as const satisfies Record<string, GatewayEventName>
 

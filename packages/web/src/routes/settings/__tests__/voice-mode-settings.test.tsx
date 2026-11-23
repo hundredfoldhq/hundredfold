@@ -10,9 +10,6 @@ const apiMocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
   getOrg: vi.fn(),
-  sttStatus: vi.fn(),
-  sttUpdateConfig: vi.fn(),
-  sttDownload: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
@@ -50,7 +47,6 @@ function stored(config: Record<string, unknown>) {
 beforeEach(() => {
   apiMocks.updateConfig.mockReset().mockResolvedValue({ revision: 'rev-2' })
   apiMocks.getOrg.mockResolvedValue({ employees: [] })
-  apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
 })
 
 describe('voice mode sound cues', () => {

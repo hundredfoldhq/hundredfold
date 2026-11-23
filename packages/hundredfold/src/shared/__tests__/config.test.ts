@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import yaml from "js-yaml";
-import { normalizeClaudeEngineConfig, validateConfigShape } from "../config.js";
+import { CONFIG_TOP_LEVEL_KEYS, normalizeClaudeEngineConfig, validateConfigShape } from "../config.js";
 import { expectPosixMode } from "../test-support/posix-mode.js";
 
 describe("retired Talk configuration compatibility", () => {
@@ -30,6 +30,14 @@ describe("normalizeClaudeEngineConfig", () => {
 });
 
 describe("validateConfigShape", () => {
+  it("accepts a stale top-level stt block from the removed whisper speech-to-text, and a save keeps it", () => {
+    expect(validateConfigShape({
+      engines: { claude: { bin: "claude", model: "opus" } },
+      stt: { enabled: true, model: "base", languages: ["en", "bg"] },
+    })).toEqual([]);
+    expect(CONFIG_TOP_LEVEL_KEYS).toContain("stt");
+  });
+
   const withRealtime = (realtime: unknown) => validateConfigShape({
     engines: { claude: { bin: "claude", model: "opus" } },
     realtime,

@@ -92,7 +92,7 @@ import { createVoiceRuntime } from "../voice/runtime.js";
 
 import { startWsHeartbeat, trackHeartbeat } from "./ws-heartbeat.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
-import { initStt } from "../stt/stt.js";
+import { setDictationConfig } from "../voice/dictation.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { gatewayWatchCallbacks } from "./watch-callbacks.js";
 import { createPluginEventsChannel, matchPluginEventsPath } from "./plugin-events-ws.js";
@@ -301,8 +301,6 @@ export function connectorInstancesFromConfig(config: HundredfoldConfig): Normali
     }
     seen.add(id);
     const connectorConfig: Record<string, unknown> = { ...raw, id };
-    // Speech-to-text is global: this block is only the fallback if stt.json is unusable.
-    if (type === "telegram") connectorConfig.stt = config.stt;
     instances.push({ id, type, employee: raw.employee as string | undefined, config: connectorConfig });
   };
 
@@ -1195,12 +1193,8 @@ export async function startGateway(
   // Sync skill symlinks to .claude/skills/ and .agents/skills/
   syncSkillSymlinks();
 
-  // Initialize host-shared STT models and settings
-  try {
-    initStt(currentConfig.stt);
-  } catch (err) {
-    logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
-  }
+  // Dictation (the Notes and Todo mics, Telegram voice notes) runs on voice mode's speech-to-text provider.
+  setDictationConfig(() => currentConfig);
 
   // Start file watchers
   startWatchers(gatewayWatchCallbacks({ reloadConfig, getConfig: () => currentConfig, reloadOrg, emit }));

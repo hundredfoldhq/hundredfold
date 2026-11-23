@@ -15,7 +15,7 @@ import type { ClaudeAccountConfig } from "./claude-accounts-config.js";
 import type { FallbackChainEntry } from "./fallback-chain-wire.js";
 import type { EngineName } from "./models.js";
 import type { MusecodeEngineConfig } from "./musecode-config.js";
-import type { SttConfig, TalkConfig } from "./voice.js";
+import type { TalkConfig } from "./voice.js";
 import type { VoiceConfig } from "./voice-config.js";
 import type {
   ConnectorInstance,
@@ -280,7 +280,8 @@ export interface HundredfoldConfig {
     /** Returned by `search_knowledge` when a search finds nothing, in place of the built-in hint. */
     missHint?: string;
   };
-  stt?: SttConfig;
+  /** @deprecated The whisper.cpp speech-to-text block is gone; dictation uses `voice.stt`. A stale block is accepted and ignored. */
+  stt?: unknown;
   /** Read-aloud TTS (`/api/tts` + Kokoro) — optional, off unless configured. */
   talk?: TalkConfig;
   /**

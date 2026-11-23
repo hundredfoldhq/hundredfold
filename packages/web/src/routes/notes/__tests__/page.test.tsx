@@ -31,17 +31,16 @@ vi.mock("@/components/page-layout", () => ({
 
 vi.mock("@/hooks/use-stt", () => ({
   useStt: () => ({
-    state: "idle", available: true, downloadProgress: null, analyser: null,
-    languages: ["en"], selectedLanguage: "en", error: null,
-    cycleLanguage: vi.fn(), handleMicClick: vi.fn(), startRecording: vi.fn(),
+    state: "idle", analyser: null, unavailableReason: null,
+    error: null,
+    handleMicClick: vi.fn(), startRecording: vi.fn(),
     stopRecording: vi.fn(async () => null), cancelRecording: vi.fn(),
-    startDownload: vi.fn(), dismissDownload: vi.fn(), dismissError: vi.fn(),
+    dismissUnavailable: vi.fn(), dismissError: vi.fn(),
   }),
 }))
 
 vi.mock("@/hooks/use-gateway", () => ({
   useGateway: () => ({
-    events: [],
     connected: true,
     connectionSeq: 1,
     skillsVersion: 1,

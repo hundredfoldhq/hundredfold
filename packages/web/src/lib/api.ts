@@ -8,7 +8,7 @@ import type {
   UpdateNoteInput,
 } from "@/routes/notes/types"
 import { createConfigApi } from "@/lib/api-config"
-import { createSttApi } from "@/lib/api-stt"
+import { createDictationApi } from "@/lib/api-dictation"
 import { createVoiceApi } from "@/lib/api-voice"
 import { createTodoCaptureApi } from "@/lib/api-todo-capture"
 import type { EngineLimitsResponse } from "@/lib/api-engine-limits"
@@ -702,7 +702,7 @@ export const api = {
     get<{ needed: boolean; onboarded: boolean; sessionsCount: number; hasEmployees: boolean; companyName: string | null; companyPrefix: string | null; todoPrefix: string | null; todoPrefixFrozen: boolean; portalName: string | null; operatorName: string | null; operatorEmoji: string | null }>("/api/onboarding"),
   completeOnboarding: (data: { companyName?: string; companyPrefix?: string | null; portalName?: string; operatorName?: string; operatorEmoji?: string; language?: string; engine?: string; model?: string; effortLevel?: string }) =>
     post<{ status: string; portal: { companyName?: string; companyPrefix?: string; portalName?: string; operatorName?: string; operatorEmoji?: string; language?: string } }>("/api/onboarding", data),
-  ...createSttApi({ get, post, put, authFetch }),
+  ...createDictationApi({ authFetch }),
   ...createVoiceApi({ get, post }),
   ...createTodoCaptureApi({ get, post }),
   getSessionQueue: (id: string) => get<QueueItem[]>(`/api/sessions/${id}/queue`),

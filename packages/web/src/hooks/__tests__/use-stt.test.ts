@@ -1,17 +1,22 @@
 import { act, renderHook } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const sttStatus = vi.fn()
-const sttTranscribe = vi.fn()
-const sttDownload = vi.fn()
+const getVoiceConfig = vi.fn()
+const transcribeRecording = vi.fn()
+const recordingToPcm16 = vi.fn()
 
 vi.mock("@/lib/api", () => ({
   api: {
-    sttStatus: () => sttStatus(),
-    sttTranscribe: (blob: Blob, language: string) => sttTranscribe(blob, language),
-    sttDownload: () => sttDownload(),
+    getVoiceConfig: () => getVoiceConfig(),
+    transcribeRecording: (pcm: Int16Array) => transcribeRecording(pcm),
   },
 }))
+vi.mock("@/lib/recording-pcm", () => ({
+  recordingToPcm16: (blob: Blob) => recordingToPcm16(blob),
+}))
+
+const READY = { enabled: true, available: true, stt: { provider: "local", status: { available: true } } }
+const PCM = new Int16Array([1, 2, 3])
 
 import { useStt } from "../use-stt"
 
@@ -106,14 +111,15 @@ async function flushMicrotasks() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  sttStatus.mockResolvedValue({ available: true, downloading: false, languages: ["en"] })
-  sttTranscribe.mockResolvedValue({ text: "hello" })
+  getVoiceConfig.mockResolvedValue(READY)
+  recordingToPcm16.mockResolvedValue(PCM)
+  transcribeRecording.mockResolvedValue({ text: "hello" })
 })
 
 describe("useStt", () => {
-  it("acknowledges a mic request before model status resolves", async () => {
-    const status = deferred<{ available: boolean; downloading: boolean; languages: string[] }>()
-    sttStatus.mockReturnValue(status.promise)
+  it("acknowledges a mic request before the voice config resolves", async () => {
+    const status = deferred<unknown>()
+    getVoiceConfig.mockReturnValue(status.promise)
     installMediaMocks()
     const { result } = renderHook(() => useStt())
 
@@ -124,11 +130,41 @@ describe("useStt", () => {
 
     expect(result.current.state).toBe("starting")
 
-    status.resolve({ available: false, downloading: false, languages: ["en"] })
+    status.resolve({ enabled: false })
     await act(async () => {
       await start
     })
-    expect(result.current.state).toBe("no-model")
+    expect(result.current.state).toBe("unavailable")
+    expect(result.current.unavailableReason).toMatch(/turn voice mode on/i)
+  })
+
+  it("says why when voice mode is on but its speech engine is not ready", async () => {
+    getVoiceConfig.mockResolvedValue({ enabled: true, available: false, stt: { status: { available: false, reason: "Local speech is installing" } } })
+    installMediaMocks()
+    const { result } = renderHook(() => useStt())
+
+    await act(async () => {
+      await result.current.handleMicClick()
+    })
+
+    expect(result.current.state).toBe("unavailable")
+    expect(result.current.unavailableReason).toContain("Local speech is installing")
+
+    act(() => result.current.dismissUnavailable())
+    expect(result.current.state).toBe("idle")
+    expect(result.current.unavailableReason).toBeNull()
+  })
+
+  it("records when only the text-to-speech half of voice mode is down", async () => {
+    getVoiceConfig.mockResolvedValue({ enabled: true, available: false, reason: "Voice speaker is not ready", stt: { status: { available: true } } })
+    installMediaMocks()
+    const { result } = renderHook(() => useStt())
+
+    await act(async () => {
+      await result.current.handleMicClick()
+    })
+
+    expect(result.current.state).toBe("recording")
   })
 
   it("stays in the starting state until microphone capture is live", async () => {
@@ -155,8 +191,8 @@ describe("useStt", () => {
   })
 
   it("ignores rapid repeated starts while one attempt is pending", async () => {
-    const status = deferred<{ available: boolean; downloading: boolean; languages: string[] }>()
-    sttStatus.mockReturnValue(status.promise)
+    const status = deferred<unknown>()
+    getVoiceConfig.mockReturnValue(status.promise)
     installMediaMocks()
     const { result } = renderHook(() => useStt())
 
@@ -167,9 +203,9 @@ describe("useStt", () => {
       second = result.current.handleMicClick()
     })
 
-    expect(sttStatus).toHaveBeenCalledTimes(1)
+    expect(getVoiceConfig).toHaveBeenCalledTimes(1)
 
-    status.resolve({ available: false, downloading: false, languages: ["en"] })
+    status.resolve({ enabled: false })
     await act(async () => {
       await Promise.all([first, second])
     })
@@ -215,27 +251,16 @@ describe("useStt", () => {
     expect(result.current.error).toMatch(/microphone access was denied/i)
   })
 
-  it("surfaces model status and download failures as errors", async () => {
-    sttStatus.mockRejectedValueOnce(new Error("offline"))
+  it("surfaces a failed availability check as an error", async () => {
+    getVoiceConfig.mockRejectedValueOnce(new Error("offline"))
     installMediaMocks()
-    const { result, rerender } = renderHook(
-      ({ events }) => useStt(events),
-      { initialProps: { events: [] as Array<{ event: string; payload: unknown }> } },
-    )
+    const { result } = renderHook(() => useStt())
 
     await act(async () => {
       await result.current.handleMicClick()
     })
     expect(result.current.state).toBe("error")
-    expect(result.current.error).toMatch(/speech recognition availability/i)
-
-    act(() => {
-      rerender({
-        events: [{ event: "stt:download:error", payload: { error: "Download interrupted" } }],
-      })
-    })
-    expect(result.current.state).toBe("error")
-    expect(result.current.error).toBe("Download interrupted")
+    expect(result.current.error).toMatch(/speech engine is ready/i)
   })
 
   it("cancels recording without transcribing captured audio", async () => {
@@ -254,7 +279,7 @@ describe("useStt", () => {
     await flushMicrotasks()
 
     expect(track.stop).toHaveBeenCalledTimes(1)
-    expect(sttTranscribe).not.toHaveBeenCalled()
+    expect(transcribeRecording).not.toHaveBeenCalled()
     expect(result.current.state).toBe("idle")
     expect(audioSession.type).toBe("auto")
   })
@@ -275,10 +300,27 @@ describe("useStt", () => {
 
     expect(transcript).toBe("hello")
     expect(track.stop).toHaveBeenCalledTimes(1)
-    expect(sttTranscribe).toHaveBeenCalledTimes(1)
-    expect(sttTranscribe).toHaveBeenCalledWith(expect.any(Blob), "en")
+    expect(recordingToPcm16).toHaveBeenCalledWith(expect.any(Blob))
+    expect(transcribeRecording).toHaveBeenCalledTimes(1)
+    expect(transcribeRecording).toHaveBeenCalledWith(PCM)
     expect(result.current.state).toBe("idle")
     expect(audioSession.type).toBe("auto")
+  })
+
+  it("reports a failed transcription, in the gateway's words, as an error", async () => {
+    transcribeRecording.mockRejectedValueOnce(new Error("Transcription failed: the speech engine fell over"))
+    installMediaMocks()
+    const { result } = renderHook(() => useStt())
+
+    await act(async () => {
+      await result.current.handleMicClick()
+    })
+    await act(async () => {
+      expect(await result.current.stopRecording()).toBeNull()
+    })
+
+    expect(result.current.state).toBe("error")
+    expect(result.current.error).toBe("Transcription failed: the speech engine fell over")
   })
 
   it("does not transcribe when the hook unmounts mid-recording", async () => {
@@ -293,7 +335,7 @@ describe("useStt", () => {
     await flushMicrotasks()
 
     expect(track.stop).toHaveBeenCalledTimes(1)
-    expect(sttTranscribe).not.toHaveBeenCalled()
+    expect(transcribeRecording).not.toHaveBeenCalled()
     expect(audioSession.type).toBe("auto")
   })
 })

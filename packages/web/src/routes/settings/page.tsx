@@ -28,7 +28,6 @@ import { EnginesSection } from "./engines/entry"
 import type { Config } from "./config-shape"
 import { configSaveBlocker } from "./engines/model-map-model"
 import { refreshFallbackChains } from "@/hooks/use-fallback-chains"
-import { SttSettingsSection } from "./stt-section"
 import { VoiceSection } from "./voice-section"
 import { VoiceModeSection } from "./voice-mode-section"
 import { VoiceStyleSection } from "./voice-style-section"
@@ -1348,9 +1347,6 @@ export default function SettingsPage() {
               )}
               {/* -- Voice mode: the sound cues -- */}
               <VoiceModeSection cues={config.voice?.cues} onChange={updateConfig} />
-
-              {/* -- Section 9: Dictation (STT) -- */}
-              <SttSettingsSection />
 
               {/* Edits save themselves; reloading is how the operator throws one
                   away or picks up a hand edit. Quiet fill, in the shared grammar. */}

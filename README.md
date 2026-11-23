@@ -101,7 +101,7 @@ Then open **[http://localhost:7777](http://localhost:7777)** and enter the code 
 
 The compose image runs one instance. Additional instances need separate containers, dedicated Hundredfold/Claude volumes and separately published ports. The writable blast radius includes those state volumes (OAuth, sessions and plugins), every writable project mount, and unrestricted network egress; see the Docker guide before mounting sensitive data.
 
-The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither are `ffmpeg`/`whisper-cli` for speech-to-text — the same as a Homebrew or npm install, which leave those to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add speech-to-text, and what the isolation does and does not cover.
+The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither is `ffmpeg`, which Telegram voice notes need — the same as a Homebrew or npm install, which leave it to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add `ffmpeg`, and what the isolation does and does not cover.
 
 Everyday commands for a native install:
 
@@ -405,7 +405,7 @@ Then open **[http://localhost:7777](http://localhost:7777)** and enter the code 
 
 The compose image runs one instance. Additional instances need separate containers, dedicated Hundredfold/Claude volumes and separately published ports. The writable blast radius includes those state volumes (OAuth, sessions and plugins), every writable project mount, and unrestricted network egress; see the Docker guide before mounting sensitive data.
 
-The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither are `ffmpeg`/`whisper-cli` for speech-to-text — the same as a Homebrew or npm install, which leave those to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add speech-to-text, and what the isolation does and does not cover.
+The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither is `ffmpeg`, which Telegram voice notes need — the same as a Homebrew or npm install, which leave it to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add `ffmpeg`, and what the isolation does and does not cover.
 
 Everyday commands for a native install:
 

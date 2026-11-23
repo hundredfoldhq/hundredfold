@@ -39,10 +39,10 @@ describe("connectorInstancesFromConfig", () => {
     expect(ids(configWith({ whatsapp: {} }))).toEqual(["whatsapp"]);
   });
 
-  it("forwards global stt settings to telegram connectors", () => {
+  it("ignores a stale top-level stt block: dictation runs on voice mode's speech engine", () => {
     const stt = { enabled: true, model: "test-model" };
     const normalized = connectorInstancesFromConfig(configWith({ telegram: { botToken: "tg-test" } }, stt));
-    expect(normalized[0].config.stt).toEqual(stt);
+    expect(normalized[0].config.stt).toBeUndefined();
   });
 
   it("skips instances without id or type, and duplicate ids", () => {

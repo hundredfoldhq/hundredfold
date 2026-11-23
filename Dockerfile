@@ -126,8 +126,6 @@ ENV HUNDREDFOLD_CONTAINER=1
 # that looked for `~/.hundredfold` would start empty beside the data.
 ENV HUNDREDFOLD_HOME=/home/node/.hundredfold
 ENV HUNDREDFOLD_CONTAINER_PRIMARY_HOME=/home/node/.hundredfold
-ENV HUNDREDFOLD_STT_SETTINGS=/home/node/.hundredfold/stt.json
-ENV HUNDREDFOLD_STT_MODELS_DIR=/home/node/.hundredfold/models/whisper
 WORKDIR /home/node
 
 # Keep Claude Code's config inside the volume. It otherwise writes ~/.claude.json,

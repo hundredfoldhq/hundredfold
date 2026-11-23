@@ -2,7 +2,7 @@
 
 Voice mode is a spoken conversation with a chat. You talk, the gateway turns your speech into text and sends it to the session as an ordinary message, and the session's reply is turned back into speech, sentence by sentence, while it is still being written. Every spoken turn is stored and shown in the chat like a typed one, marked as spoken.
 
-Voice mode replaces the old hold-to-talk microphone that sat in the chat composer: the composer has no dictation mic any more, and speaking to a chat is voice mode. The dictation microphones in Notes and Todo quick capture are separate and unchanged (they use the Whisper model under Settings, Dictation).
+Voice mode replaces the old hold-to-talk microphone that sat in the chat composer: the composer has no dictation mic any more, and speaking to a chat is voice mode. The dictation microphones in Notes and Todo quick capture stay, and now run on voice mode's speech-to-text (see [Dictation](#dictation)).
 
 Voice mode is **off by default**. With no `voice:` block, or `enabled: false`, the chat shows no voice control, the gateway accepts no voice connection and contacts no speech provider.
 
@@ -22,7 +22,7 @@ The built-in local speech installs its own runtime and models the first time you
 3. **For the GPU path only: an NVIDIA GPU with a driver that supports CUDA 12.** The CUDA and cuDNN runtimes are installed by `pip`, so no CUDA toolkit is needed. `nvidia-smi` must work. Without a GPU the CPU path is used; it works, but it is much slower (see below).
 4. **Network access during the install** to PyPI, `huggingface.co` and `github.com` (the Kokoro model files). After the install nothing needs the network.
 
-Nothing else is needed: no `ffmpeg`, no `whisper-cli`, no system `espeak`. Nothing is installed system-wide and nothing is shared with the read-aloud (`/api/tts`) or dictation features.
+Nothing else is needed: no `ffmpeg`, no `whisper-cli`, no system `espeak`. Nothing is installed system-wide and nothing is shared with the read-aloud (`/api/tts`) feature.
 
 The container image does not include Python, so the local providers do not run in it unless you extend the image ([docs/docker.md](docker.md)); hosted and OpenAI-compatible providers work there.
 
@@ -301,6 +301,15 @@ Measured against the real Silero detector on a gateway, with the cue played stra
 | Desktop browser, tab in the background | Keeps listening and speaking while the page runs. | — |
 | iPhone and iPad | Safari suspends the page's microphone and audio when the screen locks. On return you are told voice mode was suspended, replies that finished meanwhile are spoken, and listening resumes (a tap if the browser asks for one). | Keeps listening, speaking and accepting interruptions with the screen locked, with a lock-screen control to stop it. |
 | Android | Varies by browser and version: some keep the page running, some suspend it, and the same recovery applies. | Keeps listening, speaking and accepting interruptions with the screen locked, with a notification that has a Stop action. |
+
+## Dictation
+
+The dictation microphones in Notes and Todo quick capture, and the voice notes the Telegram connector transcribes, use voice mode's speech-to-text. There is no second speech engine to install or configure: whichever provider `voice.stt` names (the local Parakeet, OpenAI, or an OpenAI-compatible server) transcribes them, in `voice.language`.
+
+- **Voice mode must be set up.** While `voice.enabled` is off, or the speech-to-text provider is not ready (for example the local models are still installing), a dictation mic says so and links to Settings. It does not need the gateway restarted the way starting a voice conversation does, and it works while only the speech half of voice mode is ready.
+- **How it works.** The browser decodes its recording to 16 kHz mono 16-bit audio and posts it to `POST /api/voice/transcribe` (optional `?language=`; at most 20 minutes). The gateway cuts a long recording into segments of about a minute, at the quietest moment near each cut, and joins the text. The reply is `{ "text": "…" }`; it answers 409 with the reason while voice mode is off or not ready.
+- **Telegram voice notes** arrive as Ogg/Opus, so decoding them needs `ffmpeg` on the gateway machine. It is optional: without it, the bot replies that it cannot decode the audio. Voice mode itself never needs it.
+- **Removed:** the separate whisper.cpp engine (`whisper-cli`, a downloaded ggml model, the Settings "Dictation" section and its language list) and `/api/stt/*`. A `stt:` block in `config.yaml` is ignored. Model files already downloaded stay under `~/.hundredfold/models/whisper/` and can be deleted by hand.
 
 ## Cost
 

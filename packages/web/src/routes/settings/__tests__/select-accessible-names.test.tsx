@@ -15,9 +15,6 @@ const apiMocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
   getOrg: vi.fn(),
-  sttStatus: vi.fn(),
-  sttUpdateConfig: vi.fn(),
-  sttDownload: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
@@ -55,15 +52,6 @@ beforeEach(() => {
   apiMocks.getConfig.mockResolvedValue({ config: {}, revision: 'rev-1' })
   apiMocks.updateConfig.mockResolvedValue({})
   apiMocks.getOrg.mockResolvedValue({ employees: [] })
-  apiMocks.sttStatus.mockResolvedValue({
-    available: false,
-    model: null,
-    downloading: false,
-    progress: 0,
-    languages: ['en'],
-  })
-  apiMocks.sttUpdateConfig.mockResolvedValue({})
-  apiMocks.sttDownload.mockResolvedValue({})
 })
 
 async function renderSettings() {

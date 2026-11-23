@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { api } from "@/lib/api"
+import { recordingToPcm16 } from "@/lib/recording-pcm"
 
 type AudioSessionType =
   | "auto"
@@ -19,35 +20,30 @@ interface NavigatorWithAudioSession extends Navigator {
 
 export type SttState =
   | "idle"           // mic not active
-  | "starting"       // model/capture startup is pending
-  | "no-model"       // model not downloaded, need to show download modal
+  | "starting"       // availability check/capture startup is pending
+  | "unavailable"    // voice mode's speech engine is off or not ready; say so
   | "recording"      // actively recording
   | "transcribing"   // audio sent, waiting for result
   | "error"          // transcription failed
 
 export interface UseSttReturn {
   state: SttState
-  available: boolean | null
-  downloadProgress: number | null
   analyser: AnalyserNode | null
-  /** Configured languages from the gateway */
-  languages: string[]
-  /** Currently selected language for transcription */
-  selectedLanguage: string
   /** Error message when state is "error" */
   error: string | null
-  /** Cycle to the next language */
-  cycleLanguage: () => void
+  /** Why dictation cannot run, when state is "unavailable" */
+  unavailableReason: string | null
   handleMicClick: () => Promise<void>
   startRecording: () => Promise<void>
   stopRecording: () => Promise<string | null>
   cancelRecording: () => void
-  startDownload: () => void
-  dismissDownload: () => void
+  /** Close the "unavailable" notice */
+  dismissUnavailable: () => void
   dismissError: () => void
 }
 
-const MAX_RECORDING_MS = 30 * 60_000 // 30 minutes max
+/** The longest recording the gateway takes. */
+const MAX_RECORDING_MS = 20 * 60_000 - 5_000
 
 interface StartAttempt {
   cancelled: boolean
@@ -97,23 +93,26 @@ function createAudioContext(): AudioContext {
   return new Ctor()
 }
 
-export function useStt(
-  wsEvents?: Array<{ event: string; payload: unknown }>,
-  onAutoTranscript?: (text: string) => void,
-): UseSttReturn {
-  const [state, setState] = useState<SttState>("idle")
-  const [available, setAvailable] = useState<boolean | null>(null)
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
-  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
-  const [languages, setLanguages] = useState<string[]>(["en"])
-  const [error, setError] = useState<string | null>(null)
-  const [selectedLanguage, setSelectedLanguage] = useState<string>(() => {
-    if (typeof window === "undefined") return "en"
-    return localStorage.getItem("stt-language") || "en"
-  })
+const TURN_VOICE_ON = "Dictation uses voice mode's speech engine. Turn voice mode on in Settings to use it."
 
-  const selectedLanguageRef = useRef(selectedLanguage)
-  selectedLanguageRef.current = selectedLanguage
+/** Whether voice mode's speech-to-text can take a recording now, and if not, why in words a person can act on. */
+async function dictationReason(): Promise<string | null> {
+  const config = (await api.getVoiceConfig()) as { enabled?: unknown; stt?: { status?: { available?: unknown; reason?: unknown } } } | null
+  if (!config || config.enabled !== true) return TURN_VOICE_ON
+  const status = config.stt?.status
+  if (status && status.available === false) {
+    return typeof status.reason === "string" && status.reason
+      ? `Voice mode's speech engine is not ready: ${status.reason}`
+      : "Voice mode's speech engine is not ready."
+  }
+  return null
+}
+
+export function useStt(onAutoTranscript?: (text: string) => void): UseSttReturn {
+  const [state, setState] = useState<SttState>("idle")
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -126,28 +125,6 @@ export function useStt(
   const mountedRef = useRef(true)
   const onAutoTranscriptRef = useRef(onAutoTranscript)
   onAutoTranscriptRef.current = onAutoTranscript
-
-  // Process WebSocket events for download progress
-  useEffect(() => {
-    if (!wsEvents || wsEvents.length === 0) return
-    const latest = wsEvents[wsEvents.length - 1]
-    if (!latest.event.startsWith("stt:")) return
-
-    const p = latest.payload as Record<string, unknown>
-    if (latest.event === "stt:download:progress") {
-      setDownloadProgress(Number(p.progress) || 0)
-    }
-    if (latest.event === "stt:download:complete") {
-      setDownloadProgress(null)
-      setAvailable(true)
-      setState("idle")
-    }
-    if (latest.event === "stt:download:error") {
-      setDownloadProgress(null)
-      setError(typeof p.error === "string" ? p.error : "Speech recognition model download failed")
-      setState("error")
-    }
-  }, [wsEvents])
 
   const cleanup = useCallback((opts?: { updateAnalyser?: boolean }) => {
     if (timeoutRef.current) {
@@ -191,32 +168,6 @@ export function useStt(
       stopResolveRef.current = null
     }
   }, [cleanup])
-
-  const checkStatus = useCallback(async () => {
-    try {
-      const status = await api.sttStatus()
-      setAvailable(status.available)
-      if (status.downloading) {
-        setDownloadProgress(status.progress)
-      }
-      if (status.languages?.length > 0) {
-        setLanguages(status.languages)
-        // If the stored language isn't in the configured list, reset to the first
-        setSelectedLanguage((prev) => {
-          if (!status.languages.includes(prev)) {
-            const fallback = status.languages[0]
-            localStorage.setItem("stt-language", fallback)
-            return fallback
-          }
-          return prev
-        })
-      }
-      return status.available
-    } catch {
-      setAvailable(false)
-      throw new Error("Could not check speech recognition availability.")
-    }
-  }, [])
 
   const startRecordingInner = useCallback(async (attempt: StartAttempt) => {
     try {
@@ -278,7 +229,7 @@ export function useStt(
         }
 
         try {
-          const result = await api.sttTranscribe(blob, selectedLanguageRef.current)
+          const result = await api.transcribeRecording(await recordingToPcm16(blob))
           const text = result.text || null
           setState("idle")
           setError(null)
@@ -328,21 +279,22 @@ export function useStt(
     setState("starting")
 
     try {
-      const isAvailable = await checkStatus()
+      const reason = await dictationReason()
       if (startAttemptRef.current !== attempt || attempt.cancelled || !mountedRef.current) return
-      if (!isAvailable) {
+      if (reason) {
         startAttemptRef.current = null
-        setState("no-model")
+        setUnavailableReason(reason)
+        setState("unavailable")
         return
       }
       await startRecordingInner(attempt)
-    } catch (err) {
+    } catch {
       if (startAttemptRef.current !== attempt || attempt.cancelled || !mountedRef.current) return
       startAttemptRef.current = null
-      setError(err instanceof Error ? err.message : "Could not check speech recognition availability.")
+      setError("Could not check whether voice mode's speech engine is ready.")
       setState("error")
     }
-  }, [state, checkStatus, startRecordingInner])
+  }, [state, startRecordingInner])
 
   const startRecording = useCallback(async () => {
     if (startAttemptRef.current || state === "recording" || state === "transcribing") return
@@ -406,16 +358,9 @@ export function useStt(
     setState("idle")
   }, [cancelStartAttempt, cleanup])
 
-  const startDownload = useCallback(() => {
-    setDownloadProgress(0)
-    api.sttDownload().catch(() => {
-      setDownloadProgress(null)
-    })
-  }, [])
-
-  const dismissDownload = useCallback(() => {
+  const dismissUnavailable = useCallback(() => {
     setState("idle")
-    setDownloadProgress(null)
+    setUnavailableReason(null)
   }, [])
 
   const dismissError = useCallback(() => {
@@ -423,30 +368,16 @@ export function useStt(
     setError(null)
   }, [])
 
-  const cycleLanguage = useCallback(() => {
-    setSelectedLanguage((prev) => {
-      const idx = languages.indexOf(prev)
-      const next = languages[(idx + 1) % languages.length]
-      localStorage.setItem("stt-language", next)
-      return next
-    })
-  }, [languages])
-
   return {
     state,
-    available,
-    downloadProgress,
     analyser,
-    languages,
-    selectedLanguage,
     error,
-    cycleLanguage,
+    unavailableReason,
     handleMicClick,
     startRecording,
     stopRecording,
     cancelRecording,
-    startDownload,
-    dismissDownload,
+    dismissUnavailable,
     dismissError,
   }
 }
