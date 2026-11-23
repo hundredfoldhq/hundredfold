@@ -8,7 +8,7 @@
  * defaults resolver (`resolveVoiceConfig`) live beside it.
  */
 import path from "node:path";
-import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "@hundredfold/gateway-events";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "./gateway-events.js";
 import { HUNDREDFOLD_HOME } from "./paths.js";
 import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
