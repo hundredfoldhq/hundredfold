@@ -12,6 +12,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -573,6 +574,37 @@ class StreamingSttTests(unittest.TestCase):
         stt.warm()
         self.assertEqual(stt._streams, {})
 
+    def test_a_request_marks_its_utterance_as_recently_used_so_a_live_one_outlasts_abandoned_ones(self):
+        stt = sc.StreamingStt(FrameEngine())
+        pcm = frames_pcm(14)
+        stt.transcribe("live", pcm[: 6 * FrameEngine.span * 2], False)
+        for n in range(sc.MAX_STREAMS - 1):
+            stt.transcribe(f"abandoned{n}", frames_pcm(6), False)
+        self.assertEqual(len(stt._streams), sc.MAX_STREAMS)
+        stt.transcribe("live", pcm[: 9 * FrameEngine.span * 2], False)  # a partial: "live" is now the newest, not the oldest
+        for n in range(3):
+            stt.transcribe(f"newcomer{n}", frames_pcm(6), False)
+        self.assertIn("live", stt._streams, "the utterance still being spoken is not the one dropped")
+        self.assertNotIn("abandoned0", stt._streams)
+        self.assertNotIn("abandoned2", stt._streams)
+        self.assertEqual(stt.transcribe("live", pcm, True), expected_text(14), "and it kept its decoder state")
+
+    def test_warm_walks_the_encoder_through_every_window_size_and_keeps_nothing(self):
+        engine = FrameEngine()
+        stt = sc.StreamingStt(engine)
+        fed: list[int] = []
+        recognize = stt.recognize
+        stt.recognize = lambda pcm: (fed.append(len(pcm) // 2), recognize(pcm))[1]
+        stt.warm()
+        # The model the sidecar loads has 560 feature frames of left context, 56 of chunk and 56 of right: its window is full after
+        # about 6.7 s, and every size before that is one the encoder sees on the way.
+        self.assertGreaterEqual(fed[0], (560 + 56 + 56) * sc.STREAM_HOP, "enough audio to fill the real model's window")
+        capacity = (FrameEngine.left_frames + FrameEngine.chunk_frames + FrameEngine.right_frames) * sc.STREAM_HOP
+        first = (FrameEngine.chunk_frames + FrameEngine.right_frames) * sc.STREAM_HOP
+        chunk = FrameEngine.chunk_frames * sc.STREAM_HOP
+        self.assertEqual(sorted(set(engine.windows)), [first, first + chunk, first + 2 * chunk, capacity], "a window grows a chunk at a time from its first size to its full one, so every shape the encoder will see is seen")
+        self.assertEqual(stt._streams, {}, "nothing is held for an utterance that never existed")
+
     def test_the_server_decodes_partials_and_final_through_the_utterance_state_and_cancel_forgets_it(self):
         h = Harness()
         stt = sc.StreamingStt(FrameEngine())
@@ -674,6 +706,92 @@ class OnnxAsrStreamEngineTests(unittest.TestCase):
         engine = sc.OnnxAsrStreamEngine(FakeOnnxAsr(), np, True)
         self.assertEqual(engine.step([], None, None), (0, None))
         self.assertEqual(engine.text([3, 4]), "3 4")
+
+
+class FakeOfflineAsr:
+    """The corner of an `onnx-asr` model that offline recognition calls: the adapter's `recognize` and the model's `recognize_batch`."""
+
+    def __init__(self) -> None:
+        self.batches: list[tuple[int, int]] = []  # (samples in the input, the real length passed) for each batched call
+        self.plain: list[int] = []
+        self.failure: Exception | None = None
+        self.asr = self
+
+    def recognize(self, samples, sample_rate=16000):
+        if self.failure:
+            raise self.failure
+        self.plain.append(samples.size)
+        return f"plain {samples.size}"
+
+    def recognize_batch(self, waveforms, lengths):
+        if self.failure:
+            raise self.failure
+        self.batches.append((waveforms.shape[1], int(lengths[0])))
+        yield types.SimpleNamespace(text=f" real {int(lengths[0])} ")
+
+
+@unittest.skipIf(np is None, "numpy is not installed")
+class ParakeetOnnxTests(unittest.TestCase):
+    def build(self, providers):
+        fake = FakeOfflineAsr()
+        module = types.SimpleNamespace(load_model=lambda *args, **kwargs: fake)
+        with mock.patch.dict(sys.modules, {"onnx_asr": module}):
+            model = sc.ParakeetOnnx({"name": "nemo-conformer-rnnt", "path": "/nowhere"}, providers)
+        return model, fake
+
+    def seconds(self, value: float) -> bytes:
+        return bytes(int(value * sc.VAD_SAMPLE_RATE) * 2)
+
+    def test_on_the_gpu_an_utterance_is_padded_to_a_few_lengths_and_keeps_its_real_one(self):
+        model, fake = self.build(["CUDAExecutionProvider", "CPUExecutionProvider"])
+        lengths = (0.2, 0.5, 1.7, 3.0, 4.0, 4.3, 7.9, 10.5, 15.2, 20.0, 31.9)
+        texts = [model.recognize(self.seconds(value)) for value in lengths]
+        rate = sc.VAD_SAMPLE_RATE
+        self.assertEqual([padded for padded, _ in fake.batches], [4 * rate] * 5 + [8 * rate] * 2 + [12 * rate, 16 * rate, 24 * rate, 32 * rate], "few shapes, so the graph is planned a few times, not once per length")
+        self.assertEqual([real for _, real in fake.batches], [max(int(value * rate), sc.MIN_STT_SAMPLES) for value in lengths], "the real length, never below the minimum")
+        self.assertEqual(texts[3], f"real {3 * rate}", "the text is what the model returns for the real length, stripped")
+        self.assertEqual(fake.plain, [])
+
+    def test_on_the_gpu_a_longer_utterance_keeps_its_own_length(self):
+        model, fake = self.build(["CUDAExecutionProvider"])
+        model.recognize(self.seconds(40))
+        model.recognize(self.seconds(125))
+        self.assertEqual(fake.batches, [(40 * sc.VAD_SAMPLE_RATE, 40 * sc.VAD_SAMPLE_RATE), (125 * sc.VAD_SAMPLE_RATE,) * 2])
+
+    def test_on_the_cpu_audio_is_not_padded(self):
+        model, fake = self.build(["CPUExecutionProvider"])
+        self.assertEqual(model.recognize(self.seconds(3)), f"plain {3 * sc.VAD_SAMPLE_RATE}")
+        self.assertEqual(model.recognize(self.seconds(0.1)), f"plain {sc.MIN_STT_SAMPLES}")
+        self.assertEqual(fake.batches, [])
+
+    def test_warm_decodes_once_at_each_padded_length_on_the_gpu_and_once_on_the_cpu(self):
+        model, fake = self.build(["CUDAExecutionProvider"])
+        model.warm()
+        self.assertEqual([padded for padded, _ in fake.batches], [seconds * sc.VAD_SAMPLE_RATE for seconds in sc.OFFLINE_PAD_SECONDS])
+        model, fake = self.build(["CPUExecutionProvider"])
+        model.warm()
+        self.assertEqual(fake.plain, [sc.MIN_STT_SAMPLES])
+
+    def test_running_out_of_gpu_memory_is_reported_as_that_and_other_failures_pass_through(self):
+        model, fake = self.build(["CUDAExecutionProvider"])
+        for message in (
+            "Non-zero status code returned while running Conv node. bfc_arena.cc:360 Failed to allocate memory for requested buffer of size 27346944",
+            "CUBLAS failure 3: CUBLAS_STATUS_ALLOC_FAILED ; GPU=0 ; hostname=x ; expr=cublasGemmEx",
+            "CUDA failure 2: out of memory ; GPU=0",
+        ):
+            with self.subTest(message=message):
+                fake.failure = RuntimeError(message)
+                with self.assertRaisesRegex(RuntimeError, r"GPU ran out of memory on 55 s of audio"):
+                    model.recognize(self.seconds(55))
+        fake.failure = ValueError("bad input")
+        with self.assertRaisesRegex(ValueError, "bad input"):
+            model.recognize(self.seconds(3))
+
+    def test_the_cpu_path_reports_its_own_errors_unchanged(self):
+        model, fake = self.build(["CPUExecutionProvider"])
+        fake.failure = RuntimeError("std::bad_alloc: out of memory")
+        with self.assertRaisesRegex(RuntimeError, r"^std::bad_alloc: out of memory$"):
+            model.recognize(self.seconds(2))
 
 
 class LanguageTests(unittest.TestCase):
