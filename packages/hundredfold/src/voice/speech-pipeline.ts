@@ -63,6 +63,14 @@ export interface CutResult {
   heardBy: HeardPart[];
   /** The stored message of each of `unheard`, in step with it; undefined for a streamed reply. */
   unheardIds: Array<string | undefined>;
+  /** Other replies the cut left with something unheard (a report queued or sent behind the one cut), and what of each was heard. */
+  others: UnheardReply[];
+}
+
+/** A reply other than the one a cut fell in, of which some was not heard. */
+export interface UnheardReply {
+  replyKey: number;
+  heardBy: HeardPart[];
 }
 
 /** What was heard of one stored message of a cut reply. */
@@ -100,6 +108,8 @@ export class SpeechPipeline {
   private idleWaiters: Array<() => void> = [];
   /** The sentences the last cut left unheard, in order: what a resume with those texts speaks again. */
   private cutUnheard: Segment[] = [];
+  /** Likewise for the other replies the last cut left something of, which a resume speaks after the cut reply's own. */
+  private cutOthers: Array<{ replyKey: number; segments: Segment[] }> = [];
 
   constructor(private readonly options: PipelineOptions) {}
 
@@ -183,31 +193,35 @@ export class SpeechPipeline {
   /**
    * Stop speaking now. `segmentId` is the segment the client was playing and
    * `playedMs` how much of it, or null when the gateway cut on its own hearing
-   * and knows only what was reported played.
+   * and knows only what was reported played. `others` names the replies besides the cut one whose unheard
+   * sentences are kept for a resume and reported (a report spoken in a pass of its own); any other is dropped.
    */
-  cut(segmentId: number | null, playedMs: number): CutResult {
+  cut(segmentId: number | null, playedMs: number, others: ReadonlySet<number> = new Set()): CutResult {
     this.generation += 1;
     this.abort.abort();
     this.abort = new AbortController();
     this.wakeAll();
     this.jobs = new Map();
-    const { result, wholeIds, unheard } = this.heardAndUnheard(segmentId, playedMs);
+    const { result, wholeIds, unheard, cutOthers } = this.heardAndUnheard(segmentId, playedMs, others);
     for (const segment of this.history) {
       // What was heard to its end stays heard, so a later cut of the replay still counts it.
       if (wholeIds.has(segment.id)) segment.state = "played";
       else if (segment.state === "queued" || segment.state === "synthesising" || segment.state === "sent") segment.state = "cut";
     }
     this.cutUnheard = unheard;
+    this.cutOthers = cutOthers;
     this.queue = [];
     this.splitter.reset();
     this.notifyIdle();
     return result;
   }
 
-  /** Sentences held since a cut are dropped: the new turn will bring its own reply. */
+  /** Sentences held since a cut are dropped: the new turn will bring its own reply. They are not left queued in the history. */
   discardQueued(): void {
+    for (const segment of this.queue) if (segment.state === "queued" || segment.state === "synthesising") segment.state = "cut";
     this.queue = [];
     this.cutUnheard = [];
+    this.cutOthers = [];
     this.splitter.reset();
     this.notifyIdle();
   }
@@ -223,8 +237,26 @@ export class SpeechPipeline {
       if (unheard[i]?.text === text) segment.replaces = unheard[i].id;
       return segment;
     });
-    this.queue = [...segments, ...this.queue];
+    this.queue = [...segments, ...this.replaysOfOthers(), ...this.queue];
     this.kick();
+  }
+
+  /** The other replies' unheard sentences, spoken again as the replies and stored messages they came from. */
+  private replaysOfOthers(): Segment[] {
+    const own = this.replyKey;
+    const replays: Segment[] = [];
+    for (const other of this.cutOthers) {
+      this.replyKey = other.replyKey;
+      for (const original of other.segments) {
+        const segment = this.newSegment(original.text);
+        if (original.messageId) segment.messageId = original.messageId;
+        segment.replaces = original.id;
+        replays.push(segment);
+      }
+    }
+    this.replyKey = own;
+    this.cutOthers = [];
+    return replays;
   }
 
   /** Resolves once nothing is queued or being made. */
@@ -248,6 +280,9 @@ export class SpeechPipeline {
     const spoken = this.history.filter((s) => !s.holding);
     const playing = segmentId === null ? undefined : spoken.find((s) => s.id === segmentId);
     if (playing) return playing.replyKey;
+    // No sentence named: the one being said is the oldest not yet heard, in the order the client plays them.
+    const next = [...spoken.filter((s) => s.state === "sent").sort(byOrder), ...this.queue.filter((s) => !s.holding)].find((s) => !this.replayed(s));
+    if (next) return next.replyKey;
     return [...spoken].reverse().find((s) => s.state !== "queued")?.replyKey ?? spoken[spoken.length - 1]?.replyKey;
   }
 
@@ -267,7 +302,9 @@ export class SpeechPipeline {
     ];
   }
 
-  private heardAndUnheard(segmentId: number | null, playedMs: number): { result: CutResult; wholeIds: Set<number>; unheard: Segment[] } {
+  private heardAndUnheard(
+    segmentId: number | null, playedMs: number, others: ReadonlySet<number>,
+  ): { result: CutResult; wholeIds: Set<number>; unheard: Segment[]; cutOthers: Array<{ replyKey: number; segments: Segment[] }> } {
     const key = this.replyOfCut(segmentId);
     // Only the interrupted reply: sentences of earlier replies, and holding lines, are neither heard of it nor resumed.
     // A sentence already spoken again is not of it twice.
@@ -283,8 +320,39 @@ export class SpeechPipeline {
     const pending = this.pendingInOrder(scope, key, wholeIds);
     const unheardSegments = pending.filter((s) => s.id !== playing?.id || ratio < 1);
     const heardBy = heardParts(scope, wholeIds, playing, ratio);
-    const result: CutResult = { heard, unheard: unheardSegments.map((s) => s.text), replyKey: key, heardBy, unheardIds: unheardSegments.map((s) => s.messageId) };
-    return { result, wholeIds, unheard: unheardSegments };
+    const heardOthers = this.heardOfOthers(key, others, segmentId);
+    for (const id of heardOthers.wholeIds) wholeIds.add(id);
+    const result: CutResult = {
+      heard, unheard: unheardSegments.map((s) => s.text), replyKey: key, heardBy, unheardIds: unheardSegments.map((s) => s.messageId),
+      others: heardOthers.replies,
+    };
+    return { result, wholeIds, unheard: unheardSegments, cutOthers: heardOthers.unheard };
+  }
+
+  /**
+   * What of the other named replies was heard: whole sentences the client plays before the one it was playing (or
+   * reported played), none of the rest. A reply that was heard to its end is not reported, so its record stands.
+   */
+  private heardOfOthers(
+    key: number | undefined, others: ReadonlySet<number>, segmentId: number | null,
+  ): { replies: UnheardReply[]; wholeIds: Set<number>; unheard: Array<{ replyKey: number; segments: Segment[] }> } {
+    const replies: UnheardReply[] = [];
+    const wholeIds = new Set<number>();
+    const unheard: Array<{ replyKey: number; segments: Segment[] }> = [];
+    const playing = segmentId === null ? undefined : this.history.find((s) => s.id === segmentId && (s.state === "sent" || s.state === "played"));
+    for (const replyKey of others) {
+      if (replyKey === key) continue;
+      const scope = this.history.filter((s) => !s.holding && s.replyKey === replyKey && !this.replayed(s));
+      const whole = scope.filter((s) => s.state === "played"
+        || (s.state === "sent" && (segmentId === null ? false : playing ? (s.sentOrder ?? 0) < (playing.sentOrder ?? 0) : s.id < segmentId)));
+      const ids = new Set(whole.map((s) => s.id));
+      const pending = this.pendingInOrder(scope, replyKey, ids);
+      if (pending.length === 0) continue;
+      for (const id of ids) wholeIds.add(id);
+      replies.push({ replyKey, heardBy: heardParts(scope, ids, undefined, 0) });
+      unheard.push({ replyKey, segments: pending });
+    }
+    return { replies, wholeIds, unheard };
   }
 
   private enqueue(text: string, holding = false, messageId?: string): void {
