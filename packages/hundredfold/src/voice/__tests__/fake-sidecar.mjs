@@ -58,7 +58,7 @@ function handle(header, body) {
     case "vad.audio":
       if (Number(process.env.FAKE_STALL_AT) === ++audioFrames) for (const until = Date.now() + Number(process.env.FAKE_STALL_MS ?? 0); Date.now() < until;);
       if (marker) return markerVad(header, body);
-      return send({ op: "vad.event", stream: header.stream, kind: body.length === 2 ? "end" : "start", atMs: body.length });
+      return send({ op: "vad.event", stream: header.stream, kind: body.length === 2 ? "end" : "start", atMs: body.length, ...(body.length === 2 ? { speechMs: 1234 } : {}) });
     case "stt.partial":
     case "stt.final":
       if (mode === "nostt") return;

@@ -98,7 +98,7 @@ describe("speech sidecar client", () => {
     vad.write(Buffer.alloc(640));
     vad.write(Buffer.alloc(2));
     await until(() => events.length === 2);
-    expect(events).toEqual([{ kind: "start", atMs: 640 }, { kind: "end", atMs: 2 }]);
+    expect(events).toEqual([{ kind: "start", atMs: 640 }, { kind: "end", atMs: 2, speechMs: 1234 }]);
     vad.close();
     await until(() => logged().includes("vad.close"));
     expect(logged()).toEqual(expect.arrayContaining(["vad.open", "vad.audio", "vad.close"]));

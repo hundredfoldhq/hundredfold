@@ -152,6 +152,7 @@ class Endpointer:
         self._run = 0  # consecutive frames at or above threshold, while not speaking
         self._silent = 0  # consecutive frames below the low mark, while speaking
         self._last_voiced = 0  # frame index after the last frame that was speech
+        self._onset = 0  # frame index of the first frame of the speech in progress
 
     def push(self, probability: float) -> list[dict[str, Any]]:
         index = self.frame
@@ -167,7 +168,8 @@ class Endpointer:
         self.speaking = True
         self._silent = 0
         self._last_voiced = index + 1
-        onset = (index + 1 - self._run) * VAD_FRAME_MS
+        self._onset = index + 1 - self._run
+        onset = self._onset * VAD_FRAME_MS
         return [{"kind": "start", "atMs": max(0, onset - self.preroll_ms)}]
 
     def _while_speaking(self, index: int, probability: float) -> list[dict[str, Any]]:
@@ -180,7 +182,8 @@ class Endpointer:
             return []
         self.speaking = False
         self._run = 0
-        return [{"kind": "end", "atMs": self._last_voiced * VAD_FRAME_MS}]
+        # `speechMs` is how long it was voiced, without the pre-roll or the trailing silence: the gateway tells a bump from a word by it.
+        return [{"kind": "end", "atMs": self._last_voiced * VAD_FRAME_MS, "speechMs": (self._last_voiced - self._onset) * VAD_FRAME_MS}]
 
 
 class VadStream:

@@ -2,7 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN, VOICE_SPEED_PRESETS } from "@hundredfold/gateway-events";
 import { validateConfigShape } from "../config.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_LOCAL_STT_MODEL, DEFAULT_VOICE_PROMPT, LOCAL_STT_MODELS, localSttModel, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_LOCAL_STT_MODEL, DEFAULT_PHANTOM_PHRASES, DEFAULT_VOICE_PROMPT, LOCAL_STT_MODELS, localSttModel, resolveVoiceConfig, voiceConfigProblems, voiceOffReason } from "../voice-config.js";
 
 const HOME = path.resolve("/tmp/voice-config-test-home");
 const problems = (voice: unknown) => voiceConfigProblems(voice, HOME);
@@ -20,6 +20,7 @@ describe("voiceConfigProblems", () => {
       enabled: true, mode: "push-to-talk", language: "en-GB",
       stt: { provider: "local", model: "parakeet-unified-en-0.6b" }, tts: { provider: "local", voice: "bf_emma", speed: 0.5 },
       vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, unfinishedHoldMs: 5000, prerollMs: 1000 },
+      filter: { minConfidence: 1, noSpeechThreshold: 0, phantomMaxMs: 5000, phantomPhrases: [] },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
       cues: { enabled: false, volume: 1 },
@@ -47,6 +48,14 @@ describe("voiceConfigProblems", () => {
     ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: -1 } }, "voice.vad.unfinishedHoldMs"],
     ["voice.vad.unfinishedHoldMs", { vad: { unfinishedHoldMs: 5001 } }, "voice.vad.unfinishedHoldMs"],
     ["voice.vad.prerollMs", { vad: { prerollMs: 1001 } }, "voice.vad.prerollMs"],
+    ["voice.filter.minConfidence", { filter: { minConfidence: 1.1 } }, "voice.filter.minConfidence"],
+    ["voice.filter.noSpeechThreshold", { filter: { noSpeechThreshold: -0.1 } }, "voice.filter.noSpeechThreshold"],
+    ["voice.filter.phantomMaxMs", { filter: { phantomMaxMs: 5001 } }, "voice.filter.phantomMaxMs"],
+    ["voice.filter.phantomMaxMs", { filter: { phantomMaxMs: 250.5 } }, "voice.filter.phantomMaxMs"],
+    ["voice.filter.phantomPhrases", { filter: { phantomPhrases: "amen" } }, "voice.filter.phantomPhrases must be a list"],
+    ["voice.filter.phantomPhrases[1]", { filter: { phantomPhrases: ["amen", " "] } }, "voice.filter.phantomPhrases[1]"],
+    ["voice.filter.phantomPhrases[0]", { filter: { phantomPhrases: [3] } }, "voice.filter.phantomPhrases[0]"],
+    ["voice.filter", { filter: 5 }, "voice.filter must be a mapping"],
     ["voice.bargeIn.enabled", { bargeIn: { enabled: 1 } }, "voice.bargeIn.enabled"],
     ["voice.bargeIn.minSpeechMs", { bargeIn: { minSpeechMs: 2001 } }, "voice.bargeIn.minSpeechMs"],
     ["voice.bargeIn.onsetThreshold", { bargeIn: { onsetThreshold: -0.1 } }, "voice.bargeIn.onsetThreshold"],
@@ -242,12 +251,18 @@ describe("resolveVoiceConfig", () => {
       stt: { provider: "local", model: "parakeet-tdt-0.6b-v2", baseUrl: null, apiKeyRef: null },
       tts: { provider: "local", model: "kokoro-v1.0", baseUrl: null, apiKeyRef: null, voice: "af_heart", speed: 1 },
       vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 1000, unfinishedHoldMs: 800, prerollMs: 300 },
+      filter: { minConfidence: 0.3, noSpeechThreshold: 0.8, phantomMaxMs: 500, phantomPhrases: [...DEFAULT_PHANTOM_PHRASES] },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
       cues: { enabled: true, volume: 0.3 },
       prompt: DEFAULT_VOICE_PROMPT, promptFile: null, stylePrompt: "", holdingLine: DEFAULT_HOLDING_LINE,
       limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 }, local: { device: "auto" },
     });
+  });
+
+  it("keeps what the operator set in the filter block, and `phantomPhrases: []` turns the list off rather than restoring it", () => {
+    expect(resolve({ enabled: true, filter: { minConfidence: 0.5, phantomPhrases: [] } })?.filter).toEqual({ minConfidence: 0.5, noSpeechThreshold: 0.8, phantomMaxMs: 500, phantomPhrases: [] });
+    expect(resolve({ enabled: true, filter: null })?.filter.phantomPhrases).toEqual([...DEFAULT_PHANTOM_PHRASES]);
   });
 
   it("loads a config with no cues block, a partial one, or a null one, at the defaults", () => {

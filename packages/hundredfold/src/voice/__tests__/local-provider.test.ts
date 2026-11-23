@@ -217,7 +217,7 @@ describe("local VAD", () => {
     vad.write(Buffer.alloc(2));
     const deadline = Date.now() + 3000;
     while (events.length < 2 && Date.now() < deadline) await sleep(10);
-    expect(events).toEqual([{ kind: "start", atMs: 640 }, { kind: "end", atMs: 2 }]);
+    expect(events).toEqual([{ kind: "start", atMs: 640 }, { kind: "end", atMs: 2, speechMs: 1234 }]);
     vad.close();
   });
 });

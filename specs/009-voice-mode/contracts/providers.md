@@ -53,7 +53,7 @@ export interface VadStream {
 |---|---|---|---|
 | `local` | sidecar `stt.partial` (every 400 ms, skip if busy) / `stt.final` | sidecar `tts` | yes |
 | `openai` | Realtime transcription session over WebSocket (the producer checks the current API shape and cites the doc and date in the PR) | `POST /v1/audio/speech`, `response_format: "pcm"` (24 kHz), streamed | yes |
-| `openai-compatible` | `POST {baseUrl}/v1/audio/transcriptions` (multipart WAV, batch) | `POST {baseUrl}/v1/audio/speech` asking `pcm`, falling back to `wav` (unwrapped); MP3-only refused | no |
+| `openai-compatible` | `POST {baseUrl}/v1/audio/transcriptions` (multipart WAV, batch; asks `verbose_json` and reads `segments[].avg_logprob` and `no_speech_prob` into the final's `quality`, falling back to `json` for a server that answers 4xx other than 401, 403 or 429 to it, and asking for plain `json` from then on only after a 400, 415 or 422) | `POST {baseUrl}/v1/audio/speech` asking `pcm`, falling back to `wav` (unwrapped); MP3-only refused | no |
 
 Every network call honours its `AbortSignal`. Keys come from `resolveEnvVar` at
 construction and live only in the provider's closure.

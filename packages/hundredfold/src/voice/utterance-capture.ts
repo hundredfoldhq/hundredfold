@@ -16,7 +16,7 @@
  * event offsets, so two utterances spoken during the load stay apart.
  */
 import { VOICE_INPUT_SAMPLE_RATE } from "../shared/gateway-events.js";
-import type { SttProvider, SttStream, VadEvent, VadStream } from "./provider.js";
+import type { SttProvider, SttQuality, SttStream, VadEvent, VadStream } from "./provider.js";
 import type { VoiceClock, CancelTimer } from "./hub-types.js";
 import { VAD_HOLD_MS } from "./sidecar/client.js";
 import { looksUnfinished } from "./unfinished-speech.js";
@@ -44,6 +44,10 @@ export interface FinishedUtterance {
   /** End of speech to the final transcript. */
   sttMs: number;
   startedAt: number;
+  /** How long the person was voiced, from the VAD, without pre-roll or silence; absent in push-to-talk (no VAD) or when the VAD did not say. */
+  speechMs?: number;
+  /** What the provider reported about its confidence, when it reported any. */
+  quality?: SttQuality;
 }
 
 export interface CaptureEvents {
@@ -82,11 +86,20 @@ interface Open {
   startedAt: number;
   endedAt: number | null;
   audioMs: number;
+  /** Voiced time summed over the VAD's ends so far (speech that resumes inside a hold adds to it); null when no end has said. */
+  speechMs: number | null;
+  /** Speech resumed inside a hold and its end has not come: the voiced time so far is a floor, so it is not reported. */
+  resumedOpen: boolean;
   partial: string;
   settled: boolean;
   cancelTimeout: CancelTimer | null;
   /** Set while a late start waits for its end: nothing is fed live, the cut is made from the ring at the end. */
   catchUp: { fromByte: number } | null;
+}
+
+/** The voiced time to report: none when no end said, or when speech resumed and its end never came (what is summed is then a floor). */
+function voicedOf(open: Open): { speechMs?: number } {
+  return open.speechMs === null || open.resumedOpen ? {} : { speechMs: Math.round(open.speechMs) };
 }
 
 export class UtteranceCapture {
@@ -168,14 +181,17 @@ export class UtteranceCapture {
     return this.options.vadLagMs ?? DEFAULT_VAD_LAG_MS;
   }
 
-  private onVad({ kind, atMs }: VadEvent): void {
+  private onVad({ kind, atMs, speechMs }: VadEvent): void {
     if (this.closed || this.options.pushToTalk) return;
     if (kind === "reset") return this.onReset(atMs);
-    if (kind === "end") return this.onVadEnd(atMs);
+    if (kind === "end") return this.onVadEnd(atMs, speechMs);
     // Speech resumed inside a hold: the same utterance goes on.
     const resumed = this.cancelHold !== null && this.capturing !== null;
     this.clearHold();
-    if (resumed) return this.options.events.onVad(true);
+    if (resumed) {
+      this.capturing!.resumedOpen = true;
+      return this.options.events.onVad(true);
+    }
     const fromByte = Math.max(0, atMs * BYTES_PER_MS);
     // The VAD does not start twice without an end between, and a replaced detector says so (a reset), so this is a fallback
     // for one that did not: what was open stops where this speech begins (never past what was written).
@@ -188,8 +204,10 @@ export class UtteranceCapture {
     if (!this.ignoringUntilEnd) this.onVadStart(fromByte);
   }
 
-  private onVadEnd(atMs: number): void {
+  private onVadEnd(atMs: number, speechMs: number | undefined): void {
     this.options.events.onVad(false);
+    if (this.capturing) this.capturing.resumedOpen = false;
+    if (this.capturing && speechMs !== undefined) this.capturing.speechMs = (this.capturing.speechMs ?? 0) + speechMs;
     const catchUp = this.capturing?.catchUp;
     // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
     if (!catchUp && this.holdEnd()) return;
@@ -244,7 +262,7 @@ export class UtteranceCapture {
     const stream = this.options.stt.open({ language: this.options.language, sampleRate: VOICE_INPUT_SAMPLE_RATE, signal: abort.signal });
     const open: Open = {
       id: this.options.newId(), stream, abort, startedAt: this.options.clock.now(),
-      endedAt: null, audioMs: 0, partial: "", settled: false, cancelTimeout: null,
+      endedAt: null, audioMs: 0, speechMs: null, resumedOpen: false, partial: "", settled: false, cancelTimeout: null,
       catchUp: catchUp ? { fromByte } : null,
     };
     stream.on((event) => this.onStt(open, event));
@@ -333,7 +351,7 @@ export class UtteranceCapture {
     this.finish(open);
   }
 
-  private onStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string }): void {
+  private onStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string; quality?: SttQuality }): void {
     if (open.settled || this.closed) return;
     if (event.type === "partial") {
       open.partial = event.text ?? "";
@@ -346,6 +364,8 @@ export class UtteranceCapture {
     this.options.events.onFinal({
       id: open.id, text: event.text ?? "", audioMs: Math.round(open.audioMs),
       sttMs: Math.max(0, now - (open.endedAt ?? now)), startedAt: open.startedAt,
+      ...voicedOf(open),
+      ...(event.quality === undefined ? {} : { quality: event.quality }),
     });
   }
 

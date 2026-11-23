@@ -3,7 +3,7 @@
  * Nothing here touches a network, a model or a process.
  */
 import type { Engine, EngineResult, EngineRunOpts, ForegroundWork, SoftInterruptOutcome } from "../../shared/types.js";
-import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VadEventHandler, VadStream } from "../provider.js";
+import type { SttEvent, SttProvider, SttQuality, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VadEventHandler, VadStream } from "../provider.js";
 import type { CancelTimer, VoiceClock, VoiceSocket } from "../hub-types.js";
 
 export class FakeClock implements VoiceClock {
@@ -59,8 +59,8 @@ export class FakeVad implements VadStream {
   start(atMs = this.positionMs()): void {
     this.handler?.({ kind: "start", atMs });
   }
-  end(atMs = this.positionMs()): void {
-    this.handler?.({ kind: "end", atMs });
+  end(atMs = this.positionMs(), speechMs?: number): void {
+    this.handler?.(speechMs === undefined ? { kind: "end", atMs } : { kind: "end", atMs, speechMs });
   }
   /** The detector behind the stream was replaced at this position. */
   reset(atMs = this.positionMs()): void {
@@ -95,8 +95,8 @@ export class FakeSttStream implements SttStream {
   partial(text: string): void {
     this.emit({ type: "partial", text });
   }
-  final(text: string): void {
-    this.emit({ type: "final", text });
+  final(text: string, quality?: SttQuality): void {
+    this.emit(quality ? { type: "final", text, quality } : { type: "final", text });
   }
 }
 

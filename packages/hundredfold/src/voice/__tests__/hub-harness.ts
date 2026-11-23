@@ -1,7 +1,7 @@
 import { VoiceHub } from "../hub.js";
 import type { VoiceAttachment } from "../attachment.js";
 import type { VoiceDelivery, VoiceHubDeps, VoicePrincipal } from "../hub-types.js";
-import { DEFAULT_HOLDING_LINE, DEFAULT_VOICE_PROMPT, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
+import { DEFAULT_HOLDING_LINE, DEFAULT_PHANTOM_PHRASES, DEFAULT_VOICE_PROMPT, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import { FakeClock, FakeEngine, FakeSocket, FakeStt, FakeTts, FakeVad, settle, type FakeEngineOptions } from "./fakes.js";
 
 export const SESSION = "s1";
@@ -16,6 +16,7 @@ export function baseConfig(over: Partial<ResolvedVoiceConfig> = {}): ResolvedVoi
     stt: { provider: "local", model: "parakeet-tdt-0.6b-v2", baseUrl: null, apiKeyRef: null },
     tts: { provider: "local", model: "kokoro-v1.0", baseUrl: null, apiKeyRef: null, voice: "af_test", speed: 1 },
     vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 1000, unfinishedHoldMs: 800, prerollMs: 300 },
+    filter: { minConfidence: 0.3, noSpeechThreshold: 0.8, phantomMaxMs: 500, phantomPhrases: [...DEFAULT_PHANTOM_PHRASES] },
     bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
     autoBackground: { enabled: true, afterSeconds: 5 },
     cues: { enabled: true, volume: 0.3 },
@@ -45,6 +46,7 @@ export function createHarness(options: HarnessOptions = {}) {
   const delivered: VoiceDelivery[] = [];
   const merges: Array<{ id: string; patch: unknown }> = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   let ids = 0;
   /** The stored transcript as the hub reads it back; `external` rows are the ones the transcript sync stamped. */
   const stored: Array<{ id: string; role: string; content: string; toolCall: boolean; external: boolean; timestamp: number }> = [];
@@ -71,7 +73,7 @@ export function createHarness(options: HarnessOptions = {}) {
     findReplyMessageId: () => state.replyMessage,
     externalRepliesSince: (_session, sinceMs) => stored.filter((row) => row.external && row.role === "assistant" && !row.toolCall && row.timestamp > sinceMs),
     clock,
-    log: { info: () => undefined, warn: (message) => { warnings.push(message); } },
+    log: { info: (message) => { infos.push(message); }, warn: (message) => { warnings.push(message); } },
     newId: () => `id${++ids}`,
   };
   const hub = new VoiceHub(deps);
@@ -94,7 +96,7 @@ export function createHarness(options: HarnessOptions = {}) {
   }
 
   const h = {
-    clock, stt, tts, engine, vads, delivered, merges, warnings, state, hub, deps,
+    clock, stt, tts, engine, vads, delivered, merges, warnings, infos, state, hub, deps,
     connect, store,
     /** Frames of one type the client has been sent. */
     vad: () => vads[vads.length - 1],
