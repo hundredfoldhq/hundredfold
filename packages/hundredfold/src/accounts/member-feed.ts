@@ -8,7 +8,7 @@ import { memberWorkItem, type Viewer } from "./member-serialise.js";
  *
  * Only Todo-shaped change events pass: `company:changed` with `entity: "todo"`, which is what Todo writes,
  * comment and attachment changes and status moves all announce. Every other event (sessions, deltas, the
- * org, config, Talk, sprints, departments) is dropped. A passing event is rebuilt as `{ entity, action, id }`
+ * org, config, sprints, departments) is dropped. A passing event is rebuilt as `{ entity, action, id }`
  * plus the Todo's version and, when the original carried a value, the member-safe Todo; the original's
  * `value` (a full Todo with a session-bearing `sourceRef`), `sessionId` and anything else are never forwarded.
  *

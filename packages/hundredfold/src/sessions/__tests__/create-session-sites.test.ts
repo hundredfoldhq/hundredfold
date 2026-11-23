@@ -19,8 +19,6 @@ const PINNED: Record<string, { calls: number; through: string[]; model: string }
   "gateway/todo-employee-session.ts": { calls: 1, through: ["validateNewSessionSelection", "chargeAccountStart"], model: "model: selection.model" },
   "gateway/todo-dispatch.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
   "gateway/todo-capture-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
-  "gateway/talk-turn-api.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "{ model: pin.model }" },
-  "talk/control/delegation-adapter.ts": { calls: 1, through: ["pinAccountAtCreation", "chargeAccountStart"], model: "model: pin.model ?? " },
   // The manager creates the row from the selection the engine chooser made, which spreads the pinned model (`pinnedModel`).
   "sessions/manager.ts": { calls: 1, through: ["newSessionEngineSelection", "chargeAccountStart"], model: "...selection" },
 };
@@ -28,7 +26,6 @@ const PINNED: Record<string, { calls: number; through: string[]; model: string }
 /** Sites that never start an agent on Claude, and why. */
 const EXEMPT: Record<string, { calls: number; reason: string }> = {
   "sessions/registry.ts": { calls: 1, reason: "the definition of createSession itself" },
-  "gateway/talk-api.ts": { calls: 1, reason: "a row for a realtime voice session on the realtime provider: it runs no Claude agent, the row only carries spend" },
   "gateway/terminal-api.ts": { calls: 1, reason: "a terminal on a host: a shell, not an agent session" },
   "gateway/remote-mcp/principal.ts": { calls: 1, reason: "the anchor a connector's tool calls run as: it never runs an engine" },
 };

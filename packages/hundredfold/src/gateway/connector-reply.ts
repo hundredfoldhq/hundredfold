@@ -1,14 +1,15 @@
 import type { Connector, Session } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 
-/** Sources whose turns have no originating chat channel to relay back into. */
+/** Sources whose turns have no originating chat channel to relay back into. `talk` is for stored
+ *  rows: sessions the retired voice assistant opened keep that source. */
 const NON_CONNECTOR_SOURCES = new Set(["web", "talk", "cron"]);
 
 /**
  * Relay a completed turn's assistant text back to the connector channel that
  * originated the session. Inbound connector messages reply through their own
  * surface, but turns started elsewhere (parent callbacks, cron follow-ups,
- * rate-limit resumes) otherwise never reach the channel. No-ops for web/talk/cron
+ * rate-limit resumes) otherwise never reach the channel. No-ops for web/cron
  * sources, empty text, or a missing connector/replyContext; errors are logged and
  * swallowed so delivery failure never breaks completion.
  */

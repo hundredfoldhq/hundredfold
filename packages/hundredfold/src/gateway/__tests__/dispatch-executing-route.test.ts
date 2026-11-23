@@ -27,7 +27,7 @@ afterAll(stopDispatchHarness);
 describe("Dispatch on a Todo that is already executing", () => {
   it("refuses at click time while an execution attempt is in flight, without starting a Dispatcher", async () => {
     const item = assignedTodo("Being worked right now");
-    // Linked without a claim, the way cron and talk start work.
+    // Linked without a claim, the way cron starts work.
     const worker = linkedAttempt(item.id, "first-worker", "running", "worker:live");
     const sessionsBefore = registry.countSessions();
 

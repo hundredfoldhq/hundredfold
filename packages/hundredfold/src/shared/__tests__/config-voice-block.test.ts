@@ -141,7 +141,6 @@ describe("the voice provider key", () => {
     const { loadConfig } = await import("../config.js");
     const { buildEngineChildEnv } = await import("../child-env.js");
     const { resolveEnvVar } = await import("../env-ref.js");
-    const { createRealtimeProvider } = await import("../../talk/realtime/index.js");
     const { resolveMcpServers } = await import("../../mcp/resolver.js");
     loadConfig();
 
@@ -149,9 +148,7 @@ describe("the voice provider key", () => {
     expect(buildEngineChildEnv()).not.toHaveProperty(VAR);
     expect(resolveEnvVar(`\${${VAR}}`)).toBe(KEY);
     expect(resolveEnvVar(`$${VAR}`)).toBe(KEY);
-    // The realtime factory resolves it...
-    expect(() => createRealtimeProvider({ provider: "openai", apiKey: `\${${VAR}}` })).not.toThrow();
-    // ...and so does an MCP server's env (it is the operator's explicit choice), not the literal reference.
+    // An MCP server's env resolves it too (it is the operator's explicit choice), not the literal reference.
     const { mcpServers } = resolveMcpServers({ browser: { enabled: false }, custom: { demo: { command: "run", env: { TOKEN: `\${${VAR}}` } } } });
     expect((mcpServers.demo as { env: Record<string, string> }).env.TOKEN).toBe(KEY);
   });

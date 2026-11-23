@@ -169,29 +169,6 @@ function isErrorPayload(value: unknown): boolean {
   return isRecord(value) && isString(value.error)
 }
 
-function isBoundedString(value: unknown, limit: number): boolean {
-  return isString(value) && value.length > 0 && value.length <= limit
-}
-
-function isProactiveEffect(value: unknown): boolean {
-  if (value === null) return true
-  if (!isRecord(value)) return false
-  return ["refresh", "highlight"].includes(String(value.type)) && isBoundedString(value.target, 500)
-}
-
-function isProactiveCue(value: unknown): boolean {
-  if (!isRecord(value)) return false
-  return [
-    isBoundedString(value.receiptId, 200),
-    isBoundedString(value.talkSessionId, 200),
-    value.topicId === null ? true : isBoundedString(value.topicId, 200),
-    ["quiet", "spoken"].includes(String(value.disposition)),
-    ["routine", "urgent"].includes(String(value.urgency)),
-    isBoundedString(value.summary, 500),
-    isProactiveEffect(value.uiEffect),
-  ].every(Boolean)
-}
-
 type PayloadGuard = (value: unknown) => boolean
 
 /**
@@ -259,15 +236,4 @@ export const payloadGuards: Record<GatewayEventName, PayloadGuard> = {
   "stt:download:progress": isProgressPayload,
   "stt:download:complete": (value) => isRecord(value) && isString(value.model),
   "stt:download:error": isErrorPayload,
-  "talk:audio": (value) =>
-    isRecord(value)
-      && isString(value.sessionId)
-      && isNumber(value.seq)
-      && isString(value.mime)
-      && isString(value.dataBase64)
-      && isOptionalBoolean(value.last),
-  "talk:tts:download:progress": isProgressPayload,
-  "talk:tts:download:complete": isEmptyPayload,
-  "talk:tts:download:error": isErrorPayload,
-  "talk:proactive-cue": isProactiveCue,
 }

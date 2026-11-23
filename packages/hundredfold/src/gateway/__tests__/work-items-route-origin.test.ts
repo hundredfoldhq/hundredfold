@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { api, ctx, makeReq, makeRes, operatorHeaders, store } from "./helpers/work-items-route-harness.js";
 
 /**
- * Write provenance (X-Hundredfold-Origin). A talk-tool write and a click in the web UI
+ * Write provenance (X-Hundredfold-Origin). A write from a declared surface (`talk`, the retired
+ * voice assistant's) and a click in the web UI
  * both arrive as the authenticated operator, so the audit event is the only
  * place the difference can survive — and only an allowlisted declaration may
  * reach it.
@@ -107,5 +108,21 @@ describe("X-Hundredfold-Origin write provenance on work-item events", () => {
       expect(audit).not.toContain(declared);
       expect(audit).not.toContain("origin");
     }
+  });
+
+  it("still serves an event a previous release stamped with the retired surface", async () => {
+    const item = store.createWorkItem({ title: "stored origin" });
+    store.appendWorkItemEvent({
+      workItemId: item.id,
+      kind: "note",
+      actor: "operator",
+      detail: { note: "said aloud", origin: "talk" },
+    });
+
+    const read = await call("GET", `/api/work-items/${item.id}`, undefined, operatorHeaders);
+
+    expect(read.status).toBe(200);
+    const stored = (read.body.events as Array<{ kind: string; detail: Record<string, unknown> | null }>).find((event) => event.kind === "note");
+    expect(stored?.detail).toEqual({ note: "said aloud", origin: "talk" });
   });
 });

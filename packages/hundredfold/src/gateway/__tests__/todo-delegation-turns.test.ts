@@ -3,7 +3,7 @@ import { loadMentionHarness, mentionTestHome, sessionHeaders } from "./todo-ment
 
 // A delegation into an employee's live session on a Todo: who the session
 // reports to turn by turn, what it refuses, what it says it ignored, how a
-// retry is recognised, and Talk taking the same path.
+// retry is recognised.
 mentionTestHome("hundredfold-todo-delegation-turns-");
 
 const delivered = vi.hoisted(() => [] as string[]);
@@ -149,50 +149,5 @@ describe("a delegation that lands in a live session", () => {
     expect(first.body).toMatchObject({ sessionId: consult.id, reused: true });
     expect(again.body).toMatchObject({ sessionId: consult.id, replayed: true, reused: true });
     expect(h.deliveriesTo(consult.id, "todo-delegation")).toHaveLength(1);
-  });
-});
-
-describe("a Talk delegation", () => {
-  it("lands in the employee's live session on the Todo and reports to the Talk session from its next turn", async () => {
-    const { claimTalkDelegation } = await import("../../talk/control/delegation-adapter.js");
-    const item = h.store.createWorkItem({ title: "by voice" });
-    await h.comment(item.id, "@alpha have a look");
-    const [consult] = h.sessionsOf(item.id, "alpha");
-    h.registry.updateSession(consult.id, { status: "idle" });
-    const talk = h.employeeSession("org-root");
-
-    const claimed = claimTalkDelegation({
-      context: h.context,
-      sourceSessionId: talk.id,
-      todoId: item.id,
-      prompt: "Take this Todo over.",
-      employee: { name: "alpha", department: "platform", engine: "codex", model: "gpt-5.5" },
-      call: { talkSessionId: "talk-1", providerCallId: "call-1", idempotencyKey: "talk-delegate-1" } as never,
-    });
-
-    expect(claimed.session.id).toBe(consult.id);
-    expect(h.sessionsOf(item.id, "alpha")).toHaveLength(1);
-    expect(h.registry.getSession(consult.id)?.workItemRole).toBe("execute");
-    expect(h.delegation.reportingParentSessionId(h.startTurn(consult.id))).toBeNull();
-    h.handoff.startDelegatedTurn(h.registry.getSession(consult.id)!, claimed.queueItemId);
-    expect(h.delegation.reportingParentSessionId(h.registry.getSession(consult.id)!)).toBe(talk.id);
-  });
-
-  it("starts a new session with the child's fallback mode when the employee has none on the Todo", async () => {
-    const { claimTalkDelegation } = await import("../../talk/control/delegation-adapter.js");
-    const item = h.store.createWorkItem({ title: "by voice, fresh" });
-    const talk = h.employeeSession("org-root");
-    h.registry.updateSession(talk.id, { fallbackMode: "fallback-children" });
-
-    const claimed = claimTalkDelegation({
-      context: h.context,
-      sourceSessionId: talk.id,
-      todoId: item.id,
-      prompt: "Take this Todo.",
-      employee: { name: "alpha", department: "platform", engine: "codex", model: "gpt-5.5" },
-      call: { talkSessionId: "talk-2", providerCallId: "call-2", idempotencyKey: "talk-delegate-2" } as never,
-    });
-
-    expect(h.registry.getSession(claimed.session.id)?.fallbackMode).toBe("fallback-children");
   });
 });

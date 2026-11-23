@@ -2,7 +2,7 @@
  * First-use install of the local speech sidecar's runtime
  * (specs/009-voice-mode/contracts/speech-sidecar.md, "Bootstrap"): a Python venv with the
  * pinned packages and the models, all under `<home>/models/voice/`. Nothing is installed
- * system-wide and nothing is shared with Talk's Kokoro sidecar.
+ * system-wide and nothing is shared with the read-aloud Kokoro sidecar.
  *
  * `status()` reads the install state `GET /api/voice/config` reports; `ensureInstalled()`
  * is what `POST /api/voice/install` and the first use run, and is idempotent.

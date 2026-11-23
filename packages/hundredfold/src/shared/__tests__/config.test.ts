@@ -4,23 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import yaml from "js-yaml";
 import { normalizeClaudeEngineConfig, validateConfigShape } from "../config.js";
-import type { HundredfoldConfig } from "../types.js";
 import { expectPosixMode } from "../test-support/posix-mode.js";
 
-describe("deprecated Talk configuration compatibility", () => {
-  it("keeps the retired orchestrator keys source-compatible for patch upgrades", () => {
-    const legacyTalkConfig = {
-      enabled: false,
-      engine: "claude",
-      orchestratorModel: "sonnet",
-      kokoro: { voice: "af_heart" },
-    } satisfies NonNullable<HundredfoldConfig["talk"]>;
-
-    expect(legacyTalkConfig).toMatchObject({
-      enabled: false,
-      engine: "claude",
-      orchestratorModel: "sonnet",
+describe("retired Talk configuration compatibility", () => {
+  it("loads a config that still carries the retired orchestrator keys beside the read-aloud settings", () => {
+    const problems = validateConfigShape({
+      engines: { claude: { bin: "claude", model: "opus" } },
+      talk: { enabled: false, engine: "claude", orchestratorModel: "sonnet", kokoro: { voice: "af_heart" } },
     });
+
+    expect(problems).toEqual([]);
   });
 });
 
@@ -43,11 +36,10 @@ describe("validateConfigShape", () => {
   });
 
   /**
-   * A bad `realtime` value does not fail until a voice session is opened, and
-   * opening one is a billed call. It is caught here instead, in the same words
-   * as every other config mistake.
+   * `realtime` is a retired block: nothing reads it, so nothing validates it. An older config.yaml
+   * must keep loading whatever the block holds, including values the old validator refused.
    */
-  it("accepts the realtime block the provider union actually allows", () => {
+  it("accepts a retired realtime block, whatever it holds", () => {
     expect(withRealtime({
       provider: "openai",
       model: "gpt-realtime",
@@ -56,39 +48,9 @@ describe("validateConfigShape", () => {
       turnDetection: { type: "semantic_vad" },
       noiseReduction: "near_field",
     })).toEqual([]);
-    expect(withRealtime({ turnDetection: "server_vad" })).toEqual([]);
-    expect(withRealtime({ turnDetection: "none" })).toEqual([]);
+    expect(withRealtime({ turnDetection: "sideways", noiseReduction: "studio", provider: 7 })).toEqual([]);
+    expect(withRealtime([])).toEqual([]);
     expect(withRealtime(undefined)).toEqual([]);
-  });
-
-  it("refuses a turn detection nobody implements, and says what is allowed", () => {
-    const problems = withRealtime({ turnDetection: "sideways" });
-
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("realtime.turnDetection must be");
-    expect(problems[0]).toContain("server_vad");
-    expect(problems[0]).toContain('"sideways"');
-  });
-
-  // `semantic_vad` carries an eagerness, so it is only valid as a mapping. An
-  // operator hand-editing the file will reach for the bare name first.
-  it("refuses bare semantic_vad, which is the mapping form's easiest mistake", () => {
-    expect(withRealtime({ turnDetection: "semantic_vad" })).toHaveLength(1);
-    expect(withRealtime({ turnDetection: { type: "sideways" } })[0])
-      .toContain("realtime.turnDetection.type must be one of");
-  });
-
-  it("refuses a noise reduction outside the two the provider filters on", () => {
-    const problems = withRealtime({ noiseReduction: "studio" });
-
-    expect(problems).toEqual([
-      'realtime.noiseReduction must be one of: near_field, far_field (got "studio")',
-    ]);
-  });
-
-  it("refuses a non-string where the block holds names", () => {
-    expect(withRealtime({ provider: 7 })).toEqual(["realtime.provider must be a string (got number)"]);
-    expect(withRealtime([])).toEqual(["realtime must be a mapping"]);
   });
 
   it("accepts knowledge steering and context.alwaysInclude, and treats empty blocks as absent", () => {

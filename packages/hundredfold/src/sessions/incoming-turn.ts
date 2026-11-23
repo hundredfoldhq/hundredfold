@@ -44,11 +44,11 @@ export interface IncomingTurn {
    *  the operator/UI path is unchanged. */
   dedupeKey?: string;
   /** Preserve this identity after the queue item settles. Used when the caller
-   *  has a true operation id (Talk provider call), never for content-derived
+   *  has a true operation id (an external provider's call id), never for content-derived
    *  lateral-send keys where a later identical sentence is a new intent. */
   durableDedupe?: boolean;
-  /** Notifications default to an internal queue row. Talk operator turns are
-   *  visible user work and opt into the ordinary queue surface. */
+  /** Notifications default to an internal queue row. A turn that is visible
+   *  user work opts into the ordinary queue surface. */
   queueVisibility?: 'internal' | 'visible';
   /** An earlier parked send of the same sender that this turn replaces, taken
    *  back in the same transaction that accepts this one. Only meaningful beside
@@ -74,7 +74,7 @@ interface DurableQueueRow {
 }
 
 function durableMessageId(key: string): string {
-  return `talk-${createHash('sha256').update(key).digest('hex')}`;
+  return `durable-${createHash('sha256').update(key).digest('hex')}`;
 }
 
 function json(value: unknown): string | null {

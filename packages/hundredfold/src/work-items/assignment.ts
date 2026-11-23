@@ -158,7 +158,7 @@ export function assignWorkItem(
     return { item: getWorkItem(id)!, escalated: false, event };
   });
   const result = txn()?.item;
-  // Whichever writer reached the assignment (the route, delegation, Talk), a card that left its board is announced
+  // Whichever writer reached the assignment (the route, delegation), a card that left its board is announced
   // as having done so: the route's own event carries the same fact for the operator's browsers.
   if (result && leftBoard !== undefined && !announcesMove) notifyTodoChanged(result, 'board-moved', undefined, leftBoard);
   return result;

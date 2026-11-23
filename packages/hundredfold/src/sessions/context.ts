@@ -50,9 +50,8 @@ interface Section {
 }
 
 /**
- * `talk` is retained as stored provenance for pre-retirement sessions, but it
- * no longer selects a distinct runtime. Historical Talk turns resume through
- * the ordinary web lifecycle so no voice-orchestrator behavior can reappear.
+ * `talk` is for stored rows: sessions the retired voice assistant opened keep that source, and
+ * they resume through the ordinary web lifecycle, as web chats.
  */
 export function runtimeSessionSource(source: string): string {
   return source === "talk" ? "web" : source;

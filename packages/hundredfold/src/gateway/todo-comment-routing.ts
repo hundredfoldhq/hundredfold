@@ -234,7 +234,7 @@ export function routeTodoComment(context: ApiContext, comment: WorkItemComment):
 }
 
 /** Route every comment the gateway records, whichever path wrote it: the
- *  comment route, a review handoff's note, the coordinator's reason, Talk. */
+ *  comment route, a review handoff's note, the coordinator's reason. */
 export function installTodoCommentRouting(context: ApiContext): () => void {
   setTodoCommentListener((comment) => {
     try {

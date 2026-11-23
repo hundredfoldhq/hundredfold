@@ -19,21 +19,6 @@ export interface MessageMediaWire {
   size?: number
 }
 
-export interface TalkProactiveUiEffect {
-  type: "refresh" | "highlight"
-  target: string
-}
-
-export interface TalkProactiveCuePayload {
-  receiptId: string
-  talkSessionId: string
-  topicId: string | null
-  disposition: "quiet" | "spoken"
-  urgency: "routine" | "urgent"
-  summary: string
-  uiEffect: TalkProactiveUiEffect | null
-}
-
 export type CompanyChangedEvent =
   | {
     entity: "todo"; action: string; id: string; sessionId?: string

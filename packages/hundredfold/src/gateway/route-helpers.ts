@@ -23,9 +23,9 @@ import { pickEncoding, compressBuffer, MIN_COMPRESS_BYTES } from "./compress.js"
  *     clients already depend on.
  *     Catches for an *expected* failure (a corrupt file on disk) stay put.
  *  5. Operator-only authority stays in `operatorOnlyControlPlaneRoute` wherever a
- *     route reaches it. Talk and heartbeat dispatch ahead of that table;
- *     files dispatches after it but the table lists no `/api/files` route. So all
- *     three gate themselves, and each one is a place a guard can go missing.
+ *     route reaches it. Heartbeat dispatches ahead of that table;
+ *     files dispatches after it but the table lists no `/api/files` route. So both
+ *     gate themselves, and each one is a place a guard can go missing.
  *  6. The delegation call sits exactly where the route block used to sit in the
  *     dispatch chain, in the same order.
  */

@@ -86,8 +86,8 @@ interface TranscriptRow {
  * row, or (rarely) a standalone tool row with `status:"RUNNING"`. Most often the
  * only trace of a tool is its terminal `status:"DONE"` row with NO opener at all.
  *
- * The web/talk renderers open a card on `tool_use` and merely *mutate the last
- * card* on `tool_result` — they never create one. So a lone `tool_result` lands
+ * The web renderer opens a card on `tool_use` and merely *mutates the last
+ * card* on `tool_result` — it never creates one. So a lone `tool_result` lands
  * on whatever the previous message was and the tool card is lost. `openCards`
  * counts the cards opened-but-not-yet-closed so a DONE row can either close an
  * existing card (no duplicate) or, when none is open, synthesize its own
