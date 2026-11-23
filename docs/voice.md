@@ -125,6 +125,8 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `bargeIn.onsetThreshold` | `0.02` | Loudness (RMS, 0 to 1) the browser's detector treats as you speaking. Raise it if speakers cause false stops. |
 | `autoBackground.enabled` | `true` | Move long work to the background when you speak, where the engine can (see below). |
 | `autoBackground.afterSeconds` | `5` | A tool call older than this when you speak is long work, 1 to 600. |
+| `cues.enabled` | `true` | Soft sound cues while the assistant is thinking and while it runs a tool (see "Sound cues"). `false` turns them off. |
+| `cues.volume` | `0.3` | How loud the cues are, 0 (silent) to 1. Even 1 is a soft note. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
 | `promptFile` | — | A path inside the instance home holding the instructions, read the first time the voice config is resolved and again whenever the `voice:` block changes (not only when the gateway starts). `prompt` wins if both are set. |
 | `stylePrompt` | — | Your own directions for how spoken replies sound, added to the voice instructions on every voice turn, in the browser and the app. At most 2000 characters; empty or unset changes nothing. It is read on each turn, so a config reload applies it to the next spoken turn, even in a conversation already open (no gateway restart). Also editable in Settings, under Voice style, once voice mode is on. Example below. |
@@ -240,6 +242,30 @@ Speaking while the assistant is working never stops the work. How the gateway le
 | Every other engine | Your message waits behind the turn, and the holding line is spoken straight away. When nothing long is running, speaking interrupts the turn as a typed message with "send now" does. |
 
 "Long" means a tool call that has run longer than `autoBackground.afterSeconds`. Shorter work is left to finish up to that point before your message is acted on.
+
+## Sound cues
+
+So that silence while the assistant works does not feel like a hang, voice mode plays two soft sounds, one at a time:
+
+- **Thinking:** one soft, low note (about G4) every 1.6 seconds, while the model is working and nothing is being spoken yet.
+- **Tool:** a pair of soft notes, the second a little higher (about F4 then A4), every 1.8 seconds, while a tool is running. It takes over from the thinking note at the first tool call and gives it back when the tool returns.
+
+Both are made on the device (a plain sine note that swells and fades gently, with no overtones; no audio file and no network), in the web app and in the mobile app, and the first note comes about a third of a second after the state starts, so a brief pause makes no sound. They follow the gateway's own `turn`, `vad` and `background` frames, not a guess made on the client.
+
+**They stop at once** when the assistant starts to speak (a reply or the holding line, from the moment the gateway announces the sentence), when you are heard speaking (the gateway's voice activity, a partial transcript, or push-to-talk held), when the turn ends, and when voice mode stops, is suspended by the device or is paused by a call. A cue that was silenced for speech starts again if the work is still going when the speech has played out.
+
+**Long work moved to the background:** when a tool call is moved to the background (see above), the tool sound stops and the thinking sound takes its place until the turn ends, since the assistant is free to answer. Background work that keeps running after the turn has ended is silent; the chat shows it as moved and still running. The hand-over is approximate: the gateway's `background` frame does not name the tool call, so a task moved while a different tool is running also switches the sound early.
+
+**Settings:** Settings, Voice mode, has a switch and a volume slider; the same keys are `voice.cues.enabled` and `voice.cues.volume` in `config.yaml`. They are on at a low volume by default, apply the next time voice mode starts, and a config with no `cues` block, or one with stale keys, loads and uses the defaults.
+
+**Why a cue cannot trigger the microphone.** The phone or computer can hear its own speaker, so this is guarded in four ways:
+
+1. A cue never goes through the speech player. Barge-in only listens while speech is playing (browser, Android and iOS alike), and a cue is never playing then, so a cue is never taken for you interrupting.
+2. The gateway only hears a cue if it leaks into the microphone, and the cue is built not to look like speech to it: notes of 110 to 140 milliseconds with long gaps, at most -16 dBFS at volume 1 and about -26 dBFS at the default, well under the 250 ms hold that starts an utterance. The echo canceller of the browser, Android and iOS removes most of it before that.
+3. A cue that is playing is silenced the moment the gateway says it hears you, so it never sits under your own voice for long.
+4. Its audio is on a player of its own, on the same audio session as the microphone, so the platform's echo canceller knows it is output.
+
+Measured against the real Silero detector on a gateway, with the cue played straight into the microphone uplink and no echo cancelling at all: each cue at volume 1 for 20 seconds (about 0.07 RMS, above the default onset level for the 110 to 140 ms of each note, never for 250 ms), and a cue at five times that level (about 0.35 RMS), started no utterance, no transcript and no `stop_playback`, while a spoken sentence at normal level did. If a loud room or an open speaker still sets it off on your setup, lower `cues.volume` or turn the cues off.
 
 ## The screen is locked
 

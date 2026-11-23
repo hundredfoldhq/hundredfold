@@ -30,6 +30,9 @@ final class VoiceController {
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    /// The sound cue's own node: looped beside the speech player, never through it or the ledger, so the
+    /// onset detector (which only listens while the ledger says speech is playing) cannot hear a cue as barge-in.
+    private let cuePlayer = AVAudioPlayerNode()
     /// Serial queue guarding all mutable state below.
     private let state = DispatchQueue(label: "run.hundredfold.voice.state")
     /// Serialises `start` and `stop` end to end. Rust calls both from its own threads: a
@@ -55,6 +58,8 @@ final class VoiceController {
     private var pendingCapture = Data()
     private var interruptedAt: DispatchTime?
     private var observers: [NSObjectProtocol] = []
+    /// The cue the session last asked for (PCM16LE mono), kept so a restarted engine can play it again. Guarded by `state`.
+    private var cuePCM: Data?
 
     private func nowMs() -> Int64 {
         Int64((DispatchTime.now().uptimeNanoseconds - clock.uptimeNanoseconds) / 1_000_000)
@@ -98,8 +103,10 @@ final class VoiceController {
         }
 
         engine.attach(player)
+        engine.attach(cuePlayer)
         playerAttached = true
         engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+        engine.connect(cuePlayer, to: engine.mainMixerNode, format: playbackFormat)
         guard installCapture() else {
             teardown()
             return false
@@ -145,9 +152,14 @@ final class VoiceController {
     private func teardown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
+        state.sync {
+            cuePCM = nil
+            cuePlayer.stop()
+        }
         engine.stop()
         if playerAttached {
             engine.detach(player)
+            engine.detach(cuePlayer)
             playerAttached = false
         }
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -189,6 +201,9 @@ final class VoiceController {
             return false
         }
         player.play()
+        // The restart stopped the cue's node, and the session only asks again when the wanted cue changes,
+        // so play the last one it asked for.
+        playCue()
         return true
     }
 
@@ -329,7 +344,48 @@ final class VoiceController {
         playedFrames = 0
     }
 
-    func pause() { player.pause() }
+    /// Loops `pcm` (PCM16LE mono at 24 kHz) as the sound cue, replacing any cue; empty data stops it.
+    /// The remembered cue and every operation on its node happen under `state`, so a stop from the Rust
+    /// thread cannot interleave with a route-change restart replaying the old cue.
+    func setCue(_ pcm: Data) {
+        state.sync {
+            cuePCM = pcm.count >= 2 ? pcm : nil
+            cuePlayer.stop()
+            playCueLocked()
+        }
+    }
+
+    /// Plays the cue the session last asked for, if any. The restart after a route change stops the node,
+    /// and the session only asks again when the wanted cue changes, so the controller replays it itself.
+    private func playCue() {
+        state.sync { playCueLocked() }
+    }
+
+    /// A node must not be played while the engine is stopped (that raises an exception), so in the gap of
+    /// a route change or interruption this does nothing and the restart plays the cue instead.
+    private func playCueLocked() {
+        guard running, interruptedAt == nil, let pcm = cuePCM, engine.isRunning else { return }
+        let frames = pcm.count / 2
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frames)),
+              let channel = buffer.floatChannelData?[0] else { return }
+        pcm.withUnsafeBytes { raw in
+            let samples = raw.bindMemory(to: Int16.self)
+            for i in 0..<frames {
+                channel[i] = Float(Int16(littleEndian: samples[i])) / 32768.0
+            }
+        }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        cuePlayer.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+        cuePlayer.play()
+    }
+
+    func pause() {
+        state.sync {
+            cuePCM = nil
+            cuePlayer.stop()
+        }
+        player.pause()
+    }
     func resume() { if state.sync(execute: { running }) { player.play() } }
 
     // MARK: system events: interruptions, route changes, lock-screen control
@@ -434,6 +490,16 @@ public func hf_voice_play(_ segmentId: UInt32, _ pcm: UnsafePointer<UInt8>?, _ l
 
 @_cdecl("hf_voice_segment_end")
 public func hf_voice_segment_end(_ segmentId: UInt32) { VoiceController.shared.segmentEnd(Int(segmentId)) }
+
+@_cdecl("hf_voice_set_cue")
+public func hf_voice_set_cue(_ pcm: UnsafePointer<UInt8>?, _ length: Int) {
+    guard let pcm, length > 0 else {
+        VoiceController.shared.setCue(Data())
+        return
+    }
+    // Copied before returning: the Rust buffer is only valid for the call.
+    VoiceController.shared.setCue(Data(bytes: pcm, count: length))
+}
 
 @_cdecl("hf_voice_flush")
 public func hf_voice_flush() { VoiceController.shared.flush() }

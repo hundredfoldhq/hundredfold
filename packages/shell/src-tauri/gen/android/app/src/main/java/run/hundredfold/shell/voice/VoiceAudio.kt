@@ -50,6 +50,12 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
     private var track: AudioTrack? = null
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
+    /**
+     * The sound cue: a looping static track of its own, on the same audio session as the capture (so the
+     * echo canceller knows it) and never touching the playback queue or the ledger. The onset detector
+     * only listens while the ledger says speech is playing, so a cue cannot trigger a barge-in.
+     */
+    private var cueTrack: AudioTrack? = null
     private var captureThread: Thread? = null
     private var playbackThread: Thread? = null
 
@@ -143,7 +149,52 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
         synchronized(lock) { flushLocked() }
     }
 
+    /** Loops [pcm] (PCM16LE mono at 24 kHz) as the sound cue, replacing any cue; an empty array stops it. */
+    fun setCue(pcm: ByteArray) {
+        synchronized(lock) {
+            stopCueLocked()
+            val rec = record ?: return
+            if (!running || paused || pcm.size < 2) return
+            val frames = pcm.size / 2
+            val cue = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(OUTPUT_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(pcm.size)
+                .setSessionId(rec.audioSessionId)
+                .build()
+            if (cue.state != AudioTrack.STATE_INITIALIZED) {
+                cue.release()
+                return
+            }
+            cue.write(pcm, 0, pcm.size)
+            cue.setLoopPoints(0, frames, -1)
+            cue.play()
+            cueTrack = cue
+        }
+    }
+
+    private fun stopCueLocked() {
+        cueTrack?.let {
+            runCatching { it.pause(); it.flush() }
+            it.release()
+        }
+        cueTrack = null
+    }
+
     fun pause() {
+        synchronized(lock) { stopCueLocked() }
         paused = true
         track?.pause()
         record?.stop()
@@ -161,6 +212,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
     fun stop() {
         if (!running) return
         running = false
+        synchronized(lock) { stopCueLocked() }
         queue.offer(Chunk(-1, -1, ByteArray(0)))
         record?.let { runCatching { it.stop() } }
         track?.let { runCatching { it.pause(); it.flush() } }

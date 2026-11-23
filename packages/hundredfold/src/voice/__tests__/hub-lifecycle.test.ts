@@ -13,9 +13,16 @@ describe("attachment lifecycle and limits", () => {
       type: "ready", protocol: 1, sessionId: SESSION,
       input: { encoding: "pcm16", sampleRate: 16_000 }, output: { encoding: "pcm16", sampleRate: 24_000 },
       stt: { provider: "fake-stt", partials: true }, tts: { provider: "fake-tts", voice: "af_test" },
-      onset: { threshold: 0.02, minSpeechMs: 250 }, backgrounding: "native", limits: { maxUtteranceSeconds: 60 },
+      onset: { threshold: 0.02, minSpeechMs: 250 }, cues: { enabled: true, volume: 0.3 }, backgrounding: "native", limits: { maxUtteranceSeconds: 60 },
       keepaliveMs: VOICE_KEEPALIVE_MS,
     }]);
+  });
+
+  it("tells the client the configured cue settings, and that they are off when turned off", () => {
+    const loud = createHarness({ config: { cues: { enabled: true, volume: 0.8 } } });
+    expect(loud.connect().socket.ofType("ready")[0]).toMatchObject({ cues: { enabled: true, volume: 0.8 } });
+    const off = createHarness({ config: { cues: { enabled: false, volume: 0.3 } } });
+    expect(off.connect().socket.ofType("ready")[0]).toMatchObject({ cues: { enabled: false, volume: 0.3 } });
   });
 
   it.each([
