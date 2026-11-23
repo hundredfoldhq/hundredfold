@@ -42,7 +42,14 @@ function ensureCommentMetaTable(db: DatabaseType): void {
   )`);
   // A table made before the account was recorded gains the column in place; its rows read as no account.
   const columns = db.prepare('PRAGMA table_info(work_item_comment_meta)').all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === 'user_id')) db.exec('ALTER TABLE work_item_comment_meta ADD COLUMN user_id TEXT');
+  if (!columns.some((column) => column.name === 'user_id')) {
+    try {
+      db.exec('ALTER TABLE work_item_comment_meta ADD COLUMN user_id TEXT');
+    } catch (err) {
+      // Another process opened the same old table first and added it.
+      if (!/duplicate column name/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
+  }
   ready.add(db);
 }
 

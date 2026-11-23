@@ -219,6 +219,23 @@ describe("a Todo comment that wakes an employee", () => {
     expect(userIdColumn(woken[0]!.id)).toBe(olive.userId);
   });
 
+  it("attributes a consult woken by the note on a status move, and leaves a bearer-token move unattributed", async () => {
+    const olive = await joinAsOwner(h, "olive@example.test");
+    const moveWithNote = async (headers: Record<string, string>) => {
+      const todoId = await newTodo();
+      const started = await call("POST", `/api/work-items/${todoId}/status`, { status: "executing" }, headers);
+      expect(started.status).toBe(200);
+      const moved = await call("POST", `/api/work-items/${todoId}/status`, { status: "in_review", note: "@wake-worker please verify" }, headers);
+      expect(moved.status).toBe(200);
+      const woken = reg.listSessionsByWorkItem(todoId).filter((session) => session.employee === "wake-worker");
+      expect(woken).toHaveLength(1);
+      return woken[0]!.id;
+    };
+
+    expect(userIdColumn(await moveWithNote(asAccount(olive)))).toBe(olive.userId);
+    expect(userIdColumn(await moveWithNote(asBearer))).toBeNull();
+  });
+
   it("does not expose the commenting account on the comment itself", async () => {
     const olive = await joinAsOwner(h, "olive@example.test");
     const todoId = await newTodo();

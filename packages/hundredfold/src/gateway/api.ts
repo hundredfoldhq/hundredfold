@@ -2746,11 +2746,11 @@ export async function handleApiRequest(
         // The coordinator's reason is the record of why the operator's decision
         // was taken for them: it goes on the Todo, under the coordinator's session.
         if (actingAsOperator && result.item.status === "done") {
-          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), body: `Closed as done for the operator. Reason: ${note}`, origin: caller.origin });
+          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), body: `Closed as done for the operator. Reason: ${note}`, origin: caller.origin });
         }
         const closeComment = result.item.status === "done" ? employeeCloseComment(lane, note) : undefined;
         if (closeComment) {
-          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), body: closeComment, origin: caller.origin });
+          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), body: closeComment, origin: caller.origin });
         }
         if (result.item.status !== item.status) result.item = linkSelfStartedTodo(caller, result.item, actor);
         // A review handoff or send-back note is a comment under whoever moved it; a retried move posts it too.
