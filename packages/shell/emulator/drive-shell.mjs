@@ -4,7 +4,8 @@
 //
 //   ADB="docker exec hf-emu adb" node drive-shell.mjs '<expression>'
 //
-// The expression may return a promise; its value is printed as JSON.
+// The expression may return a promise; its value is printed as JSON. It runs as if
+// a user gesture started it (history entries pushed without one are skipped by Back).
 
 import { execFileSync } from "node:child_process"
 import WebSocket from "ws"
@@ -27,7 +28,7 @@ const result = await new Promise((resolve, reject) => {
     const message = JSON.parse(data.toString())
     if (message.id === 1) message.error ? reject(new Error(message.error.message)) : resolve(message.result)
   })
-  socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: process.argv[2], awaitPromise: true, returnByValue: true } }))
+  socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: process.argv[2], awaitPromise: true, returnByValue: true, userGesture: true } }))
 })
 socket.close()
 if (result.exceptionDetails) {

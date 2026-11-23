@@ -88,9 +88,10 @@ shell-only `native_state` object, which reports the native session's own state (
 the web UI learns of a Stop from the notification or a pause for a call). Its shape
 and `reason` values are specified in `specs/009-voice-mode/contracts/native-voice.md`.
 A web UI that is suspended or gone does not end the session. On Android, BACK at the
-app root moves the task to the background while voice runs instead of finishing the
-activity, and removing the task from recents ends the session cleanly (`bye`, close
-1000). A page reload cannot reattach to a running session yet.
+app root moves the task to the background instead of finishing the activity (finishing
+it aborts the process), so the session keeps running, and removing the task from
+recents ends the session cleanly (`bye`, close 1000). A page reload cannot reattach to a
+running session yet.
 
 ### Platform status
 
@@ -234,6 +235,18 @@ and speaker are driven through the emulator's gRPC audio service instead
 (`emulator/emulator-audio.mjs`; `cd packages/shell/emulator && npm install` first).
 `--network host` lets `adb reverse` reach services on the host; the gRPC port is
 token-protected and only on loopback.
+
+### Back-button run
+
+`emulator/run-back-test.sh` pins the main activity's Back handling: at the app root
+Back moves the task to the background and the process survives (finishing the
+activity aborts it), reopening resumes the same page without a reload, Back with
+in-app history steps back inside the page, and with voice mode running the foreground
+service and the socket stay up. It exits non-zero on the first failed check.
+
+```sh
+EVIDENCE_DIR=./evidence APK=<path to the APK> packages/shell/emulator/run-back-test.sh
+```
 
 ### Locked-screen run (spec quickstart §8)
 
