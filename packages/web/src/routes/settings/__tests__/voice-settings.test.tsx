@@ -96,6 +96,38 @@ describe('the Voice section', () => {
   })
 })
 
+describe('the Voice style field', () => {
+  it('is absent while voice mode is off', async () => {
+    renderSettings()
+    await screen.findByRole('combobox', { name: 'Spoken reply speed' })
+    expect(screen.queryByRole('textbox', { name: 'Voice style prompt' })).toBeNull()
+  })
+
+  it('shows the stored style and writes an edit to voice.stylePrompt, keeping the rest of the voice block', async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      config: {
+        realtime: STALE_REALTIME,
+        voice: { enabled: true, mode: 'push-to-talk', stylePrompt: 'Be brief.' },
+      },
+      revision: 'rev-1',
+    })
+    renderSettings()
+
+    const field = (await screen.findByRole('textbox', { name: 'Voice style prompt' })) as HTMLTextAreaElement
+    expect(field.value).toBe('Be brief.')
+    fireEvent.change(field, { target: { value: 'Much shorter, more personal, a bit funny. Make jokes.' } })
+
+    await waitFor(() =>
+      expect(apiMocks.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voice: { enabled: true, mode: 'push-to-talk', stylePrompt: 'Much shorter, more personal, a bit funny. Make jokes.' },
+        }),
+        'rev-1',
+      ),
+    )
+  })
+})
+
 describe('the speaking speed (voice mode)', () => {
   beforeEach(() => apiMocks.updateConfig.mockClear())
   const speedSelect = () => screen.findByRole('combobox', { name: 'Spoken reply speed' }) as Promise<HTMLSelectElement>

@@ -25,6 +25,9 @@ export {
   VOICE_MAX_INPUT_FRAME_BYTES,
   VOICE_OUTPUT_SAMPLE_RATE,
   VOICE_PROTOCOL_VERSION,
+  VOICE_SPEED_DEFAULT,
+  VOICE_SPEED_MAX,
+  VOICE_SPEED_MIN,
 } from "@hundredfold/gateway-events";
 export type {
   VoiceBackgrounding,
