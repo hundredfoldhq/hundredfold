@@ -93,11 +93,12 @@ export interface HundredfoldConfig {
     todoDepartments?: TodoDepartmentsConfig;
     /** Remote MCP connector at `/mcp`: off unless enabled; see shared/remote-mcp-config.ts. */
     remoteMcp?: RemoteMcpConfig;
-    /** Opt-in: when set, POST /api/sessions reads the forwarded SSO identity
-     *  from this request header (set by an auth proxy such as oauth2-proxy,
-     *  Traefik forward-auth, or IAP) and persists it on the session. Accepts a
-     *  single header name or a priority-ordered list. Unset = single-user
-     *  no-op (sessions default to "web-user", header never read). */
+    /** Opt-in: when set, the routes that start a session read the forwarded SSO
+     *  identity from this request header (set by an auth proxy such as
+     *  oauth2-proxy, Traefik forward-auth, or IAP) and persist it on the session.
+     *  Accepts a single header name or a priority-ordered list. It takes
+     *  precedence over the signed-in account. Unset = the header is never read
+     *  and a session is attributed to the signed-in account, if any. */
     userHeader?: string | string[];
   };
   engines: {

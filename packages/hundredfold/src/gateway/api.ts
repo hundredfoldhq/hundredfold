@@ -166,7 +166,7 @@ import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_K
 import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
-import { accountEmailOf, requestAccountId } from "../accounts/request-account.js";
+import { accountEmailOf, requestUserId } from "../accounts/request-account.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
 import { signOutUserSession } from "../accounts/logout.js";
 import type { AccountsRuntime } from "../accounts/runtime.js";
@@ -2146,7 +2146,7 @@ export async function handleApiRequest(
       let newSessionId: string | null = null;
       try {
         // 1. Duplicate session + messages in the registry
-        const { session: newSession, messageCount } = duplicateSession(params.id, undefined, requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts));
+        const { session: newSession, messageCount } = duplicateSession(params.id, undefined, requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader));
         newSessionId = newSession.id;
 
         // 2. Fork the engine session (Claude/Codex). For Claude, route through
@@ -2922,7 +2922,7 @@ export async function handleApiRequest(
         // The Dispatcher is a root: it carries whoever pressed the button, the account or the pressing session's own.
         userId: caller.kind === "session"
           ? getSession(caller.callerId)?.userId ?? undefined
-          : requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts),
+          : requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader),
         emitProjectionEvent: (id, action) => emitTodoProjectionEvent(context, id, action),
       });
       return json(res, started.body, started.status);
@@ -3749,7 +3749,7 @@ export async function handleApiRequest(
           employee: employeeName ?? null,
           parentSessionId,
           // A delegation asked for from the dashboard is the signed-in account's; from a tool it inherits its parent's.
-          userId: requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts),
+          userId: requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader),
           model: selection.model,
           effortLevel: selection.effortLevel,
           fallbackMode,
@@ -3902,8 +3902,7 @@ export async function handleApiRequest(
       // session. Unset config → undefined → stored as NULL (single-user no-op).
       // Otherwise the account the request's device was signed in with; a spawn from a tool carries neither
       // and inherits its parent's.
-      const userId = resolveUserHeader(req.headers, config.gateway.userHeader)
-        ?? requestAccountId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts);
+      const userId = requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader);
       const spawned = await spawnSession(context, {
         prompt,
         employee: employeeName,
@@ -4951,28 +4950,4 @@ function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string, 
   });
 }
 
-/**
- * Resolve the forwarded SSO identity from request headers, given the configured
- * `gateway.userHeader` (a single header name or a priority-ordered list). Node
- * lowercases incoming header keys, so we look up case-insensitively. Returns the
- * first present, non-empty, trimmed value; `undefined` when the config is unset
- * or no configured header is present. Unset config = single-user no-op: the
- * header is never read and the caller falls back to "web-user".
- */
-export function resolveUserHeader(
-  headers: Record<string, string | string[] | undefined>,
-  userHeaderConfig: string | string[] | undefined,
-): string | undefined {
-  if (!userHeaderConfig) return undefined;
-  const names = Array.isArray(userHeaderConfig) ? userHeaderConfig : [userHeaderConfig];
-  for (const name of names) {
-    if (!name) continue;
-    const raw = headers[name.toLowerCase()];
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (trimmed) return trimmed;
-    }
-  }
-  return undefined;
-}
+export { resolveUserHeader } from "../accounts/request-account.js";

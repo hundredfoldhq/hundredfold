@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -11,6 +11,12 @@ import {
 import {
   CALLER_SESSION_CAPABILITY_HEADER, CALLER_SESSION_HEADER, TOOL_CALL_HEADER, TOOL_CALL_HEADER_VALUE, ensureSessionCapability,
 } from "../../mcp/identity.js";
+
+// The duplicate route forks the engine's own transcript; there is no engine here, so the fork is a stub that succeeds.
+vi.mock("../../sessions/fork.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/fork.js")>()),
+  forkEngineSession: async () => ({ engineSessionId: "forked-engine-ref" }),
+}));
 
 /**
  * Which signed-in account started a session. The harness is the account side (real sign-in, real device store); the
@@ -274,15 +280,66 @@ describe("POST /api/work-items/:id/dispatch: the Dispatcher session", () => {
 });
 
 describe("POST /api/sessions/:id/duplicate", () => {
-  it("attributes the copy to the account that asked for it", async () => {
+  function source(owner: string | null) {
+    const created = reg.createSession({ engine: "codex", source: "web", sourceRef: `web:dup-${Math.random()}`, ...(owner ? { userId: owner } : {}) });
+    reg.updateSession(created.id, { engineSessionId: "engine-ref" } as never);
+    return created.id;
+  }
+
+  it("attributes the copy to the account that asked for it, never to the original's owner", async () => {
     const olive = await joinAsOwner(h, "olive@example.test");
     const omar = await joinAsOwner(h, "omar@example.test");
-    const source = reg.createSession({ engine: "codex", source: "web", sourceRef: "web:dup-source", userId: omar.userId });
-    reg.updateSession(source.id, { engineSessionId: "engine-ref" } as never);
-    // Without an engine to fork the route cannot finish; the registry call is what carries the account.
-    const copy = reg.duplicateSession(source.id, undefined, olive.userId).session;
-    expect(copy.userId).toBe(olive.userId);
-    expect(reg.duplicateSession(source.id).session.userId).toBe(omar.userId);
+    const src = source(omar.userId);
+
+    const byOlive = await call("POST", `/api/sessions/${src}/duplicate`, undefined, asAccount(olive));
+    expect(byOlive.status).toBe(200);
+    expect(byOlive.body.id).not.toBe(src);
+    expect(userIdColumn(byOlive.body.id)).toBe(olive.userId);
+
+    const byBearer = await call("POST", `/api/sessions/${src}/duplicate`, undefined, asBearer);
+    expect(byBearer.status).toBe(200);
+    expect(userIdColumn(byBearer.body.id)).toBeNull();
+  });
+
+  it("takes the proxy identity ahead of the account, as the chat route does", async () => {
+    userHeader = "X-Auth-Request-Email";
+    const olive = await joinAsOwner(h, "olive@example.test");
+    const copy = await call("POST", `/api/sessions/${source(null)}/duplicate`, undefined, { ...asAccount(olive), "x-auth-request-email": "sso@example.test" });
+    expect(userIdColumn(copy.body.id)).toBe("sso@example.test");
+  });
+});
+
+describe("the proxy identity wins on every route that starts a session", () => {
+  it("a delegation from the dashboard and a Dispatch both store the forwarded identity", async () => {
+    userHeader = "X-Auth-Request-Email";
+    const { createWorkItem } = await import("../../work-items/store.js");
+    const olive = await joinAsOwner(h, "olive@example.test");
+    const proxied = { ...asAccount(olive), "x-auth-request-email": "sso@example.test" };
+
+    const delegated = await call("POST", "/api/delegations", { employee: "attr-worker", task: "Proxied", title: "Proxied" }, proxied);
+    expect(delegated.status).toBe(201);
+    expect(userIdColumn(delegated.body.sessionId)).toBe("sso@example.test");
+
+    const item = createWorkItem({ title: "Proxied dispatch", source: "human" });
+    const pressed = await call("POST", `/api/work-items/${item.id}/dispatch`, {}, proxied);
+    expect(pressed.status).toBe(201);
+    expect(userIdColumn(pressed.body.sessionId)).toBe("sso@example.test");
+
+    const plain = await call("POST", "/api/delegations", { employee: "attr-worker", task: "No header", title: "Plain" }, asAccount(olive));
+    expect(userIdColumn(plain.body.sessionId)).toBe(olive.userId);
+  });
+});
+
+describe("POST /api/todo-captures: the Shaper session", () => {
+  it("is attributed to the account that captured, and to nobody for the bearer token", async () => {
+    const olive = await joinAsOwner(h, "olive@example.test");
+    const mine = await call("POST", "/api/todo-captures", { text: "capture something" }, asAccount(olive));
+    expect(mine.status).toBe(201);
+    expect(userIdColumn(mine.body.sessionId)).toBe(olive.userId);
+
+    const bare = await call("POST", "/api/todo-captures", { text: "capture from a script" }, asBearer);
+    expect(bare.status).toBe(201);
+    expect(userIdColumn(bare.body.sessionId)).toBeNull();
   });
 });
 

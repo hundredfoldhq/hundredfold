@@ -2250,7 +2250,8 @@ function copiedTransportMeta(meta: JsonObject | null): string | null {
 
 /**
  * Duplicate a session and all its messages, returning a new session with a fresh ID.
- * Does NOT fork the engine session — the caller handles that separately.
+ * Does NOT fork the engine session — the caller handles that separately. The copy is attributed to whoever asked
+ * for it (`userId`), or to nobody; never to the source's owner, who did not start it.
  */
 export function duplicateSession(sourceId: string, newTitle?: string, userId?: string): { session: Session; messageCount: number } {
   const db = initDb();
@@ -2290,7 +2291,7 @@ export function duplicateSession(sourceId: string, newTitle?: string, userId?: s
       source.employee,
       source.model,
       title,
-      userId ?? source.userId ?? null,
+      userId ?? null,
       source.effortLevel,
       source.fallbackMode,
       source.fallbackTarget ? JSON.stringify(source.fallbackTarget) : null,
