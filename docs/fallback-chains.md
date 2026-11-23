@@ -100,9 +100,10 @@ employee's `fallback`, `engines.claude.fallback` and
 
 - it lists at least two members;
 - every member is a mapping with `engine: claude` and an optional `profile`
-  (an engine other than Claude is refused: a group holds Claude accounts only,
-  and opencode account groups are not supported yet); a member with no profile
-  is the default login;
+  (a member with no profile is the default login), or, for a group of opencode
+  accounts, `engine: opencode` with `profile` (see [opencode account
+  groups](#opencode-account-groups)). A group's members all run on one engine: a
+  group that mixes Claude and opencode, or holds any other engine, is refused;
 - no member names a `model`: a member is an account, and the model is the
   session's own, or the link rules above for a hop;
 - members are distinct, and every `profile` is a declared account;
@@ -129,6 +130,80 @@ sent the pick without the numbers, and sees the accounts, their states and the r
 In the new-chat picker the default option reads "Balanced (by headroom)" when the chosen
 employee's chain opens with a group holding its own account, and sends no profile;
 choosing a profile still sends `claude:<name>`.
+
+#### opencode account groups
+
+A group may instead hold opencode accounts: the accounts declared under
+`engines.opencode.accounts` (see [opencode accounts](design/opencode-accounts.md)),
+each a provider id. A member names its account with `profile`:
+
+```yaml
+engines:
+  opencode:
+    model: opencode-go/glm-5
+    accounts:
+      go-a: { provider: opencode-go }                  # the built-in provider, declared so a group can name it
+      go-b: { provider: opencode-go-b, base: opencode-go, keyEnv: OPENCODE_GO_B_API_KEY }
+    fallback:
+      - group:
+          - { engine: opencode, profile: go-a }
+          - { engine: opencode, profile: go-b }
+      - { engine: claude }
+```
+
+- Every member is `engine: opencode` with a `profile` that is a declared opencode
+  account; no member names a `model`; at least two members, distinct; no nesting,
+  no strings. A `profile` on a standalone opencode link is still refused: outside
+  a group an opencode account is named by its provider in the model
+  (`opencode-go-b/glm-5`).
+- Valid only where the chain's own target runs on opencode: an opencode employee's
+  `fallback` and `engines.opencode.fallback`. Anywhere else (a Claude employee, an
+  engine or account chain of another engine) a member has no model of its own to
+  run, so it is a load error.
+- Three refusals have fixed sentences, shared with the Settings editor:
+  `a group's members all run on one engine`; `an opencode group member names its
+  account with profile`; and `an opencode group balances an opencode session's own
+  model; put it in an opencode employee's chain or engines.opencode.fallback`.
+  `hundredfold doctor` prints them, with the rest of a group's problems.
+- A group's **own account** is the declared account whose `provider` is the
+  provider of the subject's own model (the employee's `model`, else
+  `engines.opencode.model`). A subject whose model's provider is no declared
+  account has none and is never balanced: declare the built-in provider as an
+  account (`go-a` above) to include it. The **model key** is the model without its
+  provider: `opencode-go/glm-5` gives `glm-5`.
+- **Expansion.** A member resolves to `{ engine: opencode, model: <member
+  provider>/<model key> }`: with the own model `opencode-go/glm-5`, `go-b` is
+  `opencode-go-b/glm-5`. A member whose account does not serve that key (it is not
+  in the model registry as available) is passed over as `model-not-served`, so it
+  is no candidate and no fallback link for that session. The member that is the
+  session's own account is the own target and is not listed again. The link's
+  `account` stays `opencode`; the group ranks its members by health key,
+  `opencode/<provider>`.
+- **Headroom** comes from a usage history per declared account, keyed
+  `opencode/<provider>` and kept beside the Claude ones (same collapse, retention
+  and cap): the engine-health refresh, every fifteen minutes, appends one sample
+  per account from what it already computes for the provider, the provider's own
+  meter where it answered, else the usage ledger's buckets for accounts with
+  `usageLimits`. Windows are `5h`, `7d` and `30d`. The provider's meter and a ledger
+  bucket for the provider's `*` apply to every model; a ledger bucket for one model
+  is a window named `<window> <model key>` that applies only to a session on exactly
+  that model key (an exact match, not Claude's family match). An account with no
+  reading has no sample: it is unknown, weight 0 while another member has a reading,
+  an even split when none has. The provider meter is the reading to rely on: on
+  OpenCode 2.x `run` mode records turns at $0 in the ledger, so a ledger-only
+  account reads as full headroom.
+- **Exhausted** means health holds `opencode/<provider>` (the meter, or the
+  provider's own quota, auth or expired-key refusal) or `opencode/<provider>/<model>`
+  for the session's model.
+- The weights, shares, smooth round-robin, freshness and the all-exhausted rule are
+  those of [balanced groups at runtime](#balanced-groups-at-runtime); the credit
+  table is shared and its keys never collide with Claude's. A config reload that
+  changes a group in any chain (`engines.opencode.fallback` included) forgets the
+  credits. `GET /api/fallback-chains` shows `startPick` for an opencode employee or
+  the opencode engine subject whose chain opens with a home group.
+
+Pinning a session to its pick (a model `<picked provider>/<model key>`) is separate,
+later work: today the pick is previewed, not applied to new sessions.
 
 ### Legacy forms
 
@@ -380,6 +455,20 @@ target and is refused. A local profile is refused on a remote session, a remote
 account on a local one, and a remote account on another `user@host` is refused
 on both. `employeeFallbackProblems` reports each at load, and a chain that
 still names one passes it over as `remote`.
+
+**A remote employee's home group balances its new sessions.** When the group at
+the head of a remote employee's chain (its own `fallback`, else
+`engines.claude.fallback`) holds its own login (the member naming no profile, or
+the declared account of its own directory), each new session is pinned to a
+member by headroom, as a gateway session is, and the other members stay its
+fallback links. Headroom comes from the usage readings the gateway already
+takes over SSH for each login. A member on another `user@host` is no candidate.
+The pin is kept in the session's `transportMeta.remoteAccountPin`
+(`{ account, configDir }`), never in its profile column, which is a directory on
+the gateway, and every launch, wake and return of the session runs on that
+directory. It is honoured only while the employee still runs on the same
+`user@host`: move the employee and its sessions run on its own login again.
+`GET /api/fallback-chains?employee=<name>` reports the next pick as `startPick`.
 
 ### Health keys
 

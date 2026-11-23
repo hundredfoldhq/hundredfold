@@ -42,6 +42,11 @@ export interface GatewayEventMap {
     /** A tool call made inside a sub-agent rather than by the main agent. */
     sidechain?: boolean
     block?: JsonValue
+    /** The text block a text delta belongs to, or a main tool call or block ends.
+     *  Ids rise, so a later block has a larger id. */
+    streamBlock?: number
+    /** How much of the block's text came before this text delta (0 for a snapshot). */
+    offset?: number
   }
   "session:notification": { sessionId: string; message: string; meta?: JsonObject; messageId?: string }
   "session:attachment": { sessionId: string; id: string; content: string; media: MessageMediaWire[]; timestamp: number }

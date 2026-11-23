@@ -23,7 +23,8 @@ import type { WorkItem } from "../work-items/store.js";
  * for that account's own reset (FR-056). An assignee whose chain opens with a
  * group of Claude accounts holding its own login is judged on the account the
  * balancer would pick for it now (a preview: nothing is charged, so the view
- * does not move until a session really starts).
+ * does not move until a session really starts). An opencode Todo is previewed the same way, over the opencode
+ * accounts of its group (`opencode/<provider>` keys).
  */
 
 export const UNROUTED = "unrouted";
@@ -47,6 +48,12 @@ export interface WalkAccountsDeps {
   employee?: (name: string) => Employee | undefined;
 }
 
+/** The model a Todo's start is previewed with: an opencode Todo's own (the model the Todo names, else its assignee's own opencode one), else the assignee's. */
+function previewModel(engine: string, assignee: Employee, named: string | null | undefined): string | undefined {
+  if (engine !== "opencode") return assignee.model;
+  return named ?? (assignee.engine === "opencode" ? assignee.model : undefined);
+}
+
 export function walkAccounts(deps: WalkAccountsDeps): WalkAccounts {
   const { config, now } = deps;
   const health = deps.health ?? readEngineHealth();
@@ -60,8 +67,10 @@ export function walkAccounts(deps: WalkAccountsDeps): WalkAccounts {
       if (!item.assignee || item.assignee === OPERATOR_ASSIGNEE) return UNROUTED;
       const assignee = employee(item.assignee);
       if (!assignee) return UNROUTED;
-      const engine = getTodoDispatchConfig(item.id)?.engine ?? assignee.engine ?? config.engines.default;
-      const { accountPick } = pinAccountAtCreation({ config, employee: assignee, engine, model: assignee.model, now: new Date(now), inputs: { health } });
+      const dispatch = getTodoDispatchConfig(item.id);
+      const engine = dispatch?.engine ?? assignee.engine ?? config.engines.default;
+      const model = previewModel(engine, assignee, dispatch?.model);
+      const { accountPick } = pinAccountAtCreation({ config, employee: assignee, engine, model, now: new Date(now), inputs: { health } });
       return accountPick?.picked ?? accountForEmployee(assignee, engine);
     },
     label: (account) => labels.get(account) ?? account,

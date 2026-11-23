@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectorMessage, connectorStub, createTestHome, engineResult, eventually, scriptedEngine, testConfig } from "./helpers/turn-parity-harness.js";
 import type { HundredfoldConfig } from "../../shared/types.js";
 
@@ -115,4 +115,65 @@ describe("SessionManager.route — the account of a new routed session", () => {
     expect(pickOf(session)).toBeDefined();
     expect(session.transportMeta).toHaveProperty("accountPick");
   }, 30_000);
+});
+
+describe("SessionManager.route — the account of a new routed opencode session", () => {
+  const OWN = "opencode/opencode-go";
+  const OTHER = "opencode/opencode-go-b";
+  const MODEL = "opencode-go/glm-5";
+  const ocEmployee = { name: "parity-oc-worker", engine: "opencode", model: MODEL, persona: "Routed opencode start fixture" };
+
+  function ocConfig(): HundredfoldConfig {
+    const base = config() as unknown as { engines: Record<string, unknown>; models: Record<string, unknown> };
+    base.engines["default"] = "opencode";
+    base.engines["opencode"] = {
+      bin: process.execPath, model: MODEL, fallback: [{ group: [{ engine: "opencode", profile: "go-a" }, { engine: "opencode", profile: "go-b" }] }, "codex"],
+      accounts: { "go-a": { provider: "opencode-go" }, "go-b": { provider: "opencode-go-b", base: "opencode-go", keyEnv: "OPENCODE_GO_B_API_KEY" } },
+    };
+    base.models["opencode"] = { default: MODEL, models: [MODEL, "opencode-go-b/glm-5"].map((id) => ({ id })) };
+    return base as unknown as HundredfoldConfig;
+  }
+
+  beforeEach(async () => {
+    // The model registry is cached per process: the Claude starts above built it without these models.
+    const { invalidateModelRegistry } = await import("../../shared/models.js");
+    invalidateModelRegistry();
+    fs.rmSync(LIMITS_DIR, { recursive: true, force: true });
+    fs.mkdirSync(LIMITS_DIR, { recursive: true });
+    const later = Math.floor(Date.now() / 1000) + 3 * 3600;
+    for (const [account, used] of [[OWN, 40], [OTHER, 60]] as const) {
+      fs.writeFileSync(path.join(LIMITS_DIR, `opencode-usage-history.${encodeURIComponent(account)}.json`), JSON.stringify([{ at: Date.now(), windows: [{ name: "5h", usedPercent: used, resetsAt: later }] }]));
+    }
+  });
+
+  async function routeOc(opts: Record<string, unknown>) {
+    const manager = new ManagerClass(ocConfig(), new Map<string, unknown>([
+      ["opencode", scriptedEngine("opencode", [engineResult({ result: "ok" })])],
+      ["codex", scriptedEngine("codex", [engineResult({ result: "ok" })])],
+    ]) as never, "routed-oc-boot");
+    const routed = await manager.route(connectorMessage(`stub:routed-oc-${Math.random().toString(16).slice(2)}`, "probe"), connectorStub(), opts);
+    const id = routed!.sessionId;
+    await eventually(() => ["idle", "error", "interrupted"].includes(registry.getSession(id)?.status ?? ""));
+    return registry.getSession(id)!;
+  }
+
+  it("is spread six to four over ten starts of an employee, each on the model its account serves", async () => {
+    const counts: Record<string, number> = {};
+    for (let n = 0; n < 10; n++) {
+      const session = await routeOc({ employee: ocEmployee });
+      const picked = pickOf(session)!.picked;
+      expect(session.model).toBe(picked === OTHER ? "opencode-go-b/glm-5" : MODEL);
+      counts[picked] = (counts[picked] ?? 0) + 1;
+    }
+    expect(counts).toEqual({ [OWN]: 6, [OTHER]: 4 });
+  }, 90_000);
+
+  it("balances nothing for a start that names a model on another account's provider, and does not charge it", async () => {
+    const named = await routeOc({ employee: ocEmployee, model: "opencode-go-b/glm-5" });
+    expect(named.model).toBe("opencode-go-b/glm-5");
+    expect(pickOf(named)).toBeUndefined();
+    expect(pickOf(await routeOc({ employee: ocEmployee }))).toMatchObject({ picked: OWN }); // still the first start of the rotation
+  }, 60_000);
+
+  afterAll(async () => (await import("../../shared/models.js")).invalidateModelRegistry());
 });

@@ -3,6 +3,14 @@
 Implemented as TypeScript types in `packages/gateway-events/src/voice-protocol.ts`,
 shared by the gateway, the web client and (by mirror) the native client.
 
+## Starting on a new chat
+
+The socket needs a session, so a client on a new chat creates one first: `POST /api/sessions` with `{ "speech": true }` and no `prompt`
+(operator only; every other caller keeps the `400`). The row is created idle, with no message and no turn, and then
+`GET /ws/voice/:sessionId` attaches as below. The first final transcript is delivered as the session's first message through the ordinary
+delivery path and names the session as a typed first message does. When the attachment ends (bye, close, detach, resume window, takeover by
+nothing) and the session still has no message, the gateway deletes it and emits `session:deleted`. A takeover by the same principal does not.
+
 ## Upgrade
 
 `GET /ws/voice/:sessionId` with `Upgrade: websocket`.
@@ -43,7 +51,7 @@ shared by the gateway, the web client and (by mirror) the native client.
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}` | after `hello` |
+| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
 | `vad` | `speaking: boolean` | the gateway's VAD state (UI only) |
 | `transcript` | `utteranceId`, `text`, `final` | partial or final |
 | `stop_playback` | `reason: "speech"` | the gateway's VAD heard speech over playback before the client's onset did |
@@ -55,6 +63,7 @@ shared by the gateway, the web client and (by mirror) the native client.
 | `missed` | `messageIds: string[]` | replies that finished while the client was suspended; their speech follows |
 | `metrics` | `utteranceId`, `sttMs`, `ttfaMs \| null` | per exchange |
 | `error` | `code`, `message`, `utteranceId?` | `bad_frame`, `utterance_too_long`, `stt_failed`, `tts_failed`, `dispatch_failed`, `speech_unavailable`, `internal` |
+| `keepalive` | | every `ready.keepaliveMs` while attached; no state, only proof of life (browsers cannot see ws pings). A client that saw `keepaliveMs` may treat the connection as lost after 2.5 intervals with no message of any kind. Additive: no protocol version bump |
 | `detached` | `reason` | `taken_over`, `session_gone`, `disabled`, `access_lost`, `shutdown` |
 
 ## Close codes

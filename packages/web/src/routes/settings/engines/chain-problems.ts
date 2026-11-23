@@ -3,7 +3,7 @@ import {
   type FallbackChainContext,
   type FallbackLink,
 } from "@hundredfold/fallback-chain-wire"
-import { accountEntriesFor, accountNames, allAccountNames, chainEntriesFor, type EnginesConfig } from "./chain-model"
+import { accountEntriesFor, accountNames, allAccountNames, chainEntriesFor, opencodeAccounts, type EnginesConfig } from "./chain-model"
 import { isGroupItem, type ChainContext, type ChainItem } from "./chain-links"
 
 /* Chain validation on the client. The sentences are the wire module's own, so a
@@ -11,7 +11,13 @@ import { isGroupItem, type ChainContext, type ChainItem } from "./chain-links"
 
 /** The validator's view of the instance. */
 export function validatorContext(ctx: ChainContext, self: FallbackLink | undefined): FallbackChainContext {
-  return { engines: ctx.engines.map((e) => e.name), profiles: new Set(ctx.profiles), self }
+  return {
+    engines: ctx.engines.map((e) => e.name),
+    profiles: new Set(ctx.profiles),
+    ...(ctx.opencodeProfiles ? { opencodeProfiles: new Set(ctx.opencodeProfiles) } : {}),
+    ...(ctx.ownEngine ? { ownEngine: ctx.ownEngine } : {}),
+    self,
+  }
 }
 
 /**
@@ -69,7 +75,8 @@ export function chainSaveBlocker(
 ): string | null {
   const names = Object.keys(registry ?? {})
   if (names.length === 0) return null
-  const ctx = { engines: names, profiles: new Set(allAccountNames(engines)) }
+  const opencodeNames = opencodeAccounts(engines).map(([name]) => name)
+  const ctx = { engines: names, profiles: new Set(allAccountNames(engines)), opencodeProfiles: new Set(opencodeNames) }
   const before = new Map(chainsOf(loaded, names).map(({ where, chain }) => [where, JSON.stringify(chain)]))
   const problems = chainsOf(engines, names)
     // A chain this edit did not change is the gateway's to report, not a reason to refuse an unrelated save.

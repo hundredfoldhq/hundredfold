@@ -1,6 +1,6 @@
 import type { VoiceClientFrame, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { startCapture, requestMicrophone } from "./capture-worklet"
-import { VoiceStore, type VoiceController } from "./controller"
+import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
 import { VoicePlayer, type PlayerAudioContext } from "./player"
@@ -59,7 +59,8 @@ export interface BrowserVoiceDeps {
 }
 
 export interface BrowserVoiceOptions {
-  sessionId: string
+  /** The chat, or how to create one when the control is on a new chat. */
+  sessionId: string | VoiceSessionStarter
   mode: VoiceMode
   /** `bargeIn.enabled` from the voice config. */
   bargeIn: boolean
@@ -112,11 +113,16 @@ export class BrowserVoiceSession implements VoiceController {
   private generation = 0
   private talking = false
   private pendingResumeMs: number | null = null
+  private session: string | null
 
   constructor(
     private readonly options: BrowserVoiceOptions,
     private readonly deps: BrowserVoiceDeps = defaultBrowserDeps(),
-  ) {}
+  ) {
+    this.session = typeof options.sessionId === "string" ? options.sessionId : null
+  }
+
+  boundSessionId = (): string | null => this.session
 
   getSnapshot = (): VoiceUiState => this.store.snapshot
   subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
@@ -131,13 +137,39 @@ export class BrowserVoiceSession implements VoiceController {
     void ctx.resume().catch(() => undefined)
     const microphone = this.deps.requestMicrophone()
     this.ctx = ctx
-    this.openSocket()
+    if (this.session !== null) {
+      this.openSocket(this.session)
+      return this.attachMicrophone(microphone, generation)
+    }
+    return this.createThenAttach(microphone, generation)
+  }
+
+  /** A new chat: the session is created once, now that the microphone request is in flight, and the socket opens on it. */
+  private async createThenAttach(microphone: Promise<MediaStream>, generation: number): Promise<void> {
+    const starter = this.options.sessionId as VoiceSessionStarter
+    let id: string
+    try {
+      id = await starter.create()
+    } catch (error) {
+      this.releaseMicrophone(microphone)
+      if (generation === this.generation) this.failStart(error instanceof Error && error.message ? error.message : "Couldn't start a chat for voice mode.")
+      return
+    }
+    if (generation !== this.generation || !this.ctx) {
+      this.releaseMicrophone(microphone)
+      starter.discard(id)
+      return
+    }
+    this.session = id
+    starter.bind(id, this)
+    this.openSocket(id)
     return this.attachMicrophone(microphone, generation)
   }
 
   stop(): void {
     if (this.store.snapshot.status === "off" && !this.ctx) return
     this.closing = true
+    dropHandoff(this)
     this.socket?.send({ type: "bye" })
     this.socket?.close(1000, "bye")
     this.teardown()
@@ -170,7 +202,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   resumeFromTap(): Promise<void> {
     const ctx = this.ctx
-    if (!ctx) return this.start()
+    if (!ctx || this.session === null) return this.start()
     void ctx.resume().catch(() => undefined)
     const trackLive = this.capture?.track?.readyState === "live"
     const microphone = trackLive ? null : this.deps.requestMicrophone()
@@ -181,15 +213,15 @@ export class BrowserVoiceSession implements VoiceController {
     } else {
       // A new attachment: it is `ready` again before audio goes up, and the `resume` follows then.
       this.store.dispatch({ type: "connecting", mode: this.options.mode })
-      this.openSocket()
+      this.openSocket(this.session as string)
     }
     return microphone ? this.replaceMicrophone(microphone, this.generation) : Promise.resolve()
   }
 
   // ── socket ────────────────────────────────────────────────────────────────
 
-  private openSocket(): void {
-    this.socket = this.deps.openSocket(this.options.sessionId, {
+  private openSocket(sessionId: string): void {
+    this.socket = this.deps.openSocket(sessionId, {
       onFrame: (frame) => this.onFrame(frame),
       onAudio: (chunk) => this.onAudio(chunk),
       onClose: (close) => this.onClose(close),
@@ -245,6 +277,11 @@ export class BrowserVoiceSession implements VoiceController {
   }
 
   // ── microphone ────────────────────────────────────────────────────────────
+
+  /** A microphone request nobody will use: the stream, once granted, is stopped. */
+  private releaseMicrophone(microphone: Promise<MediaStream>): void {
+    void microphone.then(stopTracks, () => undefined)
+  }
 
   private async attachMicrophone(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     try {
@@ -342,6 +379,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   private failStart(message: string): void {
     this.closing = true
+    dropHandoff(this)
     this.socket?.close(1000, "bye")
     this.teardown()
     this.store.dispatch({ type: "failed", message })

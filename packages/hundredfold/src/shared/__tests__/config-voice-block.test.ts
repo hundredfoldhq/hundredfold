@@ -107,6 +107,34 @@ describe("the voice provider key", () => {
     expect(buildEngineChildEnv()[VAR]).toBe(KEY);
   });
 
+  it("is withheld from every engine child when the block asks for voice but is invalid (enabled: \"yes\")", async () => {
+    process.env[VAR] = KEY;
+    writeConfig({ enabled: "yes", stt: { provider: "openai", apiKey: `\${${VAR}}` }, tts: { provider: "openai", apiKey: `\${${VAR}}` } });
+    const { loadConfig } = await import("../config.js");
+    const { buildEngineChildEnv, voiceKeyEnvironment } = await import("../child-env.js");
+    const { resolveVoiceConfig, voiceOffReason } = await import("../voice-config.js");
+    const loaded = loadConfig();
+
+    expect(resolveVoiceConfig(loaded)).toBeNull();
+    expect(voiceOffReason(loaded.voice)).toContain("voice.enabled");
+    expect(buildEngineChildEnv()).not.toHaveProperty(VAR);
+    expect(Object.values(buildEngineChildEnv())).not.toContain(KEY);
+    expect(process.env[VAR]).toBeUndefined();
+    expect(voiceKeyEnvironment()[VAR]).toBe(KEY);
+  });
+
+  it("is left alone when the block does not ask for voice: enabled absent or false", async () => {
+    for (const block of [{ stt: { provider: "openai", apiKey: `\${${VAR}}` } }, { enabled: false, stt: { provider: "openai", apiKey: `\${${VAR}}` } }]) {
+      process.env[VAR] = KEY;
+      writeConfig(block);
+      vi.resetModules();
+      const { loadConfig } = await import("../config.js");
+      const { buildEngineChildEnv } = await import("../child-env.js");
+      loadConfig();
+      expect(buildEngineChildEnv()[VAR]).toBe(KEY);
+    }
+  });
+
   it("is still found by an explicit ${VAR} elsewhere in config.yaml, while every engine child lacks it", async () => {
     process.env[VAR] = KEY;
     writeConfig({ enabled: true, stt: { provider: "openai", apiKey: `\${${VAR}}` }, tts: { provider: "openai", apiKey: `\${${VAR}}` } });
