@@ -88,11 +88,18 @@ interface Open {
   audioMs: number;
   /** Voiced time summed over the VAD's ends so far (speech that resumes inside a hold adds to it); null when no end has said. */
   speechMs: number | null;
+  /** Speech resumed inside a hold and its end has not come: the voiced time so far is a floor, so it is not reported. */
+  resumedOpen: boolean;
   partial: string;
   settled: boolean;
   cancelTimeout: CancelTimer | null;
   /** Set while a late start waits for its end: nothing is fed live, the cut is made from the ring at the end. */
   catchUp: { fromByte: number } | null;
+}
+
+/** The voiced time to report: none when no end said, or when speech resumed and its end never came (what is summed is then a floor). */
+function voicedOf(open: Open): { speechMs?: number } {
+  return open.speechMs === null || open.resumedOpen ? {} : { speechMs: Math.round(open.speechMs) };
 }
 
 export class UtteranceCapture {
@@ -181,7 +188,10 @@ export class UtteranceCapture {
     // Speech resumed inside a hold: the same utterance goes on.
     const resumed = this.cancelHold !== null && this.capturing !== null;
     this.clearHold();
-    if (resumed) return this.options.events.onVad(true);
+    if (resumed) {
+      this.capturing!.resumedOpen = true;
+      return this.options.events.onVad(true);
+    }
     const fromByte = Math.max(0, atMs * BYTES_PER_MS);
     // The VAD does not start twice without an end between, and a replaced detector says so (a reset), so this is a fallback
     // for one that did not: what was open stops where this speech begins (never past what was written).
@@ -196,6 +206,7 @@ export class UtteranceCapture {
 
   private onVadEnd(atMs: number, speechMs: number | undefined): void {
     this.options.events.onVad(false);
+    if (this.capturing) this.capturing.resumedOpen = false;
     if (this.capturing && speechMs !== undefined) this.capturing.speechMs = (this.capturing.speechMs ?? 0) + speechMs;
     const catchUp = this.capturing?.catchUp;
     // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
@@ -251,7 +262,7 @@ export class UtteranceCapture {
     const stream = this.options.stt.open({ language: this.options.language, sampleRate: VOICE_INPUT_SAMPLE_RATE, signal: abort.signal });
     const open: Open = {
       id: this.options.newId(), stream, abort, startedAt: this.options.clock.now(),
-      endedAt: null, audioMs: 0, speechMs: null, partial: "", settled: false, cancelTimeout: null,
+      endedAt: null, audioMs: 0, speechMs: null, resumedOpen: false, partial: "", settled: false, cancelTimeout: null,
       catchUp: catchUp ? { fromByte } : null,
     };
     stream.on((event) => this.onStt(open, event));
@@ -353,7 +364,7 @@ export class UtteranceCapture {
     this.options.events.onFinal({
       id: open.id, text: event.text ?? "", audioMs: Math.round(open.audioMs),
       sttMs: Math.max(0, now - (open.endedAt ?? now)), startedAt: open.startedAt,
-      ...(open.speechMs === null ? {} : { speechMs: Math.round(open.speechMs) }),
+      ...voicedOf(open),
       ...(event.quality === undefined ? {} : { quality: event.quality }),
     });
   }

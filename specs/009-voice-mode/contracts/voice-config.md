@@ -29,7 +29,7 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `vad.prerollMs` | integer | `300` | 0 to 1000 |
 | `filter.minConfidence` | number | `0.3` | 0 to 1; a final whose provider-reported confidence is below it is dropped (0: never) |
 | `filter.noSpeechThreshold` | number | `0.8` | 0 to 1; a final whose provider-reported no-speech chance is above it is dropped (1: never) |
-| `filter.phantomMaxMs` | integer | `500` | 0 to 5000; a clip voiced for less, whose whole transcript is a phantom phrase, is dropped (0: never) |
+| `filter.phantomMaxMs` | integer | `500` | 0 to 5000; a clip whose speech span (first to last voiced frame) is shorter, whose whole transcript is a phantom phrase, is dropped (0: never) |
 | `filter.phantomPhrases` | list of strings | `you`, `thank you`, `thanks for watching`, `amen`, `uh`, `um`, `hmm`, `mm`, `mhm`, `huh`, `oh`, `ah` | at most 100, each 1 to 80 characters; matched on the whole transcript after lower-casing and dropping punctuation; `[]` turns it off |
 | `bargeIn.enabled` | boolean | `true` | |
 | `bargeIn.minSpeechMs` | integer | `250` | 50 to 2000 |

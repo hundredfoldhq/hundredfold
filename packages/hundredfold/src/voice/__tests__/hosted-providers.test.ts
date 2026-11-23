@@ -402,6 +402,59 @@ describe("OpenAI-compatible STT", () => {
     expect(server.seen[2]!.body.toString("latin1")).toContain("verbose_json");
   });
 
+  it.each([404, 408, 409, 423])("a transient %i on verbose_json that then succeeds as json does not turn verbose_json off for later utterances", async (status) => {
+    let first = true;
+    const server = await httpServer((request, res) => {
+      if (first && request.body.toString("latin1").includes("verbose_json")) { first = false; res.writeHead(status); return res.end("warming up"); }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ text: "hello", segments: [{ start: 0, end: 1, avg_logprob: -0.1, no_speech_prob: 0.1 }] }));
+    });
+    const provider = compatible(server.url);
+    const results: unknown[] = [];
+    for (let round = 0; round < 2; round += 1) {
+      const stream = provider.open(opts());
+      const events = collect(stream);
+      stream.write(pcm(100, 500));
+      stream.end();
+      await until(() => events.length > 0);
+      results.push(events[0]);
+    }
+    expect(server.seen.map((request) => request.body.toString("latin1").includes("verbose_json"))).toEqual([true, false, true]);
+    expect(results[0]).toEqual({ type: "final", text: "hello" });
+    expect(results[1]).toMatchObject({ type: "final", text: "hello", quality: { noSpeechProb: 0.1 } });
+  });
+
+  it.each([415, 422])("a %i on verbose_json that then succeeds as json is remembered", async (status) => {
+    const server = await httpServer((request, res) => {
+      if (request.body.toString("latin1").includes("verbose_json")) { res.writeHead(status); return res.end("bad response_format"); }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ text: "hello" }));
+    });
+    const provider = compatible(server.url);
+    for (let round = 0; round < 2; round += 1) {
+      const stream = provider.open(opts());
+      const events = collect(stream);
+      stream.write(pcm(100, 500));
+      stream.end();
+      await until(() => events.length > 0);
+    }
+    expect(server.seen.map((request) => request.body.toString("latin1").includes("verbose_json"))).toEqual([true, false, false]);
+  });
+
+  it("a 200 reply to verbose_json that is not JSON falls back to json for that utterance", async () => {
+    const server = await httpServer((request, res) => {
+      if (request.body.toString("latin1").includes("verbose_json")) { res.writeHead(200, { "Content-Type": "text/plain" }); return res.end("hello there"); }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ text: "hello there" }));
+    });
+    const stream = compatible(server.url).open(opts());
+    const events = collect(stream);
+    stream.write(pcm(100, 500));
+    stream.end();
+    await until(() => events.length > 0);
+    expect(events).toEqual([{ type: "final", text: "hello there" }]);
+  });
+
   it("sends the key when one is configured and refuses a configured key that is not set", async () => {
     const server = await httpServer((_request, res) => res.end(JSON.stringify({ text: "ok" })));
     const withKey = compatible(server.url, { apiKeyRef: "${LOCAL_KEY}" }, ENV);

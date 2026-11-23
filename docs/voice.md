@@ -126,7 +126,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `vad.prerollMs` | `300` | Audio kept from before speech was detected, 0 to 1000. |
 | `filter.minConfidence` | `0.3` | A transcript the provider is less sure of than this is dropped, 0 to 1 (0 turns it off). See [Noise and phantom words](#noise-and-phantom-words). |
 | `filter.noSpeechThreshold` | `0.8` | A transcript the provider says is probably not speech, above this chance, is dropped, 0 to 1 (1 turns it off). |
-| `filter.phantomMaxMs` | `500` | A clip voiced for less than this many ms, whose whole transcript is one of `filter.phantomPhrases`, is dropped, 0 to 5000 (0 turns the list off). |
+| `filter.phantomMaxMs` | `500` | A clip whose speech (from its first voiced frame to its last) lasted less than this many ms, whose whole transcript is one of `filter.phantomPhrases`, is dropped, 0 to 5000 (0 turns the list off). |
 | `filter.phantomPhrases` | `you`, `thank you`, `thanks for watching`, `amen`, `uh`, `um`, `hmm`, `mm`, `mhm`, `huh`, `oh`, `ah` | The words speech to text invents out of noise. Matched on the whole transcript, ignoring case and punctuation. `[]` turns the list off. |
 | `bargeIn.enabled` | `true` | Whether speaking over the assistant stops it. |
 | `bargeIn.minSpeechMs` | `250` | How long your voice must be heard over playback before playback stops, 50 to 2000. |
@@ -200,9 +200,9 @@ A knock, a bump or a tap can get past voice activity detection, and speech to te
 
 1. **The detector.** `vad.threshold` and `vad.minSpeechMs` decide what starts an utterance at all; a transient shorter than `minSpeechMs` never does.
 2. **What the provider reports.** A provider that says how sure it was is believed: a transcript with a no-speech chance above `filter.noSpeechThreshold`, or a confidence below `filter.minConfidence`, is dropped. Only `openai-compatible` reports these today (it asks the server for `verbose_json`, which Whisper-style servers answer with a confidence and a no-speech chance per segment, and falls back to plain `json` for a server that refuses it). The local Parakeet models and OpenAI's Realtime transcription report neither, so for them only 1 and 3 apply.
-3. **Known phantoms in a short clip.** A clip the detector heard voiced for under `filter.phantomMaxMs` whose whole transcript is in `filter.phantomPhrases` is dropped. The same words in a longer clip go through: "thank you" said on purpose lasts longer than a knock. Push-to-talk has no detector, so this check does not apply to it.
+3. **Known phantoms in a short clip.** A clip whose speech, from the detector's first voiced frame to its last, lasted under `filter.phantomMaxMs` whose whole transcript is in `filter.phantomPhrases` is dropped. The same words in a longer clip go through: "thank you" said on purpose lasts longer than a knock. Push-to-talk has no detector, so this check does not apply to it.
 
-Tuning: if "yes" or "stop" is ever dropped, lower `filter.minConfidence` and `filter.phantomMaxMs` (or empty `filter.phantomPhrases`); if phantoms still get through, raise `vad.threshold` or `vad.minSpeechMs`, or add the phrases you see to `filter.phantomPhrases`. A change applies to a voice conversation opened after it (a conversation already open keeps the settings it started with).
+Tuning: if a real short reply is ever dropped, lower `filter.minConfidence` and `filter.phantomMaxMs`, or remove its phrase from `filter.phantomPhrases` (the default list holds only "you", "thank you" and similar, never "yes" or "stop"); if phantoms still get through, raise `vad.threshold` or `vad.minSpeechMs`, or add the phrases you see to `filter.phantomPhrases`. A change applies to a voice conversation opened after it (a conversation already open keeps the settings it started with).
 
 ```yaml
 voice:

@@ -28,6 +28,14 @@ describe("phantom utterances are not sent as the person's words", () => {
     expect(h.infos.join("\n")).not.toContain("Thank you");
   });
 
+  it("an empty transcript is silence, not a dropped utterance: nothing is logged even when the provider doubts it", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    await utterance(h, attachment, "", 900, { noSpeechProb: 0.99 });
+    expect(finals(socket.ofType("transcript"))).toEqual([""]);
+    expect(h.infos.some((line) => line.includes("dropped an utterance"))).toBe(false);
+  });
+
   it("the same words from a clip long enough to be said on purpose go through", async () => {
     const h = createHarness();
     const { socket, attachment } = h.connect();
@@ -133,5 +141,28 @@ describe("the capture sums how long speech was voiced", () => {
     vad.end(900, 450);
     stt.last().final("I would like to book a table and chairs");
     expect(seen[0].speechMs).toBe(750);
+  });
+
+  it("speech that resumed inside a hold and was cut by a reset has no voiced time to report", async () => {
+    const clock = new FakeClock();
+    const stt = new FakeStt();
+    const vad = new FakeVad();
+    const seen: Array<{ speechMs?: number }> = [];
+    const capture = new UtteranceCapture({
+      stt, vad, language: "en", prerollMs: 0, unfinishedHoldMs: 800, maxUtteranceMs: 60_000, pushToTalk: false, clock, newId: () => "u1",
+      events: { onVad: () => undefined, onStart: () => undefined, onPartial: () => undefined, onFinal: (u) => seen.push(u), onFailed: () => undefined, onTooLong: () => undefined },
+    });
+    const pcm = Buffer.alloc(640, 3);
+    vad.start(0);
+    capture.write(pcm);
+    stt.last().partial("I would like to book a table and");
+    vad.end(300, 300);
+    clock.advance(100);
+    vad.start(400);
+    capture.write(pcm);
+    vad.reset(600);
+    stt.last().final("I would like to book a table and chairs");
+    expect(seen).toHaveLength(1);
+    expect(seen[0].speechMs).toBeUndefined();
   });
 });

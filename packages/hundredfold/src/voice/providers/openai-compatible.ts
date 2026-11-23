@@ -7,6 +7,7 @@
  * that can only return MP3 is refused with a message that says so. The key is optional.
  */
 import { resolveEnvVar } from "../../shared/env-ref.js";
+import { logger } from "../../shared/logger.js";
 import type { ResolvedVoiceSide } from "../../shared/voice-config.js";
 import type { SttEvent, SttProvider, SttQuality, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
 import { iso6391, looksLikeMp3, looksLikeOggOrFlac, mp3SniffBytes, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
@@ -112,23 +113,40 @@ class BatchSttStream implements SttStream {
   }
 
   private async transcribe(pcm: Buffer): Promise<{ text: string; quality?: SttQuality }> {
-    let verbose = this.format.verbose;
-    let response = await this.request(pcm, verbose);
-    // A server that does not know `verbose_json` answers 4xx (not about credentials or rate). Ask again for plain `json`, and
-    // stop asking for the other kind only if that works: a 4xx about the audio itself fails both ways and changes nothing.
-    if (verbose && formatRefused(response.status)) {
-      const plain = await this.request(pcm, false);
-      if (plain.ok) {
-        this.format.verbose = false;
-        verbose = false;
-      }
-      response = plain;
+    const verbose = this.format.verbose;
+    const first = await this.ask(pcm, verbose);
+    // A reply to `verbose_json` that cannot be read (plain text sent back with a 200) is asked for again as `json`, for this utterance only.
+    const reply = (await readReply(first.response)) ?? (first.verbose ? await readReply(await this.requestOk(pcm, false)) : null);
+    if (!reply || typeof reply.text !== "string") throw new Error("transcription reply had no text");
+    const quality = first.verbose ? qualityOf(reply) : undefined;
+    return { text: reply.text.trim(), ...(quality ? { quality } : {}) };
+  }
+
+  /**
+   * One request, asking for `verbose_json` while the server takes it. A server that does not know it answers 4xx (not about
+   * credentials or rate): ask again for plain `json` for this utterance. Stop asking for the other kind for good only if that
+   * works and the status is one an unknown format gets: any other 4xx (a model still warming up, a timeout, a conflict) is
+   * transient and must not turn the quality filters off.
+   */
+  private async ask(pcm: Buffer, verbose: boolean): Promise<{ response: Response; verbose: boolean }> {
+    const response = await this.request(pcm, verbose);
+    if (!verbose || !formatRefused(response.status)) {
+      if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
+      return { response, verbose };
     }
+    const plain = await this.request(pcm, false);
+    if (!plain.ok) throw new Error(`transcription failed (HTTP ${plain.status})`);
+    if (formatUnknown(response.status)) {
+      this.format.verbose = false;
+      logger.info(`[voice] the speech-to-text server refused verbose_json (HTTP ${response.status}); using plain json, so the confidence and no-speech filters do not apply`);
+    }
+    return { response: plain, verbose: false };
+  }
+
+  private async requestOk(pcm: Buffer, verbose: boolean): Promise<Response> {
+    const response = await this.request(pcm, verbose);
     if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
-    const parsed = (await response.json()) as { text?: unknown; segments?: unknown };
-    if (typeof parsed.text !== "string") throw new Error("transcription reply had no text");
-    const quality = verbose ? qualityOf(parsed) : undefined;
-    return { text: parsed.text.trim(), ...(quality ? { quality } : {}) };
+    return response;
   }
 
   private request(pcm: Buffer, verbose: boolean): Promise<Response> {
@@ -149,9 +167,22 @@ class BatchSttStream implements SttStream {
   }
 }
 
+async function readReply(response: Response): Promise<{ text?: unknown; segments?: unknown } | null> {
+  try {
+    return (await response.json()) as { text?: unknown; segments?: unknown };
+  } catch {
+    return null;
+  }
+}
+
 /** A 4xx that is not about credentials or rate: the server did not like `response_format`. */
 function formatRefused(status: number): boolean {
   return status >= 400 && status < 500 && ![401, 403, 429].includes(status);
+}
+
+/** The statuses a server gives for a `response_format` it does not know: bad request, unsupported media type, unprocessable. */
+function formatUnknown(status: number): boolean {
+  return status === 400 || status === 415 || status === 422;
 }
 
 function formatNotSupported(error: unknown): boolean {

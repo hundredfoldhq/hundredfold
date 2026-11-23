@@ -377,7 +377,7 @@ export class VoiceAttachment {
 
   private async handleFinal(utterance: FinishedUtterance): Promise<void> {
     if (this.ended) return;
-    const phantom = phantomReason(utterance, this.config.filter);
+    const phantom = utterance.text.trim() ? phantomReason(utterance, this.config.filter) : null;
     // Noise that got past the VAD is told to the client as an utterance with no words, the way silence is, and goes no further.
     const words = phantom === null ? utterance.text.trim() : "";
     if (phantom !== null) this.deps.log.info(`voice: dropped an utterance for ${this.sessionId}: ${phantom}`);
