@@ -14,12 +14,18 @@ export function normalizeWords(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * A high no-speech chance alone is not enough when the provider also says how sure it was: Whisper-style servers often
+ * report one for short clips that were decoded confidently, so (like Whisper itself) a transcript is dropped on it only
+ * when the confidence is also low, or when no confidence was reported at all.
+ */
 function providerDoubt(quality: FinishedUtterance["quality"], filter: PhantomFilter): string | null {
-  if (quality?.noSpeechProb !== undefined && quality.noSpeechProb > filter.noSpeechThreshold) {
-    return `the provider put the chance of no speech at ${quality.noSpeechProb.toFixed(2)} (above ${filter.noSpeechThreshold})`;
+  const confidence = quality?.confidence;
+  if (confidence !== undefined && confidence < filter.minConfidence) {
+    return `the provider's confidence was ${confidence.toFixed(2)} (below ${filter.minConfidence})`;
   }
-  if (quality?.confidence !== undefined && quality.confidence < filter.minConfidence) {
-    return `the provider's confidence was ${quality.confidence.toFixed(2)} (below ${filter.minConfidence})`;
+  if (quality?.noSpeechProb !== undefined && quality.noSpeechProb > filter.noSpeechThreshold && confidence === undefined) {
+    return `the provider put the chance of no speech at ${quality.noSpeechProb.toFixed(2)} (above ${filter.noSpeechThreshold}) and gave no confidence`;
   }
   return null;
 }

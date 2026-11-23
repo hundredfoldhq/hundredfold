@@ -57,11 +57,25 @@ describe("phantom utterances are not sent as the person's words", () => {
     expect(h.delivered.map((d) => d.text)).toEqual(["Yes", "Stop", "you"]);
   });
 
-  it("a transcript the provider calls probably not speech is dropped, however long the clip", async () => {
+  it("a transcript the provider calls probably not speech, with no confidence to say otherwise, is dropped however long the clip", async () => {
     const h = createHarness();
     const { socket, attachment } = h.connect();
-    await utterance(h, attachment, "And that's dope", 900, { noSpeechProb: 0.93, confidence: 0.9 });
+    await utterance(h, attachment, "And that's dope", 900, { noSpeechProb: 0.93 });
     expect(finals(socket.ofType("transcript"))).toEqual([""]);
+    expect(h.delivered).toHaveLength(0);
+  });
+
+  it("a high no-speech chance does not drop a transcript the provider was confident about", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await utterance(h, attachment, "Yes", 300, { noSpeechProb: 0.9, confidence: 0.9 });
+    expect(h.delivered.map((d) => d.text)).toEqual(["Yes"]);
+  });
+
+  it("a high no-speech chance together with a low confidence is dropped", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await utterance(h, attachment, "Amen", 900, { noSpeechProb: 0.95, confidence: 0.1 });
     expect(h.delivered).toHaveLength(0);
   });
 

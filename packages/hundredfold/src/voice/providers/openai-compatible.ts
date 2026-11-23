@@ -29,7 +29,7 @@ function keyProblem(side: ResolvedVoiceSide, key: string | undefined): VoiceProv
   return { available: true };
 }
 
-/** Whether the server takes `verbose_json`; cleared for good once it refuses it, so only the first utterance pays for the retry. */
+/** Whether the server takes `verbose_json`; cleared for good once it answers 400, 415 or 422 to it and takes plain `json`. A transient refusal costs one retry for that utterance only. */
 interface ReplyFormat { verbose: boolean }
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -134,6 +134,7 @@ class BatchSttStream implements SttStream {
       if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
       return { response, verbose };
     }
+    await response.body?.cancel().catch(() => undefined);
     const plain = await this.request(pcm, false);
     if (!plain.ok) throw new Error(`transcription failed (HTTP ${plain.status})`);
     if (formatUnknown(response.status)) {
