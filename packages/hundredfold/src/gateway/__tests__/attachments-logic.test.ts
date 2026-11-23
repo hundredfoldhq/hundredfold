@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi, afterEach } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -53,6 +53,29 @@ describe("rehomeAttachmentsToSession", () => {
   });
 });
 
+async function postUpload(bytes: string, sessionId: string, filename = "image.png") {
+  const boundary = "same-name-boundary";
+  const payload = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="sessionId"\r\n\r\n${sessionId}\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n${bytes}\r\n--${boundary}--\r\n`,
+  );
+  const req = Object.assign(Readable.from([payload]), {
+    method: "POST",
+    url: "/api/files",
+    headers: { host: "gateway.test", "content-type": `multipart/form-data; boundary=${boundary}`, "content-length": String(payload.length) },
+  });
+  const out: { status?: number; body?: string } = {};
+  const res = {
+    writeHead(status: number) { out.status = status; return res; },
+    end(body?: string) { out.body = body; return res; },
+  } as unknown as import("node:http").ServerResponse;
+  const ctx = { emit: () => {}, getConfig: () => ({}) } as unknown as import("../api.js").ApiContext;
+  await files.handleFilesRequest(req as never, res, { method: "POST", pathname: "/api/files", url: new URL("/api/files", "http://localhost") }, ctx);
+  return out;
+}
+
+afterEach(() => { vi.restoreAllMocks(); });
+
 describe("same-named uploads in one session", () => {
   it("claimUniqueUploadPath never returns a taken name and keeps the extension", () => {
     const dir = fs.mkdtempSync(path.join(tmp, "claim-"));
@@ -84,14 +107,16 @@ describe("same-named uploads in one session", () => {
   });
 
   it("re-homing onto a name an earlier message already used does not clobber it", () => {
+    seedFilesDirUpload("p3a", "image.png", Buffer.from("EARLIER"));
+    files.rehomeAttachmentsToSession(["p3a"], "sess-later");
     seedFilesDirUpload("p3", "image.png", Buffer.from("LATER"));
-    files.rehomeAttachmentsToSession(["p3"], "sess-paste");
+    files.rehomeAttachmentsToSession(["p3"], "sess-later");
 
     const m3 = reg.getFile("p3")!;
-    expect(path.basename(m3.path!)).toBe("image-3.png");
+    expect(path.basename(m3.path!)).toBe("image-2.png");
     expect(fs.readFileSync(m3.path!, "utf8")).toBe("LATER");
-    expect(fs.readFileSync(reg.getFile("p1")!.path!, "utf8")).toBe("FIRST");
-    // The recorded name matches what is on disk, so the message references the right file.
+    expect(fs.readFileSync(reg.getFile("p3a")!.path!, "utf8")).toBe("EARLIER");
+    // The registry keeps the display name; the attachment is resolved through its own path.
     expect(m3.filename).toBe("image.png");
   });
 
@@ -108,30 +133,12 @@ describe("same-named uploads in one session", () => {
   });
 
   it("session-scoped multipart uploads of the same name land in distinct files", async () => {
-    async function post(bytes: string) {
-      const boundary = "mar-same-name-boundary";
-      const payload = Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="sessionId"\r\n\r\nsess-multi\r\n` +
-        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="image.png"\r\nContent-Type: image/png\r\n\r\n${bytes}\r\n--${boundary}--\r\n`,
-      );
-      const req = Object.assign(Readable.from([payload]), {
-        method: "POST",
-        url: "/api/files",
-        headers: { host: "gateway.test", "content-type": `multipart/form-data; boundary=${boundary}`, "content-length": String(payload.length) },
-      });
-      const out: { status?: number; body?: string } = {};
-      const res = {
-        writeHead(status: number) { out.status = status; return res; },
-        end(body?: string) { out.body = body; return res; },
-      } as unknown as import("node:http").ServerResponse;
-      const ctx = { emit: () => {}, getConfig: () => ({}) } as unknown as import("../api.js").ApiContext;
-      await files.handleFilesRequest(req as never, res, { method: "POST", pathname: "/api/files", url: new URL("/api/files", "http://localhost") }, ctx);
-      expect(out.status).toBe(201);
-      return JSON.parse(out.body!) as { id: string; filename: string };
-    }
-
-    const first = await post("ONE");
-    const second = await post("TWO");
+    const parse = (o: { status?: number; body?: string }) => {
+      expect(o.status).toBe(201);
+      return JSON.parse(o.body!) as { id: string; filename: string };
+    };
+    const first = parse(await postUpload("ONE", "sess-multi"));
+    const second = parse(await postUpload("TWO", "sess-multi"));
     const p1 = reg.getFile(first.id)!.path!;
     const p2 = reg.getFile(second.id)!.path!;
     expect(p1).not.toBe(p2);
@@ -140,6 +147,50 @@ describe("same-named uploads in one session", () => {
     // The returned name is the one on disk, so the attachment points at its own file.
     expect(path.basename(p1)).toBe(first.filename);
     expect(path.basename(p2)).toBe(second.filename);
+  });
+
+  it("a failed upload write leaves no empty placeholder behind", async () => {
+    vi.spyOn(fs.promises, "writeFile").mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
+    const out = await postUpload("DATA", "sess-enospc");
+    expect(out.status).toBe(500);
+    const dir = files.uploadDir("sess-enospc");
+    expect(fs.readdirSync(dir)).toEqual([]);
+    // A retry gets the plain name back rather than image-2.png.
+    const retry = JSON.parse((await postUpload("DATA", "sess-enospc")).body!) as { filename: string };
+    expect(retry.filename).toBe("image.png");
+  });
+
+  it("a failed cross-device copy leaves no empty placeholder behind", () => {
+    seedFilesDirUpload("xdev1", "image.png", Buffer.from("X"));
+    vi.spyOn(fs, "renameSync").mockImplementationOnce(() => { throw Object.assign(new Error("xdev"), { code: "EXDEV" }); });
+    vi.spyOn(fs, "copyFileSync").mockImplementationOnce(() => { throw Object.assign(new Error("io"), { code: "EIO" }); });
+    files.rehomeAttachmentsToSession(["xdev1"], "sess-xdev");
+    expect(reg.getFile("xdev1")!.path).toBeNull();
+    expect(fs.readdirSync(files.uploadDir("sess-xdev"))).toEqual([]);
+  });
+
+  it("a second upload of a name at the filesystem length limit still gets a distinct file", () => {
+    const dir = fs.mkdtempSync(path.join(tmp, "long-"));
+    for (const name of ["a".repeat(251) + ".png", "字".repeat(83) + ".png"]) {
+      expect(Buffer.byteLength(name)).toBeGreaterThan(250);
+      const a = files.claimUniqueUploadPath(dir, name);
+      const b = files.claimUniqueUploadPath(dir, name);
+      const c = files.claimUniqueUploadPath(dir, name);
+      expect(new Set([a, b, c]).size).toBe(3);
+      for (const p of [a, b, c]) {
+        expect(Buffer.byteLength(path.basename(p))).toBeLessThanOrEqual(255);
+        expect(path.extname(p)).toBe(".png");
+      }
+    }
+  });
+
+  it("a claim that throws skips that attachment without aborting the rest", () => {
+    seedFilesDirUpload("long1", "first.png", Buffer.from("L"));
+    seedFilesDirUpload("long2", "second.png", Buffer.from("A"));
+    vi.spyOn(fs, "openSync").mockImplementationOnce(() => { throw Object.assign(new Error("name too long"), { code: "ENAMETOOLONG" }); });
+    files.rehomeAttachmentsToSession(["long1", "long2"], "sess-long");
+    expect(reg.getFile("long1")!.path).toBeNull();
+    expect(fs.readFileSync(reg.getFile("long2")!.path!, "utf8")).toBe("A");
   });
 });
 
