@@ -119,11 +119,15 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `tts.voice` | `local`: `af_heart`; `openai`, `openai-compatible`: `marin`, `alloy` | The voice. |
 | `tts.speed` | `1.0` | How fast the assistant speaks its replies, as a multiplier of the voice's natural pace: 0.5 to 2. A change applies to the next sentence spoken, with no restart. See [Speaking speed](#speaking-speed). |
 | `tts.baseUrl`, `tts.apiKey` | — | As for `stt`. |
-| `vad.threshold` | `0.5` | Speech probability that counts as speech, 0 to 1. |
-| `vad.minSpeechMs` | `250` | Speech must last this long to start an utterance, 50 to 2000. |
+| `vad.threshold` | `0.5` | Speech probability that counts as speech, 0 to 1. Raise it if knocks and taps start utterances. |
+| `vad.minSpeechMs` | `250` | Speech must last this long, unbroken, to start an utterance, 50 to 2000, so a knock or a tap that is shorter never counts. Raise it if short noises still get through; a short word such as "yes" or "stop" is voiced for roughly 300 to 500 ms, so keep it under that. |
 | `vad.silenceMs` | `1000` | Silence that ends an utterance, 200 to 5000. A shorter pause than this does not end your turn; lower it for a snappier reply, raise it if the assistant still cuts in on your pauses. |
 | `vad.unfinishedHoldMs` | `800` | Extra silence waited when the words so far look unfinished (they trail off on "and", "the", "to", a comma, "um" and the like), so a pause to think does not end the turn. Speaking again inside it continues the same utterance. It works from the live transcript, so it helps when the words end on such a word ("book a table and"); a pause after a finished-looking sentence is ended by `vad.silenceMs` alone. 0 turns it off, up to 5000. Hands-free only; push-to-talk ends when you release. |
 | `vad.prerollMs` | `300` | Audio kept from before speech was detected, 0 to 1000. |
+| `filter.minConfidence` | `0.3` | A transcript the provider is less sure of than this is dropped, 0 to 1 (0 turns it off). See [Noise and phantom words](#noise-and-phantom-words). |
+| `filter.noSpeechThreshold` | `0.8` | A transcript the provider says is probably not speech, above this chance, is dropped, 0 to 1 (1 turns it off). |
+| `filter.phantomMaxMs` | `500` | A clip voiced for less than this many ms, whose whole transcript is one of `filter.phantomPhrases`, is dropped, 0 to 5000 (0 turns the list off). |
+| `filter.phantomPhrases` | `you`, `thank you`, `thanks for watching`, `amen`, `uh`, `um`, `hmm`, `mm`, `mhm`, `huh`, `oh`, `ah` | The words speech to text invents out of noise. Matched on the whole transcript, ignoring case and punctuation. `[]` turns the list off. |
 | `bargeIn.enabled` | `true` | Whether speaking over the assistant stops it. |
 | `bargeIn.minSpeechMs` | `250` | How long your voice must be heard over playback before playback stops, 50 to 2000. |
 | `bargeIn.onsetThreshold` | `0.02` | Loudness (RMS, 0 to 1) the browser's detector treats as you speaking. Raise it if speakers cause false stops. |
@@ -184,11 +188,30 @@ voice:
   tts: { provider: openai-compatible, baseUrl: "http://localhost:8880", model: kokoro, voice: af_heart }
 ```
 
-`apiKey` is optional here. Speech-to-text is batch: the whole utterance is sent when you stop, so no partial transcripts. Text-to-speech asks for `pcm`, then `wav`; a server that can only return MP3 is refused with a message saying so. Audio at another sample rate is converted to 24 kHz.
+`apiKey` is optional here. Speech-to-text is batch, and asks for `verbose_json` so [phantom words](#noise-and-phantom-words) can be told from speech: the whole utterance is sent when you stop, so no partial transcripts. Text-to-speech asks for `pcm`, then `wav`; a server that can only return MP3 is refused with a message saying so. Audio at another sample rate is converted to 24 kHz.
 
 ### Voice activity detection with a hosted provider
 
 The gateway decides when you have stopped speaking. With the local models installed it uses Silero, even when speech-to-text is hosted. Without them it falls back to a simple in-process loudness detector, which is less accurate: a fan or a keyboard can start an utterance. Install the local models if you use a hosted provider with a noisy room.
+
+## Noise and phantom words
+
+A knock, a bump or a tap can get past voice activity detection, and speech to text then writes words for it ("Thank you", "Amen", a lone "You"), which would be sent to the assistant as if you had said them. Three checks stand between a noise and the chat, in this order; an utterance that fails one is dropped like silence: nothing is dispatched, the transcript line is empty, and an assistant you interrupted carries on speaking. The gateway log says why, with numbers and never your words.
+
+1. **The detector.** `vad.threshold` and `vad.minSpeechMs` decide what starts an utterance at all; a transient shorter than `minSpeechMs` never does.
+2. **What the provider reports.** A provider that says how sure it was is believed: a transcript with a no-speech chance above `filter.noSpeechThreshold`, or a confidence below `filter.minConfidence`, is dropped. Only `openai-compatible` reports these today (it asks the server for `verbose_json`, which Whisper-style servers answer with a confidence and a no-speech chance per segment, and falls back to plain `json` for a server that refuses it). The local Parakeet models and OpenAI's Realtime transcription report neither, so for them only 1 and 3 apply.
+3. **Known phantoms in a short clip.** A clip the detector heard voiced for under `filter.phantomMaxMs` whose whole transcript is in `filter.phantomPhrases` is dropped. The same words in a longer clip go through: "thank you" said on purpose lasts longer than a knock. Push-to-talk has no detector, so this check does not apply to it.
+
+Tuning: if "yes" or "stop" is ever dropped, lower `filter.minConfidence` and `filter.phantomMaxMs` (or empty `filter.phantomPhrases`); if phantoms still get through, raise `vad.threshold` or `vad.minSpeechMs`, or add the phrases you see to `filter.phantomPhrases`. A change applies to a voice conversation opened after it (a conversation already open keeps the settings it started with).
+
+```yaml
+voice:
+  enabled: true
+  vad: { threshold: 0.6, minSpeechMs: 300 }
+  filter:
+    minConfidence: 0.35
+    phantomPhrases: [you, thank you, amen, bye]
+```
 
 ## Speaking speed
 

@@ -33,6 +33,7 @@ export class EnergyVad implements VadStream {
   private run = 0;
   private silent = 0;
   private lastVoiced = 0;
+  private onsetFrame = 0;
   private closed = false;
   private readonly level: number;
   private readonly minFrames: number;
@@ -75,8 +76,8 @@ export class EnergyVad implements VadStream {
     this.speaking = true;
     this.silent = 0;
     this.lastVoiced = index + 1;
-    const onset = (index + 1 - this.run) * FRAME_MS;
-    this.emit("start", Math.max(0, onset - this.params.prerollMs));
+    this.onsetFrame = index + 1 - this.run;
+    this.emit("start", Math.max(0, this.onsetFrame * FRAME_MS - this.params.prerollMs));
   }
 
   private whileSpeaking(index: number, loud: boolean): void {
@@ -89,10 +90,10 @@ export class EnergyVad implements VadStream {
     if (this.silent < this.silenceFrames) return;
     this.speaking = false;
     this.run = 0;
-    this.emit("end", this.lastVoiced * FRAME_MS);
+    this.emit("end", this.lastVoiced * FRAME_MS, (this.lastVoiced - this.onsetFrame) * FRAME_MS);
   }
 
-  private emit(kind: "start" | "end", atMs: number): void {
-    for (const handler of this.handlers) handler({ kind, atMs });
+  private emit(kind: "start" | "end", atMs: number, speechMs?: number): void {
+    for (const handler of this.handlers) handler(speechMs === undefined ? { kind, atMs } : { kind, atMs, speechMs });
   }
 }

@@ -11,7 +11,7 @@ import { iso6391, looksLikeMp3, mp3SniffBytes, mpegFrameLength, parseWav, toWav 
 import { EnergyVad } from "../providers/energy-vad.js";
 import { LocalSttProvider, LocalTtsProvider } from "../providers/local.js";
 import { OpenAiSttProvider, OpenAiTtsProvider } from "../providers/openai.js";
-import { OpenAiCompatibleSttProvider, OpenAiCompatibleTtsProvider } from "../providers/openai-compatible.js";
+import { OpenAiCompatibleSttProvider, OpenAiCompatibleTtsProvider, qualityOf } from "../providers/openai-compatible.js";
 import { createSttProvider, createTtsProvider, createVad, closeSharedLocalSpeech } from "../providers/registry.js";
 import { SpeechInstaller } from "../sidecar/bootstrap.js";
 import { SpeechSidecarClient } from "../sidecar/client.js";
@@ -305,6 +305,20 @@ describe("OpenAI TTS", () => {
   });
 });
 
+describe("qualityOf", () => {
+  it("is undefined when the reply carries no usable numbers, and clamps what it does carry", () => {
+    expect(qualityOf({})).toBeUndefined();
+    expect(qualityOf({ segments: [] })).toBeUndefined();
+    expect(qualityOf({ segments: [{ avg_logprob: "x", no_speech_prob: null }, null, 7] })).toBeUndefined();
+    expect(qualityOf({ segments: [{ avg_logprob: 0.5, no_speech_prob: 1.4 }] })).toEqual({ confidence: 1, noSpeechProb: 1 });
+  });
+
+  it("takes whichever field a server sends", () => {
+    expect(qualityOf({ segments: [{ no_speech_prob: 0.7 }] })).toEqual({ noSpeechProb: 0.7 });
+    expect(qualityOf({ segments: [{ avg_logprob: -1 }] })?.confidence).toBeCloseTo(Math.exp(-1), 6);
+  });
+});
+
 describe("OpenAI-compatible STT", () => {
   const compatible = (url: string, extra: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) =>
     new OpenAiCompatibleSttProvider({ provider: "openai-compatible", model: "whisper-1", baseUrl: url, apiKeyRef: null, ...extra }, env);
@@ -332,6 +346,60 @@ describe("OpenAI-compatible STT", () => {
     expect(request.body.readUInt32LE(riff + 24)).toBe(16_000);
     expect(request.body.readUInt32LE(riff + 40)).toBe(6400);
     expect(request.headers.authorization).toBeUndefined();
+  });
+
+  it("asks for verbose_json and reports how sure the model was: the length-weighted confidence and the highest no-speech chance", async () => {
+    const server = await httpServer((_request, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ text: "Amen", segments: [
+        { start: 0, end: 3, avg_logprob: -0.2, no_speech_prob: 0.1 },
+        { start: 3, end: 4, avg_logprob: -1.2, no_speech_prob: 0.9 },
+      ] }));
+    });
+    const stream = compatible(server.url).open(opts());
+    const events = collect(stream);
+    stream.write(pcm(100, 500));
+    stream.end();
+    await until(() => events.length > 0);
+    expect(server.seen[0]!.body.toString("latin1")).toContain("verbose_json");
+    const event = events[0] as { type: string; text: string; quality: { confidence: number; noSpeechProb: number } };
+    expect(event).toMatchObject({ type: "final", text: "Amen", quality: { noSpeechProb: 0.9 } });
+    expect(event.quality.confidence).toBeCloseTo(Math.exp((-0.2 * 3 - 1.2) / 4), 6);
+  });
+
+  it("a server that refuses verbose_json is asked for json, and remembered: the next utterance goes straight to json", async () => {
+    const server = await httpServer((request, res) => {
+      if (request.body.toString("latin1").includes("verbose_json")) { res.writeHead(400); return res.end("unsupported response_format"); }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ text: "hello" }));
+    });
+    const provider = compatible(server.url);
+    for (let round = 0; round < 2; round += 1) {
+      const stream = provider.open(opts());
+      const events = collect(stream);
+      stream.write(pcm(100, 500));
+      stream.end();
+      await until(() => events.length > 0);
+      expect(events).toEqual([{ type: "final", text: "hello" }]);
+    }
+    expect(server.seen.map((request) => request.body.toString("latin1").includes("verbose_json"))).toEqual([true, false, false]);
+  });
+
+  it("a 4xx that fails as plain json too does not stop later utterances asking for verbose_json", async () => {
+    const server = await httpServer((_request, res) => { res.writeHead(413); res.end("too large"); });
+    const provider = compatible(server.url);
+    const stream = provider.open(opts());
+    const events = collect(stream);
+    stream.write(pcm(100, 500));
+    stream.end();
+    await until(() => events.length > 0);
+    expect(events).toEqual([{ type: "error", message: "transcription failed (HTTP 413)" }]);
+    const again = provider.open(opts());
+    collect(again);
+    again.write(pcm(100, 500));
+    again.end();
+    await until(() => server.seen.length === 3);
+    expect(server.seen[2]!.body.toString("latin1")).toContain("verbose_json");
   });
 
   it("sends the key when one is configured and refuses a configured key that is not set", async () => {
@@ -616,7 +684,7 @@ describe("energy VAD", () => {
     vad.write(pcm(200));
     vad.write(pcm(300, 8000));
     vad.write(pcm(400));
-    expect(events).toEqual([{ kind: "start", atMs: 200 - 60 }, { kind: "end", atMs: 500 }]);
+    expect(events).toEqual([{ kind: "start", atMs: 200 - 60 }, { kind: "end", atMs: 500, speechMs: 300 }]);
   });
 
   it("ignores a burst shorter than minSpeech and audio below the level, and a closed stream", () => {

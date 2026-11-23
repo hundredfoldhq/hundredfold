@@ -53,6 +53,17 @@ export interface VoiceConfig {
     /** Audio kept from before speech started. Defaults to 300. */
     prerollMs?: number;
   };
+  /** What is dropped after speech to text, so noise that passed the VAD is not sent as if you had said it. */
+  filter?: {
+    /** Drop a transcript the provider is less sure of than this (mean token probability, 0..1; 0 turns it off). Only providers that report one. Defaults to 0.3. */
+    minConfidence?: number;
+    /** Drop a transcript the provider says is probably not speech, above this probability (0..1; 1 turns it off). Only providers that report one. Defaults to 0.8. */
+    noSpeechThreshold?: number;
+    /** A clip voiced for less than this (ms; 0 turns the phrase list off) whose whole transcript is one of `phantomPhrases` is dropped. Defaults to 500. */
+    phantomMaxMs?: number;
+    /** Words speech to text invents out of noise. Defaults to a short built-in list; `[]` turns the list off. */
+    phantomPhrases?: string[];
+  };
   bargeIn?: {
     /** Defaults to true. */
     enabled?: boolean;
@@ -148,6 +159,7 @@ export interface ResolvedVoiceConfig {
   stt: ResolvedVoiceSide;
   tts: ResolvedVoiceSide & { voice: string; speed: number };
   vad: { threshold: number; minSpeechMs: number; silenceMs: number; unfinishedHoldMs: number; prerollMs: number };
+  filter: { minConfidence: number; noSpeechThreshold: number; phantomMaxMs: number; phantomPhrases: string[] };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
   cues: { enabled: boolean; volume: number };
@@ -162,6 +174,10 @@ export interface ResolvedVoiceConfig {
   local: { device: "auto" | "gpu" | "cpu" };
 }
 
+/** What speech to text tends to write for a bump, a breath or a hum, none of which a person says on purpose to an assistant in under half a second. */
+export const DEFAULT_PHANTOM_PHRASES: readonly string[] = ["you", "thank you", "thanks for watching", "amen", "uh", "um", "hmm", "mm", "mhm", "huh", "oh", "ah"];
+const MAX_PHANTOM_PHRASES = 100;
+const MAX_PHANTOM_PHRASE_CHARS = 80;
 const MODES = ["hands-free", "push-to-talk"];
 const DEVICES = ["auto", "gpu", "cpu"];
 const LANGUAGE = /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/;
@@ -250,6 +266,24 @@ function vadProblems(vad: Obj | undefined): string[] {
   ];
 }
 
+function phantomPhraseProblems(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return [`voice.filter.phantomPhrases must be a list of words (got ${typeName(value)})`];
+  if (value.length > MAX_PHANTOM_PHRASES) return [`voice.filter.phantomPhrases must have at most ${MAX_PHANTOM_PHRASES} entries (got ${value.length})`];
+  const bad = value.findIndex((entry) => typeof entry !== "string" || entry.trim() === "" || entry.length > MAX_PHANTOM_PHRASE_CHARS);
+  return bad < 0 ? [] : [`voice.filter.phantomPhrases[${bad}] must be a non-empty string of at most ${MAX_PHANTOM_PHRASE_CHARS} characters`];
+}
+
+function filterProblems(filter: Obj | undefined): string[] {
+  if (!filter) return [];
+  return [
+    ...inRange("voice.filter.minConfidence", filter.minConfidence, [0, 1], false),
+    ...inRange("voice.filter.noSpeechThreshold", filter.noSpeechThreshold, [0, 1], false),
+    ...inRange("voice.filter.phantomMaxMs", filter.phantomMaxMs, [0, 5000], true),
+    ...phantomPhraseProblems(filter.phantomPhrases),
+  ];
+}
+
 function bargeInProblems(bargeIn: Obj | undefined): string[] {
   if (!bargeIn) return [];
   return [
@@ -316,7 +350,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   const stt = sideProblems("voice.stt", voice.stt);
   const tts = sideProblems("voice.tts", voice.tts);
   const parts = {
-    vad: block("voice.vad", voice.vad), bargeIn: block("voice.bargeIn", voice.bargeIn), autoBackground: block("voice.autoBackground", voice.autoBackground),
+    vad: block("voice.vad", voice.vad), filter: block("voice.filter", voice.filter), bargeIn: block("voice.bargeIn", voice.bargeIn), autoBackground: block("voice.autoBackground", voice.autoBackground),
     limits: block("voice.limits", voice.limits), local: block("voice.local", voice.local), cues: block("voice.cues", voice.cues),
   };
   return [
@@ -324,7 +358,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...oneOf("voice.mode", voice.mode, MODES),
     ...languageProblems(voice.language, [stt.side?.provider ?? "local", tts.side?.provider ?? "local"]),
     ...stt.problems, ...tts.problems, ...ttsProblems(tts.side),
-    ...vadProblems(parts.vad.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
+    ...vadProblems(parts.vad.value), ...filterProblems(parts.filter.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
     ...cuesProblems(parts.cues.value),
     ...textProblems("voice.prompt", voice.prompt, MAX_PROMPT_CHARS), ...promptFileProblems(voice.promptFile, home),
     ...textProblems("voice.stylePrompt", voice.stylePrompt, MAX_STYLE_PROMPT_CHARS),
@@ -406,16 +440,26 @@ function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {
   return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 1000), unfinishedHoldMs: setting(vad, "unfinishedHoldMs", 800), prerollMs: setting(vad, "prerollMs", 300) };
 }
 
+function resolveFilter(filter: Obj): ResolvedVoiceConfig["filter"] {
+  return {
+    minConfidence: setting(filter, "minConfidence", 0.3),
+    noSpeechThreshold: setting(filter, "noSpeechThreshold", 0.8),
+    phantomMaxMs: setting(filter, "phantomMaxMs", 500),
+    phantomPhrases: setting<string[]>(filter, "phantomPhrases", [...DEFAULT_PHANTOM_PHRASES]),
+  };
+}
+
 function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {
   return { enabled: setting(bargeIn, "enabled", true), minSpeechMs: setting(bargeIn, "minSpeechMs", 250), onsetThreshold: setting(bargeIn, "onsetThreshold", 0.02) };
 }
 
-function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "cues" | "limits" | "local"> {
+function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "filter" | "bargeIn" | "autoBackground" | "cues" | "limits" | "local"> {
   const autoBackground = sub(voice, "autoBackground");
   const limits = sub(voice, "limits");
   const cues = sub(voice, "cues");
   return {
     vad: resolveVad(sub(voice, "vad")),
+    filter: resolveFilter(sub(voice, "filter")),
     bargeIn: resolveBargeIn(sub(voice, "bargeIn")),
     autoBackground: { enabled: setting(autoBackground, "enabled", true), afterSeconds: setting(autoBackground, "afterSeconds", 5) },
     cues: { enabled: setting(cues, "enabled", true), volume: setting(cues, "volume", DEFAULT_CUE_VOLUME) },

@@ -2,12 +2,13 @@
  * Providers for a self-hosted server that speaks the OpenAI audio API shape
  * (specs/009-voice-mode/contracts/providers.md, `openai-compatible` row):
  * `POST {baseUrl}/v1/audio/transcriptions` with the whole utterance as a WAV (batch, so no
- * partials), and `POST {baseUrl}/v1/audio/speech` asking for `pcm`, then `wav`; a server
+ * partials; it asks for `verbose_json`, whose segments say how sure the model was, and falls back to `json`
+ * for a server that refuses that), and `POST {baseUrl}/v1/audio/speech` asking for `pcm`, then `wav`; a server
  * that can only return MP3 is refused with a message that says so. The key is optional.
  */
 import { resolveEnvVar } from "../../shared/env-ref.js";
 import type { ResolvedVoiceSide } from "../../shared/voice-config.js";
-import type { SttEvent, SttProvider, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
+import type { SttEvent, SttProvider, SttQuality, SttStream, SttStreamOptions, TtsProvider, TtsSynthesisOptions, VoiceProviderStatus } from "../provider.js";
 import { iso6391, looksLikeMp3, looksLikeOggOrFlac, mp3SniffBytes, parseWav, redact, resamplePcm16, toWav } from "./audio.js";
 import { pcmChunks, postSpeech, SpeechHttpError, type SpeechRequest } from "./speech-http.js";
 
@@ -27,10 +28,35 @@ function keyProblem(side: ResolvedVoiceSide, key: string | undefined): VoiceProv
   return { available: true };
 }
 
+/** Whether the server takes `verbose_json`; cleared for good once it refuses it, so only the first utterance pays for the retry. */
+interface ReplyFormat { verbose: boolean }
+
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+/**
+ * What a `verbose_json` reply says about itself: the exponent of the length-weighted mean `avg_logprob` of its segments, and
+ * the highest `no_speech_prob`. A server that sends neither (or plain `json`) gives `undefined` and nothing is filtered on it.
+ */
+export function qualityOf(reply: { segments?: unknown }): SttQuality | undefined {
+  if (!Array.isArray(reply.segments)) return undefined;
+  const segments = reply.segments.filter((raw): raw is Record<string, unknown> => typeof raw === "object" && raw !== null);
+  const logprobs = segments.filter((segment) => finite(segment.avg_logprob));
+  // A segment's share is its length in seconds; one with no usable length counts as one.
+  const share = (segment: Record<string, unknown>): number => (finite(segment.start) && finite(segment.end) && segment.end > segment.start ? segment.end - segment.start : 1);
+  const weight = logprobs.reduce((sum, segment) => sum + share(segment), 0);
+  const noSpeech = segments.map((segment) => segment.no_speech_prob).filter(finite);
+  const quality: SttQuality = {};
+  if (weight > 0) quality.confidence = clamp01(Math.exp(logprobs.reduce((sum, segment) => sum + (segment.avg_logprob as number) * share(segment), 0) / weight));
+  if (noSpeech.length > 0) quality.noSpeechProb = clamp01(Math.max(...noSpeech));
+  return quality.confidence === undefined && quality.noSpeechProb === undefined ? undefined : quality;
+}
+
 export class OpenAiCompatibleSttProvider implements SttProvider {
   readonly id = "openai-compatible";
   readonly partials = false;
   readonly #key: string | undefined;
+  private readonly format: ReplyFormat = { verbose: true };
 
   constructor(private readonly side: ResolvedVoiceSide, env: NodeJS.ProcessEnv = process.env) {
     this.#key = resolveEnvVar(side.apiKeyRef ?? undefined, env);
@@ -41,7 +67,7 @@ export class OpenAiCompatibleSttProvider implements SttProvider {
   }
 
   open(options: SttStreamOptions): SttStream {
-    return new BatchSttStream(this.side, this.#key, options, this.status());
+    return new BatchSttStream(this.side, this.#key, options, this.status(), this.format);
   }
 }
 
@@ -53,7 +79,7 @@ class BatchSttStream implements SttStream {
 
   readonly #key: string | undefined;
 
-  constructor(private readonly side: ResolvedVoiceSide, key: string | undefined, private readonly options: SttStreamOptions, status: VoiceProviderStatus) {
+  constructor(private readonly side: ResolvedVoiceSide, key: string | undefined, private readonly options: SttStreamOptions, status: VoiceProviderStatus, private readonly format: ReplyFormat) {
     this.#key = key;
     options.signal.addEventListener("abort", () => this.abort(), { once: true });
     if (options.signal.aborted) this.abort();
@@ -80,24 +106,40 @@ class BatchSttStream implements SttStream {
     this.chunks = [];
     if (pcm.length === 0) return this.settle({ type: "final", text: "" });
     void this.transcribe(pcm).then(
-      (text) => this.settle({ type: "final", text }),
+      ({ text, quality }) => this.settle({ type: "final", text, ...(quality ? { quality } : {}) }),
       (error: unknown) => this.settle({ type: "error", message: redact(error instanceof Error ? error.message : String(error), [this.#key]) }),
     );
   }
 
-  private async transcribe(pcm: Buffer): Promise<string> {
+  private async transcribe(pcm: Buffer): Promise<{ text: string; quality?: SttQuality }> {
+    let verbose = this.format.verbose;
+    let response = await this.request(pcm, verbose);
+    // A server that does not know `verbose_json` answers 4xx (not about credentials or rate). Ask again for plain `json`, and
+    // stop asking for the other kind only if that works: a 4xx about the audio itself fails both ways and changes nothing.
+    if (verbose && formatRefused(response.status)) {
+      const plain = await this.request(pcm, false);
+      if (plain.ok) {
+        this.format.verbose = false;
+        verbose = false;
+      }
+      response = plain;
+    }
+    if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
+    const parsed = (await response.json()) as { text?: unknown; segments?: unknown };
+    if (typeof parsed.text !== "string") throw new Error("transcription reply had no text");
+    const quality = verbose ? qualityOf(parsed) : undefined;
+    return { text: parsed.text.trim(), ...(quality ? { quality } : {}) };
+  }
+
+  private request(pcm: Buffer, verbose: boolean): Promise<Response> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(toWav(pcm, this.options.sampleRate))], { type: "audio/wav" }), "audio.wav");
     form.append("model", this.side.model);
-    form.append("response_format", "json");
+    form.append("response_format", verbose ? "verbose_json" : "json");
     const language = iso6391(this.options.language);
     if (language) form.append("language", language);
     const headers: Record<string, string> = this.#key ? { Authorization: `Bearer ${this.#key}` } : {};
-    const response = await fetch(endpoint(this.side, "transcriptions"), { method: "POST", headers, body: form, signal: this.controller.signal });
-    if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
-    const parsed = (await response.json()) as { text?: unknown };
-    if (typeof parsed.text !== "string") throw new Error("transcription reply had no text");
-    return parsed.text.trim();
+    return fetch(endpoint(this.side, "transcriptions"), { method: "POST", headers, body: form, signal: this.controller.signal });
   }
 
   private settle(event: SttEvent): void {
@@ -108,9 +150,12 @@ class BatchSttStream implements SttStream {
 }
 
 /** A 4xx that is not about credentials or rate: the server did not like `response_format`. */
+function formatRefused(status: number): boolean {
+  return status >= 400 && status < 500 && ![401, 403, 429].includes(status);
+}
+
 function formatNotSupported(error: unknown): boolean {
-  if (!(error instanceof SpeechHttpError)) return false;
-  return error.status >= 400 && error.status < 500 && ![401, 403, 429].includes(error.status);
+  return error instanceof SpeechHttpError && formatRefused(error.status);
 }
 
 export class OpenAiCompatibleTtsProvider implements TtsProvider {

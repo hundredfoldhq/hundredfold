@@ -200,6 +200,13 @@ class EndpointerTests(unittest.TestCase):
         self.assertEqual(events[0][1]["atMs"], 2 * 32)  # onset: the first speech frame
         self.assertEqual(events[1][1]["atMs"], 5 * 32)  # where the last speech frame ended
 
+    def test_end_says_how_long_the_speech_was_voiced_without_preroll_or_trailing_silence(self):
+        events = self.run_probs([0, 0, 1, 1, 1, 0, 0, 0, 0], preroll_ms=64)
+        self.assertEqual(events[1][1]["speechMs"], 3 * 32)  # frames 2 to 4, not the pre-roll before them or the silence after
+        # A second utterance counts from its own first speech frame.
+        again = self.run_probs([1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0])
+        self.assertEqual([e.get("speechMs") for _, e in again if e["kind"] == "end"], [2 * 32, 4 * 32])
+
     def test_preroll_moves_the_start_back_and_never_below_zero(self):
         events = self.run_probs([0, 0, 1, 1], preroll_ms=40)
         self.assertEqual(events[0][1]["atMs"], 64 - 40)

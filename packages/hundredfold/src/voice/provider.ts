@@ -20,9 +20,20 @@ export interface SttStreamOptions {
   signal: AbortSignal;
 }
 
+/**
+ * What a provider says about how sure it is of a final transcript, when it says anything (each field is absent when the
+ * provider reports nothing: the local Parakeet models and OpenAI's Realtime transcription report neither).
+ */
+export interface SttQuality {
+  /** Mean per-token probability of the words, 0..1 (the exponent of a Whisper-style `avg_logprob`). */
+  confidence?: number;
+  /** Probability that the audio held no speech, 0..1 (Whisper's `no_speech_prob`; the highest of the segments). */
+  noSpeechProb?: number;
+}
+
 export type SttEvent =
   | { type: "partial"; text: string }
-  | { type: "final"; text: string }
+  | { type: "final"; text: string; quality?: SttQuality }
   | { type: "error"; message: string };
 
 /** One utterance's recognition. Emits at most one `final` or one `error`, then nothing. */
@@ -75,10 +86,16 @@ export interface TtsProvider {
 
 /**
  * What a VAD stream reports, at `atMs`, an offset into everything written to the stream. `start` and `end` mark speech.
- * `reset` says the detector behind the stream was replaced (the sidecar restarted): nothing before `atMs` will get an
- * end, and every later event has `atMs` at or after it. The in-process detector never emits one.
+ * An `end` carries `speechMs`, how long that speech was voiced. `reset` says the detector behind the stream was replaced
+ * (the sidecar restarted): nothing before `atMs` will get an end, and every later event has `atMs` at or after it. The
+ * in-process detector never emits one.
  */
-export interface VadEvent { kind: "start" | "end" | "reset"; atMs: number }
+export interface VadEvent {
+  kind: "start" | "end" | "reset";
+  atMs: number;
+  /** On `end`: how long the speech that just ended was voiced, first voiced frame to last, without the pre-roll or the trailing silence. */
+  speechMs?: number;
+}
 export type VadEventHandler = (event: VadEvent) => void;
 
 /** The gateway's voice activity detection over one attachment's continuous audio. */

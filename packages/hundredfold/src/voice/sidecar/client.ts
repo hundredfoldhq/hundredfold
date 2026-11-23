@@ -419,7 +419,8 @@ export class SpeechSidecarClient {
     if (!state) return;
     // The sidecar counts from the first byte of the generation that sent this; the caller counts from the stream's first.
     const atMs = state.baseBytes / VAD_BYTES_PER_MS + Number(header.atMs);
-    const event = { kind: header.kind === "end" ? ("end" as const) : ("start" as const), atMs };
+    const speechMs = header.kind === "end" && typeof header.speechMs === "number" ? header.speechMs : undefined;
+    const event = { kind: header.kind === "end" ? ("end" as const) : ("start" as const), atMs, ...(speechMs === undefined ? {} : { speechMs }) };
     for (const handler of state.handlers) handler(event);
   }
 
