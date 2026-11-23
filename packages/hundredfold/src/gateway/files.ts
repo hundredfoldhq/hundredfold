@@ -46,6 +46,41 @@ export function sanitizeUploadFilename(name: string): string {
   return base;
 }
 
+/**
+ * Atomically claim an unused filename in `dir`: the first free of `name`,
+ * `name-2`, `name-3`, ... (suffix before the extension). The empty file is
+ * created exclusively, so concurrent uploads of the same name cannot take the
+ * same slot; callers then write or rename over the placeholder they own.
+ */
+export function claimUniqueUploadPath(dir: string, name: string): string {
+  const ext = path.extname(name);
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  for (let n = 1; ; n++) {
+    const candidate = path.join(dir, n === 1 ? name : suffixedName(stem, ext, n));
+    try {
+      fs.closeSync(fs.openSync(candidate, "wx"));
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+}
+
+/** Longest filename (in bytes) common filesystems accept. */
+const MAX_FILENAME_BYTES = 255;
+
+/** `stem-n.ext`, trimming the stem by whole characters so the result stays within the filename byte limit. */
+function suffixedName(stem: string, ext: string, n: number): string {
+  const tail = `-${n}${ext}`;
+  const budget = MAX_FILENAME_BYTES - Buffer.byteLength(tail);
+  let trimmed = stem;
+  while (trimmed.length > 0 && Buffer.byteLength(trimmed) > budget) {
+    // Drop one code point at a time so a multi-byte character is never split.
+    trimmed = Array.from(trimmed).slice(0, -1).join("");
+  }
+  return `${trimmed}${tail}`;
+}
+
 /** Restrict a sessionId to a safe single path segment (no separators / traversal). */
 export function sanitizeSessionId(id: string): string {
   // Drop separators/unsafe chars, then strip leading dots so no "."/".." segment survives.
@@ -595,22 +630,35 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     ? uploadDir(result.sessionId!)
     : path.join(FILES_DIR, result.id);
   await fs.promises.mkdir(storageDir, { recursive: true });
-  const storagePath = path.join(storageDir, safeName);
-  await fs.promises.writeFile(storagePath, result.buffer);
+  // Session uploads share one directory per day, so two same-named files (every
+  // pasted clipboard image is "image.png") must not overwrite each other.
+  const storagePath = sessionScoped
+    ? claimUniqueUploadPath(storageDir, safeName)
+    : path.join(storageDir, safeName);
+  const storedName = path.basename(storagePath);
+  let meta: FileMeta;
+  let mimetype: string;
+  try {
+    await fs.promises.writeFile(storagePath, result.buffer);
 
-  const mimetype = mimeFromFilename(safeName);
-  // The extension only decides whether a probe is worth attempting — what makes
-  // the pair real is sharp reading it, so a .png full of zip bytes records none.
-  const dimensions = mimetype.startsWith("image/") ? await readImageDimensions(result.buffer) : null;
-  const meta = insertFile({
-    id: result.id,
-    filename: safeName,
-    size: result.buffer.length,
-    mimetype,
-    // For session uploads, record the absolute on-disk path so download + path-injection can find it.
-    path: sessionScoped ? storagePath : customPath,
-    ...(dimensions ?? {}),
-  });
+    mimetype = mimeFromFilename(safeName);
+    // The extension only decides whether a probe is worth attempting — what makes
+    // the pair real is sharp reading it, so a .png full of zip bytes records none.
+    const dimensions = mimetype.startsWith("image/") ? await readImageDimensions(result.buffer) : null;
+    meta = insertFile({
+      id: result.id,
+      filename: storedName,
+      size: result.buffer.length,
+      mimetype,
+      // For session uploads, record the absolute on-disk path so download + path-injection can find it.
+      path: sessionScoped ? storagePath : customPath,
+      ...(dimensions ?? {}),
+    });
+  } catch (err) {
+    // A failed write leaves the claimed placeholder behind with no registry row; drop it.
+    if (sessionScoped) fs.rmSync(storagePath, { force: true });
+    throw err;
+  }
 
   // Write to custom path if provided
   if (customPath) {
@@ -910,18 +958,26 @@ export function rehomeAttachmentsToSession(fileIds: unknown, sessionId: string):
     const current = path.join(FILES_DIR, meta.id, meta.filename);
     if (!fs.existsSync(current)) continue; // already session-scoped or missing
     fs.mkdirSync(destDir, { recursive: true });
-    const dest = path.join(destDir, sanitizeUploadFilename(meta.filename));
+    let dest: string;
     try {
-      fs.renameSync(current, dest);
+      dest = claimUniqueUploadPath(destDir, sanitizeUploadFilename(meta.filename));
     } catch (err) {
-      // Cross-device fallback: copy then remove.
-      if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+      logger.warn(`Failed to re-home attachment ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    try {
+      try {
+        fs.renameSync(current, dest);
+      } catch (err) {
+        // Cross-device fallback: copy then remove.
+        if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
         fs.copyFileSync(current, dest);
         fs.rmSync(current, { force: true });
-      } else {
-        logger.warn(`Failed to re-home attachment ${id}: ${err instanceof Error ? err.message : String(err)}`);
-        continue;
       }
+    } catch (err) {
+      fs.rmSync(dest, { force: true }); // drop the empty placeholder claimed above
+      logger.warn(`Failed to re-home attachment ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
     }
     // Remove the now-empty FILES_DIR/<id> dir (best-effort).
     try { fs.rmdirSync(path.join(FILES_DIR, meta.id)); } catch { /* not empty / gone */ }
