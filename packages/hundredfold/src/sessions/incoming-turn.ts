@@ -47,8 +47,8 @@ export interface IncomingTurn {
    *  has a true operation id (an external provider's call id), never for content-derived
    *  lateral-send keys where a later identical sentence is a new intent. */
   durableDedupe?: boolean;
-  /** Notifications default to an internal queue row. A turn that is
-   *  visible user work and opt into the ordinary queue surface. */
+  /** Notifications default to an internal queue row. A turn that is visible
+   *  user work opts into the ordinary queue surface. */
   queueVisibility?: 'internal' | 'visible';
   /** An earlier parked send of the same sender that this turn replaces, taken
    *  back in the same transaction that accepts this one. Only meaningful beside

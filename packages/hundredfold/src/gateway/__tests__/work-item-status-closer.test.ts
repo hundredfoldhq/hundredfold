@@ -495,6 +495,7 @@ describe("asOperator while the operator is talking to a granted employee in a we
     ["a board hook", { source: "hook", sourceRef: "hook:fire-1", sessionKey: "hook:fire-1" }],
     ["a chat connector", { source: "slack", sourceRef: "slack:chat-1", sessionKey: "slack:chat-1" }],
     ["a stored talk-source chat", { source: "talk", sourceRef: "talk:call-1", sessionKey: "talk:call-1" }],
+    ["a stored handoff session", { sourceRef: "talk-handoff:call-1", sessionKey: "talk-handoff:call-1" }],
     ["a cron run", { source: "cron", sourceRef: "cron:job-1:2026-01-01T00:00:00Z" }],
     ["a child session", { parentSessionId: "parent-session" }],
   ] as const)("refuses a granted employee in %s, even on a turn stamped as the operator's", async (_label, overrides) => {
