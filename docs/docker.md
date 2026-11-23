@@ -74,35 +74,28 @@ Prefer `:ro` wherever the agents only need to read — that list is the blast ra
 - **Network egress is unrestricted.** The container has to reach the Anthropic API; it can therefore reach anything else, so treat data inside mounts as exfiltratable.
 - **Credentials in the container are real.** The `hundredfold-claude` volume holds a live token for your account.
 - **Only the `claude` engine is installed.** `codex`, `grok` and `hermes` appear in the default config but their binaries are not in the image, so selecting one in the dashboard will fail. A Homebrew or npm install does not provide them either.
-- **Voice features are not installed.** Speech-to-text needs `whisper-cli` and `ffmpeg`, neither of which is in the image — see [Enabling speech-to-text](#enabling-speech-to-text). Voice *output* (kokoro TTS) additionally shells out to `python`, which the runtime stage does not include, so read-aloud playback is unavailable without extending the image further. [Voice mode](voice.md) is the same: its built-in local speech needs Python 3.10+ (with `venv` and `pip`), which the image lacks, so use a hosted or OpenAI-compatible provider there, or extend the image.
+- **The local voice engine is not installed.** Read-aloud (kokoro TTS) shells out to `python`, which the runtime stage does not include, so it is unavailable without extending the image. [Voice mode](voice.md) is the same: its built-in local speech needs Python 3.10+ (with `venv` and `pip`), which the image lacks, so use a hosted or OpenAI-compatible provider there, or extend the image. Dictation (the Notes and Todo microphones) and Telegram voice notes run on voice mode's speech-to-text, so they work with a hosted provider; Telegram voice notes also need `ffmpeg`, which the image lacks — see [Telegram voice notes](#telegram-voice-notes).
 - **Git has no identity.** `git commit` inside a mounted repo fails with *"Author identity unknown"* unless you supply `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`, and on a Linux host whose user is not uid 1000 the bind-mounted files are not writable by the container's `node` user. Reading them does work: the image sets `safe.directory = *` system-wide, without which git refuses a foreign-owned repository outright — `git status` and `git log` included, not just writes.
 
-## Enabling speech-to-text
+## Telegram voice notes
 
-Voice notes and the dictation microphones (Notes and Todo quick capture) shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
+Dictation and Telegram voice notes are transcribed by the speech-to-text provider voice mode is set up with ([voice mode](voice.md)); there is no separate speech engine to install. The dictation microphones send the browser's own decoded audio, so they need nothing more. A Telegram voice note arrives as Ogg/Opus, and decoding it needs `ffmpeg`, which the image does not include (neither does a Homebrew or npm install, where you would run `brew install ffmpeg` yourself). Without it the bot answers that it cannot decode the audio.
 
-Installing them inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which `docker compose up -d --build` throws away. They have to be baked into an image.
+Installing it inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which `docker compose up -d --build` throws away. It has to be baked into an image.
 
-Build the base image under its own tag first, so the derived one has something to extend (compose tags its own build `hundredfold:local`, so `Dockerfile.stt` must not use that name as its base):
+Build the base image under its own tag first, so the derived one has something to extend (compose tags its own build `hundredfold:local`, so `Dockerfile.ffmpeg` must not use that name as its base):
 
 ```bash
 docker build --tag hundredfold:base .
 ```
 
-Then create `Dockerfile.stt`:
+Then create `Dockerfile.ffmpeg`:
 
 ```dockerfile
 FROM hundredfold:base
 USER root
-ARG WHISPER_CPP_REF=v1.7.4
-# curl is not listed: the base image already installs it, because agent turns reach
-# the gateway with it. The model download shells out to the same binary.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg cmake g++ git \
- && git clone --depth 1 -b "$WHISPER_CPP_REF" https://github.com/ggerganov/whisper.cpp /tmp/w \
- && cmake -S /tmp/w -B /tmp/w/build \
- && cmake --build /tmp/w/build -j --target whisper-cli \
- && cp /tmp/w/build/bin/whisper-cli /usr/local/bin/ \
- && rm -rf /tmp/w /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+ && apt-get clean
 USER node
 ```
 
@@ -112,10 +105,10 @@ Point compose at it in `docker-compose.override.yml`:
 services:
   hundredfold:
     build:
-      dockerfile: Dockerfile.stt
+      dockerfile: Dockerfile.ffmpeg
 ```
 
-Then `docker compose up -d --build` and download a model from the dashboard. **No extra volume is needed** — models are written to `~/.hundredfold/models/whisper`, already on the `hundredfold-home` volume, so each one downloads once and survives every later upgrade. Re-run the `docker build --tag hundredfold:base .` step whenever you upgrade Hundredfold itself.
+Then `docker compose up -d --build`. Re-run the `docker build --tag hundredfold:base .` step whenever you upgrade Hundredfold itself.
 
 ## Persistence and upgrades
 

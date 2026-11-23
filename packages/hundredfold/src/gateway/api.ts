@@ -119,20 +119,13 @@ import {
   CONFIG_PATH,
   ORG_DIR,
   LOGS_DIR,
-  TMP_DIR,
   FILES_DIR,
-  STT_SETTINGS_FILE,
   resolveHomeIdentity,
 } from "../shared/paths.js";
 import { CONFIG_TOP_LEVEL_KEYS, saveConfigAtomic, gatewayEnvOverrides, validateConfigShape } from "../shared/config.js";
 import { messageBodyError } from "../shared/message-body.js";
 import { logger } from "../shared/logger.js";
 import { redactText } from "../shared/redact.js";
-import { getSttStatus, downloadModel, transcribe as sttTranscribe, WHISPER_LANGUAGES } from "../stt/stt.js";
-import {
-  getEffectiveSttSettings,
-  writeSharedSttSettings,
-} from "../stt/settings-store.js";
 import { CODEX_HOMES_DIR, HUNDREDFOLD_HOME } from "../shared/paths.js";
 import { collectEngineLimits } from "../shared/engine-limits.js";
 import { scopeEngineLimitsToConfigured } from "../shared/engine-limits-configured.js";
@@ -164,7 +157,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, fileIdsToMedia, rehomeAttachmentsToSession, mimeFromFilename, MultipartUploadError, readLocalFileForIngestion, readMultipartFile, sanitizeUploadFilename } from "./files.js";
 import { handleSessionFileRoutes } from "./session-file-read.js";
 import { serveAttachmentBytes } from "./attachment-serve.js";
-import { readJsonBody, readBodyRaw } from "./http-helpers.js";
+import { readJsonBody } from "./http-helpers.js";
 import { applyLabelChange, parseLabelChange } from "./work-item-label-change.js";
 import { resolveMessageAudiences, speechContextApplies } from "./speech-context.js";
 import { isJsonMediaType } from "./media-type.js";
@@ -4773,98 +4766,6 @@ export async function handleApiRequest(
         });
       }
       return json(res, { status: "ok", portal: updated.portal });
-    }
-
-    // ── STT (Speech-to-Text) ──────────────────────────────────
-    if (method === "GET" && pathname === "/api/stt/status") {
-      const config = context.getConfig();
-      const settings = getEffectiveSttSettings(config.stt, STT_SETTINGS_FILE, logger.warn);
-      const status = getSttStatus(settings.model, settings.languages);
-      return json(res, status);
-    }
-
-    if (method === "POST" && pathname === "/api/stt/download") {
-      const config = context.getConfig();
-      const settings = getEffectiveSttSettings(config.stt, STT_SETTINGS_FILE, logger.warn);
-      const model = settings.model;
-
-      downloadModel(model, (progress) => {
-        context.emit("stt:download:progress", { progress });
-      }).then(() => {
-        try {
-          writeSharedSttSettings(STT_SETTINGS_FILE, { ...settings, enabled: true, model });
-        } catch (err) {
-          logger.error(`Failed to update shared STT settings after download: ${err}`);
-        }
-        context.emit("stt:download:complete", { model });
-      }).catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`STT download failed: ${msg}`);
-        context.emit("stt:download:error", { error: msg });
-      });
-
-      return json(res, { status: "downloading", model });
-    }
-
-    if (method === "POST" && pathname === "/api/stt/transcribe") {
-      const config = context.getConfig();
-      const settings = getEffectiveSttSettings(config.stt, STT_SETTINGS_FILE, logger.warn);
-      const model = settings.model;
-      const languages = settings.languages;
-      // Accept language from query param, fall back to first configured language
-      const requestedLang = url.searchParams.get("language");
-      const language = requestedLang && languages.includes(requestedLang) ? requestedLang : languages[0];
-
-      const audioBuffer = await readBodyRaw(req);
-      if (audioBuffer.length === 0) return badRequest(res, "No audio data");
-      if (audioBuffer.length > 100 * 1024 * 1024) return badRequest(res, "Audio too large (100MB max)");
-
-      const contentType = req.headers["content-type"] || "audio/webm";
-      const ext = contentType.includes("wav") ? ".wav"
-        : contentType.includes("mp4") || contentType.includes("m4a") ? ".m4a"
-        : contentType.includes("ogg") ? ".ogg"
-        : ".webm";
-
-      const tmpFile = path.join(TMP_DIR, `stt-${crypto.randomUUID()}${ext}`);
-      fs.mkdirSync(TMP_DIR, { recursive: true });
-      fs.writeFileSync(tmpFile, audioBuffer);
-
-      try {
-        const text = await sttTranscribe(tmpFile, model, language);
-        return json(res, { text });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`STT transcription failed: ${msg}`);
-        return serverError(res, `Transcription failed: ${msg}`);
-      } finally {
-        try { fs.unlinkSync(tmpFile); } catch {}
-      }
-    }
-
-    if (method === "PUT" && pathname === "/api/stt/config") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const body = _parsed.body as any;
-      const langs = body.languages;
-
-      if (!Array.isArray(langs) || langs.length === 0) {
-        return badRequest(res, "languages must be a non-empty array");
-      }
-
-      const invalid = langs.filter((l) => typeof l !== "string" || !WHISPER_LANGUAGES[l]);
-      if (invalid.length > 0) {
-        return badRequest(res, `Invalid language codes: ${invalid.join(", ")}`);
-      }
-
-      try {
-        const config = context.getConfig();
-        const settings = getEffectiveSttSettings(config.stt, STT_SETTINGS_FILE, logger.warn);
-        writeSharedSttSettings(STT_SETTINGS_FILE, { ...settings, languages: langs });
-        return json(res, { status: "ok", languages: langs });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return serverError(res, `Failed to update STT config: ${msg}`);
-      }
     }
 
     // /api/files — file upload/download/management

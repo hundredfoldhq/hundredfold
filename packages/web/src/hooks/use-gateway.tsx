@@ -8,10 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { createGatewaySocket } from "@/lib/ws";
-import type { GatewayEvent, GatewayEventListener, GatewayEventName } from "@hundredfold/gateway-events";
+import type { GatewayEventListener } from "@hundredfold/gateway-events";
 
 export interface GatewayContextValue {
-  events: GatewayEvent[];
   connected: boolean;
   connectionSeq: number;
   skillsVersion: number;
@@ -21,33 +20,11 @@ export interface GatewayContextValue {
 const GatewayContext = createContext<GatewayContextValue | null>(null);
 
 /**
- * Events that still need to flow through the legacy `events` context array.
- *
- * Background: every consumer that destructures `events` re-renders on every
- * event we push. Most consumers have been migrated to subscribe(); the
- * remaining holdout is useStt (the Notes and Todo quick-capture dictation mics),
- * which filters `stt:*`. We keep only those frames in the array so its
- * consumers don't re-render for every ping/keepalive/log/session-delta on the
- * bus.
- *
- * Subscribers are unaffected — they still receive every event via subscribe().
- */
-const EVENTS_ARRAY_PREFIXES = ["stt:"] as const;
-
-function shouldPushToEventsArray(event: GatewayEventName): boolean {
-  for (const prefix of EVENTS_ARRAY_PREFIXES) {
-    if (event.startsWith(prefix)) return true;
-  }
-  return false;
-}
-
-/**
  * Opens ONE WebSocket per app and exposes its events via context.
  * All consumers (useGateway, NotificationProvider, etc.) read from this
  * single connection — never open their own.
  */
 export function GatewayProvider({ children }: { children: ReactNode }) {
-  const [events, setEvents] = useState<GatewayEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [connectionSeq, setConnectionSeq] = useState(0);
   const [skillsVersion, setSkillsVersion] = useState(0);
@@ -57,14 +34,6 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     const socket = createGatewaySocket(
       (frame) => {
         const { event } = frame;
-        // Only mutate the shared events array for frames that one of the
-        // remaining events-array consumers actually filters for. Everything
-        // else is delivered exclusively through subscribe() below, which
-        // avoids waking every <ChatPane> on the page for unrelated frames.
-        if (shouldPushToEventsArray(event)) {
-          setEvents((prev) => [...prev.slice(-99), frame]);
-        }
-
         if (event === "skills:changed") {
           setSkillsVersion((prev) => prev + 1);
         }
@@ -117,7 +86,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   return (
     <GatewayContext.Provider
-      value={{ events, connected, connectionSeq, skillsVersion, subscribe }}
+      value={{ connected, connectionSeq, skillsVersion, subscribe }}
     >
       {children}
     </GatewayContext.Provider>

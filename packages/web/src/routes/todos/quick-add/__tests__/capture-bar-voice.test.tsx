@@ -25,24 +25,19 @@ vi.mock("@/lib/api", async (importOriginal) => {
 // The voice path never drives a gateway frame — its whole contract is what
 // happens before anything is posted — so this only has to be inert.
 vi.mock("@/hooks/use-gateway", () => ({
-  useGateway: () => ({ connectionSeq: 1, events: [], subscribe: (_next: GatewayEventListener) => () => {} }),
+  useGateway: () => ({ connectionSeq: 1, subscribe: (_next: GatewayEventListener) => () => {} }),
 }))
 
 const stt = vi.hoisted(() => ({
   state: "idle" as string,
-  available: true,
-  downloadProgress: null as number | null,
+  unavailableReason: null as string | null,
   analyser: null,
-  languages: ["en"],
-  selectedLanguage: "en",
   error: null as string | null,
-  cycleLanguage: vi.fn(),
   handleMicClick: vi.fn(),
   startRecording: vi.fn(),
   stopRecording: vi.fn<() => Promise<string | null>>(),
   cancelRecording: vi.fn(),
-  startDownload: vi.fn(),
-  dismissDownload: vi.fn(),
+  dismissUnavailable: vi.fn(),
   dismissError: vi.fn(),
 }))
 vi.mock("@/hooks/use-stt", () => ({ useStt: vi.fn(() => stt) }))

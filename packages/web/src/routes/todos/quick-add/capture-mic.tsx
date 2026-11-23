@@ -1,9 +1,8 @@
 import { useEffect, useRef } from "react"
 import { LoaderCircle, Mic } from "@/components/ui/icon"
-import { useGateway } from "@/hooks/use-gateway"
 import { useStt, type UseSttReturn } from "@/hooks/use-stt"
 import { MicWaveform } from "@/components/chat/mic-waveform"
-import { WhisperDownloadModal } from "@/components/stt/whisper-download-modal"
+import { DictationUnavailableModal } from "@/components/stt/dictation-unavailable-modal"
 import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS } from "@/lib/mic-gesture"
 import { cn } from "@/lib/utils"
 
@@ -21,7 +20,7 @@ function useMicGesture(stt: UseSttReturn, onTranscript: (text: string) => void) 
   const toggleActiveRef = useRef(false)
 
   useEffect(() => {
-    if (stt.state === "idle" || stt.state === "no-model" || stt.state === "error") toggleActiveRef.current = false
+    if (stt.state === "idle" || stt.state === "unavailable" || stt.state === "error") toggleActiveRef.current = false
   }, [stt.state])
 
   async function transcribe() {
@@ -48,7 +47,7 @@ function useMicGesture(stt: UseSttReturn, onTranscript: (text: string) => void) 
     const downAt = downAtRef.current
     if (downAt === null) return
     downAtRef.current = null
-    if (stt.state === "no-model" || stt.state === "transcribing") return
+    if (stt.state === "unavailable" || stt.state === "transcribing") return
     if (classifyMicGesture(downAt, Date.now(), MIC_HOLD_THRESHOLD_MS) === "hold") void transcribe()
     else toggleActiveRef.current = true
   }
@@ -77,8 +76,7 @@ function MicGlyph({ stt, recording, busy }: { stt: UseSttReturn; recording: bool
 }
 
 export function CaptureMic({ onTranscript }: { onTranscript: (text: string) => void }) {
-  const { events } = useGateway()
-  const stt = useStt(events, onTranscript)
+  const stt = useStt(onTranscript)
   const gesture = useMicGesture(stt, onTranscript)
 
   const recording = stt.state === "recording"
@@ -113,11 +111,10 @@ export function CaptureMic({ onTranscript }: { onTranscript: (text: string) => v
         </p>
       )}
 
-      <WhisperDownloadModal
-        open={stt.state === "no-model"}
-        progress={stt.downloadProgress}
-        onDownload={stt.startDownload}
-        onCancel={stt.dismissDownload}
+      <DictationUnavailableModal
+        open={stt.state === "unavailable"}
+        reason={stt.unavailableReason}
+        onClose={stt.dismissUnavailable}
       />
     </>
   )

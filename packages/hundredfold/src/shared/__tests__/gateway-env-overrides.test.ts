@@ -100,9 +100,9 @@ describe("withoutGatewayEnvValues", () => {
   });
 
   it("never invents a gateway block", () => {
-    // saveConfigAtomic also writes objects that are not whole configs (the STT handlers,
-    // tests); adding `gateway: {}` to those would be a config.yaml edit nobody asked for.
-    const config = { stt: { enabled: true } };
+    // saveConfigAtomic also writes objects that are not whole configs (handlers, tests);
+    // adding `gateway: {}` to those would be a config.yaml edit nobody asked for.
+    const config = { portal: { portalName: "Portal" } };
     expect(withoutGatewayEnvValues(config, { env, file: {} })).toBe(config);
   });
 });

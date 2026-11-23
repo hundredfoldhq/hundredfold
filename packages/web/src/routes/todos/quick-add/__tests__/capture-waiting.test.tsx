@@ -28,7 +28,6 @@ let listener: ((event: string, payload: unknown) => void) | undefined
 vi.mock("@/hooks/use-gateway", () => ({
   useGateway: () => ({
     connectionSeq: 1,
-    events: [],
     subscribe: (next: GatewayEventListener) => {
       listener = (event, payload) => next({ event, payload } as GatewayEvent)
       return () => { listener = undefined }
@@ -39,11 +38,11 @@ vi.mock("@/hooks/use-gateway", () => ({
 // The mic is not part of this contract; it only has to exist.
 vi.mock("@/hooks/use-stt", () => ({
   useStt: vi.fn(() => ({
-    state: "idle", available: false, downloadProgress: null, analyser: null,
-    languages: ["en"], selectedLanguage: "en", error: null,
-    cycleLanguage: vi.fn(), handleMicClick: vi.fn(), startRecording: vi.fn(),
-    stopRecording: vi.fn(), cancelRecording: vi.fn(), startDownload: vi.fn(),
-    dismissDownload: vi.fn(), dismissError: vi.fn(),
+    state: "idle", analyser: null, unavailableReason: null,
+    error: null,
+    handleMicClick: vi.fn(), startRecording: vi.fn(),
+    stopRecording: vi.fn(), cancelRecording: vi.fn(), dismissUnavailable: vi.fn(),
+    dismissError: vi.fn(),
   })),
 }))
 
