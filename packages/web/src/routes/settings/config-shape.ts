@@ -89,9 +89,10 @@ export interface Config {
     turnDetection?: string | { type?: string; [key: string]: unknown }
     noiseReduction?: string
   }
-  /** Voice mode. Only the speaking rate and the cue settings have controls here; the rest is edited in the file. */
+  /** Voice mode. Only the speaking rate, the style prompt and the cue settings have controls here; the rest is edited in the file and survives a save. */
   voice?: {
     enabled?: boolean
+    stylePrompt?: string
     tts?: { speed?: number; [key: string]: unknown }
     cues?: { enabled?: boolean; volume?: number }
     [key: string]: unknown

@@ -4,7 +4,7 @@ Voice mode is a spoken conversation with a chat. You talk, the gateway turns you
 
 Voice mode is **off by default**. With no `voice:` block, or `enabled: false`, the chat shows no voice control, the gateway accepts no voice connection and contacts no speech provider.
 
-The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.
+The speech itself runs on the gateway's machine by default (Parakeet for speech-to-text, in one of two versions you can choose between, Kokoro for text-to-speech, Silero for voice activity detection), costs nothing and needs no key. OpenAI and any server that speaks the OpenAI audio API can be used instead, per direction.
 
 Voice mode is for the operator. Board members cannot message sessions yet, so they have no chat to speak into: the voice routes answer them "Not available to board members", and a member sees no voice control. It will be offered to members when they can chat with sessions.
 
@@ -47,6 +47,52 @@ The speech process starts when voice is first used, stays warm for 10 minutes af
 
 Changing `local.device` between `cpu` and `gpu` needs a new install (a different runtime package and a different Parakeet model); the config reply says `not_installed` until you run it again.
 
+### Choosing the speech-to-text model
+
+The local provider runs one of three Parakeet models, chosen with `stt.model`:
+
+| `stt.model` | What it is | Size on disk | Notes |
+|---|---|---|---|
+| `parakeet-tdt-0.6b-v2` (default) | NVIDIA Parakeet TDT 0.6B v2, English | 2.4 GB (GPU), 0.65 GB (CPU) | The model every earlier version used. |
+| `parakeet-unified-en-0.6b` | NVIDIA Parakeet Unified 0.6B, English; one transducer model for offline and streaming recognition | 2.5 GB (GPU), 0.66 GB (CPU) | NVIDIA reports better accuracy than its earlier transducer models, and on the sample below it made fewer errors; its final decode takes longer on long utterances. The gateway uses its offline mode. NVIDIA Open Model License (see below). |
+| `parakeet-unified-en-0.6b-streaming` | The same Unified model run in its chunked streaming mode (560 ms chunks with 560 ms of right context) | 2.5 GB (GPU), 0.67 GB (CPU); the weights are shared with the offline Unified model when both are installed | Decodes the speech as it arrives, so the final text is ready about 40 to 60 ms after speech ends instead of 0.3 to 0.9 s. In our sample it made a few more word errors than the offline mode (see below). NVIDIA Open Model License (see below). |
+
+```yaml
+voice:
+  enabled: true
+  stt:
+    model: parakeet-unified-en-0.6b
+```
+
+With the local provider, any other value keeps voice off and says so, naming `voice.stt.model` and the three choices (a stale or misspelt name no longer runs the default silently). Leaving `stt.model` out keeps the default, so a configuration that names no model, or the default, is unchanged. Hosted providers (`openai`, `openai-compatible`) keep taking any model name.
+
+Changing the model needs the new model's files, not a new install of everything. Reload the configuration, then ask for the install again (the voice control's "Install", or `POST /api/voice/install`): the Python environment is kept and only the model is downloaded (a few minutes; it refuses to start with less than 3.5 GB free for the GPU path, 1 GB for the CPU path). Every model that has been installed stays installed, and switching between them is instant. Each downloaded file of the unified model is pinned to a commit and its SHA-256, and a file that does not match fails the install.
+
+Measured on one workstation with a 16 GB NVIDIA GPU while its CPU was heavily loaded (load average about 60), over 73 clean LibriSpeech clips (8 minutes of read speech, 1,150 words): word error rate 2.87% for `parakeet-tdt-0.6b-v2` and 2.35% for `parakeet-unified-en-0.6b` (33 and 27 word errors, mostly proper names). The gap is six words, so read it as "no worse", not as proof of better. Warm decode took a median of 0.45 to 0.60 s for the default and 0.55 to 0.70 s for the unified model; it is dominated by a Python decoding loop that the loaded CPU slows, and the unified model's grows faster with the length of the utterance (about 0.85 s against 0.5 to 0.65 s for 10 to 15 seconds of speech). Your numbers on an idle machine will be several times lower.
+
+### Streaming speech-to-text
+
+`parakeet-unified-en-0.6b-streaming` keeps the speech-to-text protocol as it is. The sidecar holds the decoder state for each utterance and, each time the audio of that utterance grows, steps only through the new audio. Partials (`sttPartials`) are therefore cheap, though they trail the speech: a partial shows text only up to about the right context (about 1.1 s) behind the live audio, where an offline partial decodes everything heard so far, so the voice view's live transcript lags a little more. The final is complete either way. By the time the voice detector ends the utterance every chunk but the last is already decoded. The silent tail the voice endpoint already waits for (700 ms or more) serves as the last chunk's right context, so the final does not wait for more audio.
+
+Measured through the real sidecar server on one workstation with a 16 GB NVIDIA GPU and a busy CPU, in real time, with a partial every 400 ms and a 700 ms silent tail, warm, median of six runs. `sttMs` is the time from the end of speech to the final text; "load" is the host's load average over the run:
+
+| Utterance | Load | Offline `sttMs` | Streaming `sttMs` |
+|---|---|---|---|
+| 3 s | 28 to 37 | 414 ms | 42 ms |
+| 10 s | 28 to 37 | 636 ms | 57 ms |
+| 30 s | 28 to 37 | 912 ms | 37 ms |
+| 3 s | 4 to 16 | 303 ms | 37 ms |
+| 10 s | 4 to 16 | 364 ms | 39 ms |
+| 30 s | 4 to 16 | 603 ms | 39 ms |
+
+Cold (the first utterance after the sidecar starts, no warm-up, one run each, so only indicative): streaming took 39 to 46 ms at 3 s and 10 s in every run. Offline took anywhere from 0.25 s (3 s of speech) and 0.41 s (10 s) at a load of about 16, to 0.5 s, 1.2 s and 1.3 s (3, 10 and 30 s) on an earlier, busier run whose load was not recorded: how much the first offline decode costs depends on the host and the state of the GPU. The one-off graph planning of streaming happens in the partials, while the person is still speaking.
+
+Accuracy, on the same 73 LibriSpeech clips (1,150 words): offline 27 word errors (2.35%), or 28 with a 700 ms silent tail; streaming 32 (2.78%), with or without the tail. The 4 to 5 extra errors fall on 11 of the 73 clips and go both ways (streaming was better on four of them, worse on seven), mostly proper names and word forms ("Calico" for "Kaliko", "scepter" for "sceptre"), so treat it as a small accuracy cost of a fraction of a percentage point, not as a clear loss. NVIDIA's own table for this setting is 6.29 against 5.91 word error rate, the same direction.
+
+On a CPU the int8 streaming model gave correct text on 8 short clips (2 errors in 95 words, both in one three-second clip), with the final step taking 0.9 to 2.0 s on a host with a load average of about 15 and four threads. No offline int8 Unified model was installed to compare against, so there is no CPU speed claim: measure on your own machine before choosing it without a GPU.
+
+The streaming graphs come from a third party's sherpa-onnx conversion of NVIDIA's model; the gateway loads them with the same `onnx-asr` runtime as the other models and does not need `sherpa-onnx`.
+
 ### Speed
 
 Measured on a workstation with a 16 GB NVIDIA GPU (and a heavily loaded CPU): Parakeet fp32 on the GPU decodes a few seconds of speech in 50 to 100 ms warm, and Kokoro on the GPU speaks a sentence in well under a second. On a CPU, Parakeet's int8 model took several seconds per decode on that loaded machine, and Kokoro about as long as the speech it makes. Expect voice mode on CPU to feel slow; use the GPU, or a hosted provider, for a conversation that flows.
@@ -61,7 +107,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `mode` | `hands-free` | `hands-free` ends an utterance on your pause; `push-to-talk` ends it when you release the control. |
 | `language` | `en` | Language code. The local providers speak English only (`en`, `en-GB`, …). |
 | `stt.provider` | `local` | `local`, `openai` or `openai-compatible`. |
-| `stt.model` | per provider | `local`: `parakeet-tdt-0.6b-v2`; `openai`: `gpt-live-transcribe`; `openai-compatible`: `whisper-1`. |
+| `stt.model` | per provider | `local`: `parakeet-tdt-0.6b-v2` (default), `parakeet-unified-en-0.6b` or `parakeet-unified-en-0.6b-streaming`, and nothing else; `openai`: `gpt-live-transcribe`; `openai-compatible`: `whisper-1`, or whatever name the server uses. |
 | `stt.baseUrl` | — | Required for `openai-compatible`: the server's root, without `/v1`. http or https. |
 | `stt.apiKey` | — | A `${VAR}` reference to an environment variable. A literal key is refused. |
 | `tts.provider` | `local` | As for `stt.provider`. |
@@ -83,10 +129,24 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `cues.volume` | `0.3` | How loud the cues are, 0 (silent) to 1. Even 1 is a soft note. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
 | `promptFile` | — | A path inside the instance home holding the instructions, read the first time the voice config is resolved and again whenever the `voice:` block changes (not only when the gateway starts). `prompt` wins if both are set. |
+| `stylePrompt` | — | Your own directions for how spoken replies sound, added to the voice instructions on every voice turn, in the browser and the app. At most 2000 characters; empty or unset changes nothing. It is read on each turn, so a config reload applies it to the next spoken turn, even in a conversation already open (no gateway restart). Also editable in Settings, under Voice style, once voice mode is on. Example below. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
 | `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). |
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
+
+### Voice style
+
+`stylePrompt` is for taste, `prompt` is for replacing the instructions. The built-in instructions stay in place and your text is added to them, so the replies keep their spoken shape and take on your voice:
+
+```yaml
+voice:
+  enabled: true
+  stylePrompt: >-
+    Replies much shorter, more personal, a bit funny. Make jokes.
+```
+
+The first spoken turn of a conversation carries the full instructions with your directions under "Style directions from the user"; every later turn carries them again as one line next to the short reminder (a multi-line style is joined into one line there). That line says it replaces any earlier style directions, so an edit takes effect in a conversation already open; clearing the style sends one line saying to ignore the earlier directions. Typed messages never carry the style, and neither does a message that starts with `/`. Voice mode starts with the gateway, so turning `voice.enabled` on needs a restart before the first spoken turn; after that, edits to the style need none.
 
 Provider keys are never sent to a browser, in any response, message or error. The gateway takes each variable an `apiKey` names out of its own environment when the configuration loads and keeps it only inside the gateway: no engine process, tool or shell a model runs inherits it. A variable that only voice needs, such as `VOICE_OPENAI_API_KEY`, is the clearest choice: another tool the gateway starts that expects the same variable will not find it. A `${VAR}` you write elsewhere in `config.yaml` (a realtime key, an MCP server's environment) still resolves it.
 
@@ -159,6 +219,7 @@ The local voices are Kokoro's: `af_*` and `am_*` are American English female and
 The gateway does not ship the models; it downloads them on first use.
 
 - **Parakeet TDT 0.6B v2** (speech-to-text): NVIDIA's model, converted to ONNX by a third party under CC-BY-4.0; see NVIDIA's model card for its community model licence.
+- **Parakeet Unified 0.6B (English)**, offline and streaming (speech-to-text, opt-in): NVIDIA's model, governed by the [NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/): commercial use is allowed, and NVIDIA claims no rights in what it transcribes. Passing the model on to others requires a copy of that agreement and the notice "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"; the gateway does not do that, because it does not ship the model: the install fetches the third-party ONNX conversions ([the encoder and decoder](https://huggingface.co/eschmidbauer/parakeet-unified-en-0.6b-onnx) and [the vocabulary](https://huggingface.co/mrfakename/parakeet-unified-ONNX), both marked with that licence; for the streaming model also [its encoder graph](https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms), whose repository has no licence metadata; its safety note cites the same NVIDIA licence) from Hugging Face straight onto your machine, so the agreement is between you and NVIDIA. One of the conversions the install does not use is labelled CC-BY-4.0 on its page, which is not what NVIDIA's own model card says; the agreement is the one that applies. You must not bypass or disable the model's guardrails without an equivalent of your own, and your licence ends if you sue anyone claiming the model infringes a patent or copyright.
 - **Kokoro-82M v1.0** (text-to-speech): Apache-2.0.
 - **Silero VAD**: MIT.
 

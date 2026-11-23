@@ -78,6 +78,8 @@ export interface VoiceConfig {
   prompt?: string;
   /** Instance-relative file holding the voice prompt. `prompt` wins when both are set. */
   promptFile?: string;
+  /** The operator's own directions for how replies sound, added to the voice instructions on every voice turn. Empty or absent changes nothing. */
+  stylePrompt?: string;
   /** Spoken, with no model turn, when an utterance must wait behind long work. */
   holdingLine?: string;
   limits?: {
@@ -98,6 +100,16 @@ export interface VoiceConfig {
 export const VOICE_STT_PROVIDERS = ["local", "openai", "openai-compatible"] as const;
 export type VoiceProviderId = (typeof VOICE_STT_PROVIDERS)[number];
 
+/** The speech-to-text models the built-in local provider can run, as `voice.stt.model` names them. The first is the default. */
+export const LOCAL_STT_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"] as const;
+export type LocalSttModelId = (typeof LOCAL_STT_MODELS)[number];
+export const DEFAULT_LOCAL_STT_MODEL: LocalSttModelId = LOCAL_STT_MODELS[0];
+
+/** The local model a resolved config runs: `stt.model` when the local provider does the speech-to-text, else the default (the sidecar loads one regardless, for the other local halves). */
+export function localSttModel(stt: { provider: string; model: string }): LocalSttModelId {
+  return stt.provider === "local" && (LOCAL_STT_MODELS as readonly string[]).includes(stt.model) ? (stt.model as LocalSttModelId) : DEFAULT_LOCAL_STT_MODEL;
+}
+
 /** Spoken-conversation instructions sent with the first voice turn (contracts/voice-config.md). */
 export const DEFAULT_VOICE_PROMPT =
   "You are in a spoken conversation. Your replies are converted to speech. Answer in short, natural sentences and lead with the answer. " +
@@ -115,7 +127,7 @@ export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come 
 
 /** Per provider: the model and voice used when the config names none. */
 export const VOICE_PROVIDER_DEFAULTS: Record<VoiceProviderId, { sttModel: string; ttsModel: string; ttsVoice: string }> = {
-  local: { sttModel: "parakeet-tdt-0.6b-v2", ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
+  local: { sttModel: DEFAULT_LOCAL_STT_MODEL, ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
   openai: { sttModel: "gpt-live-transcribe", ttsModel: "gpt-4o-mini-tts", ttsVoice: "marin" },
   "openai-compatible": { sttModel: "whisper-1", ttsModel: "tts-1", ttsVoice: "alloy" },
 };
@@ -143,6 +155,8 @@ export interface ResolvedVoiceConfig {
   prompt: string;
   /** Absolute path of the prompt file, only when no inline `prompt` is set. */
   promptFile: string | null;
+  /** The operator's style directions, trimmed; "" when there are none. */
+  stylePrompt: string;
   holdingLine: string;
   limits: { maxUtteranceSeconds: number; maxConcurrentAttachments: number };
   local: { device: "auto" | "gpu" | "cpu" };
@@ -154,6 +168,7 @@ const LANGUAGE = /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/;
 const ENV_REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_HOLDING_LINE_CHARS = 300;
+export const MAX_STYLE_PROMPT_CHARS = 2000;
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -207,6 +222,8 @@ function providerSideProblems(prefix: string, side: Obj): string[] {
   const provider = side.provider ?? "local";
   const problems = oneOf(`${prefix}.provider`, side.provider, VOICE_STT_PROVIDERS);
   problems.push(...nonEmptyString(`${prefix}.model`, side.model), ...apiKeyProblems(`${prefix}.apiKey`, side.apiKey));
+  // The local speech-to-text provider runs a fixed set of models; any other name would silently run the default.
+  if (prefix === "voice.stt" && provider === "local" && typeof side.model === "string" && side.model.trim() !== "") problems.push(...oneOf(`${prefix}.model`, side.model, LOCAL_STT_MODELS));
   if (provider === "local" && side.baseUrl !== undefined) problems.push(`${prefix}.baseUrl is not used by the local provider; remove it`);
   else problems.push(...baseUrlProblems(`${prefix}.baseUrl`, side.baseUrl, provider === "openai-compatible"));
   return problems;
@@ -310,6 +327,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...vadProblems(parts.vad.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
     ...cuesProblems(parts.cues.value),
     ...textProblems("voice.prompt", voice.prompt, MAX_PROMPT_CHARS), ...promptFileProblems(voice.promptFile, home),
+    ...textProblems("voice.stylePrompt", voice.stylePrompt, MAX_STYLE_PROMPT_CHARS),
     ...textProblems("voice.holdingLine", voice.holdingLine, MAX_HOLDING_LINE_CHARS),
     ...limitsProblems(parts.limits.value), ...oneOf("voice.local.device", parts.local.value?.device, DEVICES),
     ...Object.values(parts).flatMap((part) => part.problems),
@@ -406,6 +424,11 @@ function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" 
   };
 }
 
+/** The operator's style directions, trimmed; "" when unset or blank. */
+function resolveStylePrompt(voice: Obj): string {
+  return typeof voice.stylePrompt === "string" ? voice.stylePrompt.trim() : "";
+}
+
 /**
  * The effective voice settings, or null when voice is off: absent, not `enabled: true`, or
  * the block has problems (the config loader refuses those, so this is the belt to its braces).
@@ -423,6 +446,7 @@ export function resolveVoiceConfig(config: { voice?: unknown }, home: string = H
     ...resolveTuning(voice),
     prompt: inlinePrompt ?? DEFAULT_VOICE_PROMPT,
     promptFile,
+    stylePrompt: resolveStylePrompt(voice),
     holdingLine: setting(voice, "holdingLine", DEFAULT_HOLDING_LINE),
   };
 }
