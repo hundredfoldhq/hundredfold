@@ -101,7 +101,7 @@
 // FAKE_OPENCODE_STAGED_LOG names a file each `serve` and `run` appends one JSON line to:
 // the verb, the staged config file (OPENCODE_CONFIG) as it read at start, and the
 // environment variables named by FAKE_OPENCODE_STAGED_ENV (comma separated);
-// FAKE_OPENCODE_SESSIONS_FILE names a file the session ids are kept in across `serve` processes;
+// FAKE_OPENCODE_SESSIONS_FILE names a file, if it exists when `serve` starts, that the session ids are kept in across `serve` processes;
 // FAKE_OPENCODE_RUN_LOG names a file each `run` appends its argv to as one JSON line; FAKE_OPENCODE_SERVE_LOG names a file each
 // `serve` start appends a line to; FAKE_OPENCODE_CREATE_DELAY_MS delays the
 // answer to POST /session; FAKE_OPENCODE_HISTORY_DELAY_MS delays the answer
@@ -171,10 +171,11 @@ function serve() {
   const sessions = new Map();
   let seq = 0;
   const emptySession = () => ({ busy: false, queue: [], running: null, messages: [], pending: new Map() });
-  // FAKE_OPENCODE_SESSIONS_FILE: the ids of the sessions a server created, kept in a file the way opencode keeps its sessions in its
-  // data directory, so a server started again (a gateway restart) still knows a session an earlier one made. Their messages are not kept.
-  const sessionsFile = process.env.FAKE_OPENCODE_SESSIONS_FILE;
-  if (sessionsFile && fs.existsSync(sessionsFile)) {
+  // FAKE_OPENCODE_SESSIONS_FILE: when the file exists as the server starts, the ids of the sessions a server creates are kept in it,
+  // the way opencode keeps its sessions in its data directory, so a server started again (a gateway restart) still knows a session an
+  // earlier one made. Their messages are not kept. With no file, each server starts with no sessions at all.
+  const sessionsFile = process.env.FAKE_OPENCODE_SESSIONS_FILE && fs.existsSync(process.env.FAKE_OPENCODE_SESSIONS_FILE) ? process.env.FAKE_OPENCODE_SESSIONS_FILE : undefined;
+  if (sessionsFile) {
     for (const id of fs.readFileSync(sessionsFile, "utf8").split("\n").filter(Boolean)) {
       sessions.set(id, emptySession());
       seq = Math.max(seq, Number(id.slice(-6)) || 0);

@@ -146,6 +146,7 @@ const groupHopFromPick = (h) => groupWalk(h, { from: "B", then: "A" });
 
 /** A pinned session keeps its model: five turns and a resume after a gateway restart, while the other account's usage drops below it. Pinned to the non-own account too, which is the pin that is not the model the employee would have run. */
 async function stickiness(h) {
+  h.keepOpencodeSessions();
   const accounts = await h.useOpencodeGroup();
   h.writeScenario({ opencode: { "*": "ok" } });
   for (const [pinned, other] of [["A", "B"], ["B", "A"]]) {

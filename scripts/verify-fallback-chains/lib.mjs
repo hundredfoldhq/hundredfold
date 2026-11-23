@@ -214,6 +214,17 @@ export class Harness {
     await waitFor("the gateway to answer", async () => (await this.api("GET", "/api/status").catch(() => ({ status: 0 }))).status === 200, { timeoutMs: 60_000 });
   }
 
+  /**
+   * From now on the fake opencode servers that start keep the ids of their sessions across a restart, as opencode keeps its
+   * sessions in its data directory (a restart of the gateway starts a new server, which must still know the session a turn
+   * resumes). `reset` ends it: scenarios that do not call this see each server start with no sessions, as before.
+   */
+  keepOpencodeSessions() {
+    const file = process.env.FAKE_OPENCODE_SESSIONS_FILE;
+    if (!file) throw new Error("FAKE_OPENCODE_SESSIONS_FILE is not set: run this through scripts/verify-fallback-chains.sh");
+    fs.writeFileSync(file, "");
+  }
+
   /** Back to a known state: no sessions, no engine health, no chains, a clean scenario. */
   async reset() {
     for (const id of this.sessions.splice(0)) {
@@ -223,6 +234,7 @@ export class Harness {
     fs.mkdirSync(path.join(this.args.home, "tmp"), { recursive: true });
     fs.writeFileSync(path.join(this.args.home, "tmp", "engine-health.json"), "{}\n");
     fs.rmSync(path.join(this.args.home, "tmp", "engine-limits"), { recursive: true, force: true });
+    if (process.env.FAKE_OPENCODE_SESSIONS_FILE) fs.rmSync(process.env.FAKE_OPENCODE_SESSIONS_FILE, { force: true });
     await this.putConfig({
       engines: {
         claude: { fallback: null, fallbackModelMap: null, accounts: { A: { fallback: null }, B: { fallback: null }, "remote-a": null, "remote-b": null } },
