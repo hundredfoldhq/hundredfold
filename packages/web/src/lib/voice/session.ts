@@ -161,6 +161,7 @@ export class BrowserVoiceSession implements VoiceController {
       return
     }
     this.session = id
+    starter.bind(id, this)
     this.openSocket(id)
     return this.attachMicrophone(microphone, generation)
   }

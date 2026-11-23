@@ -2,10 +2,13 @@ import { INITIAL_VOICE_STATE, voiceReducer, type VoiceAction, type VoiceUiState 
 
 /**
  * How a controller on a chat that does not exist yet gets one: the first tap creates the session, and the
- * conversation attaches to it. `discard` is for a session that was created after the run had already ended.
+ * conversation attaches to it. `create` only makes the session. `bind` is called once the controller knows its run is
+ * still live, before the conversation attaches: the pane moves onto the chat then, never earlier. `discard` is for a
+ * session that was created after the run had already ended; it was never bound.
  */
 export interface VoiceSessionStarter {
   create(): Promise<string>
+  bind(sessionId: string, controller: VoiceController): void
   discard(sessionId: string): void
 }
 

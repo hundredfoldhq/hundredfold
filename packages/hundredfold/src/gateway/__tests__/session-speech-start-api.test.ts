@@ -152,6 +152,18 @@ describe("the first message names a spoken start", () => {
     expect(registry.getSession(session.id)!.title).toBe(named.title);
   });
 
+  it("a spoken start linked to a Todo is never discarded as empty", async () => {
+    const created = await post({ speech: true });
+    expect(awaiting.isEmptySpokenStart(created.body.id)).toBe(true);
+    const db = (await import("../../shared/db.js")).initDb();
+    db.pragma("foreign_keys = OFF");
+    try { db.prepare("UPDATE sessions SET work_item_id = ? WHERE id = ?").run("todo-linked", created.body.id); }
+    finally { db.pragma("foreign_keys = ON"); }
+    expect(registry.getSession(created.body.id)!.workItemId).toBe("todo-linked");
+    expect(registry.getMessages(created.body.id)).toEqual([]);
+    expect(awaiting.isEmptySpokenStart(created.body.id)).toBe(false);
+  });
+
   it("a session with a message is never an empty spoken start", async () => {
     const created = await post({ speech: true });
     registry.insertMessage(created.body.id, "user", "hi");

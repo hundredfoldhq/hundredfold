@@ -51,6 +51,21 @@ describe("a conversation that ends hands its session to the discard port", () =>
     expect(discarded).toEqual(["s1"]);
   });
 
+  it("a takeover that finds voice turned off ends the conversation, so the empty start is discarded", () => {
+    const { h, discarded } = harness();
+    h.connect();
+    const config = h.deps.config;
+    let calls = 0;
+    // The attach reads the config, then the takeover reads it again after the detach: voice is off by then.
+    h.deps.config = () => (++calls > 1 ? null : config());
+    const second = h.connect();
+    expect(second.attachment).toBeNull();
+    expect(second.socket.ofType("detached")).toEqual([{ type: "detached", reason: "disabled" }]);
+    expect(second.socket.closed).toMatchObject({ code: 1000 });
+    expect(h.hub.size()).toBe(0);
+    expect(discarded).toEqual(["s1"]);
+  });
+
   it("a discard that throws is logged and does not break the hub", () => {
     const { h } = harness();
     h.deps.discardIfEmptySpokenStart = () => { throw new Error("disk full"); };

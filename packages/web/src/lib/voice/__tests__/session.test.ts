@@ -634,7 +634,9 @@ describe("starting on a chat that does not exist yet", () => {
     let reject!: (error: unknown) => void
     const create = vi.fn(() => new Promise<string>((res, rej) => { resolve = res; reject = rej }))
     const discard = vi.fn()
-    return { create, discard, resolve: (id: string) => resolve(id), reject: (e: unknown) => reject(e), api: { create, discard } satisfies VoiceSessionStarter }
+    const order: string[] = []
+    const bind = vi.fn((id: string) => { order.push(`bind:${id}`) })
+    return { create, bind, discard, order, resolve: (id: string) => resolve(id), reject: (e: unknown) => reject(e), api: { create, bind, discard } satisfies VoiceSessionStarter }
   }
 
   it("asks for the microphone inside the tap, creates the chat once, then opens the socket on it", async () => {
@@ -650,6 +652,20 @@ describe("starting on a chat that does not exist yet", () => {
     expect(r.opened).toEqual(["new-1"])
     expect(r.session.boundSessionId()).toBe("new-1")
     expect(s.create).toHaveBeenCalledTimes(1)
+    expect(s.bind).toHaveBeenCalledExactlyOnceWith("new-1", r.session)
+  })
+
+  it("binds the pane to the chat only once the run is known to be live, before the conversation attaches", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const deps = (r.session as unknown as { deps: BrowserVoiceDeps }).deps
+    const open = deps.openSocket
+    deps.openSocket = (id, handlers, mode) => { s.order.push(`socket:${id}`); return open(id, handlers, mode) }
+    const run = r.session.start()
+    expect(s.bind).not.toHaveBeenCalled()
+    s.resolve("new-1")
+    await run
+    expect(s.order).toEqual(["bind:new-1", "socket:new-1"])
   })
 
   it("a second start while the chat is being created does nothing", async () => {
@@ -670,6 +686,7 @@ describe("starting on a chat that does not exist yet", () => {
     s.reject(new Error("The gateway refused to start a chat."))
     await run
     await Promise.resolve()
+    expect(s.bind).not.toHaveBeenCalled()
     expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "The gateway refused to start a chat." })
     expect(r.sockets).toHaveLength(0)
     expect(r.contexts[0].close).toHaveBeenCalled()
@@ -684,6 +701,8 @@ describe("starting on a chat that does not exist yet", () => {
     s.resolve("new-1")
     await run
     expect(s.discard).toHaveBeenCalledWith("new-1")
+    expect(s.bind).not.toHaveBeenCalled()
+    expect(r.session.boundSessionId()).toBeNull()
     expect(r.sockets).toHaveLength(0)
     await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
   })

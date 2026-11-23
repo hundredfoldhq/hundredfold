@@ -63,12 +63,7 @@ export class VoiceHub {
    */
   attach(socket: VoiceSocket, request: AttachRequest): VoiceAttachment | null {
     const config = this.deps.config();
-    if (!config) {
-      // Voice was switched off between the upgrade and here: say so as an attached client would hear it, not as a missing chat.
-      if (socket.readyState === 1) socket.send(JSON.stringify({ type: "detached", reason: "disabled" }));
-      socket.close(1000, "disabled");
-      return null;
-    }
+    if (!config) return this.refuseDisabled(socket);
     const existing = this.attachments.get(request.sessionId);
     if (existing) return this.replace(existing, socket, request);
     if (this.attachments.size >= config.limits.maxConcurrentAttachments) {
@@ -123,7 +118,17 @@ export class VoiceHub {
     this.takingOver = request.sessionId;
     try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
-    return config ? this.create(socket, request, config) : null;
+    if (config) return this.create(socket, request, config);
+    // Voice went off between the detach and here: no new attachment will end this conversation, so this is its end.
+    this.discardEmpty(request.sessionId);
+    return this.refuseDisabled(socket);
+  }
+
+  /** Voice was switched off before this socket got an attachment: say so as an attached client would hear it, not as a missing chat. */
+  private refuseDisabled(socket: VoiceSocket): null {
+    if (socket.readyState === 1) socket.send(JSON.stringify({ type: "detached", reason: "disabled" }));
+    socket.close(1000, "disabled");
+    return null;
   }
 
   private create(socket: VoiceSocket, request: AttachRequest, config: ResolvedVoiceConfig): VoiceAttachment {

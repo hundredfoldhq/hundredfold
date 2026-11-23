@@ -261,17 +261,19 @@ describe("NativeVoiceSession native_state events", () => {
 describe("NativeVoiceSession on a chat that does not exist yet", () => {
   it("creates the chat once, then starts the shell on it", async () => {
     const { value, voiceStart } = bridge()
-    const starter = { create: vi.fn(async () => "new-1"), discard: vi.fn() }
+    const starter = { create: vi.fn(async () => "new-1"), bind: vi.fn(), discard: vi.fn() }
     const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
     await session.start()
     expect(starter.create).toHaveBeenCalledTimes(1)
     expect(voiceStart.mock.calls[0][0]).toEqual({ target: { origin: ORIGIN }, sessionId: "new-1", mode: "hands-free" })
     expect(session.boundSessionId()).toBe("new-1")
+    expect(starter.bind).toHaveBeenCalledExactlyOnceWith("new-1", session)
+    expect(starter.bind.mock.invocationCallOrder[0]).toBeLessThan(voiceStart.mock.invocationCallOrder[0])
   })
 
   it("a creation that fails is reported and the shell is never started", async () => {
     const { value, voiceStart } = bridge()
-    const starter = { create: vi.fn(async () => { throw new Error("no chat") }), discard: vi.fn() }
+    const starter = { create: vi.fn(async () => { throw new Error("no chat") }), bind: vi.fn(), discard: vi.fn() }
     const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
     await session.start()
     expect(voiceStart).not.toHaveBeenCalled()
@@ -281,13 +283,15 @@ describe("NativeVoiceSession on a chat that does not exist yet", () => {
   it("a stop before the chat exists discards it and never starts the shell", async () => {
     const { value, voiceStart } = bridge()
     let resolve!: (id: string) => void
-    const starter = { create: vi.fn(() => new Promise<string>((r) => { resolve = r })), discard: vi.fn() }
+    const starter = { create: vi.fn(() => new Promise<string>((r) => { resolve = r })), bind: vi.fn(), discard: vi.fn() }
     const session = new NativeVoiceSession(value, { sessionId: starter, mode: "hands-free", origin: ORIGIN })
     const run = session.start()
     session.stop()
     resolve("new-1")
     await run
     expect(starter.discard).toHaveBeenCalledWith("new-1")
+    expect(starter.bind).not.toHaveBeenCalled()
+    expect(session.boundSessionId()).toBeNull()
     expect(voiceStart).not.toHaveBeenCalled()
   })
 })

@@ -112,6 +112,7 @@ export class NativeVoiceSession implements VoiceController {
       return
     }
     this.session = id
+    starter.bind(id, this)
     return this.startShell(id)
   }
 

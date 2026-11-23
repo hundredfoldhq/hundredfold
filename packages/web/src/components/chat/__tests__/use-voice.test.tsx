@@ -324,7 +324,7 @@ describe('tapAction', () => {
 })
 
 describe('useVoice on a new chat', () => {
-  const starter = { create: vi.fn(() => Promise.resolve('new-1')), discard: vi.fn() }
+  const starter = { create: vi.fn(() => Promise.resolve('new-1')), bind: vi.fn(), discard: vi.fn() }
 
   it('shows the control on a new chat when voice is enabled, and not when voice is off', async () => {
     getVoiceConfig.mockResolvedValue(ENABLED)
@@ -412,21 +412,26 @@ describe('useVoice on a new chat', () => {
     expect(first.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('a pane that is torn down first and replaced a moment later still hands the controller over', async () => {
-    getVoiceConfig.mockResolvedValue(ENABLED)
-    const { offerHandoff } = await import('@/lib/voice/controller')
-    const old = renderHook(() => useVoice(null, null, undefined, starter))
-    await waitFor(() => expect(old.result.current.enabled).toBe(true))
-    const first = controllers[0] as unknown as { dispose: ReturnType<typeof vi.fn> }
-    offerHandoff('new-3', first as never)
-    old.unmount()
-    expect(first.dispose).not.toHaveBeenCalled()
-    const next = renderHook(() => useVoice('new-3', null))
-    expect(next.result.current.controller).toBe(first)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(first.dispose).not.toHaveBeenCalled()
-    next.unmount()
-    expect(first.dispose).toHaveBeenCalledTimes(1)
+  it('a pane that is torn down first and replaced a moment later still hands the controller over, past the grace too', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      getVoiceConfig.mockResolvedValue(ENABLED)
+      const { offerHandoff, HANDOFF_GRACE_MS } = await import('@/lib/voice/controller')
+      const old = renderHook(() => useVoice(null, null, undefined, starter))
+      await waitFor(() => expect(old.result.current.enabled).toBe(true))
+      const first = controllers[0] as unknown as { dispose: ReturnType<typeof vi.fn> }
+      offerHandoff('new-3', first as never)
+      old.unmount()
+      expect(first.dispose).not.toHaveBeenCalled()
+      const next = renderHook(() => useVoice('new-3', null))
+      expect(next.result.current.controller).toBe(first)
+      // The old pane's grace timer still fires; the controller the new pane claimed carries on.
+      vi.advanceTimersByTime(HANDOFF_GRACE_MS + 10)
+      expect(first.dispose).not.toHaveBeenCalled()
+      expect(next.result.current.controller).toBe(first)
+      next.unmount()
+      expect(first.dispose).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
   })
 
   it('an offered controller nobody claims is disposed once the grace runs out', async () => {

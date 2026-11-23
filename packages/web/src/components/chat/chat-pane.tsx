@@ -179,6 +179,7 @@ export function ChatPane({
   const voiceStarterRef = useRef<VoiceSessionStarter | null>(null)
   const voiceStarter = useMemo<VoiceSessionStarter>(() => ({
     create: () => voiceStarterRef.current!.create(),
+    bind: (id, controller) => voiceStarterRef.current?.bind(id, controller),
     discard: (id) => voiceStarterRef.current?.discard(id),
   }), [])
   const principal = usePrincipal()
@@ -454,6 +455,8 @@ export function ChatPane({
 
   // Voice on a new chat: the chat is created with the composer's own choices and no first message, the pane is bound to it
   // as a sent first message binds it, and the first thing said becomes that message. One creation per run, however it is tapped.
+  // The controller binds the pane only once it knows the run is still live: a run stopped mid-create discards the chat
+  // instead, and the pane, the tab and the chat list never see it.
   const voiceCreation = useRef<Promise<string> | null>(null)
   voiceStarterRef.current = {
     create: () => {
@@ -468,15 +471,16 @@ export function ChatPane({
         if (shouldPersistNewSessionSelector({ selectedEmployee, manuallyChanged: newSessionSelectorDirtyRef.current })) {
           writeNewSessionSelector(selector)
         }
-        const sid = String(session.id)
-        // Before the pane binds: the tabbed layout remounts the pane to bind it, and the new pane must find the controller.
-        if (voice.controller) offerHandoff(sid, voice.controller)
-        onSessionCreated?.(sid)
-        keepPaneTab(sid)
-        onRefresh?.()
-        return sid
+        return String(session.id)
       })().finally(() => { voiceCreation.current = null })
       return voiceCreation.current
+    },
+    bind: (sid, controller) => {
+      // Before the pane binds: the tabbed layout remounts the pane to bind it, and the new pane must find the controller.
+      offerHandoff(sid, controller)
+      onSessionCreated?.(sid)
+      keepPaneTab(sid)
+      onRefresh?.()
     },
     discard: (id) => { void api.deleteSession(id).catch(() => undefined) },
   }
