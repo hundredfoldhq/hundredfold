@@ -47,6 +47,9 @@ export interface AddCommentInput {
   parentCommentId?: string | null;
   /** The writer's session, from its verified caller identity. */
   sessionId?: string;
+  /** The signed-in account whose request wrote the comment, from the request's verified identity. Kept apart from
+   *  the comment itself (`comment-meta.ts`); a session it wakes is attributed to it. */
+  userId?: string;
   /** The surface the write was issued from, when the request declared one. */
   origin?: WriteOrigin;
   /** Stable machine-operation identity. When present, an exact retry returns

@@ -1000,6 +1000,15 @@ function workItemCommentSession(caller: WorkItemCaller): { sessionId?: string } 
   return caller.kind === 'session' ? { sessionId: caller.callerId } : {};
 }
 
+/** The account an operator-surface comment is written under: the signed-in owner, or the forwarded proxy identity when
+ *  one is configured. A session's comment names none here (the wake takes the session's own account), and the bearer
+ *  token names no one. */
+function workItemCommentAccount(req: HttpRequest, context: ApiContext, caller: WorkItemCaller): { userId?: string } {
+  if (caller.kind !== 'operator') return {};
+  const userId = requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader);
+  return userId ? { userId } : {};
+}
+
 /** Attachment identity mirrors the comments model: server-stamped, pair-safe. */
 function workItemAttachmentActor(caller: WorkItemCaller): AttachmentActor {
   return { ...workItemCommentAuthor(caller), operator: caller.kind === 'operator' };
@@ -2737,15 +2746,15 @@ export async function handleApiRequest(
         // The coordinator's reason is the record of why the operator's decision
         // was taken for them: it goes on the Todo, under the coordinator's session.
         if (actingAsOperator && result.item.status === "done") {
-          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), body: `Closed as done for the operator. Reason: ${note}`, origin: caller.origin });
+          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), body: `Closed as done for the operator. Reason: ${note}`, origin: caller.origin });
         }
         const closeComment = result.item.status === "done" ? employeeCloseComment(lane, note) : undefined;
         if (closeComment) {
-          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), body: closeComment, origin: caller.origin });
+          addComment({ workItemId: params.id, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), body: closeComment, origin: caller.origin });
         }
         if (result.item.status !== item.status) result.item = linkSelfStartedTodo(caller, result.item, actor);
         // A review handoff or send-back note is a comment under whoever moved it; a retried move posts it too.
-        if (target === "in_review" || target === "executing") postReviewNote(params.id, { actor, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), origin: caller.origin });
+        if (target === "in_review" || target === "executing") postReviewNote(params.id, { actor, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), origin: caller.origin });
         const activityReceiptId = persistTodoMutationActivity(
           req,
           context,
@@ -2997,6 +3006,7 @@ export async function handleApiRequest(
           body: text,
           ...workItemCommentAuthor(caller),
           ...workItemCommentSession(caller),
+          ...workItemCommentAccount(req, context, caller),
           parentCommentId,
           origin: caller.origin,
         });
