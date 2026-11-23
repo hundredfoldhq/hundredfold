@@ -27,6 +27,8 @@ Every reply can instead be `error {ref, message}`. A request is answered in the 
 sidecar finishes it, not the order sent: replies carry the request's id, stream or
 utterance.
 
+**Speech-to-text state**: the audio of one `utterance` id only ever grows (each `stt.partial` and the `stt.final` carry everything so far), so the sidecar may keep state per utterance id. A streaming model (`hello.models.stt.streaming: true`) uses this to decode only the audio it has not yet stepped through and to carry its decoder state to the next request; a model that is not streaming decodes the whole buffer each time. The state is dropped by the `stt.final`, by `cancel`, by an error on that utterance, and (for abandoned ids) by a cap of 8 utterances kept. A request whose audio is shorter than one already decoded for the id starts that utterance over. The wire format is the same either way; a gateway that knows nothing of streaming works unchanged.
+
 **VAD offsets**: `vad.event` offsets are into the stream. `start.atMs` is where to cut from, with `prerollMs` already subtracted (minimum 0), so the hub must not subtract pre-roll again. `end.atMs` is where speech stopped, before the trailing silence. Offsets count from the first audio the sidecar received on this stream: when the gateway reopens a stream after a sidecar respawn they start again at 0, and audio dropped while the sidecar was down (the client holds at most 256 chunks) is not counted, so offsets from before a respawn are invalid after it.
 
 ## Lifecycle

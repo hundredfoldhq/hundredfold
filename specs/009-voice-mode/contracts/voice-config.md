@@ -14,7 +14,7 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `mode` | `hands-free` \| `push-to-talk` | `hands-free` | enum |
 | `language` | string | `en` | BCP-47-ish `^[a-z]{2,3}(-[A-Za-z0-9]+)*$`; `local` accepts only `en*` |
 | `stt.provider` | `local` \| `openai` \| `openai-compatible` | `local` | known id |
-| `stt.model` | string | provider default (`local`: `parakeet-tdt-0.6b-v2`; `openai`: the current transcription model, named in the docs) | non-empty; for `local`, one of `parakeet-tdt-0.6b-v2`, `parakeet-unified-en-0.6b` |
+| `stt.model` | string | provider default (`local`: `parakeet-tdt-0.6b-v2`; `openai`: the current transcription model, named in the docs) | non-empty; for `local`, one of `parakeet-tdt-0.6b-v2`, `parakeet-unified-en-0.6b`, `parakeet-unified-en-0.6b-streaming` |
 | `stt.baseUrl` | URL | — | required for `openai-compatible`; http(s) only |
 | `stt.apiKey` | string | — | must be a `${VAR}` reference; a literal is refused with a message telling how to move it to the environment |
 | `tts.provider` | as `stt.provider` | `local` | |

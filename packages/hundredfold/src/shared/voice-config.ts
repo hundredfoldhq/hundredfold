@@ -91,7 +91,7 @@ export const VOICE_STT_PROVIDERS = ["local", "openai", "openai-compatible"] as c
 export type VoiceProviderId = (typeof VOICE_STT_PROVIDERS)[number];
 
 /** The speech-to-text models the built-in local provider can run, as `voice.stt.model` names them. The first is the default. */
-export const LOCAL_STT_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b"] as const;
+export const LOCAL_STT_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"] as const;
 export type LocalSttModelId = (typeof LOCAL_STT_MODELS)[number];
 export const DEFAULT_LOCAL_STT_MODEL: LocalSttModelId = LOCAL_STT_MODELS[0];
 

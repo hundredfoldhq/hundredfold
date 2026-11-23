@@ -76,6 +76,8 @@ export interface PinnedFile {
   remote: string;
   local: string;
   sha256: string;
+  /** Where an identical file may already be, relative to the model's directory (another model's copy of the same weights): linked in when it has this hash, so it is not fetched twice. */
+  reuse?: string;
 }
 
 /** Third-party ONNX exports of NVIDIA's `parakeet-unified-en-0.6b` (NVIDIA Open Model License), pinned by commit and checked by hash. */
@@ -98,6 +100,26 @@ const UNIFIED_FILES: Record<VoiceDevice, PinnedFile[]> = {
 };
 const UNIFIED_VOCAB_FILE: PinnedFile = { ...UNIFIED_VOCAB, remote: "vocab.txt", local: "vocab.txt", sha256: "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff" };
 
+/** The unified model's buffered streaming exports (one encoder graph per chunk size; the weights are the offline export's), at the 1,120 ms setting: chunk and right context of 560 ms each. The bundle repository is a third party's, pinned by commit; its model files carry NVIDIA's licence. */
+const STREAMING_BUNDLE = { repo: "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms", revision: "6b81ecde332cc55c621ff955695f91c51962751b" } as const;
+const STREAMING_INT8_BUNDLE = { repo: "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms", revision: "615bf8c5ad39692dc96cf1105afde73ec3eb2a59" } as const;
+/** The offline unified model's directory name, where the streaming model's identical weights may already be. */
+const UNIFIED_OFFLINE_DIR = "parakeet-unified-en-0.6b";
+
+/** The streaming model: its own encoder graph (which carries the chunked attention masks) over the same weights, decoder, joint and vocabulary as the offline unified model. */
+const UNIFIED_STREAMING_FILES: Record<VoiceDevice, PinnedFile[]> = {
+  gpu: [
+    { ...STREAMING_BUNDLE, remote: "encoder.onnx", local: "encoder-model.onnx", sha256: "76468fce46a2812e430fe3f56db77e4d461b66b61c4824098d1d79f53f457076" },
+    // The graph names its weight file `encoder.weights`; the offline export's `encoder.onnx.data` is the same bytes.
+    { ...STREAMING_BUNDLE, remote: "encoder.weights", local: "encoder.weights", sha256: "c054b2932ee13aa39ed84982a399822f3193311fb6fd8e1e204566722614bd87", reuse: `../${UNIFIED_OFFLINE_DIR}-fp32/encoder.onnx.data` },
+    ...UNIFIED_FILES.gpu.filter((file) => file.local.startsWith("decoder_joint")),
+  ],
+  cpu: [
+    { ...STREAMING_INT8_BUNDLE, remote: "encoder.int8.onnx", local: "encoder-model.int8.onnx", sha256: "1c03f1192de41771384af22972ca10203613ba56197a024f275b86727cd35911" },
+    ...UNIFIED_FILES.cpu.filter((file) => file.local.startsWith("decoder_joint")),
+  ],
+};
+
 /** `config.json` as `onnx-asr` reads it for this model (the export ships none): a FastConformer RNN-T with 128 mel bins and 8x subsampling. */
 const UNIFIED_CONFIG = { model_type: "nemo-conformer-rnnt", features_size: 128, subsampling_factor: 8, max_tokens_per_step: 10 } as const;
 
@@ -111,10 +133,13 @@ export interface SttDownload {
 export const STT_MODEL_BYTES: Record<LocalSttModelId, Record<VoiceDevice, number>> = {
   "parakeet-tdt-0.6b-v2": { gpu: 2_500_000_000, cpu: 700_000_000 },
   "parakeet-unified-en-0.6b": { gpu: 2_500_000_000, cpu: 670_000_000 },
+  "parakeet-unified-en-0.6b-streaming": { gpu: 2_500_000_000, cpu: 670_000_000 },
 };
 
 export function sttDownload(model: LocalSttModelId, device: VoiceDevice): SttDownload | null {
-  return model === "parakeet-unified-en-0.6b" ? { files: [...UNIFIED_FILES[device], UNIFIED_VOCAB_FILE], config: { ...UNIFIED_CONFIG } } : null;
+  if (model === "parakeet-unified-en-0.6b") return { files: [...UNIFIED_FILES[device], UNIFIED_VOCAB_FILE], config: { ...UNIFIED_CONFIG } };
+  if (model === "parakeet-unified-en-0.6b-streaming") return { files: [...UNIFIED_STREAMING_FILES[device], UNIFIED_VOCAB_FILE], config: { ...UNIFIED_CONFIG } };
+  return null;
 }
 
 /** `speech_sidecar.py` sits beside this module's parent, in src and in dist (the build copies it). */
@@ -125,7 +150,13 @@ function sidecarScriptPath(): string {
 /** The `hello.models` the sidecar loads from (shape documented in speech_sidecar.py). */
 export function helloModels(paths: VoicePaths, device: VoiceDevice, model: LocalSttModelId = DEFAULT_LOCAL_STT_MODEL): Record<string, unknown> {
   return {
-    stt: { name: model === "parakeet-unified-en-0.6b" ? "nemo-conformer-rnnt" : PARAKEET_NAME, path: paths.sttDir(device, model), quantization: device === "gpu" ? null : "int8" },
+    stt: {
+      name: model === DEFAULT_LOCAL_STT_MODEL ? PARAKEET_NAME : "nemo-conformer-rnnt",
+      path: paths.sttDir(device, model),
+      quantization: device === "gpu" ? null : "int8",
+      // The sidecar keeps decoding state per utterance for this model instead of decoding the whole buffer each time.
+      ...(model === "parakeet-unified-en-0.6b-streaming" ? { streaming: true } : {}),
+    },
     tts: { model: path.join(paths.kokoroDir, "kokoro-v1.0.onnx"), voices: path.join(paths.kokoroDir, "voices-v1.0.bin") },
     vad: { path: paths.vadDir, model: path.join(paths.vadDir, "silero_vad.onnx") },
   };

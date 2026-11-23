@@ -417,6 +417,265 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(h.exit_code, [2])
 
 
+class FrameEngine(sc.StreamEngine):
+    """Encoder frame k of the audio is the value k + 1: every sample in frame k's 1,280-sample span holds it. The
+    model 'hears' one token per frame, so a streaming decode is right exactly when it emits every frame once, in order.
+    A window cut at a sample that is not a frame boundary (the last step trims by however many samples it was over) moves
+    the stub's frame grid, which a real model shrugs off; the tests keep the cuts on frame boundaries."""
+
+    left_frames, chunk_frames, right_frames, subsampling = 40, 16, 24, 8  # 5, 2 and 3 encoder frames
+    blank, max_tokens = 0, 4
+    span = 160 * 8
+
+    def __init__(self) -> None:
+        self.windows: list[int] = []  # samples in each window the encoder saw
+
+    def encode(self, window):
+        self.windows.append(len(window) // 2)
+        samples = struct.unpack(f"<{len(window) // 2}h", window)
+        return [samples[at] for at in range(0, len(samples), self.span)], -(-len(samples) // self.span)
+
+    def new_state(self):
+        return 0
+
+    def step(self, tokens, state, frame):
+        # One token per frame, then the blank, as a joint does after it has spoken for a frame. The decoder state is the
+        # number of tokens it has taken in, as an RNN-T's prediction network's is: a state that was dropped or replayed
+        # between steps no longer matches the tokens, and the stub says so by speaking garbage.
+        if tokens and tokens[-1] == frame:
+            return self.blank, state
+        return (frame if state == len(tokens) else -1), state + 1
+
+    def text(self, tokens):
+        return ",".join(str(t) for t in tokens)
+
+
+def frames_pcm(frames: int, tail: int = 0) -> bytes:
+    """`frames` whole frames of the FrameEngine's audio, then `tail` samples of the next frame."""
+    out = b"".join(struct.pack("<h", k + 1) * FrameEngine.span for k in range(frames))
+    return out + struct.pack("<h", frames + 1) * tail
+
+
+def expected_text(frames: int, tail: int = 0) -> str:
+    return ",".join(str(k + 1) for k in range(frames + (1 if tail else 0)))
+
+
+class StreamingUtteranceTests(unittest.TestCase):
+    def run_schedule(self, frames: int, tail: int, cuts: list[int]) -> tuple[str, FrameEngine, list[str]]:
+        engine = FrameEngine()
+        utterance = sc.StreamingUtterance(engine)
+        pcm = frames_pcm(frames, tail)
+        partials = [utterance.advance(pcm[: cut * 2], False) for cut in cuts]
+        return utterance.advance(pcm, True), engine, partials
+
+    def test_the_final_text_is_the_same_whatever_the_partials_did(self):
+        for frames, tail in [(0, 700), (1, 0), (3, 17), (6, 0), (7, 1), (12, 0), (25, 0), (40, 0)]:
+            total = frames * FrameEngine.span + tail
+            for cuts in ([], [total // 2], list(range(500, total, 500)), list(range(1280, total, 1280)), list(range(1, total, 4001))):
+                with self.subTest(frames=frames, tail=tail, partials=len(cuts)):
+                    text, _, _ = self.run_schedule(frames, tail, cuts)
+                    self.assertEqual(text, expected_text(frames, tail))
+
+    def test_the_decoder_state_is_carried_between_requests_and_across_window_slides(self):
+        # 40 frames slide the window many times (it holds 10); the partials cut the utterance at chunk and mid-chunk points.
+        engine = FrameEngine()
+        utterance = sc.StreamingUtterance(engine)
+        pcm = frames_pcm(40)
+        total = 40 * FrameEngine.span
+        for cut in range(3000, total, 3000):
+            text = utterance.advance(pcm[: cut * 2], False)
+            self.assertNotIn("-1", text.split(","), f"state lost by the partial at {cut}")
+            self.assertEqual(utterance.state, len(utterance.tokens), f"state out of step with the tokens at {cut}")
+        self.assertEqual(utterance.advance(pcm, True), expected_text(40))
+        self.assertEqual(utterance.state, 40)
+        utterance.advance(frames_pcm(3), True)  # shorter audio for the same utterance starts it over, state included
+        self.assertEqual(utterance.state, 3)
+
+    def test_a_partial_holds_back_only_what_still_lacks_right_context(self):
+        # Five frames of audio: the first step needs a chunk and the right context (5 frames), so exactly 2 are decoded.
+        _, _, partials = self.run_schedule(5, 0, [5 * FrameEngine.span])
+        self.assertEqual(partials, ["1,2"])
+
+    def test_work_is_incremental_not_a_redecode_of_the_buffer(self):
+        engine = FrameEngine()
+        utterance = sc.StreamingUtterance(engine)
+        pcm = frames_pcm(60)
+        span = FrameEngine.span
+        calls = []
+        for frames in range(5, 61):
+            utterance.advance(pcm[: frames * span * 2], False)
+            calls.append(len(engine.windows))
+        self.assertLessEqual(max(b - a for a, b in zip(calls, calls[1:])), 1, "one new frame never costs more than one step")
+        before = len(engine.windows)
+        utterance.advance(pcm, True)
+        self.assertLessEqual(len(engine.windows) - before, 2, "a final after partials decodes only the tail")
+        self.assertLessEqual(max(engine.windows), engine.left_frames * 160 + (engine.chunk_frames + engine.right_frames) * 160, "the window never outgrows left + chunk + right")
+
+    def test_a_final_with_no_partials_decodes_everything(self):
+        text, engine, _ = self.run_schedule(20, 0, [])
+        self.assertEqual(text, expected_text(20))
+        self.assertGreater(len(engine.windows), 2)
+
+    def test_a_buffer_that_shrinks_starts_over(self):
+        engine = FrameEngine()
+        utterance = sc.StreamingUtterance(engine)
+        utterance.advance(frames_pcm(12), False)
+        self.assertEqual(utterance.advance(frames_pcm(6), True), expected_text(6))
+
+    def test_an_empty_utterance_decodes_to_nothing(self):
+        engine = FrameEngine()
+        self.assertEqual(sc.StreamingUtterance(engine).advance(b"", True), "")
+        self.assertEqual(engine.windows, [])
+
+    def test_a_token_cap_per_frame_bounds_a_runaway_joint(self):
+        engine = FrameEngine()
+        engine.step = lambda tokens, state, frame: (7, state)  # never blank
+        self.assertEqual(sc.StreamingUtterance(engine).advance(frames_pcm(1), True), "7,7,7,7")
+
+
+class StreamingSttTests(unittest.TestCase):
+    def test_utterances_keep_separate_state_and_the_final_drops_it(self):
+        stt = sc.StreamingStt(FrameEngine())
+        pcm = frames_pcm(9)
+        stt.transcribe("a", pcm[: 5 * FrameEngine.span * 2], False)
+        stt.transcribe("b", pcm[: 8 * FrameEngine.span * 2], False)
+        self.assertEqual(set(stt._streams), {"a", "b"})
+        self.assertEqual(stt.transcribe("a", pcm, True), expected_text(9))
+        self.assertEqual(set(stt._streams), {"b"})
+        stt.forget("b")
+        stt.forget("never-seen")
+        self.assertEqual(stt._streams, {})
+
+    def test_a_failed_step_drops_the_state_so_the_next_request_starts_over(self):
+        engine = FrameEngine()
+        stt = sc.StreamingStt(engine)
+        pcm = frames_pcm(9)
+        stt.transcribe("u", pcm[: 6 * FrameEngine.span * 2], False)
+        real = engine.encode
+        engine.encode = lambda window: (_ for _ in ()).throw(RuntimeError("device lost"))
+        with self.assertRaises(RuntimeError):
+            stt.transcribe("u", pcm, False)
+        self.assertNotIn("u", stt._streams)
+        engine.encode = real
+        self.assertEqual(stt.transcribe("u", pcm, True), expected_text(9))
+
+    def test_abandoned_utterances_are_capped(self):
+        stt = sc.StreamingStt(FrameEngine())
+        for n in range(sc.MAX_STREAMS + 5):
+            stt.transcribe(f"u{n}", frames_pcm(6), False)
+        self.assertEqual(len(stt._streams), sc.MAX_STREAMS)
+        self.assertIn(f"u{sc.MAX_STREAMS + 4}", stt._streams)
+        self.assertNotIn("u0", stt._streams)
+
+    def test_stateless_recognize_and_warm_work(self):
+        stt = sc.StreamingStt(FrameEngine())
+        self.assertEqual(stt.recognize(frames_pcm(8)), expected_text(8))
+        stt.warm()
+        self.assertEqual(stt._streams, {})
+
+    def test_the_server_decodes_partials_and_final_through_the_utterance_state_and_cancel_forgets_it(self):
+        h = Harness()
+        stt = sc.StreamingStt(FrameEngine())
+        h.server._loader = lambda hello: sc.Models(StubVad(), stt, h.tts, "cpu")
+        h.send(HELLO)
+        pcm = frames_pcm(14)
+        h.send({"op": "stt.partial", "stream": "s", "utterance": "u1"}, pcm[: 8 * FrameEngine.span * 2])
+        h.send({"op": "stt.partial", "stream": "s", "utterance": "u2"}, pcm[: 8 * FrameEngine.span * 2])
+        h.send({"op": "stt.final", "stream": "s", "utterance": "u1"}, pcm)
+        h.wait_for(lambda f: f["op"] == "stt.text" and f["final"])
+        h.send({"op": "cancel", "id": "u2"})
+        h.send({"op": "ping", "n": 1})
+        h.wait_for(lambda f: f["op"] == "pong")
+        texts = {(f["utterance"], f["final"]): f["text"] for f, _ in h.outbound.frames() if f["op"] == "stt.text"}
+        self.assertEqual(texts[("u1", True)], expected_text(14))
+        self.assertEqual(texts[("u1", False)], "1,2,3,4")
+        self.assertEqual(stt._streams, {})
+        h.finish()
+
+
+try:
+    import numpy as np
+except ImportError:  # the stubs above need no packages; this one fake does
+    np = None
+
+
+class FakeOnnxAsr:
+    """The corners of an `onnx-asr` NeMo RNN-T model that the streaming engine reaches into."""
+
+    _blank_idx = 1024
+    _max_tokens_per_step = 10
+
+    def __init__(self, meta=None) -> None:
+        self.calls: list[tuple[int, int]] = []
+        metadata = meta if meta is not None else {
+            "streaming_model_type": "nemo_parakeet_unified_streaming", "left_feature_frames": "560", "chunk_feature_frames": "56",
+            "right_feature_frames": "56", "subsampling_factor": "8",
+        }
+        self._encoder = types.SimpleNamespace(get_modelmeta=lambda: types.SimpleNamespace(custom_metadata_map=metadata))
+
+    def _preprocessor(self, waveforms, lengths):
+        self.calls.append((waveforms.shape[1], int(lengths[0])))
+        return waveforms, lengths
+
+    def _encode(self, features, lengths):
+        return features.reshape(1, -1, 1), lengths // 160 // 8
+
+    def _create_state(self):
+        return None
+
+    def _decode(self, tokens, state, frame):
+        return np.zeros(1025), -1, state
+
+    def _decode_tokens(self, ids, indices, logprobs):
+        return types.SimpleNamespace(text=" ".join(str(i) for i in ids))
+
+
+@unittest.skipIf(np is None, "numpy is not installed")
+class OnnxAsrStreamEngineTests(unittest.TestCase):
+    WINDOW = (560 + 56 + 56) * 160
+
+    def pcm(self, samples: int) -> bytes:
+        return bytes(samples * 2)
+
+    def test_it_reads_the_window_geometry_from_the_encoder(self):
+        engine = sc.OnnxAsrStreamEngine(FakeOnnxAsr(), np, True)
+        self.assertEqual((engine.left_frames, engine.chunk_frames, engine.right_frames, engine.subsampling), (560, 56, 56, 8))
+        self.assertEqual((engine.blank, engine.max_tokens), (1024, 10))
+
+    def test_on_the_gpu_every_window_has_one_shape_and_the_real_length(self):
+        asr = FakeOnnxAsr()
+        engine = sc.OnnxAsrStreamEngine(asr, np, True)
+        for samples in (17920, 26880, 93680, self.WINDOW, 100):
+            engine.encode(self.pcm(samples))
+        self.assertEqual([shape for shape, _ in asr.calls], [self.WINDOW] * 5, "one input shape, so the graph is planned once")
+        self.assertEqual([length for _, length in asr.calls], [17920, 26880, 93680, self.WINDOW, sc.MIN_STT_SAMPLES], "the real length, never below the minimum")
+
+    def test_on_the_cpu_windows_keep_their_length(self):
+        asr = FakeOnnxAsr()
+        engine = sc.OnnxAsrStreamEngine(asr, np, False)
+        engine.encode(self.pcm(17920))
+        engine.encode(self.pcm(100))
+        self.assertEqual(asr.calls, [(17920, 17920), (sc.MIN_STT_SAMPLES, sc.MIN_STT_SAMPLES)])
+
+    def test_an_encoder_that_is_not_a_streaming_export_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "not a Parakeet Unified streaming export"):
+            sc.OnnxAsrStreamEngine(FakeOnnxAsr({}), np, True)
+
+    def test_a_model_object_without_the_expected_internals_is_refused_by_name(self):
+        asr = FakeOnnxAsr()
+        del FakeOnnxAsr._decode_tokens
+        try:
+            with self.assertRaisesRegex(RuntimeError, "no _decode_tokens"):
+                sc.OnnxAsrStreamEngine(asr, np, True)
+        finally:
+            FakeOnnxAsr._decode_tokens = lambda self, ids, indices, logprobs: types.SimpleNamespace(text=" ".join(str(i) for i in ids))
+
+    def test_a_token_step_and_the_text_go_through_the_model(self):
+        engine = sc.OnnxAsrStreamEngine(FakeOnnxAsr(), np, True)
+        self.assertEqual(engine.step([], None, None), (0, None))
+        self.assertEqual(engine.text([3, 4]), "3 4")
+
+
 class LanguageTests(unittest.TestCase):
     def test_kokoro_language_follows_the_voice_for_english(self):
         self.assertEqual(sc.kokoro_language("af_heart", "en"), "en-us")
@@ -500,6 +759,48 @@ class PinnedDownloadTests(unittest.TestCase):
         sc._download_pinned(self.dest, self.download())
         self.assertEqual([name for _, name, _ in self.fetched], ["x/enc.onnx"])
         self.assertEqual(open(os.path.join(self.dest, "encoder-model.onnx"), "rb").read(), b"graph")
+
+    def reuse_download(self, reuse: str):
+        spec = self.download()
+        spec["files"][1]["reuse"] = reuse
+        return spec
+
+    def sibling(self, content: bytes = b"weights") -> str:
+        """Another model's directory holding the weights under the name the offline export gave them."""
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, "weights.data"), "wb") as out:
+            out.write(content)
+        return os.path.join(other, "weights.data")
+
+    def test_a_file_another_model_already_holds_is_linked_in_not_fetched(self):
+        source = self.sibling()
+        sc._download_pinned(self.dest, self.reuse_download("../other/weights.data"))
+        self.assertEqual([name for _, name, _ in self.fetched], ["x/enc.onnx", "vocab.txt"])
+        target = os.path.join(self.dest, "enc.onnx.data")
+        self.assertEqual(open(target, "rb").read(), b"weights")
+        self.assertTrue(os.path.samefile(source, target), "linked, not a second copy on disk")
+        self.assertEqual(sorted(os.listdir(self.dest)), ["config.json", "enc.onnx.data", "encoder-model.onnx", "vocab.txt"])
+
+    def test_a_file_that_is_not_where_the_hint_says_or_has_another_hash_is_fetched(self):
+        sc._download_pinned(self.dest, self.reuse_download("../other/missing.data"))
+        self.assertIn("x/enc.onnx.data", [name for _, name, _ in self.fetched])
+        self.fetched.clear()
+        self.sibling(b"something else")
+        sc._download_pinned(os.path.join(self.tmp.name, "model2"), self.reuse_download("../other/weights.data"))
+        self.assertIn("x/enc.onnx.data", [name for _, name, _ in self.fetched])
+        self.assertEqual(open(os.path.join(self.tmp.name, "model2", "enc.onnx.data"), "rb").read(), b"weights")
+
+    def test_a_copy_is_made_where_the_filesystem_will_not_link(self):
+        self.sibling()
+        real = os.link
+        os.link = lambda *a, **k: (_ for _ in ()).throw(OSError("cross-device"))
+        try:
+            sc._download_pinned(self.dest, self.reuse_download("../other/weights.data"))
+        finally:
+            os.link = real
+        self.assertEqual(open(os.path.join(self.dest, "enc.onnx.data"), "rb").read(), b"weights")
+        self.assertNotIn("x/enc.onnx.data", [name for _, name, _ in self.fetched])
 
     def test_download_with_a_pinned_stt_runs_only_the_steps_asked_for(self):
         spec = {"stt": {"name": "nemo-conformer-rnnt", "path": self.dest, "quantization": None, "download": self.download()}, "only": ["stt"]}

@@ -169,7 +169,7 @@ describe("validateConfigShape", () => {
 
 describe("the local speech-to-text model", () => {
   it("is one of the known models; the first is the default", () => {
-    expect(LOCAL_STT_MODELS).toEqual(["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b"]);
+    expect(LOCAL_STT_MODELS).toEqual(["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"]);
     expect(DEFAULT_LOCAL_STT_MODEL).toBe("parakeet-tdt-0.6b-v2");
     for (const model of LOCAL_STT_MODELS) expect(problems({ stt: { provider: "local", model } })).toEqual([]);
     expect(problems({ stt: { model: "parakeet-unified-en-0.6b" } })).toEqual([]); // the provider defaults to local
@@ -178,7 +178,7 @@ describe("the local speech-to-text model", () => {
   it("refuses a name it does not know, naming the choices, rather than silently running the default", () => {
     const [problem, ...rest] = problems({ stt: { provider: "local", model: "parakeet-unified-en-0.6" } });
     expect(rest).toEqual([]);
-    expect(problem).toContain("voice.stt.model must be one of parakeet-tdt-0.6b-v2, parakeet-unified-en-0.6b");
+    expect(problem).toContain("voice.stt.model must be one of parakeet-tdt-0.6b-v2, parakeet-unified-en-0.6b, parakeet-unified-en-0.6b-streaming");
     expect(problems({ stt: { model: "whisper-1" } })).toHaveLength(1);
   });
 
@@ -207,6 +207,7 @@ describe("the local speech-to-text model", () => {
   it("localSttModel picks the model the sidecar loads: the chosen one only when the local provider does the transcription", () => {
     expect(localSttModel({ provider: "local", model: "parakeet-unified-en-0.6b" })).toBe("parakeet-unified-en-0.6b");
     expect(localSttModel({ provider: "openai-compatible", model: "parakeet-unified-en-0.6b" })).toBe(DEFAULT_LOCAL_STT_MODEL);
+    expect(localSttModel({ provider: "local", model: "parakeet-unified-en-0.6b-streaming" })).toBe("parakeet-unified-en-0.6b-streaming");
     expect(localSttModel({ provider: "local", model: "unknown" })).toBe(DEFAULT_LOCAL_STT_MODEL);
   });
 });
