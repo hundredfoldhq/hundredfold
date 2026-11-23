@@ -66,7 +66,7 @@ describe("same-named uploads in one session", () => {
     expect(path.basename(files.claimUniqueUploadPath(dir, "notes"))).toBe("notes-3");
   });
 
-  it("re-homing two same-named first-message uploads keeps both files", () => {
+  it("re-homing two same-named first-message uploads keeps both files", async () => {
     seedFilesDirUpload("p1", "image.png", Buffer.from("FIRST"));
     seedFilesDirUpload("p2", "image.png", Buffer.from("SECOND"));
     files.rehomeAttachmentsToSession(["p1", "p2"], "sess-paste");
@@ -78,6 +78,9 @@ describe("same-named uploads in one session", () => {
     expect(fs.readFileSync(m2.path!, "utf8")).toBe("SECOND");
     expect(path.dirname(m1.path!)).toBe(path.dirname(m2.path!));
     expect(fs.readdirSync(path.dirname(m1.path!)).sort()).toEqual(["image-2.png", "image.png"]);
+    // The paths handed to the engine for the message are distinct too.
+    const { resolveAttachmentPaths } = await import("../web-session-dispatch.js");
+    expect(resolveAttachmentPaths(["p1", "p2"])).toEqual([m1.path, m2.path]);
   });
 
   it("re-homing onto a name an earlier message already used does not clobber it", () => {
