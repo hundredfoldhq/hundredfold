@@ -113,6 +113,23 @@ describe("a spoken round trip (US1)", () => {
     ]);
   });
 
+  it("text written before a tool call is spoken before the tool finishes, and the text after it is a sentence of its own", async () => {
+    const h = createHarness();
+    const { socket } = h.connect();
+    h.event("session:started");
+    // No space after the full stop: the sentence's end is only certain once the tool call says the text is over.
+    h.delta("text", "Looking for the audit job now.");
+    h.delta("tool_use", "", { toolName: "Bash" });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Looking for the audit job now."]);
+    expect(h.tts.calls).toEqual(["Looking for the audit job now."]);
+    h.delta("tool_result", "ok");
+    h.delta("text", "It is running.");
+    h.event("session:completed", { result: "Looking for the audit job now.It is running.", error: null });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Looking for the audit job now.", "It is running."]);
+  });
+
   it("sub-agent text and tools are not the main reply", async () => {
     const h = createHarness();
     const { socket } = h.connect();

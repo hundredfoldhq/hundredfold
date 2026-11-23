@@ -192,6 +192,9 @@ export class ReplyVoice {
 
   onToolUse(name: string | undefined): void {
     if (this.suppress) return;
+    // A tool call ends the text block before it: its last sentence is spoken now, not held until the text after
+    // the call (or the turn's end) shows where it stops, and the text after is a sentence of its own.
+    if (!this.suspended) this.pipeline.endReply();
     this.engineTurn = "working";
     this.tool = name;
     this.emitTurn();
