@@ -99,6 +99,7 @@ export {
   foldPartialText,
   normalizeBlockDeltaForTurn,
 } from "../sessions/partial-stream.js";
+import { getLiveStreamBlock } from "../sessions/partial-stream.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { spawnCwd } from "../sessions/session-cwd.js";
 import { sessionScopeDepartment } from "../sessions/session-scope.js";
@@ -1912,9 +1913,19 @@ export async function handleApiRequest(
       const page = includeMessages && lastN > 0
         ? getMessagePage(params.id, { limit: lastN })
         : null;
-      const messages = includeMessages
+      const storedMessages = includeMessages
         ? page ? page.messages : getMessages(params.id)
         : [];
+      // While a turn runs, the text block it is streaming comes from the turn's writer
+      // and is read in the same tick as the rows: the stored row of that block trails
+      // the stream by up to one flush, and a view opened now lines the live deltas up
+      // against this text by their offsets.
+      const liveStream = includeMessages && session.status === "running"
+        ? getLiveStreamBlock(session.id, session.attemptToken)
+        : null;
+      const messages = liveStream?.messageId
+        ? storedMessages.map((message) => message.id === liveStream.messageId ? { ...message, content: liveStream.text } : message)
+        : storedMessages;
 
       // Backfill from Claude Code's JSONL transcript if our DB has no messages.
       // Run async + transactional so the GET doesn't block on multi-MB JSONL
@@ -1936,6 +1947,7 @@ export async function handleApiRequest(
       return json(res, withFallbackView({
         ...serializeSessionResponse(session, context),
         ...(includeMessages ? { messages } : {}),
+        ...(liveStream ? { liveStream } : {}),
         ...(page ? { messagesPage: { hasOlder: page.hasOlder } } : {}),
       }, session, context, resolveScopedCaller(resolveScopedWriteCallerIdentity(req, context)) !== null));
     }

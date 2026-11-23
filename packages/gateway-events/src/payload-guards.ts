@@ -131,6 +131,8 @@ function hasOptionalDeltaToolFields(value: Record<string, unknown>): boolean {
     && isOptionalString(value.agentId)
     && isOptionalString(value.input)
     && isOptionalBoolean(value.sidechain)
+    && isOptionalNumber(value.streamBlock)
+    && isOptionalNumber(value.offset)
 }
 
 function isSessionAttachment(value: unknown): boolean {

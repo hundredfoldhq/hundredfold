@@ -66,7 +66,7 @@ export type PreTurnCompaction =
   | { kind: "preempted" };
 
 /** The compaction's stream is not the turn's answer: nothing of it is kept. */
-const DISCARDED_STREAM: PartialStreamWriter = { persist() {}, finish() {} };
+const DISCARDED_STREAM: PartialStreamWriter = { persist: (delta) => delta, finish() {} };
 
 /** The chat sees the compaction's status and the meter moving, not its prose. */
 function compactionSurface(surface: TurnSurface): TurnSurface {
