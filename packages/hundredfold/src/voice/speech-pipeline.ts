@@ -63,7 +63,7 @@ export interface CutResult {
   heardBy: HeardPart[];
   /** The stored message of each of `unheard`, in step with it; undefined for a streamed reply. */
   unheardIds: Array<string | undefined>;
-  /** Other replies the cut left with something unheard (a report queued or sent behind the one cut), and what of each was heard. */
+  /** Other replies the cut left with something unheard (a report or a gateway reply queued or sent behind the one cut), and what of each was heard. */
   others: UnheardReply[];
 }
 
@@ -194,7 +194,8 @@ export class SpeechPipeline {
    * Stop speaking now. `segmentId` is the segment the client was playing and
    * `playedMs` how much of it, or null when the gateway cut on its own hearing
    * and knows only what was reported played. `others` names the replies besides the cut one whose unheard
-   * sentences are kept for a resume and reported (a report spoken in a pass of its own); any other is dropped.
+   * sentences are kept for a resume and reported (a report spoken in a pass of its own, or a gateway reply sent behind
+   * the cut one); any other is dropped.
    */
   cut(segmentId: number | null, playedMs: number, others: ReadonlySet<number> = new Set()): CutResult {
     this.generation += 1;

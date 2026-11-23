@@ -73,6 +73,8 @@ export class ReplyVoice {
   private readonly attachedAt: number;
   private readonly dealtWith = new Set<string>();
   private readonly passes: Reply[] = [];
+  /** The last few gateway replies that finished, for a barge-in that cuts something other than them. */
+  private readonly finished: Reply[] = [];
   /** The last barge-in cut, for the words or silence that follow it. */
   private lastCut: CutResult | null = null;
 
@@ -115,7 +117,12 @@ export class ReplyVoice {
 
   /** Stop speaking and keep what was not heard; returns what was. */
   cutPlayback(segmentId: number | null, playedMs: number): CutResult {
-    const open = new Set(this.passes.filter((p) => !p.closed).map((p) => p.id));
+    // Every reply but the one the cut falls in may be left partly unheard: a report, or a gateway reply sent behind it.
+    const open = new Set([
+      ...this.passes.filter((p) => !p.closed).map((p) => p.id),
+      ...this.finished.map((r) => r.id),
+      ...(this.reply ? [this.reply.id] : []),
+    ].sort((a, b) => a - b));
     const result = this.pipeline.cut(segmentId, playedMs, open);
     this.lastCut = result;
     this.pipeline.hold();
@@ -137,12 +144,18 @@ export class ReplyVoice {
     } else {
       this.resumeStreamed(cut, unheard);
     }
-    // The reports the cut left unheard are spoken after it: each stored message is told what went out, once it has.
+    this.recordOthersWhenSpoken(cut);
+    this.pipeline.release();
+  }
+
+  /** The replies the cut left unheard are spoken after it: each stored message is told what went out, once it has. */
+  private recordOthersWhenSpoken(cut: CutResult | null): void {
     for (const other of cut?.others ?? []) {
       const report = this.passes.find((p) => p.id === other.replyKey);
       if (report) void this.pipeline.whenIdle().then(() => this.applyPassMeta(report)).catch((error: unknown) => this.logMetaFailure(error));
+      const reply = this.finished.find((r) => r.id === other.replyKey);
+      if (reply) void this.pipeline.whenIdle().then(() => this.safeApplyMeta(reply)).catch((error: unknown) => this.logMetaFailure(error));
     }
-    this.pipeline.release();
   }
 
   /** A streamed reply's sentences go on as its own; one that had already finished is told once they are spoken. */
@@ -163,7 +176,7 @@ export class ReplyVoice {
     this.pipeline.discardQueued();
     this.pipeline.release();
     for (const pass of dropped) this.recordNothingHeard(pass);
-    this.recordUnheardReports(cut);
+    this.recordUnheardOthers(cut);
     const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
     if (cut && pass) return this.recordPassHeard(cut.heardBy, pass);
     const reply = this.reply ?? this.last;
@@ -174,11 +187,23 @@ export class ReplyVoice {
     else this.safeApplyMeta(reply);
   }
 
-  /** A report the cut left partly or wholly unheard (queued or sent behind the reply cut) keeps only what was heard of it. */
-  private recordUnheardReports(cut: CutResult | null): void {
+  /**
+   * A reply the cut left partly or wholly unheard (a report, or a gateway reply, queued or sent behind the reply cut)
+   * keeps only what was heard of it.
+   */
+  private recordUnheardOthers(cut: CutResult | null): void {
     for (const other of cut?.others ?? []) {
       const report = this.passes.find((p) => p.id === other.replyKey && !p.closed);
-      if (report) this.recordPassHeard(other.heardBy, report);
+      if (report) {
+        this.recordPassHeard(other.heardBy, report);
+        continue;
+      }
+      const reply = this.finished.find((r) => r.id === other.replyKey) ?? (this.reply?.id === other.replyKey ? this.reply : undefined);
+      if (!reply) continue;
+      reply.heard = other.heardBy.map((part) => part.text).filter(Boolean).join(" ");
+      // A reply still being written has no stored message of its own yet: it is told when its turn ends.
+      if (reply === this.reply) this.pendingMeta = reply;
+      else this.safeApplyMeta(reply);
     }
   }
 
@@ -305,6 +330,8 @@ export class ReplyVoice {
     }
     if (flush) this.pipeline.endReply();
     this.last = reply;
+    this.finished.push(reply);
+    if (this.finished.length > RETAINED_PASSES) this.finished.shift();
     // Pin the stored message now, while it is the newest: a later reply must not be taken for it.
     this.resolveMessage(reply);
     void this.pipeline.whenIdle().then(() => this.applyMeta(reply)).catch((error: unknown) => this.logMetaFailure(error));

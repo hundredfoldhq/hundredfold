@@ -296,7 +296,8 @@ describe("which reply the sentences belong to", () => {
     socket.clear();
     bargeIn(attachment, 2, 0);
     await noWordsFollow(h);
-    expect(texts(socket)).toEqual([BETA, GAMMA, "Delta report two.", "Epsilon ends it."]);
+    // The gateway reply sent behind the pass was not heard either: it is spoken once, after the pass.
+    expect(texts(socket)).toEqual([BETA, GAMMA, "Delta report two.", "Epsilon ends it.", "Hi there."]);
     expect(lastPatch(h, one)).toEqual({ voice: { spokenText: REPLY } });
     expect(lastPatch(h, two)).toEqual({ voice: { spokenText: REPORT_TWO } });
   });
@@ -472,5 +473,117 @@ describe("a report queued behind a gateway reply that is cut", () => {
     await h.say(attachment, "stop now");
     expect(lastPatch(h, earlier)).toEqual({ voice: { spokenText: "The first report." } });
     expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: ALPHA, interrupted: true } });
+  });
+});
+
+describe("a gateway reply sent behind a report that the client cuts on the report", () => {
+  const ONE = "Report one.";
+  const TWO = "Report two.";
+  const REPORT = `${ONE} ${TWO}`;
+  const NEXT = "Next reply one. Next reply two.";
+  const isReplySentence = (text: unknown) => text === ALPHA || text === BETA || text === GAMMA;
+
+  /** The report is sent, then the reply behind it; none of it is played and the client cuts on the report's second sentence. */
+  async function replyBehindReport() {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    const [report] = h.externalTurn(REPORT);
+    await settle();
+    h.state.replyMessage = h.store("assistant", REPLY);
+    await h.reply(REPLY);
+    expect(texts(socket)).toEqual([ONE, TWO, ALPHA, BETA, GAMMA]);
+    const reply = h.state.replyMessage!;
+    bargeIn(attachment, idOf(socket, TWO), 0);
+    return { h, socket, attachment, report, reply };
+  }
+
+  it("when words follow, the reply records that none of it was heard, and is not spoken", async () => {
+    const { h, socket, attachment, report, reply } = await replyBehindReport();
+    socket.clear();
+    await h.say(attachment, "stop now");
+    expect(lastPatch(h, report)).toEqual({ voice: { spokenText: ONE, interrupted: true } });
+    expect(lastPatch(h, reply)).toEqual({ voice: { spokenText: "", interrupted: true } });
+    expect(texts(socket).filter(isReplySentence)).toEqual([]);
+  });
+
+  it("with no words, the report is spoken again from the cut, then the reply once, and each is recorded as spoken", async () => {
+    const { h, socket, report, reply } = await replyBehindReport();
+    socket.clear();
+    await noWordsFollow(h);
+    expect(texts(socket)).toEqual([TWO, ALPHA, BETA, GAMMA]);
+    expect(lastPatch(h, report)).toEqual({ voice: { spokenText: REPORT } });
+    expect(lastPatch(h, reply)).toEqual({ voice: { spokenText: REPLY } });
+  });
+
+  it("a cut that names no sentence behaves the same: nothing heard of the reply, or all of it spoken once", async () => {
+    const heard = await replyBehindReport();
+    heard.attachment.onText(JSON.stringify({ type: "barge_in", segmentId: null, playedMs: 0 }));
+    await heard.h.say(heard.attachment, "stop now");
+    expect(lastPatch(heard.h, heard.reply)).toEqual({ voice: { spokenText: "", interrupted: true } });
+    const resumed = await replyBehindReport();
+    resumed.attachment.onText(JSON.stringify({ type: "barge_in", segmentId: null, playedMs: 0 }));
+    resumed.socket.clear();
+    await noWordsFollow(resumed.h);
+    expect(texts(resumed.socket).filter(isReplySentence)).toEqual([ALPHA, BETA, GAMMA]);
+    expect(lastPatch(resumed.h, resumed.reply)).toEqual({ voice: { spokenText: REPLY } });
+  });
+
+  it("two replies behind the report are each recorded, or each spoken once", async () => {
+    const make = async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.externalTurn(REPORT);
+      await settle();
+      h.state.replyMessage = h.store("assistant", REPLY);
+      await h.reply(REPLY);
+      const first = h.state.replyMessage!;
+      h.state.replyMessage = h.store("assistant", NEXT);
+      await h.reply(NEXT);
+      const second = h.state.replyMessage!;
+      bargeIn(attachment, idOf(socket, TWO), 0);
+      socket.clear();
+      return { h, socket, attachment, first, second };
+    };
+    const words = await make();
+    await words.h.say(words.attachment, "stop now");
+    expect(lastPatch(words.h, words.first)).toEqual({ voice: { spokenText: "", interrupted: true } });
+    expect(lastPatch(words.h, words.second)).toEqual({ voice: { spokenText: "", interrupted: true } });
+    const silent = await make();
+    await noWordsFollow(silent.h);
+    expect(texts(silent.socket)).toEqual([TWO, ALPHA, BETA, GAMMA, "Next reply one.", "Next reply two."]);
+    expect(lastPatch(silent.h, silent.first)).toEqual({ voice: { spokenText: REPLY } });
+    expect(lastPatch(silent.h, silent.second)).toEqual({ voice: { spokenText: NEXT } });
+  });
+
+  it("an earlier reply spoken in full keeps its record, with words and with none", async () => {
+    const make = async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.state.replyMessage = h.store("assistant", NEXT);
+      await h.reply(NEXT);
+      const earlier = h.state.replyMessage!;
+      await playAll(socket, attachment);
+      h.externalTurn(REPORT);
+      await settle();
+      h.state.replyMessage = h.store("assistant", REPLY);
+      await h.reply(REPLY);
+      bargeIn(attachment, idOf(socket, TWO), 0);
+      socket.clear();
+      return { h, socket, attachment, earlier, reply: h.state.replyMessage };
+    };
+    const words = await make();
+    await words.h.say(words.attachment, "stop now");
+    expect(lastPatch(words.h, words.earlier)).toEqual({ voice: { spokenText: NEXT } });
+    expect(lastPatch(words.h, words.reply!)).toEqual({ voice: { spokenText: "", interrupted: true } });
+    const silent = await make();
+    await noWordsFollow(silent.h);
+    expect(texts(silent.socket)).toEqual([TWO, ALPHA, BETA, GAMMA]);
+    expect(lastPatch(silent.h, silent.earlier)).toEqual({ voice: { spokenText: NEXT } });
+  });
+
+  it("the report's own recording is unchanged", async () => {
+    const { h, attachment, report } = await replyBehindReport();
+    await h.say(attachment, "stop now");
+    expect(lastPatch(h, report)).toEqual({ voice: { spokenText: ONE, interrupted: true } });
   });
 });
