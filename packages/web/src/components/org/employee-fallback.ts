@@ -10,7 +10,7 @@ import {
 import type { Employee } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import type { EnginesResponse } from "@/lib/api"
-import { itemKey, itemsOfEntries, itemsOfResolved, type ChainItem } from "@/routes/settings/engines/chain-links"
+import { itemKey, itemsOfEntries, itemsOfResolved, type ChainItem, type OpencodeAccountRef } from "@/routes/settings/engines/chain-links"
 import { hostRowProblems, rowProblemsAgainst, type HostProblem } from "@/routes/settings/engines/chain-problems"
 
 /* What the employee screens need to know about a chain: whether it is the
@@ -204,9 +204,14 @@ export function fallbackFieldState(
   engine: string,
   value: ChainItem[] | null,
   chains: FallbackChainsResponse | undefined,
-  /** The model the editor now has; the saved one when it does not say. */
-  model?: string,
+  editing: {
+    /** The model the editor now has; the saved one when it does not say. */
+    model?: string
+    /** The declared opencode accounts, once read: what an opencode group's members are ticked from and checked against. */
+    opencode?: readonly OpencodeAccountRef[]
+  } = {},
 ) {
+  const { model, opencode } = editing
   const account = engine === "claude" ? declaredAccountOf(employee, chains) : undefined
   const subject = employeeSubject(chains, employee.name)
   // A remote account has no chain of its own: a remote employee inherits its engine's, whatever account it is on.
@@ -216,13 +221,19 @@ export function fallbackFieldState(
   const own = value === null ? null : ownChainOf(employee, value, subject)
   const changed = !sameChain(value, employeeChainOf(employee))
   const options = profilesForEmployee(employee, chains)
-  const accounts: DeclaredAccounts = { names: (chains?.profiles ?? []).map((p) => p.name), hostProblem: employeeHostProblem(employee, chains) }
+  const accounts: DeclaredAccounts = {
+    names: (chains?.profiles ?? []).map((p) => p.name),
+    hostProblem: employeeHostProblem(employee, chains),
+    ...(opencode ? { opencodeNames: opencode.map((a) => a.name) } : {}),
+  }
   return { inherited, self, selves, shown: own?.links ?? inherited.links, own, subject, changed, profiles: options.map((p) => p.name), accounts, profileLabels: profileLabels(options) }
 }
 
 /** What a chain's profile links are checked against: every declared account's name, and why one on the wrong side for the employee may not be named. */
 export interface DeclaredAccounts {
   names: readonly string[]
+  /** The declared opencode accounts' names, where they are known: an opencode group member is checked against them. */
+  opencodeNames?: readonly string[]
   hostProblem?: HostProblem
 }
 
@@ -234,7 +245,13 @@ export function chainProblemCount(
   /** A name that is not among the declared accounts names no account. */
   accounts: DeclaredAccounts,
 ): number {
-  const ctx = { engines: Object.values(registry.engines), profiles: [...accounts.names] }
+  const ctx = {
+    engines: Object.values(registry.engines),
+    profiles: [...accounts.names],
+    ...(accounts.opencodeNames ? { opencodeProfiles: [...accounts.opencodeNames] } : {}),
+    // The engine the save would leave the employee on: an opencode group is refused anywhere else.
+    ...(selves[0] ? { ownEngine: selves[0].engine } : {}),
+  }
   const found = rowProblemsAgainst("fallback", links, ctx, selves)
   return found.byRow.flat().length + found.general.length + hostRowProblems("fallback", links, accounts.hostProblem).flat().length
 }

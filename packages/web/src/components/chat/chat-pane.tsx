@@ -13,6 +13,8 @@ import { ScrollingEmptyState } from '@/components/chat/chat-transcript-empty'
 import { ChatHydrationOverlay, useHydrationSpinner } from '@/components/chat/chat-hydration'
 import { SessionQueueContext, useSessionQueue } from '@/components/chat/use-session-queue'
 import { useVoice } from '@/components/chat/use-voice'
+import { offerHandoff, type VoiceSessionStarter } from '@/lib/voice/controller'
+import { usePrincipal } from '@/hooks/use-principal'
 import { VoiceCaption } from '@/components/chat/voice-caption'
 import { VoiceControl } from '@/components/chat/voice-control'
 import { QueuedBar } from '@/components/chat/queued-bar'
@@ -170,7 +172,18 @@ export function ChatPane({
     loadRetrying,
   } = live
   const sessionQueue = useSessionQueue(sessionId, subscribe)
-  const voice = useVoice(sessionId, backgroundActivity, () => { if (sessionId) void reloadSession(sessionId) })
+  // A new chat can start voice: the first tap creates the chat. The starter is stable; what it reads is kept current below.
+  const voiceStarterRef = useRef<VoiceSessionStarter | null>(null)
+  const voiceStarter = useMemo<VoiceSessionStarter>(() => ({
+    create: () => voiceStarterRef.current!.create(),
+    bind: (id, controller) => voiceStarterRef.current?.bind(id, controller),
+    discard: (id) => voiceStarterRef.current?.discard(id),
+  }), [])
+  const principal = usePrincipal()
+  const voice = useVoice(
+    sessionId, backgroundActivity, () => { if (sessionId) void reloadSession(sessionId) },
+    !sessionId && principal?.kind !== 'member' ? voiceStarter : null,
+  )
   // A message cancelled out of the queue never ran: it leaves the transcript.
   const shownMessages = useMemo(() => sessionQueue.withdrawn.size === 0 ? messages
     : messages.filter((message) => !sessionQueue.withdrawn.has(message.id)), [messages, sessionQueue.withdrawn])
@@ -435,6 +448,38 @@ export function ChatPane({
     // Keep viewMode and stale-notice handling fresh across chat↔CLI sends.
     [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, selector, effectiveProfile, currentSession?.engine, engineRegistry, beginSend, failSend, answerStaleChatBySending, sessionQueue, keepPaneTab]
   )
+
+  // Voice on a new chat: the chat is created with the composer's own choices and no first message, the pane is bound to it
+  // as a sent first message binds it, and the first thing said becomes that message. One creation per run, however it is tapped.
+  // The controller binds the pane only once it knows the run is still live: a run stopped mid-create discards the chat
+  // instead, and the pane, the tab and the chat list never see it.
+  const voiceCreation = useRef<Promise<string> | null>(null)
+  voiceStarterRef.current = {
+    create: () => {
+      voiceCreation.current ??= (async () => {
+        const params = buildNewSessionParams({
+          message: '', selectedEmployee, engine: selector.engine, profile: effectiveProfile,
+          model: selector.model, effortLevel: selector.effortLevel, speech: true,
+        })
+        delete params.prompt
+        Object.assign(params, newChatFallbackParams(newChatFallbackRef.current))
+        const session = (await api.createSession(params)) as Record<string, unknown>
+        if (shouldPersistNewSessionSelector({ selectedEmployee, manuallyChanged: newSessionSelectorDirtyRef.current })) {
+          writeNewSessionSelector(selector)
+        }
+        return String(session.id)
+      })().finally(() => { voiceCreation.current = null })
+      return voiceCreation.current
+    },
+    bind: (sid, controller) => {
+      // Before the pane binds: the tabbed layout remounts the pane to bind it, and the new pane must find the controller.
+      offerHandoff(sid, controller)
+      onSessionCreated?.(sid)
+      keepPaneTab(sid)
+      onRefresh?.()
+    },
+    discard: (id) => { void api.deleteSession(id).catch(() => undefined) },
+  }
 
   const handleStatusRequest = useCallback(async () => {
     if (!sessionId) {

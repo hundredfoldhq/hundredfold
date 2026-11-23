@@ -1,5 +1,6 @@
 import type { UsageSample, UsageSampleWindow } from "./claude-usage-history.js";
 import { ENGINE_HEALTH_REFRESH_INTERVAL_MS } from "./engine-health-interval.js";
+import { isOpencodeAccountKey, opencodeModelKeyOf } from "./fallback-chain-opencode-group.js";
 import type { AccountHeadroom, AccountPick, FallbackChainSource } from "./fallback-chain-wire.js";
 
 /**
@@ -20,7 +21,7 @@ export const ACCOUNT_READING_FRESH_MS = 2 * ENGINE_HEALTH_REFRESH_INTERVAL_MS;
 
 /** One account of a group, as the ranking sees it. */
 export interface GroupCandidate {
-  /** The per-account store key (`claude`, `claude:<profile key>`). */
+  /** The per-account store key (`claude`, `claude:<profile key>`, or an opencode account's `opencode/<provider>`). */
   account: string;
   label: string;
   /** The newest usage sample recorded for the account, when there is one. */
@@ -44,13 +45,23 @@ interface Headroom {
 }
 
 const SCOPED_WINDOW_RE = /^7d\s+(\S.*)$/i;
+/** An opencode account's model-scoped window: `<window> <model key>`, written for one model of the provider's ledger. */
+const OPENCODE_SCOPED_WINDOW_RE = /^(?:5h|7d|30d)\s+(\S.*)$/;
 
 function words(text: string): string[] {
   return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
-/** Whether a window applies to a session on `model`: a `7d <model name>` window only to that family, every other window always, and every window when the model is unknown. */
-function windowApplies(window: UsageSampleWindow, model: string | null | undefined): boolean {
+/** An opencode window applies to every model, except one scoped to a model key, which applies only to a session on exactly that key (no family matching). */
+function opencodeWindowApplies(window: UsageSampleWindow, model: string | null | undefined): boolean {
+  const scope = OPENCODE_SCOPED_WINDOW_RE.exec(window.name.trim())?.[1];
+  const key = opencodeModelKeyOf(model) ?? model?.trim();
+  return scope === undefined || !key || scope === key;
+}
+
+/** Whether a window applies to a session on `model`: a `7d <model name>` window only to that family, every other window always, and every window when the model is unknown. An opencode account's scoped windows match the model key exactly. */
+function windowApplies(window: UsageSampleWindow, model: string | null | undefined, account: string): boolean {
+  if (isOpencodeAccountKey(account)) return opencodeWindowApplies(window, model);
   const scope = SCOPED_WINDOW_RE.exec(window.name.trim())?.[1];
   if (scope === undefined || !model?.trim()) return true;
   const modelWords = new Set(words(model));
@@ -58,10 +69,10 @@ function windowApplies(window: UsageSampleWindow, model: string | null | undefin
 }
 
 /** The headroom a sample leaves: 100 minus the highest use across the applicable windows, a window that has already reset counting as unused, in whole percent. */
-function headroomOf(sample: UsageSample, model: string | null | undefined, now: Date): Headroom {
+function headroomOf(sample: UsageSample, account: string, model: string | null | undefined, now: Date): Headroom {
   let tightest: UsageSampleWindow | undefined;
   for (const window of sample.windows) {
-    if (window.resetsAt * 1000 <= now.getTime() || !windowApplies(window, model)) continue;
+    if (window.resetsAt * 1000 <= now.getTime() || !windowApplies(window, model, account)) continue;
     if (tightest === undefined || window.usedPercent > tightest.usedPercent) tightest = window;
   }
   if (tightest === undefined) return { percent: 100 };
@@ -94,7 +105,7 @@ interface Measured {
 
 function measure(candidate: GroupCandidate, options: GroupRankOptions): Measured {
   const { reading } = candidate;
-  return { state: stateOf(candidate, options.now), reading, ...(reading ? { headroom: headroomOf(reading, options.model, options.now) } : {}) };
+  return { state: stateOf(candidate, options.now), reading, ...(reading ? { headroom: headroomOf(reading, candidate.account, options.model, options.now) } : {}) };
 }
 
 const TIER_ORDER: Record<AccountHeadroom["state"], number> = { fresh: 0, stale: 1, unknown: 2, exhausted: 3 };

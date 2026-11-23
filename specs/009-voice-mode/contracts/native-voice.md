@@ -52,6 +52,7 @@ feature.
 | Session | `AVAudioSession` `.playAndRecord`, mode `.voiceChat` (echo cancellation), `UIBackgroundModes: audio` | foreground service, type `microphone`, ongoing notification |
 | Capture | `AVAudioEngine` input → 16 kHz PCM16 | `AudioRecord`, source `VOICE_COMMUNICATION`, `AcousticEchoCanceler` |
 | Playback | `AVAudioPlayerNode` queue, flushable | `AudioTrack` streaming, flushable |
+| Sound cue | `AVAudioPlayerNode` of its own, looped; never in the speech queue | `AudioTrack` of its own (static, looped) on the capture's audio session; never in the speech queue |
 | Onset detector | RMS over 20 ms frames, `minSpeechMs` hold (same parameters as `ready.onset`) | same |
 | Lock-screen control | Now Playing info ("Voice mode on"), remote `pause`/`stop` → `voice_stop` | notification action "Stop" → `voice_stop` |
 | Permissions | `NSMicrophoneUsageDescription` | `RECORD_AUDIO`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS` |
@@ -68,3 +69,12 @@ client rebuilds its capture path for the new format.
 While voice runs, the session outlives the UI: on Android, BACK at the app root moves the
 task to the background instead of finishing the activity. Removing the task from recents
 ends the session cleanly (`bye`, close 1000).
+
+## Sound cues
+
+Rust decides (`voice-core/src/cues.rs`, `session.rs`) from the forwarded gateway frames (see voice-socket.md,
+"Sound cues") and hands the platform one PCM16LE mono 24 kHz loop at a time (`SetCue`); an empty loop stops it.
+The platform loops it on a channel of its own. The speech ledger, the onset detector and the `played` reports
+never see a cue, so a cue cannot be taken for speech playing or for a barge-in. A pause for an interruption stops
+the cue, and the end of the interruption asks for it again if it is still wanted. The Android build is
+tested; the iOS code is written to this contract and needs a Mac with Xcode to build.

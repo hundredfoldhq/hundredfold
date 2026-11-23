@@ -240,6 +240,38 @@ describe('the Voice section', () => {
   })
 })
 
+describe('the Voice style field', () => {
+  it('is absent while voice mode is off', async () => {
+    renderSettings()
+    await screen.findByText('Stored')
+    expect(screen.queryByRole('textbox', { name: 'Voice style prompt' })).toBeNull()
+  })
+
+  it('shows the stored style and writes an edit to voice.stylePrompt, keeping the rest of the voice block', async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      config: {
+        realtime: { provider: 'openai', apiKey: STORED_KEY_SENTINEL },
+        voice: { enabled: true, mode: 'push-to-talk', stylePrompt: 'Be brief.' },
+      },
+      revision: 'rev-1',
+    })
+    renderSettings()
+
+    const field = (await screen.findByRole('textbox', { name: 'Voice style prompt' })) as HTMLTextAreaElement
+    expect(field.value).toBe('Be brief.')
+    fireEvent.change(field, { target: { value: 'Much shorter, more personal, a bit funny. Make jokes.' } })
+
+    await waitFor(() =>
+      expect(apiMocks.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voice: { enabled: true, mode: 'push-to-talk', stylePrompt: 'Much shorter, more personal, a bit funny. Make jokes.' },
+        }),
+        'rev-1',
+      ),
+    )
+  })
+})
+
 describe('the Talk Orb row', () => {
   it('offers the four calm orb styles in Voice settings', async () => {
     renderSettings()
@@ -273,5 +305,70 @@ describe('the Talk Orb row', () => {
 
     await screen.findByRole('combobox', { name: 'Voice provider' })
     expect(screen.queryByText(NOT_SET_UP)).toBeNull()
+  })
+})
+
+describe('the speaking speed (voice mode)', () => {
+  beforeEach(() => apiMocks.updateConfig.mockClear())
+  const speedSelect = () => screen.findByRole('combobox', { name: 'Spoken reply speed' }) as Promise<HTMLSelectElement>
+
+  it('offers Slower, Normal, Faster and Fastest, and shows Normal when nothing is set', async () => {
+    renderSettings()
+
+    const select = await speedSelect()
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
+      'Slower (0.8×)',
+      'Normal (1×)',
+      'Faster (1.25×)',
+      'Fastest (1.5×)',
+    ])
+    expect(select.value).toBe('1')
+  })
+
+  it('writes the chosen speed to voice.tts.speed and leaves the rest of the voice block alone', async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      config: { realtime: { provider: 'openai', apiKey: STORED_KEY_SENTINEL }, voice: { enabled: true, tts: { voice: 'af_bella' } } },
+      revision: 'rev-1',
+    })
+    renderSettings()
+
+    fireEvent.change(await speedSelect(), { target: { value: '1.5' } })
+
+    await waitFor(() =>
+      expect(apiMocks.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ voice: { enabled: true, tts: { voice: 'af_bella', speed: 1.5 } } }),
+        'rev-1',
+      ),
+    )
+  })
+
+  it('shows a speed from the file that is not a preset as it is, and does not rewrite it by being opened', async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      config: { realtime: { provider: 'openai', apiKey: STORED_KEY_SENTINEL }, voice: { enabled: true, tts: { speed: 1.1 } } },
+      revision: 'rev-1',
+    })
+    renderSettings()
+
+    const select = await speedSelect()
+    expect(select.value).toBe('1.1')
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toContain('Custom (1.1×)')
+    await waitFor(() => expect(apiMocks.getConfig).toHaveBeenCalled())
+    expect(apiMocks.updateConfig).not.toHaveBeenCalled()
+  })
+
+  it('says so when voice mode is off, and not when it is on', async () => {
+    renderSettings()
+    await speedSelect()
+    expect(screen.queryByText(/Voice mode is off/)).not.toBeNull()
+  })
+
+  it('does not say so when voice mode is on', async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      config: { realtime: { provider: 'openai', apiKey: STORED_KEY_SENTINEL }, voice: { enabled: true } },
+      revision: 'rev-1',
+    })
+    renderSettings()
+    await speedSelect()
+    expect(screen.queryByText(/Voice mode is off/)).toBeNull()
   })
 })

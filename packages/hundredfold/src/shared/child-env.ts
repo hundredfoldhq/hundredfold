@@ -57,6 +57,42 @@ export function setOpencodeAccountKeyEnv(names: Iterable<string>, env: NodeJS.Pr
   }
 }
 
+/** The variables the `voice.*.apiKey` settings name (`${VAR}`). Withheld from every child built here exactly as the opencode
+ *  account keys are: the gateway resolves a voice key itself, so no engine process, and no shell a model runs, has it.
+ *  An explicit `${VAR}` elsewhere in config.yaml still resolves it ({@link voiceKeyEnvironment}): only inheritance is cut. */
+let voiceKeyEnv: ReadonlySet<string> = new Set();
+
+/** The voice keys themselves, taken out of the gateway's own environment when the config loads. */
+const voiceKeys = new Map<string, string>();
+
+/**
+ * Replace the voice key variables every child env drops (an empty list clears them) and move each one's value out of
+ * `env` into this module, the way {@link setOpencodeAccountKeyEnv} does for account keys. The gateway's voice providers
+ * read it back through {@link voiceKeyEnvironment}, and its own successor gets it ({@link withOpencodeAccountKeys}).
+ */
+export function setVoiceKeyEnv(names: Iterable<string>, env: NodeJS.ProcessEnv = process.env): void {
+  voiceKeyEnv = new Set(names);
+  for (const [name, value] of [...voiceKeys]) {
+    if (voiceKeyEnv.has(name)) continue;
+    // A name voice no longer uses is the operator's ordinary variable again: readable, and passed to a successor.
+    voiceKeys.delete(name);
+    if (env[name] === undefined) env[name] = value;
+  }
+  for (const name of voiceKeyEnv) {
+    const value = env[name];
+    if (value === undefined) continue;
+    if (value.trim() !== "") voiceKeys.set(name, value);
+    delete env[name];
+  }
+}
+
+/** `base` (the gateway's environment) with the voice keys taken at config load laid over it. Only for the gateway's own voice providers; never a child env. */
+export function voiceKeyEnvironment(base: Readonly<Record<string, string | undefined>> = process.env): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = { ...base };
+  for (const [name, value] of voiceKeys) out[name] = value;
+  return out;
+}
+
 /** `base` (the gateway's environment) with the account keys taken at config load laid over it: a key taken wins, any other variable reads as `base` has it. Only for the readers that hand a key to an opencode process or report whether one is set; never a child env as a whole. */
 export function opencodeAccountKeyEnvironment(base: Readonly<Record<string, string | undefined>> = process.env): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = { ...base };
@@ -64,10 +100,11 @@ export function opencodeAccountKeyEnvironment(base: Readonly<Record<string, stri
   return out;
 }
 
-/** `env` with the account keys the gateway took put back: for a gateway that starts its own successor (daemon start, restart), which reads them again at its own config load. */
+/** `env` with the account keys (and voice keys) the gateway took put back: for a gateway that starts its own successor (daemon start, restart), which reads them again at its own config load. */
 export function withOpencodeAccountKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const [name, value] of opencodeAccountKeys) out[name] = value;
+  for (const [name, value] of voiceKeys) out[name] = value;
   return out;
 }
 
@@ -75,6 +112,8 @@ export function withOpencodeAccountKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessE
 export function resetOpencodeAccountKeysForTest(): void {
   opencodeAccountKeys.clear();
   opencodeAccountKeyEnv = new Set();
+  voiceKeys.clear();
+  voiceKeyEnv = new Set();
 }
 
 /** Per-engine scrub rules. `exact` names and `prefix` families are stripped
@@ -168,7 +207,7 @@ function shouldScrubEngineChildEnv(
   options: EngineChildEnvOptions,
   denyExact: ReadonlySet<string>,
 ): boolean {
-  if (ENGINE_CHILD_ENV_DENY_EXACT.has(key) || denyExact.has(key) || opencodeAccountKeyEnv.has(key)) return true;
+  if (ENGINE_CHILD_ENV_DENY_EXACT.has(key) || denyExact.has(key) || opencodeAccountKeyEnv.has(key) || voiceKeyEnv.has(key)) return true;
   if (options.scopedSession && !isScopedSessionEnvName(key)) return true;
   return ENGINE_SCRUB_RULES.some(
     (rule) => Boolean(options[rule.option])

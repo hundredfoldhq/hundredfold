@@ -50,7 +50,7 @@ function operatorSwitchRecord(session: Session, config: HundredfoldConfig, own: 
 
 /** What `switchSessionTarget` writes for a resolved target: the profile only when the request named one or the balancer picked one, and the balancer's record as the resolution decided it (set, cleared or left). */
 function switchWrite(body: TargetPatchInput["body"], resolved: Extract<SwitchResolution, { ok: true }>, lastSwitch: LastSwitch): SwitchSessionTargetOptions {
-  const { target, accountPick } = resolved;
+  const { target, accountPick, remoteAccountPin } = resolved;
   return {
     engine: target.engine,
     ...(body.profile !== undefined || accountPick ? { claudeConfigDir: target.claudeConfigDir } : {}),
@@ -60,6 +60,7 @@ function switchWrite(body: TargetPatchInput["body"], resolved: Extract<SwitchRes
     sync: "pointer",
     lastSwitch: lastSwitch as unknown as JsonObject,
     ...(accountPick === undefined ? {} : { accountPick }),
+    ...(remoteAccountPin === undefined ? {} : { remoteAccountPin }),
   };
 }
 
@@ -74,7 +75,7 @@ export function patchSessionTarget(input: TargetPatchInput): TargetPatchResult {
   const resolved = resolveSwitchTarget(config, session, body, { caller: "operator" });
   if (!resolved.ok) return { kind: "refused", error: resolved.error };
   const { target, own } = resolved;
-  if (staysInSlot(config, session, target)) return { kind: "none" };
+  if (staysInSlot(config, session, target, resolved.remoteAccountPin)) return { kind: "none" };
   if (input.busy) return { kind: "refused", error: "Cannot switch engine or profile while a turn is running, waiting, or queued" };
 
   const lastSwitch = operatorSwitchRecord(session, config, own, target);

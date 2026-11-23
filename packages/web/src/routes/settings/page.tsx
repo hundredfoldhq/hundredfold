@@ -30,6 +30,8 @@ import { configSaveBlocker } from "./engines/model-map-model"
 import { refreshFallbackChains } from "@/hooks/use-fallback-chains"
 import { SttSettingsSection } from "./stt-section"
 import { VoiceSection } from "./voice-section"
+import { VoiceModeSection } from "./voice-mode-section"
+import { VoiceStyleSection } from "./voice-style-section"
 import { PairingSection } from "./pairing-section"
 import { PeopleEntry } from "./people/entry"
 import { ShortcutsSection } from "./shortcuts-section"
@@ -1372,7 +1374,15 @@ export default function SettingsPage() {
                 capability={voiceCapability}
                 onChange={updateConfig}
                 talkOrbOn={settings.talkOrb}
+                spokenSpeed={config.voice?.tts?.speed}
+                voiceModeOn={config.voice?.enabled === true}
               />
+
+              {config.voice?.enabled === true && (
+                <VoiceStyleSection value={config.voice.stylePrompt ?? ""} onChange={updateConfig} />
+              )}
+              {/* -- Voice mode: the sound cues -- */}
+              <VoiceModeSection cues={config.voice?.cues} onChange={updateConfig} />
 
               {/* -- Section 9: Dictation (STT) -- */}
               <SttSettingsSection />

@@ -33,6 +33,9 @@ extern "C" {
     fn hf_voice_flush();
     fn hf_voice_pause();
     fn hf_voice_resume();
+    /// Loops this PCM16LE mono 24 kHz buffer as a sound cue on its own player node; a null pointer or
+    /// zero length stops the cue.
+    fn hf_voice_set_cue(pcm: *const u8, length: usize);
     fn hf_voice_stop();
 }
 
@@ -58,8 +61,8 @@ impl AudioPlatform for IosPlatform {
     }
 
     fn command(&self, command: PlatformCommand) {
-        // SAFETY: the pointer passed to `hf_voice_play` is valid for `length`
-        // bytes for the duration of the call; Swift copies it before returning.
+        // SAFETY: the pointer passed to `hf_voice_play` and `hf_voice_set_cue` is valid for
+        // `length` bytes for the duration of the call; Swift copies it before returning.
         unsafe {
             match command {
                 PlatformCommand::ConfigureOnset(Onset {
@@ -73,6 +76,8 @@ impl AudioPlatform for IosPlatform {
                 PlatformCommand::Flush => hf_voice_flush(),
                 PlatformCommand::Pause => hf_voice_pause(),
                 PlatformCommand::Resume => hf_voice_resume(),
+                PlatformCommand::Cue(Some(pcm)) => hf_voice_set_cue(pcm.as_ptr(), pcm.len()),
+                PlatformCommand::Cue(None) => hf_voice_set_cue(std::ptr::null(), 0),
             }
         }
     }

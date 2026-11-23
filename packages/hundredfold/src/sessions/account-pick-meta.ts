@@ -79,3 +79,15 @@ export function transportMetaWithoutPickNumbers<T extends Session["transportMeta
   const candidates = raw.candidates.map((candidate) => (isRecord(candidate) ? withoutHeadroomNumbers(candidate) : candidate));
   return { ...meta, accountPick: { ...raw, candidates } } as T;
 }
+
+/**
+ * The transport meta a model-only change leaves an opencode session with: the balancer's pick dropped, since a model the operator
+ * names is an account they chose, and the pick left behind would make the chain read follow an account the session no longer runs on.
+ * `undefined` when there is nothing to change (no pick, another engine, or the model stays what it was).
+ */
+export function metaWithoutPickForModel(session: Pick<Session, "engine" | "model" | "transportMeta">, model: string): NonNullable<Session["transportMeta"]> | undefined {
+  const meta = session.transportMeta;
+  if (session.engine !== "opencode" || model === session.model || !meta || typeof meta !== "object" || Array.isArray(meta) || !("accountPick" in meta)) return undefined;
+  const { accountPick: _pick, ...rest } = meta;
+  return rest;
+}

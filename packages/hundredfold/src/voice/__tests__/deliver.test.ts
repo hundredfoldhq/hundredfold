@@ -237,6 +237,64 @@ describe("a send-now folds parked messages without dropping the voice envelope",
   });
 });
 
+describe("the voice style reaches the engine prompt of a spoken turn only", () => {
+  const STYLE = "Much shorter, more personal, a bit funny. Make jokes.";
+
+  async function spokenTurn(style: string, words: string): Promise<{ sessionId: string; prompt: string }> {
+    const session = newSession();
+    const clock = new FakeClock();
+    const stt = new FakeStt();
+    const vads: FakeVad[] = [];
+    let ids = 0;
+    const hub = new VoiceHub({
+      config: () => baseConfig({ stylePrompt: style }),
+      providers: () => ({ stt, tts: new FakeTts(), createVad: () => { const vad = new FakeVad(); vads.push(vad); return vad; } }),
+      getSession: (id) => registry.getSession(id),
+      getEngine: () => engine as unknown as import("../../shared/types.js").Engine,
+      turnRunning: () => false,
+      deliver: (delivery) => deliver.deliverVoiceMessage(context, delivery),
+      mergeMessageMeta: (id, patch) => { registry.mergeMessageMeta(id, patch); },
+      findReplyMessageId: registry.latestAssistantMessageId,
+      externalRepliesSince: registry.externalRepliesSince,
+      clock,
+      log: { info: () => undefined, warn: () => undefined },
+      newId: () => `id${++ids}`,
+    });
+    const attachment = hub.attach(new FakeSocket(), { sessionId: session.id, principal: { kind: "operator" } })!;
+    attachment.onText(JSON.stringify({ type: "hello", protocol: 1, mode: "hands-free", client: "web" }));
+    vads[0].start(0);
+    for (let i = 0; i < 10; i += 1) attachment.onBinary(Buffer.alloc(640, 1));
+    vads[0].end();
+    clock.advance(40);
+    stt.last().final(words);
+    await settle();
+    await engineRan();
+    return { sessionId: session.id, prompt: engine.runs[0].prompt };
+  }
+
+  it("a configured style is in the prompt the engine runs for a voice turn, and the stored message is only the words", async () => {
+    const { sessionId, prompt } = await spokenTurn(STYLE, "what is two plus two");
+    expect(prompt).toContain(STYLE);
+    expect(prompt.endsWith("\n\nwhat is two plus two")).toBe(true);
+    expect(registry.getMessages(sessionId).filter((m) => m.role === "user").map((m) => m.content)).toEqual(["what is two plus two"]);
+  });
+
+  it("with no style the engine prompt has no style directions", async () => {
+    const { prompt } = await spokenTurn("", "what is two plus two");
+    expect(prompt).toContain(VOICE_PROMPT_OPEN);
+    expect(prompt).not.toMatch(/style directions/i);
+  });
+
+  it("a typed (non-voice) turn on the same configuration never carries the style", async () => {
+    const dispatchModule = await import("../../gateway/web-session-dispatch.js");
+    const session = newSession();
+    dispatchModule.dispatchWebSessionRun(session, "what is two plus two", engine as unknown as import("../../shared/types.js").Engine, context);
+    await engineRan();
+    expect(engine.runs[0].prompt).toBe("what is two plus two");
+    expect(engine.runs[0].prompt).not.toContain(STYLE);
+  });
+});
+
 describe("what the hub stores on the chat, through the real registry (what the web re-reads)", () => {
   it("the user message carries utteranceId, sttProvider and audioMs; the reply carries spokenText and ttfaMs, and interrupted when cut off", async () => {
     const session = newSession();

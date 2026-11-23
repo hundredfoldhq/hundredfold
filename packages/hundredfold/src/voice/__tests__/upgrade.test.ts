@@ -78,6 +78,23 @@ describe("the /ws/voice/:id upgrade", () => {
     expect((await open(r.url(newSession().id))).kind).toBe("destroyed");
   });
 
+  it("a reload that makes the voice block invalid detaches a running voice like turning it off, and says why", async () => {
+    const { voiceConfigResponse } = await import("../../gateway/voice-api.js");
+    const r = await start();
+    const session = newSession();
+    const live = keep(await open(r.url(session.id)));
+    const got = collect(live);
+    live.send(hello());
+    await waitFor(() => got.text.some((f) => f.type === "ready"));
+    r.config.current = { ...r.config.current, voice: { ...(r.config.current.voice as object), vad: { silenceMs: 50 } } };
+    r.runtime.wrapEmit((() => undefined) as never)("config:reloaded" as never, {} as never);
+    expect(await got.closed).toMatchObject({ reason: "disabled" });
+    expect(got.text.filter((f) => f.type === "detached")).toEqual([{ type: "detached", reason: "disabled" }]);
+    expect(r.runtime.hub.size()).toBe(0);
+    expect(voiceConfigResponse(r.config.current, { voiceRunning: () => true })).toMatchObject({ enabled: true, available: false, reason: expect.stringContaining("voice.vad.silenceMs") });
+    expect((await open(r.url(newSession().id))).kind).toBe("destroyed");
+  });
+
   it("an unrelated path is not taken", async () => {
     const r = await start();
     expect((await open(`ws://127.0.0.1:${r.port}/ws/voice`)).kind).toBe("destroyed");
@@ -89,6 +106,15 @@ describe("the /ws/voice/:id upgrade", () => {
     const session = newSession();
     const outcome = await open(r.url(session.id), {});
     expect(outcome).toMatchObject({ kind: "refused", status: 403 });
+  });
+
+  it("tells a caller with no credential only that authentication is needed, without describing the endpoint", async () => {
+    const r = await start();
+    const outcome = await open(r.url(newSession().id), {});
+    expect(outcome).toMatchObject({ kind: "refused", status: 403 });
+    const body = (outcome as { body: string }).body;
+    expect(body).toMatch(/Authentication is required/);
+    expect(body).not.toMatch(/operator|sessions cannot speak/);
   });
 
   it("refuses a cross-origin browser, 403, even with the operator's credential", async () => {
@@ -226,6 +252,26 @@ describe("the /ws/voice/:id upgrade", () => {
     await waitFor(() => got.text.some((f) => f.type === "ready"));
     ws.send(Buffer.alloc(64 * 1024));
     expect((await got.closed).code).toBe(1009);
+  });
+
+  it("an oversize frame ends the attachment, so its slot is free for the next socket (ws raises an error before the 1009 close)", async () => {
+    const r = await start({ enabled: true, limits: { maxConcurrentAttachments: 1 } });
+    const session = newSession();
+    const ws = keep(await open(r.url(session.id)));
+    const got = collect(ws);
+    ws.send(hello());
+    await waitFor(() => got.text.some((f) => f.type === "ready"));
+    ws.send(Buffer.alloc(64 * 1024));
+    expect((await got.closed).code).toBe(1009);
+    await waitFor(() => r.runtime.hub.size() === 0);
+    expect(r.runtime.hub.get(session.id)).toBeUndefined();
+
+    const next = keep(await open(r.url(newSession().id)));
+    const nextGot = collect(next);
+    next.send(hello());
+    await waitFor(() => nextGot.text.some((f) => f.type === "ready"));
+    expect(nextGot.text.some((f) => f.type === "error" && (f as { code?: string }).code === "limit")).toBe(false);
+    expect(r.runtime.hub.size()).toBe(1);
   });
 
   it("audio and speech run through a real socket: the final becomes the reply's speech as binary frames", async () => {

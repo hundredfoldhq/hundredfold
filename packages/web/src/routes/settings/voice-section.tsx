@@ -7,6 +7,7 @@ import type { OrbVariant } from "@/components/talk/orb-motion"
 import type { TalkCapability } from "@/lib/talk-capability"
 import { useSettings } from "@/routes/settings-provider"
 import { FieldRow, Section, SettingsInput, SettingsSelect } from "./shared"
+import { VoiceSpeedField } from "./voice-speed-field"
 import {
   ModelField,
   NoiseReductionField,
@@ -42,6 +43,10 @@ interface VoiceSectionProps {
   onChange: (path: string[], value: unknown) => void
   /** Whether the orb is switched on, which decides which way to cross-reference. */
   talkOrbOn: boolean
+  /** `voice.tts.speed`: how fast voice mode speaks its replies. */
+  spokenSpeed?: unknown
+  /** `voice.enabled`. */
+  voiceModeOn?: boolean
 }
 
 /** What the operator most needs to know, in one line: whether the orb will work. */
@@ -277,6 +282,11 @@ export function VoiceSection(props: VoiceSectionProps) {
 
       <SessionFields {...props} />
       <OrbTasteFields />
+
+      <div className="mt-[var(--space-4)] mb-[var(--space-1)] text-[length:var(--text-footnote)] font-medium text-[var(--text-primary)]">
+        Voice mode
+      </div>
+      <VoiceSpeedField speed={props.spokenSpeed} voiceModeOn={props.voiceModeOn ?? false} onChange={onChange} />
 
       <Guidance note={readiness(capability, provider, apiKey)} talkOrbOn={talkOrbOn} />
     </Section>

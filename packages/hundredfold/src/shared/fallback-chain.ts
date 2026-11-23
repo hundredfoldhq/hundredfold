@@ -8,6 +8,7 @@ import { resolveSubstituteModel } from "./engine-fallback.js";
 import { engineChain, expandFallbackChain, type ExpandedFallbackLink, type FallbackExpansionMode } from "./fallback-chain-expand.js";
 import { linkHealth } from "./fallback-chain-health.js";
 import { orderGroupLinks, type GroupRankInputs } from "./fallback-chain-group.js";
+import { isOpencodeAccountKey, opencodeMemberTarget, opencodeOwnModel } from "./fallback-chain-opencode-group.js";
 import {
   fallbackGroupOf, fallbackLinkKey, fallbackLinkLabel,
   type AccountPick, type FallbackChainEntry, type FallbackChainSource, type FallbackLink, type FallbackSkipReason, type ResolvedFallbackLink,
@@ -145,15 +146,44 @@ function withModel(env: FallbackChainEnv, subject: FallbackChainSpec, link: Fall
   return { engine: link.engine, ...(link.profile === undefined ? {} : { profile: link.profile }), ...(model === undefined ? {} : { model }) };
 }
 
+/**
+ * The target an expanded link runs and whether it can serve at all. A member of an opencode group is an
+ * account, so it runs the subject's own model key on its provider; any other link gets the model rules above.
+ */
+function targetOf(env: FallbackChainEnv, subject: FallbackChainSpec, link: FallbackLink, group: ExpandedFallbackLink["group"]): { target: FallbackLink; unserved: boolean } {
+  if (group && link.engine === "opencode") return opencodeMemberTarget(env.config, link, opencodeOwnModel(env.config, subject.own.model));
+  return { target: withModel(env, subject, link), unserved: false };
+}
+
 /** An expanded link with the group it came from, and why the subject cannot use it, when it cannot. */
 function annotated(
-  env: FallbackChainEnv, subject: FallbackChainSpec, expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"] },
+  env: FallbackChainEnv, subject: FallbackChainSpec,
+  expanded: { resolved: ResolvedFallbackLink; target: FallbackLink; group: ExpandedFallbackLink["group"]; unserved?: boolean },
 ): ResolvedFallbackLink {
-  const { resolved, target, group } = expanded;
-  const skip = skipReason(env, subject, target);
+  const { resolved, target, group, unserved } = expanded;
+  const skip = skipReason(env, subject, target) ?? (unserved ? "model-not-served" : undefined);
   const detail = skip ? skipDetail(env.config, subject.scope, target, skip) : undefined;
   const member = group ? { ...resolved, group: { index: group.index, written: group.written } } : resolved;
   return skip ? { ...member, skip, ...(detail ? { skipDetail: detail } : {}) } : member;
+}
+
+/** The keys that stand for the subject's own target: its own link, and a remote subject's unprofiled spelling of it (a link naming no profile runs the account it has). */
+function ownTargetKeys(subject: FallbackChainSpec, own: ResolvedFallbackLink): string[] {
+  const keys = [own.key];
+  // Not for a session pinned to another account than its employee's login: the unprofiled link is that login, a link of its own.
+  const unprofiledIsOwn = subject.claudeAccount === undefined || subject.claudeAccount === own.account;
+  if (subject.scope.remote && own.profile !== undefined && unprofiledIsOwn) keys.push(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  return keys;
+}
+
+/**
+ * The key a member of an opencode group has when it is the subject's own account while the subject names no model
+ * (it runs the engine's configured one, so the own link's key, `opencode||`, does not spell it). Only a group member is
+ * dropped for it: a link a chain names outright stays, as it always has.
+ */
+function ownMemberKey(config: HundredfoldConfig, own: ResolvedFallbackLink): string | undefined {
+  const effective = own.engine === "opencode" && own.model === undefined ? opencodeOwnModel(config, undefined) : undefined;
+  return effective === undefined ? undefined : fallbackLinkKey({ engine: "opencode", model: effective });
 }
 
 /**
@@ -168,19 +198,20 @@ export function resolveFallbackLinks(env: FallbackChainEnv, subject: FallbackCha
   // An account chain names its Claude accounts itself; an engine chain's unprofiled Claude link is the subject's own login.
   const claudeAccount = subject.mode === "engine" ? subject.claudeAccount : undefined;
   const own = resolvedLink(env, subject.own, "config", subject.own, { claudeAccount, healthProvider: unpinnedHealthProvider(env.config, subject.own) });
-  const seen = new Set<string>([own.key]);
-  // A remote subject on a declared account is also its own target when a link names no profile: that runs the account it has.
-  if (subject.scope.remote && own.profile !== undefined) seen.add(fallbackLinkKey({ engine: own.engine, ...(own.model === undefined ? {} : { model: own.model }) }));
+  const seen = new Set<string>(ownTargetKeys(subject, own));
+  const ownMember = ownMemberKey(env.config, own);
   const expanded = expandFallbackChain(env.config, subject.entries, { mode: subject.mode, selfAccount: subject.ownAccount, selfKey: own.key });
   const links: ResolvedFallbackLink[] = [own];
   for (const { link, origin, group } of expanded) {
-    const target = withModel(env, subject, link);
+    const { target, unserved } = targetOf(env, subject, link, group);
     const resolved = resolvedLink(env, target, origin, link, { claudeAccount });
-    if (seen.has(resolved.key)) continue;
+    if (seen.has(resolved.key) || (group && resolved.key === ownMember)) continue;
     seen.add(resolved.key);
-    links.push(annotated(env, subject, { resolved, target, group }));
+    links.push(annotated(env, subject, { resolved, target, group, unserved }));
   }
-  return links.some((link) => link.group) ? orderGroupLinks(env, links, own.model) : links;
+  // An opencode subject naming no model runs the engine's configured one, which is the model its group is ranked for.
+  const rankModel = own.engine === "opencode" ? opencodeOwnModel(env.config, own.model) : own.model;
+  return links.some((link) => link.group) ? orderGroupLinks(env, links, rankModel) : links;
 }
 
 /**
@@ -200,12 +231,15 @@ export function inheritedChain(
 
 /** Which chain a session gets, first match wins: its own target, its employee's chain, then what its account and engine give. */
 function chainSource(
-  config: HundredfoldConfig, session: Session, employee: Employee | undefined, mode: FallbackExpansionMode, ownAccount: string,
+  config: HundredfoldConfig, session: Session, employee: Employee | undefined, runs: { mode: FallbackExpansionMode; ownAccount: string; remote: boolean },
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } {
+  const { mode, ownAccount, remote } = runs;
   const target = session.fallbackTarget;
   if (target) return { source: "session", entries: [{ engine: target.engine, model: target.model }] };
-  const picked = mode === "account" ? readAccountPick(session.transportMeta) : undefined;
-  const fromPick = picked && pickedChainSource(config, picked, employee);
+  // A remote employee's session is balanced too: its pick names the chain it came from (the employee's, else the engine's).
+  // So is an opencode session's, which is pinned by its model: it keeps the chain whose group picked it.
+  const picked = mode === "account" || remote || session.engine === "opencode" ? readAccountPick(session.transportMeta) : undefined;
+  const fromPick = picked && pickedChainSource(config, picked, employee, session.engine);
   if (fromPick) return fromPick;
   if (employee?.fallback !== undefined) return { source: "employee", entries: employee.fallback };
   return inheritedChain(config, session.engine, mode, ownAccount);
@@ -220,14 +254,17 @@ function holdingGroup<T extends { entries: readonly FallbackChainEntry[] }>(chai
  * The chain a balanced session keeps: the one its pick came from (`accountPick.source`), not the
  * pinned account's own. The group lives in its employee's chain, in the chain of the employee's own
  * login, or in the engine's, whichever the pick names; undefined when that chain no longer holds the
- * group at the recorded entry (edited since), and the session then resolves as any other.
+ * group at the recorded entry (edited since), and the session then resolves as any other. An opencode
+ * session has no account chains: its pick came from its employee's chain or the engine's, read for the
+ * session's engine. A pick of the other engine's accounts (a record kept across a switch) is not its own.
  */
 function pickedChainSource(
-  config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined,
+  config: HundredfoldConfig, pick: AccountPick, employee: Employee | undefined, engine: string,
 ): { source: FallbackChainSource; entries: readonly FallbackChainEntry[] } | undefined {
+  if (isOpencodeAccountKey(pick.picked) !== (engine === "opencode")) return undefined;
   if (pick.source === "employee") return holdingGroup(employee?.fallback === undefined ? undefined : { source: "employee" as const, entries: employee.fallback }, pick);
-  if (pick.source === "engine") return holdingGroup({ source: "engine" as const, entries: engineChain(config, "claude") }, pick);
-  if (pick.source !== "account") return undefined;
+  if (pick.source === "engine") return holdingGroup({ source: "engine" as const, entries: engineChain(config, engine === "opencode" ? "opencode" : "claude") }, pick);
+  if (pick.source !== "account" || engine === "opencode") return undefined;
   const inherited = inheritedChain(config, "claude", "account", accountForEmployee(employee, "claude"));
   return holdingGroup(inherited.source === "account" ? inherited : undefined, pick);
 }
@@ -260,7 +297,9 @@ export function sessionFallbackChain(options: SessionFallbackChainOptions): { so
   const remoteOwn = isRemoteClaudeAccount(ownAccount) ? ownAccount : undefined;
   const ownProfile = session.engine === "claude" ? (scope.remote ? remoteOwn : claudeAccountKey(ownClaudeProfile(session, employee))) : undefined;
   const own = ownTargetLink(config, { engine: session.engine, model: session.model, account: ownProfile });
-  const { source, entries } = chainSource(config, session, employee, mode, ownAccount);
+  const { source, entries } = chainSource(config, session, employee, { mode, ownAccount, remote: scope.remote });
   const env: FallbackChainEnv = { config, registry, ...inputs };
-  return { source, links: resolveFallbackLinks(env, { own, ownAccount, claudeAccount, entries, mode, scope }) };
+  // An unprofiled link in a remote chain is its employee's own login, whichever account the balancer pinned the session to.
+  const loginAccount = scope.remote ? accountForEmployee(employee, "claude") : claudeAccount;
+  return { source, links: resolveFallbackLinks(env, { own, ownAccount, claudeAccount: loginAccount, entries, mode, scope }) };
 }

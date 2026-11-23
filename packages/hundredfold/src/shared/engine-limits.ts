@@ -22,6 +22,7 @@ import { collectOpencodeLimits, meteringConfigured, OPENCODE_UNMETERED_REASON } 
 import { collectOpencodeAccounts } from "./engine-limits-opencode-accounts.js";
 import { collectGoUsage, goProvidersInUse, providerHealthBuckets, withEngineUsage } from "./engine-limits-opencode-usage.js";
 import { recordMeteredExhaustion } from "./engine-health-meter.js";
+import { recordOpencodeAccountSamples } from "./opencode-usage-history.js";
 import {
   baseSnapshot,
   isoFromSeconds,
@@ -328,6 +329,12 @@ function collectUnsupported(config: HundredfoldConfig, engine: string, reason: s
   };
 }
 
+/** What one opencode reading is written to: health (a spent window marks its provider out) and each declared account's usage history (the headroom the account balancer reads). */
+function recordOpencodeReadings(config: HundredfoldConfig, buckets: EngineLimitBucket[]): void {
+  recordMeteredExhaustion(buckets);
+  recordOpencodeAccountSamples(config, buckets);
+}
+
 export async function collectEngineLimits(
   config: HundredfoldConfig,
   opts: CollectEngineLimitsOptions = {},
@@ -387,7 +394,7 @@ export async function collectEngineLimits(
     // bucket), so only it may clear a record; the others record a spent window and nothing more.
     // opencode's readings are metered per provider and recorded under `opencode/<provider>`, never the engine's own key.
     if (name === "claude") noteLimitReading(name, engines[name]);
-    else if (name === "opencode") recordMeteredExhaustion(providerHealthBuckets(engines[name].buckets, await goUsage));
+    else if (name === "opencode") recordOpencodeReadings(config, providerHealthBuckets(engines[name].buckets, await goUsage));
     else recordExhaustedWindows(name, engines[name].windows);
   }
 

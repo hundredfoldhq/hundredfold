@@ -59,6 +59,12 @@ export interface TtsProvider {
   readonly id: string;
   /** Sample rate of the PCM16LE mono chunks `synthesize` yields. */
   readonly sampleRate: number;
+  /**
+   * Whether the provider's `speed` request changes how fast it speaks. False for a model that accepts the
+   * field and ignores it (OpenAI's `gpt-4o-mini-tts`); the pipeline then changes the pace of the audio itself.
+   * Absent means true.
+   */
+  readonly honoursSpeed?: boolean;
   /** The voice used when none is configured, or null when the provider has no notion of one. */
   readonly defaultVoice: string | null;
   /** Speak one sentence, yielding PCM16LE mono chunks as they are produced. */
@@ -67,11 +73,19 @@ export interface TtsProvider {
   close?(): void;
 }
 
+/**
+ * What a VAD stream reports, at `atMs`, an offset into everything written to the stream. `start` and `end` mark speech.
+ * `reset` says the detector behind the stream was replaced (the sidecar restarted): nothing before `atMs` will get an
+ * end, and every later event has `atMs` at or after it. The in-process detector never emits one.
+ */
+export interface VadEvent { kind: "start" | "end" | "reset"; atMs: number }
+export type VadEventHandler = (event: VadEvent) => void;
+
 /** The gateway's voice activity detection over one attachment's continuous audio. */
 export interface VadStream {
   /** Append PCM16LE mono at 16 kHz. */
   write(pcm: Buffer): void;
-  /** Speech started or ended, at an offset into the stream. */
-  on(handler: (event: { kind: "start" | "end"; atMs: number }) => void): void;
+  /** Speech started or ended, or the detector was replaced, at an offset into the stream. */
+  on(handler: VadEventHandler): void;
   close(): void;
 }

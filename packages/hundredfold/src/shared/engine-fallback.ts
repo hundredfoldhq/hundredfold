@@ -13,6 +13,7 @@ import { ENGINE_NAMES, type EngineName } from "./models.js";
 import { accountNames } from "./claude-accounts-config.js";
 import type { DuplicateTolerance } from "./fallback-chain-load.js";
 import { fallbackChainProblems } from "./fallback-chain-wire.js";
+import { opencodeAccountNames } from "./opencode-accounts-config.js";
 import type { HundredfoldConfig, ModelRegistry } from "./types.js";
 
 /**
@@ -26,10 +27,11 @@ import type { HundredfoldConfig, ModelRegistry } from "./types.js";
  */
 export function validateEngineFallbackChains(engines: Record<string, unknown>, onDuplicate?: DuplicateTolerance): string[] {
   const profiles = accountNames(engines);
+  const opencodeProfiles = opencodeAccountNames(engines);
   return ENGINE_NAMES.flatMap((name) => {
     const section = engines[name];
     if (!isYamlMapping(section)) return [];
-    return fallbackChainProblems(`engines.${name}.fallback`, section.fallback, { engines: ENGINE_NAMES, profiles, self: { engine: name }, onDuplicate });
+    return fallbackChainProblems(`engines.${name}.fallback`, section.fallback, { engines: ENGINE_NAMES, profiles, opencodeProfiles, self: { engine: name }, onDuplicate });
   });
 }
 

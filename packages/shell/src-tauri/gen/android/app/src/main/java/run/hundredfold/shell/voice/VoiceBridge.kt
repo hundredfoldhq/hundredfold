@@ -72,6 +72,11 @@ class VoiceBridge(private val activity: ComponentActivity) {
         engine?.segmentEnd(segmentId)
     }
 
+    /** Loops a sound cue (PCM16LE mono 24 kHz) on its own track; an empty array stops it. */
+    fun setCue(pcm: ByteArray) {
+        engine?.setCue(pcm)
+    }
+
     fun flush() {
         engine?.flush()
     }

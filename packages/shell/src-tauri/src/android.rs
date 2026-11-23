@@ -66,6 +66,25 @@ impl AndroidPlatform {
         result.map(|_| ()).map_err(|_| NativeError::transport())
     }
 
+    /// Hands the cue loop to Kotlin; an empty array stops it.
+    fn set_cue(&self, pcm: &[u8]) -> Result<(), NativeError> {
+        let bridge = bridge().ok_or_else(NativeError::unsupported)?;
+        let mut env = bridge
+            .vm
+            .attach_current_thread_permanently()
+            .map_err(|_| NativeError::transport())?;
+        let array = env
+            .byte_array_from_slice(pcm)
+            .map_err(|_| NativeError::transport())?;
+        let result = env.call_method(&bridge.object, "setCue", "([B)V", &[JValue::Object(&array)]);
+        let _ = env.delete_local_ref(array);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+            return Err(NativeError::transport());
+        }
+        result.map(|_| ()).map_err(|_| NativeError::transport())
+    }
+
     fn play(&self, segment_id: u32, pcm: &[u8]) -> Result<(), NativeError> {
         let bridge = bridge().ok_or_else(NativeError::unsupported)?;
         let mut env = bridge
@@ -130,6 +149,7 @@ impl AudioPlatform for AndroidPlatform {
             PlatformCommand::Flush => self.call("flush", "()V", &[]),
             PlatformCommand::Pause => self.call("pause", "()V", &[]),
             PlatformCommand::Resume => self.call("resume", "()V", &[]),
+            PlatformCommand::Cue(pcm) => self.set_cue(pcm.as_deref().unwrap_or(&[])),
         };
     }
 

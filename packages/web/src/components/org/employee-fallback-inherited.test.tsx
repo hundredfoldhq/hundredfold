@@ -13,6 +13,11 @@ vi.mock("@/hooks/use-fallback-chains", async (importActual) => ({
   ...(await importActual<typeof import("@/hooks/use-fallback-chains")>()),
   useFallbackChains: () => ({ data: chains.current }),
 }))
+const declaredOpencode = vi.hoisted(() => ({ current: undefined as unknown }))
+vi.mock("@/components/chat/use-opencode-accounts", async (importActual) => ({
+  ...(await importActual<typeof import("@/components/chat/use-opencode-accounts")>()),
+  useDeclaredOpencodeAccounts: () => declaredOpencode.current,
+}))
 
 import { EmployeeFallbackField } from "./employee-fallback-field"
 

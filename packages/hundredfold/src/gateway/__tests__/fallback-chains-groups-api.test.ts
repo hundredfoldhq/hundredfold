@@ -94,7 +94,7 @@ describe("PATCH /api/org/employees/:name with a group", () => {
 
   it.each([
     ["one member", [{ group: [{ engine: "claude", profile: "A" }] }], "fallback[0].group needs at least two accounts to balance between"],
-    ["an opencode member", [{ group: [{ engine: "claude", profile: "A" }, { engine: "opencode", model: "x/y" }] }], "fallback[0].group[1]: a group holds Claude accounts only (opencode account groups are a follow-up)"],
+    ["an opencode member", [{ group: [{ engine: "claude", profile: "A" }, { engine: "opencode", model: "x/y" }] }], "fallback[0].group: a group's members all run on one engine"],
     ["a member's model", [{ group: [{ engine: "claude", profile: "A" }, { engine: "claude", profile: "B", model: "sonnet" }] }], "fallback[0].group[1]: a group member is an account, so it names no model"],
     ["an undeclared profile", [{ group: [{ engine: "claude", profile: "A" }, { engine: "claude", profile: "ghost" }] }], 'fallback[0].group[1]: profile "ghost" names no account under engines.claude.accounts'],
   ])("refuses %s with the wire sentence and writes nothing", async (_name, fallback, sentence) => {
@@ -131,7 +131,7 @@ describe("PUT /api/config with a group", () => {
 
       const account = await call("PUT", "/api/config", { engines: { claude: { accounts: { A: { configDir: DIR_A, fallback: [{ group: [{ engine: "claude", profile: "A" }, { engine: "codex" }] }] } } } } });
       expect(account.status).toBe(400);
-      expect(account.body.error).toContain("engines.claude.accounts.A.fallback[0].group[1]: a group holds Claude accounts only");
+      expect(account.body.error).toContain("engines.claude.accounts.A.fallback[0].group: a group's members all run on one engine");
     } finally {
       fs.rmSync(file, { force: true });
     }

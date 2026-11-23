@@ -56,7 +56,7 @@ export function recordAccountRateLimit(
  * it was started on, an employee's local named profile, or a remote employee's
  * own login), so that account's record stands in for the default account's `claude`.
  */
-export function substituteHealth(health: EngineHealthReading, employee: Employee | undefined, session?: Pick<Session, "claudeConfigDir">): EngineHealthReading {
+export function substituteHealth(health: EngineHealthReading, employee: Employee | undefined, session?: Pick<Session, "claudeConfigDir" | "transportMeta">): EngineHealthReading {
   const account = ownClaudeAccountOf(session, employee);
   if (account === DEFAULT_CLAUDE_ACCOUNT) return health;
   const { claude: _defaultAccount, ...rest } = health;

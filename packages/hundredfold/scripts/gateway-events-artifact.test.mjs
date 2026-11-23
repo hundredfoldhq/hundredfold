@@ -45,3 +45,26 @@ test("embedded gateway protocol runtime matches its exported declarations", asyn
   assert.deepEqual(protocol.decodeGatewayEvent(frame), frame);
   assert.equal(protocol.isGatewayEvent(frame), true);
 });
+
+test("no compiled module imports the workspace protocol package by name", () => {
+  // `@hundredfold/gateway-events` is a devDependency and is not shipped, so a
+  // bare import of it only resolves in a source checkout (through the workspace
+  // link) and fails on an installed package. Runtime code reaches the protocol
+  // through the embedded `shared/gateway-events.js`, which the build writes.
+  const distSrc = path.join(packageRoot, "dist", "src");
+  const embedded = path.join(distSrc, "shared", "gateway-events.js");
+  assert.ok(fs.existsSync(embedded), "embedded protocol runtime is missing; build first");
+  const pattern = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']@hundredfold\/gateway-events(?:\/[^"']*)?["']/;
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".js") && full !== embedded && pattern.test(fs.readFileSync(full, "utf8"))) {
+        offenders.push(path.relative(packageRoot, full));
+      }
+    }
+  };
+  walk(distSrc);
+  assert.deepEqual(offenders, [], "compiled modules import the unshipped protocol package by name");
+});

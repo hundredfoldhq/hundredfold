@@ -86,6 +86,21 @@ export class Harness {
     return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
   }
 
+  /** The calls the stand-in ssh answered (the remote scenarios' host), as it logged them. */
+  shimCalls() {
+    return this.jsonLines(this.layout.remote?.shimLog);
+  }
+
+  /** The calls the stand-in ssh refused (anything but `user@127.0.0.1`, an option it does not know): never expected. */
+  shimRefusals() {
+    return this.jsonLines(this.layout.remote?.shimRefusals);
+  }
+
+  jsonLines(file) {
+    const text = file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  }
+
   newTag() {
     this.counter += 1;
     return `fc-tag-${Date.now().toString(36)}${this.counter}`;
@@ -125,14 +140,16 @@ export class Harness {
   }
 
   /**
-   * Seeds one Claude account's usage the way the gateway reads it (`latestAccountReading`): one fresh sample in the
+   * Seeds one account's usage (a Claude account's store key, or an opencode account's `opencode/<provider>`) the way the gateway reads it (`latestAccountReading`): one fresh sample in the
    * account's own usage history file, under the instance's engine-limits directory. `usedPercent` is the tightest
    * window's use, so the account's headroom is 100 minus it. No provider is called.
    */
   seedUsage(accountKey, usedPercent, { ageMs = 0, windowName = "5h" } = {}) {
     const dir = path.join(this.args.home, "tmp", "engine-limits");
     fs.mkdirSync(dir, { recursive: true });
-    const file = accountKey === "claude" ? "claude-usage-history.json" : `claude-usage-history.${encodeURIComponent(accountKey)}.json`;
+    // An opencode account (`opencode/<provider>`) keeps its history beside the Claude ones, under its own prefix.
+    const file = accountKey.startsWith("opencode/") ? `opencode-usage-history.${encodeURIComponent(accountKey)}.json`
+      : accountKey === "claude" ? "claude-usage-history.json" : `claude-usage-history.${encodeURIComponent(accountKey)}.json`;
     const resetsAt = Math.floor(Date.now() / 1000) + 3 * 3600;
     const staged = path.join(dir, `${file}.tmp`);
     fs.writeFileSync(staged, JSON.stringify([{ at: Date.now() - ageMs, windows: [{ name: windowName, usedPercent, resetsAt }] }]));
@@ -150,6 +167,43 @@ export class Harness {
     return groupAccounts(view.body, this.layout.employees.onA);
   }
 
+  /**
+   * The two opencode accounts of the group scenarios: account A is the own model's provider and B serves the same
+   * model key on another provider, each by its ranking key (`opencode/<provider>`), its model and its declared name.
+   */
+  opencodeAccounts() {
+    const { own, groupB } = this.layout.opencodeModels;
+    const providerOf = (model) => model.slice(0, model.indexOf("/"));
+    return {
+      names: { A: "oc-a", B: "oc-b" },
+      keys: { A: `opencode/${providerOf(own)}`, B: `opencode/${providerOf(groupB)}` },
+      models: { A: own, B: groupB },
+      providers: { A: providerOf(own), B: providerOf(groupB) },
+    };
+  }
+
+  /**
+   * Declares the two opencode accounts and puts the group [A, B] at the head of the opencode chain, followed by `tail`:
+   * `engines.opencode.fallback` (`on: "engine"`) or the opencode employee's own `fallback` (`on: "employee"`, which
+   * `reset` takes away again). Returns `opencodeAccounts()`.
+   */
+  async useOpencodeGroup({ on = "engine", tail = [this.links().opencodeX] } = {}) {
+    const accounts = this.opencodeAccounts();
+    const group = { group: [{ engine: "opencode", profile: accounts.names.A }, { engine: "opencode", profile: accounts.names.B }] };
+    await this.putConfig({ engines: { opencode: { accounts: { [accounts.names.A]: { provider: accounts.providers.A }, [accounts.names.B]: { provider: accounts.providers.B } }, fallback: on === "engine" ? [group, ...tail] : null } } });
+    if (on === "employee") {
+      const patched = await this.api("PATCH", `/api/org/employees/${this.layout.employees.onOpencode}`, { fallback: [group, ...tail] });
+      if (patched.status !== 200) throw new Error(`PATCH employee fallback refused (${patched.status}): ${JSON.stringify(patched.body)}`);
+    }
+    // A config reload starts a model refresh, and the members count as served once it has run: wait for the view to hold both.
+    await waitFor("both members of the opencode group to be candidates", async () => {
+      const view = await this.api("GET", `/api/fallback-chains?employee=${this.layout.employees.onOpencode}`);
+      const subject = view.body?.subjects?.find((entry) => entry.kind === "employee" && entry.id === this.layout.employees.onOpencode);
+      return (subject?.startPick?.candidates?.length ?? 0) === 2;
+    }, { timeoutMs: 30_000 });
+    return accounts;
+  }
+
   /** Stops the gateway and starts it again on the same home and port; reads the token again (it is minted per start). */
   async restartGateway() {
     const { helper, instance } = this.args;
@@ -158,6 +212,17 @@ export class Harness {
     execFileSync(helper, ["start", instance], { stdio: "ignore" });
     this.token = JSON.parse(fs.readFileSync(path.join(this.args.home, "gateway.json"), "utf8")).token;
     await waitFor("the gateway to answer", async () => (await this.api("GET", "/api/status").catch(() => ({ status: 0 }))).status === 200, { timeoutMs: 60_000 });
+  }
+
+  /**
+   * From now on the fake opencode servers that start keep the ids of their sessions across a restart, as opencode keeps its
+   * sessions in its data directory (a restart of the gateway starts a new server, which must still know the session a turn
+   * resumes). `reset` ends it: scenarios that do not call this see each server start with no sessions, as before.
+   */
+  keepOpencodeSessions() {
+    const file = process.env.FAKE_OPENCODE_SESSIONS_FILE;
+    if (!file) throw new Error("FAKE_OPENCODE_SESSIONS_FILE is not set: run this through scripts/verify-fallback-chains.sh");
+    fs.writeFileSync(file, "");
   }
 
   /** Back to a known state: no sessions, no engine health, no chains, a clean scenario. */
@@ -169,14 +234,17 @@ export class Harness {
     fs.mkdirSync(path.join(this.args.home, "tmp"), { recursive: true });
     fs.writeFileSync(path.join(this.args.home, "tmp", "engine-health.json"), "{}\n");
     fs.rmSync(path.join(this.args.home, "tmp", "engine-limits"), { recursive: true, force: true });
+    if (process.env.FAKE_OPENCODE_SESSIONS_FILE) fs.rmSync(process.env.FAKE_OPENCODE_SESSIONS_FILE, { force: true });
     await this.putConfig({
       engines: {
-        claude: { fallback: null, fallbackModelMap: null, accounts: { A: { fallback: null }, B: { fallback: null } } },
-        opencode: { fallback: null },
+        claude: { fallback: null, fallbackModelMap: null, accounts: { A: { fallback: null }, B: { fallback: null }, "remote-a": null, "remote-b": null } },
+        opencode: { fallback: null, accounts: null },
       },
     });
     // Part of the contract; a build without employee chains answers 400, which is fine here.
     await this.api("PATCH", `/api/org/employees/${this.layout.employees.override}`, { fallback: null });
+    await this.api("PATCH", `/api/org/employees/${this.layout.employees.onOpencode}`, { fallback: null });
+    await this.api("PATCH", `/api/org/employees/${this.layout.employees.remote}`, { fallback: null });
     this.writeScenario({});
   }
 

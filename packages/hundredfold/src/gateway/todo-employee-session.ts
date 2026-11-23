@@ -88,7 +88,7 @@ export type WakeEmployeeResult =
   | { ok: true; session: Session; started: boolean }
   | { ok: false; error: string };
 
-interface Spawn { engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; pin: Pick<NewSessionSelectionResult, "accountPick" | "claudeConfigDir">; prompt: string }
+interface Spawn { engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; pin: Pick<NewSessionSelectionResult, "accountPick" | "claudeConfigDir" | "remoteAccountPin">; prompt: string }
 
 function employeeDefaults(employee: Employee): { engine: string; model?: string; employee: string; effortLevel?: string } {
   return { engine: employee.engine, ...(employee.model ? { model: employee.model } : {}), employee: employee.name, ...(employee.effortLevel ? { effortLevel: employee.effortLevel } : {}) };

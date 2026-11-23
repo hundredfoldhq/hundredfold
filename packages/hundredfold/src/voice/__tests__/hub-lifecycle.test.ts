@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VOICE_CLOSE } from "../../shared/gateway-events.js";
+import { VOICE_CLOSE, VOICE_KEEPALIVE_MS } from "../../shared/gateway-events.js";
 import { RESUME_WINDOW_MS } from "../hub.js";
 import { createHarness, OPERATOR, SESSION } from "./hub-harness.js";
 
@@ -13,8 +13,16 @@ describe("attachment lifecycle and limits", () => {
       type: "ready", protocol: 1, sessionId: SESSION,
       input: { encoding: "pcm16", sampleRate: 16_000 }, output: { encoding: "pcm16", sampleRate: 24_000 },
       stt: { provider: "fake-stt", partials: true }, tts: { provider: "fake-tts", voice: "af_test" },
-      onset: { threshold: 0.02, minSpeechMs: 250 }, backgrounding: "native", limits: { maxUtteranceSeconds: 60 },
+      onset: { threshold: 0.02, minSpeechMs: 250 }, cues: { enabled: true, volume: 0.3 }, backgrounding: "native", limits: { maxUtteranceSeconds: 60 },
+      keepaliveMs: VOICE_KEEPALIVE_MS,
     }]);
+  });
+
+  it("tells the client the configured cue settings, and that they are off when turned off", () => {
+    const loud = createHarness({ config: { cues: { enabled: true, volume: 0.8 } } });
+    expect(loud.connect().socket.ofType("ready")[0]).toMatchObject({ cues: { enabled: true, volume: 0.8 } });
+    const off = createHarness({ config: { cues: { enabled: false, volume: 0.3 } } });
+    expect(off.connect().socket.ofType("ready")[0]).toMatchObject({ cues: { enabled: false, volume: 0.3 } });
   });
 
   it.each([
@@ -104,12 +112,13 @@ describe("attachment lifecycle and limits", () => {
     expect(h.connect({ sessionId: "b" }).socket.ofType("ready")).toHaveLength(1);
   });
 
-  it("voice off: nothing attaches", () => {
+  it("voice off: nothing attaches, and the client is told voice is off, not that its chat is gone", () => {
     const h = createHarness();
     h.state.config = null;
     const { socket, attachment } = h.connect();
     expect(attachment).toBeNull();
-    expect(socket.closed?.code).toBe(VOICE_CLOSE.sessionGone);
+    expect(socket.ofType("detached")).toEqual([{ type: "detached", reason: "disabled" }]);
+    expect(socket.closed).toMatchObject({ code: 1000, reason: "disabled" });
   });
 
   it.each([
@@ -214,7 +223,15 @@ describe("attachment lifecycle and limits", () => {
       expect(h.hub.size()).toBe(0);
     });
 
-    it("without a goodbye (1006, 1005) leaves the attachment suspended for ten minutes, then drops it", () => {
+    it.each([1005, 1009])("%i (no status, an oversize frame) ends the attachment at once and frees its slot", (code) => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.hub.socketClosed(attachment, socket, code);
+      expect(h.hub.size()).toBe(0);
+      expect(attachment.suspended).toBe(false);
+    });
+
+    it("without a goodbye (1006) leaves the attachment suspended for ten minutes, then drops it", () => {
       const h = createHarness();
       const { socket, attachment } = h.connect();
       h.hub.socketClosed(attachment, socket, 1006);

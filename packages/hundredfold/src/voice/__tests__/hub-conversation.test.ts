@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { VOICE_PROMPT_OPEN, VOICE_REMINDER, interruptedNote } from "../envelope.js";
-import { createHarness, SESSION } from "./hub-harness.js";
+import { VOICE_PROMPT_OPEN, VOICE_REMINDER, VOICE_STYLE_CLEARED, interruptedNote } from "../envelope.js";
+import { baseConfig, createHarness, SESSION } from "./hub-harness.js";
 import { settle } from "./fakes.js";
 
 describe("a spoken round trip (US1)", () => {
@@ -111,6 +111,23 @@ describe("a spoken round trip (US1)", () => {
       { type: "turn", state: "speaking" },
       { type: "turn", state: "idle" },
     ]);
+  });
+
+  it("text written before a tool call is spoken before the tool finishes, and the text after it is a sentence of its own", async () => {
+    const h = createHarness();
+    const { socket } = h.connect();
+    h.event("session:started");
+    // No space after the full stop: the sentence's end is only certain once the tool call says the text is over.
+    h.delta("text", "Looking for the audit job now.");
+    h.delta("tool_use", "", { toolName: "Bash" });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Looking for the audit job now."]);
+    expect(h.tts.calls).toEqual(["Looking for the audit job now."]);
+    h.delta("tool_result", "ok");
+    h.delta("text", "It is running.");
+    h.event("session:completed", { result: "Looking for the audit job now.It is running.", error: null });
+    await settle();
+    expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Looking for the audit job now.", "It is running."]);
   });
 
   it("sub-agent text and tools are not the main reply", async () => {
@@ -273,6 +290,68 @@ describe("the voice envelope on a spoken turn", () => {
     await h.say(attachment, "two");
     await h.say(attachment, "three");
     expect(h.delivered.map((d) => d.envelope.includes(VOICE_PROMPT_OPEN))).toEqual([true, true, false]);
+  });
+
+  it("a configured style rides on the first turn's prompt and on every later turn's reminder", async () => {
+    const h = createHarness({ config: { stylePrompt: "Shorter, funnier, make jokes." } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    await h.say(attachment, "second");
+    await h.say(attachment, "third");
+    expect(h.delivered[0].envelope).toContain("Shorter, funnier, make jokes.");
+    expect(h.delivered[0].envelope).toContain(VOICE_PROMPT_OPEN);
+    for (const later of h.delivered.slice(1)) expect(later.envelope).toContain("[Voice: style directions from the user, replacing any earlier style directions: Shorter, funnier, make jokes.]");
+    expect(h.delivered.every((d) => !d.text.includes("jokes"))).toBe(true);
+  });
+
+  it("no style set leaves every envelope as it was", async () => {
+    const h = createHarness({ config: { stylePrompt: "" } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    await h.say(attachment, "second");
+    expect(h.delivered[0].envelope).not.toContain("Style directions");
+    expect(h.delivered[1].envelope).toBe(`${VOICE_REMINDER}\n\n`);
+  });
+
+  it("a style changed by a config reload reaches the conversation already open, with no new attachment", async () => {
+    const h = createHarness({ config: { stylePrompt: "Be formal." } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    h.state.config = baseConfig({ stylePrompt: "Be playful." });
+    h.event("config:reloaded", {});
+    await h.say(attachment, "second");
+    h.state.config = baseConfig({ stylePrompt: "" });
+    await h.say(attachment, "third");
+    expect(h.delivered[0].envelope).toContain("Be formal.");
+    expect(h.delivered[1].envelope).toContain("Be playful.");
+    expect(h.delivered[1].envelope).not.toContain("Be formal.");
+    expect(h.delivered[2].envelope).toBe(`${VOICE_REMINDER}\n${VOICE_STYLE_CLEARED}\n\n`);
+    // The clearing line goes once; after it nothing more is said.
+    await h.say(attachment, "fourth");
+    expect(h.delivered[3].envelope).toBe(`${VOICE_REMINDER}\n\n`);
+  });
+
+  it("a failed delivery of the clearing line sends it again on the next turn", async () => {
+    const h = createHarness({ config: { stylePrompt: "Be formal." } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    h.state.config = baseConfig({ stylePrompt: "" });
+    h.state.deliverFails = true;
+    await h.say(attachment, "lost");
+    h.state.deliverFails = false;
+    await h.say(attachment, "again");
+    expect(h.delivered.at(-1)!.envelope).toContain(VOICE_STYLE_CLEARED);
+  });
+
+  it("a style set only after the first turn is told once as a replacing line, and never cleared when it was never set", async () => {
+    const h = createHarness({ config: { stylePrompt: "" } });
+    const { attachment } = h.connect();
+    await h.say(attachment, "first");
+    await h.say(attachment, "second");
+    expect(h.delivered[1].envelope).not.toContain(VOICE_STYLE_CLEARED);
+    h.state.config = baseConfig({ stylePrompt: "Be playful." });
+    await h.say(attachment, "third");
+    expect(h.delivered[2].envelope).toContain("replacing any earlier style directions: Be playful.");
   });
 
   it("a replaced prompt in the configuration is the one sent", async () => {

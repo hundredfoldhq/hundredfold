@@ -6,15 +6,19 @@
  * realtime provider factory.
  */
 
+import { voiceKeyEnvironment } from "./child-env.js";
+
 /**
  * Resolve a value that may reference an environment variable.
  * Supports `${VAR_NAME}` and bare `$VAR_NAME`; anything else is returned as-is.
  * An unset variable resolves to `undefined`, never to the literal reference.
  *
  * The environment is named once, in the signature, so a caller can hand in its
- * own rather than have the ambient one read from inside the body.
+ * own rather than have the ambient one read from inside the body. The default is the process environment with the voice
+ * provider keys the gateway took out of it laid back over, so an explicit `${VAR}` still finds a variable voice also uses;
+ * only child processes lose it.
  */
-export function resolveEnvVar(value: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function resolveEnvVar(value: string | undefined, env: NodeJS.ProcessEnv = voiceKeyEnvironment()): string | undefined {
   if (!value) return undefined;
   const match = value.match(/^\$\{(.+)\}$/);
   if (match) {

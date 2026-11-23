@@ -8,7 +8,9 @@
  * defaults resolver (`resolveVoiceConfig`) live beside it.
  */
 import path from "node:path";
+import { VOICE_SPEED_DEFAULT, VOICE_SPEED_MAX, VOICE_SPEED_MIN } from "./gateway-events.js";
 import { HUNDREDFOLD_HOME } from "./paths.js";
+import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
 
 export interface VoiceSttConfig {
@@ -25,7 +27,7 @@ export interface VoiceSttConfig {
 export interface VoiceTtsConfig extends VoiceSttConfig {
   /** Provider default when absent; for `local`, the operator's chosen Kokoro voice. */
   voice?: string;
-  /** Playback speed multiplier, 0.5 to 2. Defaults to 1. */
+  /** Speaking rate multiplier for spoken replies, 0.5 to 2 (1 is natural). Defaults to 1; a change applies to the next sentence spoken, with no restart. */
   speed?: number;
 }
 
@@ -44,8 +46,10 @@ export interface VoiceConfig {
     threshold?: number;
     /** Defaults to 250. */
     minSpeechMs?: number;
-    /** Silence that ends an utterance. Defaults to 700. */
+    /** Silence that ends an utterance. Defaults to 1000. */
     silenceMs?: number;
+    /** Extra silence waited when the words so far look unfinished (0 turns it off). Defaults to 800. */
+    unfinishedHoldMs?: number;
     /** Audio kept from before speech started. Defaults to 300. */
     prerollMs?: number;
   };
@@ -63,10 +67,19 @@ export interface VoiceConfig {
     /** A foreground tool call older than this when the user talks is long work. Defaults to 5. */
     afterSeconds?: number;
   };
+  /** Soft repeating sound cues while the assistant is thinking and while a tool runs. */
+  cues?: {
+    /** Defaults to true. */
+    enabled?: boolean;
+    /** 0 (silent) to 1 (still gentle); defaults to 0.3. */
+    volume?: number;
+  };
   /** Inline voice prompt; replaces the built-in one. */
   prompt?: string;
   /** Instance-relative file holding the voice prompt. `prompt` wins when both are set. */
   promptFile?: string;
+  /** The operator's own directions for how replies sound, added to the voice instructions on every voice turn. Empty or absent changes nothing. */
+  stylePrompt?: string;
   /** Spoken, with no model turn, when an utterance must wait behind long work. */
   holdingLine?: string;
   limits?: {
@@ -87,6 +100,16 @@ export interface VoiceConfig {
 export const VOICE_STT_PROVIDERS = ["local", "openai", "openai-compatible"] as const;
 export type VoiceProviderId = (typeof VOICE_STT_PROVIDERS)[number];
 
+/** The speech-to-text models the built-in local provider can run, as `voice.stt.model` names them. The first is the default. */
+export const LOCAL_STT_MODELS = ["parakeet-tdt-0.6b-v2", "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-streaming"] as const;
+export type LocalSttModelId = (typeof LOCAL_STT_MODELS)[number];
+export const DEFAULT_LOCAL_STT_MODEL: LocalSttModelId = LOCAL_STT_MODELS[0];
+
+/** The local model a resolved config runs: `stt.model` when the local provider does the speech-to-text, else the default (the sidecar loads one regardless, for the other local halves). */
+export function localSttModel(stt: { provider: string; model: string }): LocalSttModelId {
+  return stt.provider === "local" && (LOCAL_STT_MODELS as readonly string[]).includes(stt.model) ? (stt.model as LocalSttModelId) : DEFAULT_LOCAL_STT_MODEL;
+}
+
 /** Spoken-conversation instructions sent with the first voice turn (contracts/voice-config.md). */
 export const DEFAULT_VOICE_PROMPT =
   "You are in a spoken conversation. Your replies are converted to speech. Answer in short, natural sentences and lead with the answer. " +
@@ -97,11 +120,14 @@ export const DEFAULT_VOICE_PROMPT =
 /** The one-line reminder that rides on every later voice turn. */
 export const VOICE_TURN_REMINDER = "[Voice: spoken reply. Short, plain sentences; no markdown or code read aloud.]";
 
+/** Low by default: a cue is a hint that work is going on, never something to listen to. */
+export const DEFAULT_CUE_VOLUME = 0.3;
+
 export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come to that as soon as it's done.";
 
 /** Per provider: the model and voice used when the config names none. */
 export const VOICE_PROVIDER_DEFAULTS: Record<VoiceProviderId, { sttModel: string; ttsModel: string; ttsVoice: string }> = {
-  local: { sttModel: "parakeet-tdt-0.6b-v2", ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
+  local: { sttModel: DEFAULT_LOCAL_STT_MODEL, ttsModel: "kokoro-v1.0", ttsVoice: "af_heart" },
   openai: { sttModel: "gpt-live-transcribe", ttsModel: "gpt-4o-mini-tts", ttsVoice: "marin" },
   "openai-compatible": { sttModel: "whisper-1", ttsModel: "tts-1", ttsVoice: "alloy" },
 };
@@ -121,13 +147,16 @@ export interface ResolvedVoiceConfig {
   language: string;
   stt: ResolvedVoiceSide;
   tts: ResolvedVoiceSide & { voice: string; speed: number };
-  vad: { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number };
+  vad: { threshold: number; minSpeechMs: number; silenceMs: number; unfinishedHoldMs: number; prerollMs: number };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
+  cues: { enabled: boolean; volume: number };
   /** The inline prompt, or the built-in one. */
   prompt: string;
   /** Absolute path of the prompt file, only when no inline `prompt` is set. */
   promptFile: string | null;
+  /** The operator's style directions, trimmed; "" when there are none. */
+  stylePrompt: string;
   holdingLine: string;
   limits: { maxUtteranceSeconds: number; maxConcurrentAttachments: number };
   local: { device: "auto" | "gpu" | "cpu" };
@@ -139,6 +168,7 @@ const LANGUAGE = /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/;
 const ENV_REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_HOLDING_LINE_CHARS = 300;
+export const MAX_STYLE_PROMPT_CHARS = 2000;
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -192,6 +222,8 @@ function providerSideProblems(prefix: string, side: Obj): string[] {
   const provider = side.provider ?? "local";
   const problems = oneOf(`${prefix}.provider`, side.provider, VOICE_STT_PROVIDERS);
   problems.push(...nonEmptyString(`${prefix}.model`, side.model), ...apiKeyProblems(`${prefix}.apiKey`, side.apiKey));
+  // The local speech-to-text provider runs a fixed set of models; any other name would silently run the default.
+  if (prefix === "voice.stt" && provider === "local" && typeof side.model === "string" && side.model.trim() !== "") problems.push(...oneOf(`${prefix}.model`, side.model, LOCAL_STT_MODELS));
   if (provider === "local" && side.baseUrl !== undefined) problems.push(`${prefix}.baseUrl is not used by the local provider; remove it`);
   else problems.push(...baseUrlProblems(`${prefix}.baseUrl`, side.baseUrl, provider === "openai-compatible"));
   return problems;
@@ -204,7 +236,7 @@ function sideProblems(prefix: string, raw: unknown): { problems: string[]; side:
 
 function ttsProblems(tts: Obj | undefined): string[] {
   if (!tts) return [];
-  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [0.5, 2], false)];
+  return [...nonEmptyString("voice.tts.voice", tts.voice), ...inRange("voice.tts.speed", tts.speed, [VOICE_SPEED_MIN, VOICE_SPEED_MAX], false)];
 }
 
 function vadProblems(vad: Obj | undefined): string[] {
@@ -213,6 +245,7 @@ function vadProblems(vad: Obj | undefined): string[] {
     ...inRange("voice.vad.threshold", vad.threshold, [0, 1], false),
     ...inRange("voice.vad.minSpeechMs", vad.minSpeechMs, [50, 2000], true),
     ...inRange("voice.vad.silenceMs", vad.silenceMs, [200, 5000], true),
+    ...inRange("voice.vad.unfinishedHoldMs", vad.unfinishedHoldMs, [0, 5000], true),
     ...inRange("voice.vad.prerollMs", vad.prerollMs, [0, 1000], true),
   ];
 }
@@ -258,6 +291,11 @@ function autoBackgroundProblems(autoBackground: Obj | undefined): string[] {
   return [...boolean("voice.autoBackground.enabled", autoBackground.enabled), ...inRange("voice.autoBackground.afterSeconds", autoBackground.afterSeconds, [1, 600], false)];
 }
 
+function cuesProblems(cues: Obj | undefined): string[] {
+  if (!cues) return [];
+  return [...boolean("voice.cues.enabled", cues.enabled), ...inRange("voice.cues.volume", cues.volume, [0, 1], false)];
+}
+
 function languageProblems(language: unknown, providers: unknown[]): string[] {
   if (language === undefined) return [];
   if (typeof language !== "string" || !LANGUAGE.test(language)) return [`voice.language must be a language code such as "en" (got ${JSON.stringify(language)})`];
@@ -269,7 +307,8 @@ function languageProblems(language: unknown, providers: unknown[]): string[] {
 
 /**
  * Problems with the `voice` block, each naming its key. Voice stays off while any
- * exists. `home` is the instance home `promptFile` must stay inside.
+ * exists; they are not part of `validateConfigShape`, so a bad block never stops the
+ * gateway starting or a reload (see `voiceOffReason`). `home` is the instance home `promptFile` must stay inside.
  */
 export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_HOME): string[] {
   if (voice === undefined || voice === null) return [];
@@ -278,7 +317,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   const tts = sideProblems("voice.tts", voice.tts);
   const parts = {
     vad: block("voice.vad", voice.vad), bargeIn: block("voice.bargeIn", voice.bargeIn), autoBackground: block("voice.autoBackground", voice.autoBackground),
-    limits: block("voice.limits", voice.limits), local: block("voice.local", voice.local),
+    limits: block("voice.limits", voice.limits), local: block("voice.local", voice.local), cues: block("voice.cues", voice.cues),
   };
   return [
     ...boolean("voice.enabled", voice.enabled),
@@ -286,11 +325,56 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...languageProblems(voice.language, [stt.side?.provider ?? "local", tts.side?.provider ?? "local"]),
     ...stt.problems, ...tts.problems, ...ttsProblems(tts.side),
     ...vadProblems(parts.vad.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
+    ...cuesProblems(parts.cues.value),
     ...textProblems("voice.prompt", voice.prompt, MAX_PROMPT_CHARS), ...promptFileProblems(voice.promptFile, home),
+    ...textProblems("voice.stylePrompt", voice.stylePrompt, MAX_STYLE_PROMPT_CHARS),
     ...textProblems("voice.holdingLine", voice.holdingLine, MAX_HOLDING_LINE_CHARS),
     ...limitsProblems(parts.limits.value), ...oneOf("voice.local.device", parts.local.value?.device, DEVICES),
     ...Object.values(parts).flatMap((part) => part.problems),
   ];
+}
+
+/** Whether the config asks for voice: anything but an object whose `enabled` is absent or `false`. A block that asks for it may still be invalid. */
+export function asksForVoice(voice: unknown): boolean {
+  return !(isObject(voice) && (voice.enabled === undefined || voice.enabled === false));
+}
+
+/**
+ * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
+ * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
+ * key or a URL's user name: the validator's messages do not echo them.
+ */
+export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
+  const problems = voiceConfigProblems(voice, home);
+  if (problems.length === 0) return null;
+  if (!asksForVoice(voice)) return null;
+  return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
+}
+
+/**
+ * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while the config does not
+ * ask for voice, so a variable a disabled block names stays where it is. A block that asks for voice but is invalid
+ * (`enabled: "yes"`) still withholds them: voice is off for that reason, not because nobody wanted it.
+ */
+export function voiceKeyEnvNames(voice: unknown): string[] {
+  if (!isObject(voice) || !asksForVoice(voice)) return [];
+  const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
+  return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
+}
+
+let lastWarned = "";
+
+/**
+ * Log the voice block's problems when they change. They do not fail the config (FR-025): voice stays off
+ * and the rest of the gateway carries on. `loadConfig` is polled, so one bad key must not flood the log.
+ */
+export function warnAboutVoiceProblems(voice: unknown): void {
+  const reason = voiceOffReason(voice);
+  const key = reason ?? "";
+  if (key === lastWarned) return;
+  lastWarned = key;
+  if (reason) logger.warn(`config voice: ${reason}`);
 }
 
 const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
@@ -315,27 +399,34 @@ function resolveSide(raw: Obj, kind: "stt" | "tts"): ResolvedVoiceSide {
 function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
   const tts = sub(voice, "tts");
   const side = resolveSide(tts, "tts");
-  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", 1) };
+  return { ...side, voice: setting(tts, "voice", VOICE_PROVIDER_DEFAULTS[side.provider].ttsVoice), speed: setting(tts, "speed", VOICE_SPEED_DEFAULT) };
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {
-  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 700), prerollMs: setting(vad, "prerollMs", 300) };
+  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 1000), unfinishedHoldMs: setting(vad, "unfinishedHoldMs", 800), prerollMs: setting(vad, "prerollMs", 300) };
 }
 
 function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {
   return { enabled: setting(bargeIn, "enabled", true), minSpeechMs: setting(bargeIn, "minSpeechMs", 250), onsetThreshold: setting(bargeIn, "onsetThreshold", 0.02) };
 }
 
-function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "limits" | "local"> {
+function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "cues" | "limits" | "local"> {
   const autoBackground = sub(voice, "autoBackground");
   const limits = sub(voice, "limits");
+  const cues = sub(voice, "cues");
   return {
     vad: resolveVad(sub(voice, "vad")),
     bargeIn: resolveBargeIn(sub(voice, "bargeIn")),
     autoBackground: { enabled: setting(autoBackground, "enabled", true), afterSeconds: setting(autoBackground, "afterSeconds", 5) },
+    cues: { enabled: setting(cues, "enabled", true), volume: setting(cues, "volume", DEFAULT_CUE_VOLUME) },
     limits: { maxUtteranceSeconds: setting(limits, "maxUtteranceSeconds", 60), maxConcurrentAttachments: setting(limits, "maxConcurrentAttachments", 4) },
     local: { device: setting(sub(voice, "local"), "device", "auto") },
   };
+}
+
+/** The operator's style directions, trimmed; "" when unset or blank. */
+function resolveStylePrompt(voice: Obj): string {
+  return typeof voice.stylePrompt === "string" ? voice.stylePrompt.trim() : "";
 }
 
 /**
@@ -355,6 +446,7 @@ export function resolveVoiceConfig(config: { voice?: unknown }, home: string = H
     ...resolveTuning(voice),
     prompt: inlinePrompt ?? DEFAULT_VOICE_PROMPT,
     promptFile,
+    stylePrompt: resolveStylePrompt(voice),
     holdingLine: setting(voice, "holdingLine", DEFAULT_HOLDING_LINE),
   };
 }

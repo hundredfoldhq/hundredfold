@@ -1,9 +1,10 @@
-import type { VoiceClientFrame, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
+import type { VoiceClientFrame, VoiceCueSettings, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { startCapture, requestMicrophone } from "./capture-worklet"
-import { VoiceStore, type VoiceController } from "./controller"
+import { DEFAULT_CUE_SETTINGS, VoiceCuePlayer, wantedCue, type CueAudioContext, type CueInputs, type VoiceCuePlayerLike } from "./cues"
+import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
-import { VoicePlayer, type PlayerAudioContext } from "./player"
+import { VoicePlayer } from "./player"
 import { VoiceSocket, type VoiceAudioChunk, type VoiceSocketClose, type VoiceSocketHandlers } from "./socket"
 import {
   installMediaSession,
@@ -13,9 +14,9 @@ import {
   type SuspendDocument,
   type SuspendTrack,
 } from "./suspend"
-import type { VoiceUiState } from "./state"
+import type { VoiceAction, VoiceUiState } from "./state"
 
-export interface VoiceAudioContext extends PlayerAudioContext, SuspendContext {
+export interface VoiceAudioContext extends CueAudioContext, SuspendContext {
   resume(): Promise<void>
   close(): Promise<void>
 }
@@ -52,6 +53,7 @@ export interface BrowserVoiceDeps {
   requestMicrophone(): Promise<MediaStream>
   startCapture(ctx: VoiceAudioContext, stream: MediaStream, onFrame: (pcm: Int16Array) => void): Promise<VoiceCaptureHandle>
   createPlayer(ctx: VoiceAudioContext, onPlayed: (segmentId: number) => void): VoicePlayerLike
+  createCuePlayer(ctx: VoiceAudioContext): VoiceCuePlayerLike
   doc: SuspendDocument
   mediaSession?: MediaSessionLike
   createMediaMetadata?: () => unknown
@@ -59,7 +61,8 @@ export interface BrowserVoiceDeps {
 }
 
 export interface BrowserVoiceOptions {
-  sessionId: string
+  /** The chat, or how to create one when the control is on a new chat. */
+  sessionId: string | VoiceSessionStarter
   mode: VoiceMode
   /** `bargeIn.enabled` from the voice config. */
   bargeIn: boolean
@@ -75,11 +78,16 @@ export function defaultBrowserDeps(): BrowserVoiceDeps {
     requestMicrophone: () => requestMicrophone(),
     startCapture: (ctx, stream, onFrame) => startCapture(ctx as unknown as AudioContext, stream, onFrame),
     createPlayer: (ctx, onPlayed) => new VoicePlayer(ctx, { onPlayed }),
+    createCuePlayer: (ctx) => new VoiceCuePlayer(ctx),
     doc: document,
     mediaSession: typeof navigator !== "undefined" && "mediaSession" in navigator ? (navigator.mediaSession as unknown as MediaSessionLike) : undefined,
     createMediaMetadata: () => new MediaMetadata({ title: "Voice mode is on", artist: "Hundredfold" }),
     now: () => Date.now(),
   }
+}
+
+function stopTracks(stream: MediaStream): void {
+  for (const track of stream.getTracks()) track.stop()
 }
 
 function microphoneMessage(error: unknown): string {
@@ -102,39 +110,74 @@ export class BrowserVoiceSession implements VoiceController {
   private capture: VoiceCaptureHandle | null = null
   private watcher: SuspendWatcher | null = null
   private detector: OnsetDetector | null = null
+  private cuePlayer: VoiceCuePlayerLike | null = null
   private removeMediaSession: (() => void) | null = null
   private closing = false
+  /** Bumped on every start and every teardown; an await that resumes under a different value belongs to a run that is over. */
+  private generation = 0
   private talking = false
   private pendingResumeMs: number | null = null
+  private session: string | null
 
   constructor(
     private readonly options: BrowserVoiceOptions,
     private readonly deps: BrowserVoiceDeps = defaultBrowserDeps(),
-  ) {}
+  ) {
+    this.session = typeof options.sessionId === "string" ? options.sessionId : null
+  }
+
+  boundSessionId = (): string | null => this.session
 
   getSnapshot = (): VoiceUiState => this.store.snapshot
   subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
 
   start(): Promise<void> {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
-    this.store.dispatch({ type: "connecting", mode: this.options.mode })
+    this.apply({ type: "connecting", mode: this.options.mode })
     this.closing = false
+    const generation = ++this.generation
     // The three calls iOS requires inside the tap, before any await.
     const ctx = this.deps.createContext()
     void ctx.resume().catch(() => undefined)
     const microphone = this.deps.requestMicrophone()
     this.ctx = ctx
-    this.openSocket()
-    return this.attachMicrophone(microphone)
+    if (this.session !== null) {
+      this.openSocket(this.session)
+      return this.attachMicrophone(microphone, generation)
+    }
+    return this.createThenAttach(microphone, generation)
+  }
+
+  /** A new chat: the session is created once, now that the microphone request is in flight, and the socket opens on it. */
+  private async createThenAttach(microphone: Promise<MediaStream>, generation: number): Promise<void> {
+    const starter = this.options.sessionId as VoiceSessionStarter
+    let id: string
+    try {
+      id = await starter.create()
+    } catch (error) {
+      this.releaseMicrophone(microphone)
+      if (generation === this.generation) this.failStart(error instanceof Error && error.message ? error.message : "Couldn't start a chat for voice mode.")
+      return
+    }
+    if (generation !== this.generation || !this.ctx) {
+      this.releaseMicrophone(microphone)
+      starter.discard(id)
+      return
+    }
+    this.session = id
+    starter.bind(id, this)
+    this.openSocket(id)
+    return this.attachMicrophone(microphone, generation)
   }
 
   stop(): void {
     if (this.store.snapshot.status === "off" && !this.ctx) return
     this.closing = true
+    dropHandoff(this)
     this.socket?.send({ type: "bye" })
     this.socket?.close(1000, "bye")
     this.teardown()
-    this.store.dispatch({ type: "stopped" })
+    this.apply({ type: "stopped" })
   }
 
   dispose(): void {
@@ -145,44 +188,46 @@ export class BrowserVoiceSession implements VoiceController {
     if (this.options.mode !== "push-to-talk" || this.store.snapshot.status !== "on" || this.talking) return
     this.talking = true
     this.socket?.send({ type: "ptt_down" })
+    this.syncCue()
   }
 
   pttUp(): void {
     if (!this.talking) return
     this.talking = false
     this.socket?.send({ type: "ptt_up" })
+    this.syncCue()
   }
 
   dismissNotice(): void {
-    this.store.dispatch({ type: "dismiss-notice" })
+    this.apply({ type: "dismiss-notice" })
   }
 
   clearBackground(): void {
-    this.store.dispatch({ type: "background-cleared" })
+    this.apply({ type: "background-cleared" })
   }
 
   resumeFromTap(): Promise<void> {
     const ctx = this.ctx
-    if (!ctx) return this.start()
+    if (!ctx || this.session === null) return this.start()
     void ctx.resume().catch(() => undefined)
     const trackLive = this.capture?.track?.readyState === "live"
     const microphone = trackLive ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
     if (this.socket?.isOpen) {
-      this.store.dispatch({ type: "resumed" })
+      this.apply({ type: "resumed" })
       this.sendResume()
     } else {
       // A new attachment: it is `ready` again before audio goes up, and the `resume` follows then.
-      this.store.dispatch({ type: "connecting", mode: this.options.mode })
-      this.openSocket()
+      this.apply({ type: "connecting", mode: this.options.mode })
+      this.openSocket(this.session as string)
     }
-    return microphone ? this.replaceMicrophone(microphone) : Promise.resolve()
+    return microphone ? this.replaceMicrophone(microphone, this.generation) : Promise.resolve()
   }
 
   // ── socket ────────────────────────────────────────────────────────────────
 
-  private openSocket(): void {
-    this.socket = this.deps.openSocket(this.options.sessionId, {
+  private openSocket(sessionId: string): void {
+    this.socket = this.deps.openSocket(sessionId, {
       onFrame: (frame) => this.onFrame(frame),
       onAudio: (chunk) => this.onAudio(chunk),
       onClose: (close) => this.onClose(close),
@@ -192,6 +237,37 @@ export class BrowserVoiceSession implements VoiceController {
   private onFrame(frame: VoiceServerFrame): void {
     this.store.dispatch({ type: "frame", frame, now: this.deps.now() })
     this.applyToAudio(frame)
+    this.syncCue()
+  }
+
+  /** Every state change goes through here, so the cue is re-decided from the state it leaves. */
+  private apply(action: VoiceAction): void {
+    this.store.dispatch(action)
+    this.syncCue()
+  }
+
+  /**
+   * Plays the cue the gateway's state calls for, or none. The cue never plays while speech is audible (the player
+   * has an open segment, which starts at `segment_start`, before its first audio) or while the user is heard.
+   */
+  private syncCue(): void {
+    const state = this.store.snapshot
+    const settings = state.ready?.cues ?? DEFAULT_CUE_SETTINGS
+    const cue = wantedCue(this.cueInputs(state, settings))
+    if (!cue && !this.cuePlayer) return
+    this.cuePlayer ??= this.ctx ? this.deps.createCuePlayer(this.ctx) : null
+    this.cuePlayer?.set(cue, settings.volume)
+  }
+
+  private cueInputs(state: VoiceUiState, settings: VoiceCueSettings): CueInputs {
+    return {
+      settings,
+      running: state.status === "on",
+      turn: state.turn,
+      hearing: state.vadSpeaking || state.partial !== "" || this.talking,
+      speechAudible: this.player?.isActive() === true,
+      toolBackgrounded: state.toolBackgrounded,
+    }
   }
 
   private applyToAudio(frame: VoiceServerFrame): void {
@@ -231,44 +307,66 @@ export class BrowserVoiceSession implements VoiceController {
   private onClose(close: VoiceSocketClose): void {
     this.socket = null
     if (this.closing) return
-    const suspended = this.watcher?.socketClosed() ?? false
-    this.store.dispatch({ type: "closed", code: close.code, reason: close.reason, requested: false })
+    // Only an established socket can be suspended. One that never reached `ready` (a failed reconnect) failed on its own.
+    const suspended = this.store.snapshot.status !== "connecting" && (this.watcher?.socketClosed() ?? false)
+    this.apply({ type: "closed", code: close.code, reason: close.reason, requested: false })
     if (!suspended && this.store.snapshot.status === "off") this.teardown()
   }
 
   // ── microphone ────────────────────────────────────────────────────────────
 
-  private async attachMicrophone(microphone: Promise<MediaStream>): Promise<void> {
+  /** A microphone request nobody will use: the stream, once granted, is stopped. */
+  private releaseMicrophone(microphone: Promise<MediaStream>): void {
+    void microphone.then(stopTracks, () => undefined)
+  }
+
+  private async attachMicrophone(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     try {
       const stream = await microphone
-      if (this.closing || !this.ctx) { for (const track of stream.getTracks()) track.stop(); return }
-      await this.beginCapture(stream)
+      await this.beginCapture(stream, generation)
     } catch (error) {
-      this.failStart(microphoneMessage(error))
+      // A run that was stopped (or replaced by a new start) has nobody left to tell.
+      if (generation === this.generation) this.failStart(microphoneMessage(error))
     }
   }
 
-  private async replaceMicrophone(microphone: Promise<MediaStream>): Promise<void> {
+  private async replaceMicrophone(microphone: Promise<MediaStream>, generation: number): Promise<void> {
     try {
       this.capture?.stop()
-      await this.beginCapture(await microphone)
+      const stream = await microphone
+      await this.beginCapture(stream, generation)
     } catch (error) {
-      this.failStart(microphoneMessage(error))
+      if (generation === this.generation) this.failStart(microphoneMessage(error))
     }
   }
 
-  private async beginCapture(stream: MediaStream): Promise<void> {
+  /**
+   * Every await that can outlive the run re-checks the generation: a stop or a
+   * newer start while the prompt or the worklet was pending must leave no live track.
+   */
+  private async beginCapture(stream: MediaStream, generation: number): Promise<void> {
     const ctx = this.ctx
-    if (!ctx) return
-    this.player ??= this.deps.createPlayer(ctx, (segmentId) => this.socket?.send({ type: "played", segmentId }))
-    this.capture = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
+    if (generation !== this.generation || !ctx) { stopTracks(stream); return }
+    this.player ??= this.deps.createPlayer(ctx, (segmentId) => {
+      this.socket?.send({ type: "played", segmentId })
+      this.syncCue()
+    })
+    let handle: VoiceCaptureHandle
+    try {
+      handle = await this.deps.startCapture(ctx, stream, (pcm) => this.onCaptureFrame(pcm))
+    } catch (error) {
+      stopTracks(stream)
+      throw error
+    }
+    if (generation !== this.generation) { handle.stop(); stopTracks(stream); return }
+    this.capture = handle
     this.watchForSuspension(ctx)
   }
 
   private watchForSuspension(ctx: VoiceAudioContext): void {
     this.watcher?.stop()
     const watcher = new SuspendWatcher(this.deps.doc, {
-      onSuspended: () => this.store.dispatch({ type: "suspended" }),
+      onSuspended: () => this.apply({ type: "suspended" }),
       onReturn: ({ suspendedMs }) => { void this.handleReturn(suspendedMs) },
     }, this.deps.now)
     const track = this.capture?.track
@@ -289,6 +387,7 @@ export class BrowserVoiceSession implements VoiceController {
   private bargeIn(player: VoicePlayerLike): void {
     const cut = player.flush()
     this.socket?.send({ type: "barge_in", segmentId: cut?.segmentId ?? null, playedMs: cut?.playedMs ?? 0 })
+    this.syncCue()
   }
 
   // ── suspension ────────────────────────────────────────────────────────────
@@ -299,11 +398,11 @@ export class BrowserVoiceSession implements VoiceController {
     if (!ctx || this.closing) return
     if (ctx.state !== "running") await this.tryResumeContext(ctx)
     if (!this.recovered(ctx)) {
-      this.store.dispatch({ type: "needs-tap" })
+      this.apply({ type: "needs-tap" })
       return
     }
     this.watcher?.clear()
-    this.store.dispatch({ type: "resumed" })
+    this.apply({ type: "resumed" })
     this.sendResume()
   }
 
@@ -321,16 +420,20 @@ export class BrowserVoiceSession implements VoiceController {
 
   private failStart(message: string): void {
     this.closing = true
+    dropHandoff(this)
     this.socket?.close(1000, "bye")
     this.teardown()
-    this.store.dispatch({ type: "failed", message })
+    this.apply({ type: "failed", message })
   }
 
   private teardown(): void {
+    this.generation++
     this.talking = false
     this.pendingResumeMs = null
     this.capture?.stop()
     this.capture = null
+    this.cuePlayer?.dispose()
+    this.cuePlayer = null
     this.player?.dispose()
     this.player = null
     this.watcher?.stop()

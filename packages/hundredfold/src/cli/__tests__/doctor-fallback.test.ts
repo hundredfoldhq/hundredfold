@@ -35,3 +35,30 @@ describe("doctor: fallback chains", () => {
     expect(run().some((finding) => finding.level === "problem")).toBe(false);
   });
 });
+
+describe("doctor: opencode account groups", () => {
+  const writeOpencode = (opencode: Record<string, unknown>, claudeFallback?: unknown[]) => fs.writeFileSync(path.join(home, "config.yaml"), yaml.dump({
+    engines: {
+      claude: { bin: "claude", model: "opus", ...(claudeFallback ? { fallback: claudeFallback } : {}) },
+      opencode: { bin: "opencode", model: "opencode-go/glm-5", accounts: { "go-a": { provider: "opencode-go" }, "go-b": { provider: "opencode-go-b", base: "opencode-go", keyEnv: "GO_B_KEY" } }, ...opencode },
+    },
+  }));
+  const GO = (profile: string) => ({ engine: "opencode", profile });
+  const problems = () => run().filter((finding) => finding.level === "problem").map((finding) => finding.message);
+
+  it("counts a valid group in engines.opencode.fallback and has no problem", () => {
+    writeOpencode({ fallback: [{ group: [GO("go-a"), GO("go-b")] }] });
+    const found = run();
+    expect(found.some((finding) => finding.message.includes("holds 1 balanced account group, and none has a problem"))).toBe(true);
+    expect(problems()).toEqual([]);
+  });
+
+  it("prints the new sentences for a mixed group, a member with no profile and an opencode group in a Claude chain", () => {
+    writeOpencode({ fallback: [{ group: [GO("go-a"), { engine: "claude" }] }, { group: [GO("go-a"), { engine: "opencode" }] }] });
+    expect(problems().join("\n")).toContain("engines.opencode.fallback[0].group: a group's members all run on one engine. A config with this problem does not load");
+    expect(problems().join("\n")).toContain("engines.opencode.fallback[1].group[1]: an opencode group member names its account with profile");
+    writeOpencode({}, [{ group: [GO("go-a"), GO("go-b")] }]);
+    expect(problems().join("\n")).toContain("engines.claude.fallback[0].group: an opencode group balances an opencode session's own model; put it in an opencode employee's chain or engines.opencode.fallback");
+  });
+});
+

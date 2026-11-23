@@ -4,10 +4,12 @@ import { ChainFlowDisclosure } from "@/components/fallback/chain-flow-disclosure
 import { resolveForFlow } from "@/components/fallback/resolve-links"
 import { useModelRegistry } from "@/hooks/use-model-registry"
 import { useFallbackChains } from "@/hooks/use-fallback-chains"
+import { opencodeAvailable } from "@/components/chat/opencode-accounts"
+import { useDeclaredOpencodeAccounts } from "@/components/chat/use-opencode-accounts"
 import type { Employee, EmployeeUpdate } from "@/lib/api"
 import { engineDisplayName } from "@/lib/engine-names"
 import { ChainEditor } from "@/routes/settings/engines/chain-editor"
-import { isGroupItem, type ChainItem } from "@/routes/settings/engines/chain-links"
+import { isGroupItem, type ChainItem, type OpencodeAccountRef } from "@/routes/settings/engines/chain-links"
 import { LegacyNotice } from "@/routes/settings/engines/chain-body"
 import { SettingsSelect } from "@/routes/settings/shared"
 import { chainBlocked, employeeChainOf, employeeSubject, fallbackFieldState, inheritedLabel, runningItems, sameChain, subjectProblems, type InheritedChain, type OwnChain } from "./employee-fallback"
@@ -88,12 +90,18 @@ function ChainChoice({ custom, ready, inherited, onChange }: {
   )
 }
 
+/** The editor's fields, with the declared opencode accounts once they are read (until then none are claimed, so nothing is flagged). */
+function chainFields<F extends object>(fields: F, opencode: readonly OpencodeAccountRef[] | undefined) {
+  return opencode ? { ...fields, opencodeAccounts: opencode } : fields
+}
+
 /** "Use the default" or "Custom": the default's chain read-only, or the same rows an
  *  engine's chain has. Switching to Custom starts from the chain the default runs. */
 export function EmployeeFallbackField({ employee, engine, model, value, onChange, onBlockedChange }: EmployeeFallbackFieldProps) {
   const { data: registry } = useModelRegistry()
   const { data: chains } = useFallbackChains(employee.name)
-  const { inherited, self, selves, shown, own, subject, changed, profiles, accounts, profileLabels } = fallbackFieldState(employee, engine, value, chains, model)
+  const opencode = useDeclaredOpencodeAccounts(opencodeAvailable(registry))
+  const { inherited, self, selves, shown, own, subject, changed, profiles, accounts, profileLabels } = fallbackFieldState(employee, engine, value, chains, { model, opencode })
   const blocked = chainBlocked(registry, own, selves, accounts, changed)
   useEffect(() => { onBlockedChange?.(blocked) }, [blocked, onBlockedChange])
   if (!registry) return null
@@ -113,7 +121,7 @@ export function EmployeeFallbackField({ employee, engine, model, value, onChange
             where="fallback"
             links={own.links}
             expanded={own.expanded}
-            fields={{ registry, profiles, knownProfiles: [...accounts.names], profileLabels }}
+            fields={chainFields({ registry, profiles, knownProfiles: [...accounts.names], profileLabels }, opencode)}
             hostProblem={accounts.hostProblem}
             waitsAs={engineDisplayName(engine)}
             // The gateway's own sentences about the stored chain, only while it is the stored chain: once edited they describe what was.
@@ -123,7 +131,7 @@ export function EmployeeFallbackField({ employee, engine, model, value, onChange
         </>
       )}
       {/* The gateway's reading is of the saved engine: an unsaved engine change draws its own target plain. */}
-      {shown.length > 0 && <ChainFlowDisclosure links={resolveForFlow(self, shown, engine === employee.engine ? subject : undefined, originsOf(own))} startPick={engine === employee.engine ? subject?.startPick : undefined} />}
+      {shown.length > 0 && <ChainFlowDisclosure links={resolveForFlow(self, shown, engine === employee.engine ? subject : undefined, originsOf(own), opencode)} startPick={engine === employee.engine ? subject?.startPick : undefined} />}
     </div>
   )
 }
@@ -177,6 +185,7 @@ function summaryOrigin(subject: FallbackChainSubject, engine: string): { from: s
 export function EmployeeFallbackSummary({ employee }: { employee: Employee }) {
   const { data: chains } = useFallbackChains(employee.name)
   const subject = employeeSubject(chains, employee.name)
+  const opencode = useDeclaredOpencodeAccounts(subject?.primary?.engine === "opencode")
   if (!subject) return null
   // What would run, so the resolved models: this is read, never written back.
   const links = runningItems(subject.effective)
@@ -187,7 +196,7 @@ export function EmployeeFallbackSummary({ employee }: { employee: Employee }) {
         Fallback chain <span className="font-normal normal-case tracking-normal text-[var(--text-quaternary)]">· {from}</span>
       </p>
       {links.length === 0 ? <NoFallback engine={employee.engine} why={why} /> : <FallbackList links={links} />}
-      {links.length > 0 && <ChainFlowDisclosure links={resolveForFlow(subject.primary ?? { engine: employee.engine }, links, subject)} startPick={subject.startPick} />}
+      {links.length > 0 && <ChainFlowDisclosure links={resolveForFlow(subject.primary ?? { engine: employee.engine }, links, subject, undefined, opencode)} startPick={subject.startPick} />}
     </div>
   )
 }

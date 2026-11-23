@@ -23,9 +23,13 @@ export {
   VOICE_AUDIO_KIND,
   VOICE_CLOSE,
   VOICE_INPUT_SAMPLE_RATE,
+  VOICE_KEEPALIVE_MS,
   VOICE_MAX_INPUT_FRAME_BYTES,
   VOICE_OUTPUT_SAMPLE_RATE,
   VOICE_PROTOCOL_VERSION,
+  VOICE_SPEED_DEFAULT,
+  VOICE_SPEED_MAX,
+  VOICE_SPEED_MIN,
 } from "@hundredfold/gateway-events";
 export type {
   VoiceBackgrounding,
@@ -36,6 +40,7 @@ export type {
   VoiceErrorCode,
   VoiceErrorFrame,
   VoiceHoldingFrame,
+  VoiceKeepaliveFrame,
   VoiceMessageMeta,
   VoiceMetricsFrame,
   VoiceMissedFrame,

@@ -11,6 +11,7 @@
 //! carries on.
 
 use hundredfold_voice_core::{
+    cues::render_loop,
     protocol::{Mode, Onset},
     session::{Action, Input, NativeState, Session, READY_TIMEOUT_MS},
 };
@@ -41,11 +42,17 @@ const STOP_WAIT: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlatformCommand {
     ConfigureOnset(Onset),
-    Play { segment_id: u32, pcm: Vec<u8> },
+    Play {
+        segment_id: u32,
+        pcm: Vec<u8>,
+    },
     SegmentEnd(u32),
     Flush,
     Pause,
     Resume,
+    /// Loop this PCM16LE mono 24 kHz buffer as a sound cue, on a channel of its own beside the speech
+    /// player (never through it, so it cannot arm the onset detector); `None` stops the cue.
+    Cue(Option<Vec<u8>>),
 }
 
 /// The platform half of native voice. Android implements it over JNI, iOS over
@@ -400,6 +407,9 @@ async fn run_session(
                 Action::SegmentEnd(segment) => {
                     platform.command(PlatformCommand::SegmentEnd(segment))
                 }
+                Action::SetCue(request) => platform.command(PlatformCommand::Cue(
+                    request.map(|request| render_loop(request.cue, request.volume)),
+                )),
                 Action::FlushPlayback => platform.command(PlatformCommand::Flush),
                 Action::PausePlayback => platform.command(PlatformCommand::Pause),
                 Action::ResumePlayback => platform.command(PlatformCommand::Resume),

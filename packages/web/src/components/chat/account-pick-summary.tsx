@@ -1,6 +1,6 @@
 import type { AccountPick } from '@hundredfold/fallback-chain-wire'
 import { DropdownMenuLabel } from '@/components/ui/dropdown-menu'
-import { headroomLine, pickedLabel, pickReasonText, pickTriggerText } from '@/lib/account-pick-format'
+import { candidateLabel, headroomLine, pickedLabel, pickReasonText, pickTriggerText } from '@/lib/account-pick-format'
 
 /**
  * Which account a balanced session was pinned to and why: the sentence, when it was picked, and
@@ -28,7 +28,7 @@ export function AccountPickSummary({ pick }: { pick: AccountPick }) {
                 data-picked={candidate.account === pick.picked || undefined}
                 className="flex justify-between gap-2 text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
               >
-                <span className={candidate.account === pick.picked ? 'font-[var(--weight-medium)] text-[var(--text-secondary)]' : undefined}>{candidate.label}</span>
+                <span className={candidate.account === pick.picked ? 'font-[var(--weight-medium)] text-[var(--text-secondary)]' : undefined}>{candidateLabel(candidate)}</span>
                 <span className="text-right">{headroomLine(candidate)}</span>
               </li>
             ))}
