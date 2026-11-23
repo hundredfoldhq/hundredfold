@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
-import { usePrefersReducedMotion } from "../talk/use-reduced-motion"
+import { usePrefersReducedMotion } from "@/hooks/use-reduced-motion"
 import { usePreviousViewSnapshot } from "./previous-view-snapshot"
 import { EDGE_GUTTER_PX, useEdgeBackGesture } from "./use-edge-back-gesture"
 

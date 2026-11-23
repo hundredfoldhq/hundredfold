@@ -171,7 +171,7 @@ describe("the status picker", () => {
     // The count is the whole open subtree, not the one child directly below it.
     expect(done.textContent).toContain("also closes 2 open sub-tasks")
     fireEvent.click(done)
-    await waitFor(() => expect(setWorkItemStatus).toHaveBeenCalledWith("TSK-12", "done", undefined, undefined, { cascade: true }))
+    await waitFor(() => expect(setWorkItemStatus).toHaveBeenCalledWith("TSK-12", "done", undefined, { cascade: true }))
   })
 
   it("commits optimistically and snaps back with the gateway's words on refusal", async () => {

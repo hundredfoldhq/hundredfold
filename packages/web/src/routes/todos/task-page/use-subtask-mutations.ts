@@ -73,7 +73,7 @@ export function useSubTaskMutations({
 
   const childStatus = useMutation({
     mutationFn: ({ childId, status, cascade }: { childId: string; status: WorkItemStatusWire; cascade?: boolean }) =>
-      cascade ? api.setWorkItemStatus(childId, status, undefined, undefined, { cascade }) : api.setWorkItemStatus(childId, status),
+      cascade ? api.setWorkItemStatus(childId, status, undefined, { cascade }) : api.setWorkItemStatus(childId, status),
     onError: failWith("The gateway refused the move"),
     onSettled: invalidateTree,
   })

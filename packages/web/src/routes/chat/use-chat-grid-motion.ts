@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, type RefCallback, type RefObject } from 'react'
-import { usePrefersReducedMotion } from '@/components/talk/use-reduced-motion'
+import { usePrefersReducedMotion } from '@/hooks/use-reduced-motion'
 
 const POSITION_EPSILON = 0.5
 const SESSION_SEPARATOR = '\u0000'

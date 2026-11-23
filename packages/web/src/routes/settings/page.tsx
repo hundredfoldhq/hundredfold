@@ -35,7 +35,6 @@ import { PeopleEntry } from "./people/entry"
 import { ShortcutsSection } from "./shortcuts-section"
 import { ResetSection } from "./reset-section"
 import { useConfigCommit } from "./use-config-commit"
-import { useVoiceCapability } from "./use-voice-capability"
 import {
   FIELD_CLASS,
   FieldRow,
@@ -68,7 +67,6 @@ export default function SettingsPage() {
     setPortalSubtitle,
     setOperatorName,
     setLanguage,
-    setTalkOrb,
     resetAll,
   } = useSettings()
 
@@ -110,10 +108,9 @@ export default function SettingsPage() {
   const [configLoading, setConfigLoading] = useState(true)
   const [configError, setConfigError] = useState<string | null>(null)
   const [conflict, setConflict] = useState<{ message: string; remedy?: string } | null>(null)
-  const { voiceCapability, reloadVoiceCapability } = useVoiceCapability()
   const { saveState, commit, adoptRevision } = useConfigCommit({
     blocker: (next) => configSaveBlocker(next.engines, modelRegistry?.engines, loadedEnginesRef.current),
-    onSaved: () => { reloadVoiceCapability(); refreshFallbackChains() },
+    onSaved: () => { refreshFallbackChains() },
     onConflict: setConflict,
   })
 
@@ -328,30 +325,6 @@ export default function SettingsPage() {
                   <RotateCcw size={12} />
                   Reset
                 </Button>
-              )}
-            </div>
-
-            <div className="mt-[var(--space-4)]">
-              <FieldRow label="Talk Orb">
-                <div className="flex sm:justify-end">
-                  <ToggleSwitch
-                    checked={settings.talkOrb}
-                    ariaLabel="Talk orb"
-                    onChange={setTalkOrb}
-                  />
-                </div>
-              </FieldRow>
-              <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-                A floating voice control you can drag to any corner. It shows what the
-                assistant is doing through motion alone.
-              </div>
-              {/* Said here rather than on the first press, which is where the
-                  operator used to find out. */}
-              {settings.talkOrb && voiceCapability?.configured === false && (
-                <div className="mt-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
-                  Voice is not set up yet, so the orb cannot open a session. Pick a
-                  provider in the Voice section below.
-                </div>
               )}
             </div>
           </Section>
@@ -1361,17 +1334,9 @@ export default function SettingsPage() {
                 </FieldRow>
               </Section>
 
-              {/* -- Section 8: Voice (realtime, speech-to-speech) -- */}
+              {/* -- Section 8: Voice (voice mode) -- */}
               <VoiceSection
-                provider={config.realtime?.provider ?? ""}
-                apiKey={config.realtime?.apiKey ?? ""}
-                model={config.realtime?.model ?? ""}
-                voice={config.realtime?.voice ?? ""}
-                turnDetection={config.realtime?.turnDetection}
-                noiseReduction={config.realtime?.noiseReduction ?? ""}
-                capability={voiceCapability}
                 onChange={updateConfig}
-                talkOrbOn={settings.talkOrb}
                 spokenSpeed={config.voice?.tts?.speed}
                 voiceModeOn={config.voice?.enabled === true}
               />

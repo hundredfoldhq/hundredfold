@@ -26,8 +26,8 @@ export default function OrgPage() {
   const [hierarchy, setHierarchy] = useState<OrgHierarchy | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // The open employee lives in the URL so the panel is linkable and the Talk
-  // orb can open one by name. The whole Employee is still what the panel wants,
+  // The open employee lives in the URL so the panel is linkable and
+  // can be opened by name. The whole Employee is still what the panel wants,
   // so the name resolves against the loaded list.
   const [params, setParams] = useSearchParams();
   const selectedName = params.get("employee");

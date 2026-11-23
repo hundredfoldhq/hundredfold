@@ -260,7 +260,7 @@ describe('summarizeOlder', () => {
 })
 
 describe('isFocusedSession', () => {
-  it('includes top-level web / slack / talk conversations', () => {
+  it('includes top-level web / slack conversations, and stored talk rows', () => {
     expect(isFocusedSession({ source: 'web' })).toBe(true)
     expect(isFocusedSession({ source: 'slack' })).toBe(true)
     expect(isFocusedSession({ source: 'talk' })).toBe(true)

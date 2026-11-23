@@ -7,8 +7,8 @@ import TodoBoardPage from "../board/board-page"
 import { isColumnInStatusFilter } from "../board/status-scope"
 import { clearBoardScrollCache } from "../board/board-route"
 
-/* A board URL that names one status is a board of that one column. This is the
- * done-when of the Talk orb's open_todos: "executing todos I started" resolves
+/* A board URL that names one status is a board of that one column. This is what
+ * a link such as "executing todos I started" relies on: it resolves
  * to /todos/b/everything?status=executing, and that link has to render what it says. */
 
 vi.mock("@/components/page-layout", () => ({ PageLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }))

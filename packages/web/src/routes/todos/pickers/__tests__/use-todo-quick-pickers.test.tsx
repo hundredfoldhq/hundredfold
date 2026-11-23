@@ -124,7 +124,7 @@ describe("quick status picker", () => {
 
     fireEvent.click(done)
     await waitFor(() =>
-      expect(setWorkItemStatus).toHaveBeenCalledWith("ISS-1", "done", undefined, undefined, { cascade: true }),
+      expect(setWorkItemStatus).toHaveBeenCalledWith("ISS-1", "done", undefined, { cascade: true }),
     )
   })
 

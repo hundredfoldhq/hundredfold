@@ -3,8 +3,6 @@ import path from "node:path"
 
 import { describe, expect, it } from "vitest"
 
-import { PALETTE_TOKENS } from "../../components/talk/orb-painters"
-
 const ROUTES = path.resolve(__dirname, "..")
 const FILES = ["globals.css", "glass-identity.css"].map((f) => ({
   name: f,
@@ -194,7 +192,7 @@ describe("colour tokens are written once with light-dark()", () => {
     // An unregistered custom property reads back as the literal light-dark()
     // text, which a canvas gradient or a theme-color meta cannot use.
     const globals = FILES[0].css
-    for (const token of [...PALETTE_TOKENS, "--bg"]) {
+    for (const token of ["--bg"]) {
       expect(globals, `${token} is read by script but not registered`).toContain(`@property ${token} {`)
     }
   })

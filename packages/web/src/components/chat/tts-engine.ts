@@ -4,8 +4,8 @@
  * Latency model: the server STREAMS one WAV frame per sentence (POST /api/tts,
  * length-prefixed frames). We start playing sentence 1 the moment it arrives while
  * 2..N are still synthesizing → time-to-first-audio ≈ one sentence, independent of
- * message length. Playback reuses the /talk gapless sequential queue
- * (TalkAudioPlayer), fed binary buffers as frames decode.
+ * message length. Playback uses a gapless sequential queue
+ * (WavChunkPlayer), fed binary buffers as frames decode.
  *
  * Strategy per message:
  *   1. Prime audio SYNCHRONOUSLY (resume the shared player's AudioContext) inside
@@ -24,10 +24,10 @@
  */
 import { stripMarkdown } from "@/lib/strip-markdown"
 import { authFetch } from "@/lib/auth"
-import { TalkAudioPlayer } from "@/components/chat/audio-player"
+import { WavChunkPlayer } from "@/components/chat/audio-player"
 import type { TtsStart, TtsStartCallbacks } from "./tts-controller"
 
-/** A gapless, ordered WAV-chunk player (subset of TalkAudioPlayer we depend on). */
+/** A gapless, ordered WAV-chunk player (subset of WavChunkPlayer we depend on). */
 export interface StreamPlayer {
   enqueueBuffer(data: ArrayBuffer): void
   onStart(cb: () => void): void
@@ -203,15 +203,15 @@ async function openStream(text: string, signal: AbortSignal): Promise<ReadableSt
 }
 
 /* One shared player so priming on the click unlocks playback for every message. */
-let sharedPlayer: TalkAudioPlayer | null = null
+let sharedPlayer: WavChunkPlayer | null = null
 
-function getPlayerInstance(): TalkAudioPlayer | null {
+function getPlayerInstance(): WavChunkPlayer | null {
   if (typeof window === "undefined") return null
   const hasAudio =
     window.AudioContext ||
     (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!hasAudio) return null
-  if (!sharedPlayer) sharedPlayer = new TalkAudioPlayer()
+  if (!sharedPlayer) sharedPlayer = new WavChunkPlayer()
   return sharedPlayer
 }
 

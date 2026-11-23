@@ -18,13 +18,11 @@ const apiMocks = vi.hoisted(() => ({
   sttUpdateConfig: vi.fn(),
   sttDownload: vi.fn(),
 }))
-const fetchTalkCapability = vi.hoisted(() => vi.fn())
 const registry = vi.hoisted(() => ({ current: undefined as unknown }))
 const chains = vi.hoisted(() => ({ current: undefined as unknown }))
 // `'failed'` stands for a chains request that errored.
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
-vi.mock('@/lib/talk-capability', () => ({ fetchTalkCapability }))
 vi.mock('@/components/page-layout', () => ({ PageLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('@/routes/providers', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }) }))
 vi.mock('@/routes/settings-provider', () => ({
@@ -114,7 +112,6 @@ beforeEach(() => {
   apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
   apiMocks.sttUpdateConfig.mockResolvedValue({})
   apiMocks.sttDownload.mockResolvedValue({})
-  fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
 })
 
 describe('Engine Fallbacks section', () => {

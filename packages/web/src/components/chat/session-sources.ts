@@ -1,6 +1,7 @@
 import type { Session } from '@/components/chat/session-signals'
 
 /** Sources the sidebar renders (others, e.g. slack/telegram, are shown elsewhere). */
+// `talk` covers stored rows: the assistant that wrote them is gone, the chats still open as web chats.
 export function isVisibleSource(s: Pick<Session, 'source'>): boolean {
   return s.source === 'web' || s.source === 'terminal' || s.source === 'talk' || s.source === 'cron' || s.source === 'workflow' || s.source === 'plugin' || s.source === 'whatsapp' || s.source === 'discord' || !s.source
 }

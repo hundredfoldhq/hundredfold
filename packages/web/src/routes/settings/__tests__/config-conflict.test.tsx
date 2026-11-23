@@ -28,10 +28,7 @@ const ApiError = vi.hoisted(() => class ApiError extends Error {
     this.remedy = remedy
   }
 })
-const fetchTalkCapability = vi.hoisted(() => vi.fn())
-
 vi.mock('@/lib/api', () => ({ api: apiMocks, ApiError }))
-vi.mock('@/lib/talk-capability', () => ({ fetchTalkCapability }))
 vi.mock('@/components/page-layout', () => ({ PageLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('@/routes/providers', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }) }))
 vi.mock('@/routes/settings-provider', () => ({
@@ -74,7 +71,6 @@ beforeEach(() => {
   apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
   apiMocks.sttUpdateConfig.mockResolvedValue({})
   apiMocks.sttDownload.mockResolvedValue({})
-  fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
 })
 
 describe('config revision', () => {

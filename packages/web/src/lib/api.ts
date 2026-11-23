@@ -26,7 +26,6 @@ import {
 import type { WorkItemCommentPageWire, WorkItemCommentWire } from "@/lib/work-item-comment-wire"
 import type { WorkItemRunWire } from "@/lib/work-item-runs-wire"
 import type { WorkItemSprintRefWire } from "./sprint-api"
-import { requestHeaderName } from "./codename";
 
 export interface TranscriptContentBlock {
   type: 'text' | 'tool_use' | 'tool_result' | 'thinking'
@@ -191,42 +190,28 @@ export async function get<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-/**
- * The surface a write came from, when it is not this UI. The gateway allowlists
- * the values and drops anything else, so declaring one is audit colour and never
- * authority — it buys the caller a label on their own write, nothing more.
- */
-export type WriteOriginWire = "talk"
-
-function writeHeaders(origin?: WriteOriginWire): Record<string, string> {
-  return origin
-    ? { "Content-Type": "application/json", [requestHeaderName("origin")]: origin }
-    : { "Content-Type": "application/json" };
-}
-
-export async function post<T>(path: string, body?: unknown, origin?: WriteOriginWire): Promise<T> {
+export async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await authFetch(path, {
     method: "POST",
-    headers: writeHeaders(origin),
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw await responseError(res);
   return res.json();
 }
 
-export async function del<T>(path: string, origin?: WriteOriginWire): Promise<T> {
+export async function del<T>(path: string): Promise<T> {
   const res = await authFetch(path, {
     method: "DELETE",
-    ...(origin ? { headers: { [requestHeaderName("origin")]: origin } } : {}),
   });
   if (!res.ok) throw await responseError(res);
   return res.json();
 }
 
-export async function put<T>(path: string, body: unknown, origin?: WriteOriginWire): Promise<T> {
+export async function put<T>(path: string, body: unknown): Promise<T> {
   const res = await authFetch(path, {
     method: "PUT",
-    headers: writeHeaders(origin),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await responseError(res);
@@ -823,11 +808,10 @@ export const api = {
     }
   },
   /** Guarded status transition (legal edges only — the gateway owns legality); `cascade` closes the open descendants with it, which the gateway allows for done alone. */
-  setWorkItemStatus: (id: string, status: WorkItemStatusWire, note?: string, origin?: WriteOriginWire, options?: { cascade?: boolean }) =>
+  setWorkItemStatus: (id: string, status: WorkItemStatusWire, note?: string, options?: { cascade?: boolean }) =>
     put<{ workItem: WorkItemFullWire; escalated: boolean }>(
       `/api/work-items/${encodeURIComponent(id)}/status`,
       { ...(note ? { status, note } : { status }), ...(options?.cascade ? { cascade: true } : {}) },
-      origin,
     ),
   /** GRS-021c: create a Todo (the "+ New Todo" affordance). The operator caller
    *  mints a `human`-source item. */
@@ -840,15 +824,15 @@ export const api = {
     priority?: number
     dueAt?: string
     labels?: string[]
-  }, origin?: WriteOriginWire) =>
-    post<{ workItem: WorkItemFullWire }>("/api/work-items", input, origin),
+  }) =>
+    post<{ workItem: WorkItemFullWire }>("/api/work-items", input),
   /** A board member names or clears the person responsible (`@operator`, `user:<id>`, null); the member source maps it to
    *  the member route. The operator edits the same field through the pen (`humanAssignee`). */
   setWorkItemPerson: (id: string, person: string | null) =>
     put<{ workItem: WorkItemFullWire }>(`/api/work-items/${encodeURIComponent(id)}/person`, { person }),
   /** Todos v2 slice 6: roster-validated assignment; status is unchanged. `@operator` assigns to the operator. */
-  assignWorkItem: (id: string, assignee: string, origin?: WriteOriginWire) =>
-    post<{ workItem: WorkItemFullWire }>(`/api/work-items/${encodeURIComponent(id)}/assign`, { assignee }, origin),
+  assignWorkItem: (id: string, assignee: string) =>
+    post<{ workItem: WorkItemFullWire }>(`/api/work-items/${encodeURIComponent(id)}/assign`, { assignee }),
   /** Make a Todo a sub-task of another (`parentId`), or detach it to top level (null). Its own sub-tasks move with it; the gateway refuses cycles and the other unsafe moves with a 4xx whose message says why. */
   reparentWorkItem: (id: string, parentId: string | null) =>
     put<{ id: string; parentId: string | null; rootId: string; depth: number; version: number; changed: boolean; moved: string[] }>(
@@ -902,11 +886,10 @@ export const api = {
   },
   /** Add a comment (or a single-level reply via parentCommentId). Author
    *  identity is stamped server-side from the operator surface. */
-  addWorkItemComment: (id: string, body: string, parentCommentId?: string, origin?: WriteOriginWire) =>
+  addWorkItemComment: (id: string, body: string, parentCommentId?: string) =>
     post<{ comment: WorkItemCommentWire }>(
       `/api/work-items/${encodeURIComponent(id)}/comments`,
       parentCommentId ? { body, parentCommentId } : { body },
-      origin,
     ),
   editWorkItemComment: (id: string, commentId: string, body: string) =>
     patch<{ comment: WorkItemCommentWire }>(
@@ -914,10 +897,9 @@ export const api = {
       { body },
     ),
   /** Tombstone: the row survives with an empty body; the UI renders [deleted]. */
-  deleteWorkItemComment: (id: string, commentId: string, origin?: WriteOriginWire) =>
+  deleteWorkItemComment: (id: string, commentId: string) =>
     del<{ comment: WorkItemCommentWire }>(
       `/api/work-items/${encodeURIComponent(id)}/comments/${encodeURIComponent(commentId)}`,
-      origin,
     ),
   /** Todos v2 slice 3: the shared label registry (existing labels only). */
   listLabels: () => get<{ labels: WorkItemLabelWire[] }>("/api/labels"),
@@ -955,8 +937,8 @@ export const api = {
     return res.json()
   },
   /** Replace a Todo's label set (ids or names; nothing created implicitly). */
-  setWorkItemLabels: (id: string, labels: string[], origin?: WriteOriginWire) =>
-    put<{ labels: WorkItemLabelWire[] }>(`/api/work-items/${encodeURIComponent(id)}/labels`, { labels }, origin),
+  setWorkItemLabels: (id: string, labels: string[]) =>
+    put<{ labels: WorkItemLabelWire[] }>(`/api/work-items/${encodeURIComponent(id)}/labels`, { labels }),
   /** Put a Todo on the operator's Home board, or take it off. */
   setWorkItemKept: (id: string, kept: boolean) =>
     put<{ kept: boolean }>(`/api/work-items/${encodeURIComponent(id)}/kept`, { kept }),

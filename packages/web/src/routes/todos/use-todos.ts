@@ -94,7 +94,7 @@ export function useSetWorkItemStatus() {
     qc,
     ({ id, status, note, cascade }) =>
       cascade
-        ? api.setWorkItemStatus(id, status, note, undefined, { cascade })
+        ? api.setWorkItemStatus(id, status, note, { cascade })
         : api.setWorkItemStatus(id, status, note),
   ))
 }

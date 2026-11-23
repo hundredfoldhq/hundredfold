@@ -79,16 +79,6 @@ export interface Config {
   cron?: {
     defaultDelivery?: { connector?: string; channel?: string }
   }
-  /** `apiKey` arrives redacted; see voice-section.tsx for what that means here. */
-  realtime?: {
-    provider?: string
-    model?: string
-    apiKey?: string
-    voice?: string
-    /** A bare name, or the tuned mapping form the provider's own union allows. */
-    turnDetection?: string | { type?: string; [key: string]: unknown }
-    noiseReduction?: string
-  }
   /** Voice mode. Only the speaking rate has a control here; the rest is edited in the file. */
   voice?: {
     enabled?: boolean

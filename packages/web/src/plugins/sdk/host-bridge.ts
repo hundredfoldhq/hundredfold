@@ -1,7 +1,6 @@
 /**
- * The two handles the app fills in as it mounts, mirroring
- * `components/talk/tools/router-handle.ts`: a module-level registration is how
- * a caller that is not a React render reaches app machinery, and a plugin's
+ * The two handles the app fills in as it mounts: a module-level registration is
+ * how a caller that is not a React render reaches app machinery, and a plugin's
  * event handler or backend callback is exactly that.
  */
 

@@ -1,29 +1,27 @@
 /**
- * Hundredfold Talk — streamed audio player (Phase 2 real loop).
+ * Streamed WAV chunk player.
  *
- * Plays base64-encoded audio chunks (a complete WAV per sentence from the local
- * Kokoro TTS backend) IN ARRIVAL ORDER with low latency, and exposes an
- * AnalyserNode so the AURA orb can react to the REAL output audio (RMS level)
- * while it speaks.
+ * Plays audio chunks (a complete WAV per sentence from the local Kokoro TTS
+ * backend) IN ARRIVAL ORDER with low latency, and exposes an AnalyserNode so a
+ * caller can read the REAL output audio level while it speaks.
  *
  * Design:
  *  - One shared AudioContext (created lazily, resumed on the first user gesture).
- *  - Each `talk:audio` frame is a SELF-CONTAINED WAV. `seq` is monotonic WITHIN a
- *    turn (it counts up from each speak's `seqStart`), and `last:true` rides only
- *    the turn's FINAL frame. We don't gate playback on `seq` — frames arrive in
- *    order over a single WS connection, so we play them in arrival order — but we
- *    DO watch `last` to re-arm cleanly at the turn boundary (a frame after a
- *    `last:true` is turn N+1's first frame: reset the drained-run latch and
- *    resume a suspended context before scheduling it).
+ *  - Each chunk is a SELF-CONTAINED WAV. `seq` is monotonic WITHIN a turn, and
+ *    `last:true` rides only the turn's FINAL chunk. We don't gate playback on
+ *    `seq` — chunks arrive in order from a single stream, so we play them in
+ *    arrival order — but we DO watch `last` to re-arm cleanly at the turn
+ *    boundary (a chunk after a `last:true` is turn N+1's first chunk: reset the
+ *    drained-run latch and resume a suspended context before scheduling it).
  *  - Decode + schedule is serialized on a promise chain so the moving "playhead"
  *    clock stays correct and chunks are scheduled back-to-back with no gaps,
  *    clicks, or overlaps — regardless of how fast each chunk decodes.
  *  - Every source routes through a single AnalyserNode → destination, giving the
  *    page a continuous signal to read regardless of which chunk is playing.
- *  - `onIdle` fires once the queue fully drains (used to settle the avatar).
+ *  - `onIdle` fires once the queue fully drains.
  *
  * Decode errors are swallowed per-chunk (we skip the bad chunk) so playback
- * never stalls on one corrupt frame.
+ * never stalls on one corrupt chunk.
  */
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -34,7 +32,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer
 }
 
-export class TalkAudioPlayer {
+export class WavChunkPlayer {
   private ctx: AudioContext | null = null
   private analyserNode: AnalyserNode | null = null
   /** False when the ctx was supplied externally (shared) — don't close it on dispose. */
@@ -47,7 +45,7 @@ export class TalkAudioPlayer {
    * @param externalCtx Optional pre-created (and gesture-resumed) AudioContext to
    *   share — e.g. the chat read-aloud primes one in the click gesture and passes
    *   it here so playback is autoplay-unlocked. When omitted, the player creates
-   *   and owns its own context (the /talk usage).
+   *   and owns its own context.
    */
   constructor(externalCtx?: AudioContext) {
     if (externalCtx) {
@@ -246,7 +244,7 @@ export class TalkAudioPlayer {
     }
   }
 
-  /** The AnalyserNode the page reads for the speaking-state orb level. */
+  /** The AnalyserNode the page reads for the output audio level. */
   get analyser(): AnalyserNode | null {
     return this.analyserNode
   }

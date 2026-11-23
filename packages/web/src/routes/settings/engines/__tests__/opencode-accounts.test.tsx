@@ -14,12 +14,10 @@ const apiMocks = vi.hoisted(() => ({
   sttUpdateConfig: vi.fn(),
   sttDownload: vi.fn(),
 }))
-const fetchTalkCapability = vi.hoisted(() => vi.fn())
 const registry = vi.hoisted(() => ({ current: undefined as unknown }))
 const chains = vi.hoisted(() => ({ current: undefined as unknown }))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
-vi.mock('@/lib/talk-capability', () => ({ fetchTalkCapability }))
 vi.mock('@/components/page-layout', () => ({ PageLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('@/routes/providers', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }) }))
 vi.mock('@/routes/settings-provider', () => ({
@@ -71,7 +69,6 @@ beforeEach(() => {
   apiMocks.updateConfig.mockResolvedValue({})
   apiMocks.getOrg.mockResolvedValue({ employees: [] })
   apiMocks.sttStatus.mockResolvedValue({ available: false, model: null, downloading: false, progress: 0, languages: ['en'] })
-  fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
   limits.current = {
     generatedAt: new Date().toISOString(), default: 'claude', engines: {},
     accounts: { opencode: [

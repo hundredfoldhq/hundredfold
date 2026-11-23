@@ -19,10 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   sttDownload: vi.fn(),
 }))
 
-const fetchTalkCapability = vi.hoisted(() => vi.fn())
-
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
-vi.mock('@/lib/talk-capability', () => ({ fetchTalkCapability }))
 vi.mock('@/components/page-layout', () => ({ PageLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('@/routes/providers', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }) }))
 vi.mock('@/routes/settings-provider', () => ({
@@ -66,7 +63,6 @@ beforeEach(() => {
   })
   apiMocks.sttUpdateConfig.mockResolvedValue({})
   apiMocks.sttDownload.mockResolvedValue({})
-  fetchTalkCapability.mockResolvedValue({ configured: true, provider: 'openai', providers: ['openai'] })
 })
 
 describe('Settings switches', () => {
