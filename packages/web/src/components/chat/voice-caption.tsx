@@ -47,17 +47,19 @@ export function VoiceCaption({ voice }: { voice: UseVoice }) {
   const message = voice.state.error ?? voice.state.notice ?? voice.note
   if (!status && !message && !voice.chip) return null
   return (
-    <div
-      data-voice-caption
-      className="relative z-[12] mb-[var(--composer-overlap,0px)] flex shrink-0 flex-wrap items-center gap-x-[var(--space-3)] gap-y-[var(--space-1)] px-[var(--space-4)] py-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--text-secondary)]"
-    >
-      {status && <span role="status" aria-live="polite" data-voice-status={voice.phase} className="min-w-0 truncate">{status}</span>}
-      {message && <Message voice={voice} text={message} />}
-      {voice.chip && (
-        <span data-voice-chip={voice.chip.kind} className="rounded-full bg-[var(--fill-secondary)] px-[var(--space-3)] py-[2px] text-[var(--text-secondary)]">
-          {voice.chip.label}
-        </span>
-      )}
+    <div data-voice-caption className="relative z-[12] mb-[var(--composer-overlap,0px)] shrink-0 text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
+      {/* The same centred column and side insets as the composer card and the
+          message rows (--chat-measure, space-3 / space-8), so the line starts
+          and ends where the thread text does instead of hugging the pane edge. */}
+      <div data-voice-caption-measure className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-wrap items-center gap-x-[var(--space-3)] gap-y-[var(--space-1)] px-3 py-[var(--space-2)] lg:px-8">
+        {status && <span role="status" aria-live="polite" data-voice-status={voice.phase} className="min-w-0 truncate">{status}</span>}
+        {message && <Message voice={voice} text={message} />}
+        {voice.chip && (
+          <span data-voice-chip={voice.chip.kind} className="rounded-full bg-[var(--fill-secondary)] px-[var(--space-3)] py-[2px] text-[var(--text-secondary)]">
+            {voice.chip.label}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
