@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
 import { floatToInt16 } from "../pcm"
 import { VoicePlayer } from "../player"
+import type { VoiceSessionStarter } from "../controller"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
@@ -69,6 +70,8 @@ class FakeDocument extends Emitter {
 interface Rig {
   session: BrowserVoiceSession
   calls: string[]
+  /** The session id of each socket opened. */
+  opened: string[]
   sockets: FakeSocket[]
   contexts: FakeSessionContext[]
   tracks: FakeTrack[]
@@ -85,10 +88,11 @@ interface Rig {
 
 interface Gate<T> { open(value: T extends void ? void : T): void; fail(error: unknown): void }
 
-function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; deferMic: boolean; deferCapture: boolean }> = {}): Rig {
+function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; deferMic: boolean; deferCapture: boolean; sessionId: string | VoiceSessionStarter }> = {}): Rig {
   const micGates: Gate<MediaStream>[] = []
   const captureGates: Gate<void>[] = []
   const calls: string[] = []
+  const opened: string[] = []
   const sockets: FakeSocket[] = []
   const contexts: FakeSessionContext[] = []
   const tracks: FakeTrack[] = []
@@ -99,7 +103,7 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
   let sink: (p: Int16Array) => void = () => {}
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
   const deps: BrowserVoiceDeps = {
-    openSocket: (_id, handlers) => { calls.push("socket"); const s = new FakeSocket(handlers); sockets.push(s); return s },
+    openSocket: (id, handlers) => { calls.push("socket"); opened.push(id); const s = new FakeSocket(handlers); sockets.push(s); return s },
     createContext: () => { calls.push("context"); const c = new FakeSessionContext(); contexts.push(c); const resume = c.resume; c.resume = vi.fn(async () => { calls.push("resume"); return resume() }); return c },
     requestMicrophone: () => {
       calls.push("microphone")
@@ -121,8 +125,8 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     createMediaMetadata: () => ({ title: "Voice mode is on" }),
     now: () => clock.now,
   }
-  const session = new BrowserVoiceSession({ sessionId: "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, micGates, captureGates }
+  const session = new BrowserVoiceSession({ sessionId: options.sessionId ?? "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
+  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, micGates, captureGates }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -186,6 +190,17 @@ describe("stopping while startup is pending", () => {
     expectNothingLive(r)
     expect(r.captureStops).toHaveBeenCalled()
     expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("a worklet that fails because a stop closed the audio context releases the microphone, with no error note", async () => {
+    const r = rig({ deferCapture: true })
+    const starting = r.session.start()
+    await flush()
+    r.session.stop()
+    r.captureGates[0].fail(new DOMException("The AudioContext is closed.", "InvalidStateError"))
+    await starting
+    expectNothingLive(r)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: null })
   })
 
   it("a worklet that fails to load releases the microphone stream", async () => {
@@ -610,6 +625,120 @@ describe("reconnecting", () => {
     await r.session.start()
     expect(r.sockets).toHaveLength(2)
     expect(r.contexts).toHaveLength(2)
+  })
+})
+
+describe("starting on a chat that does not exist yet", () => {
+  function starter() {
+    let resolve!: (id: string) => void
+    let reject!: (error: unknown) => void
+    const create = vi.fn(() => new Promise<string>((res, rej) => { resolve = res; reject = rej }))
+    const discard = vi.fn()
+    const order: string[] = []
+    const bind = vi.fn((id: string) => { order.push(`bind:${id}`) })
+    return { create, bind, discard, order, resolve: (id: string) => resolve(id), reject: (e: unknown) => reject(e), api: { create, bind, discard } satisfies VoiceSessionStarter }
+  }
+
+  it("asks for the microphone inside the tap, creates the chat once, then opens the socket on it", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    expect(r.calls).toEqual(["context", "resume", "microphone"])
+    expect(s.create).toHaveBeenCalledTimes(1)
+    expect(r.sockets).toHaveLength(0)
+    expect(r.session.boundSessionId()).toBeNull()
+    s.resolve("new-1")
+    await run
+    expect(r.opened).toEqual(["new-1"])
+    expect(r.session.boundSessionId()).toBe("new-1")
+    expect(s.create).toHaveBeenCalledTimes(1)
+    expect(s.bind).toHaveBeenCalledExactlyOnceWith("new-1", r.session)
+  })
+
+  it("binds the pane to the chat only once the run is known to be live, before the conversation attaches", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const deps = (r.session as unknown as { deps: BrowserVoiceDeps }).deps
+    const open = deps.openSocket
+    deps.openSocket = (id, handlers, mode) => { s.order.push(`socket:${id}`); return open(id, handlers, mode) }
+    const run = r.session.start()
+    expect(s.bind).not.toHaveBeenCalled()
+    s.resolve("new-1")
+    await run
+    expect(s.order).toEqual(["bind:new-1", "socket:new-1"])
+  })
+
+  it("a second start while the chat is being created does nothing", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    await r.session.start()
+    s.resolve("new-1")
+    await run
+    expect(s.create).toHaveBeenCalledTimes(1)
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it("a creation that fails reports it, opens no socket and releases the microphone", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    s.reject(new Error("The gateway refused to start a chat."))
+    await run
+    await Promise.resolve()
+    expect(s.bind).not.toHaveBeenCalled()
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "The gateway refused to start a chat." })
+    expect(r.sockets).toHaveLength(0)
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
+  })
+
+  it("a stop before the chat exists discards the chat that then arrives and keeps the microphone released", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api })
+    const run = r.session.start()
+    r.session.stop()
+    s.resolve("new-1")
+    await run
+    expect(s.discard).toHaveBeenCalledWith("new-1")
+    expect(s.bind).not.toHaveBeenCalled()
+    expect(r.session.boundSessionId()).toBeNull()
+    expect(r.sockets).toHaveLength(0)
+    await vi.waitFor(() => expect(r.tracks[0].stopped).toBe(true))
+  })
+
+  it("a stop that lands while the capture is starting releases the capture and the microphone", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api, deferCapture: true })
+    const run = r.session.start()
+    s.resolve("new-1")
+    await vi.waitFor(() => expect(r.captureGates).toHaveLength(1))
+    r.session.stop()
+    r.captureGates[0].open()
+    await run
+    expect(r.captureStops).toHaveBeenCalled()
+    expectNothingLive(r)
+  })
+
+  it("a capture that fails because a stop closed the audio context still releases the microphone, with no error note", async () => {
+    const s = starter()
+    const r = rig({ sessionId: s.api, deferCapture: true })
+    const run = r.session.start()
+    s.resolve("new-1")
+    await vi.waitFor(() => expect(r.captureGates).toHaveLength(1))
+    r.session.stop()
+    r.captureGates[0].fail(new DOMException("The AudioContext is closed.", "InvalidStateError"))
+    await run
+    expectNothingLive(r)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: null })
+  })
+
+  it("a chat that is already there never calls the starter", async () => {
+    const s = starter()
+    const r = rig({ sessionId: "s1" })
+    await r.session.start()
+    expect(s.create).not.toHaveBeenCalled()
+    expect(r.opened).toEqual(["s1"])
   })
 })
 

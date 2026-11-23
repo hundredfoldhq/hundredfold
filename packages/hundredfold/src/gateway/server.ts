@@ -838,7 +838,7 @@ export async function startGateway(
     getConfig: () => currentConfig,
     getContext: () => apiContext,
     operatorAuthenticated: (req) =>
-      verifyGatewayAuth(req.headers, gatewayAuthToken, HUNDREDFOLD_HOME) || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig)),
+      verifyGatewayAuth(req.headers, gatewayAuthToken, HUNDREDFOLD_HOME) || (!authRequiredNow() && isSameOriginBrowserRequest(req, currentConfig, { upgradeHandshake: true })),
   });
   const talkEmit = createTalkProactiveGatewayEmit(initDb(), broadcast);
   const emit = voice ? voice.wrapEmit(talkEmit) : talkEmit;

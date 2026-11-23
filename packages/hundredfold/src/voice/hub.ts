@@ -37,6 +37,8 @@ export class VoiceHub {
   private providers: { config: ResolvedVoiceConfig; set: VoiceProviderSet } | null = null;
   /** Providers of a config that was replaced while attachments still used them; closed once none do. */
   private retired: VoiceProviderSet[] = [];
+  /** The session whose attachment a takeover is ending: its conversation goes on in the new one. */
+  private takingOver: string | null = null;
 
   constructor(private readonly deps: VoiceHubDeps) {}
 
@@ -61,12 +63,7 @@ export class VoiceHub {
    */
   attach(socket: VoiceSocket, request: AttachRequest): VoiceAttachment | null {
     const config = this.deps.config();
-    if (!config) {
-      // Voice was switched off between the upgrade and here: say so as an attached client would hear it, not as a missing chat.
-      if (socket.readyState === 1) socket.send(JSON.stringify({ type: "detached", reason: "disabled" }));
-      socket.close(1000, "disabled");
-      return null;
-    }
+    if (!config) return this.refuseDisabled(socket);
     const existing = this.attachments.get(request.sessionId);
     if (existing) return this.replace(existing, socket, request);
     if (this.attachments.size >= config.limits.maxConcurrentAttachments) {
@@ -118,9 +115,20 @@ export class VoiceHub {
       existing.adopt(socket, request.principal);
       return existing;
     }
-    existing.detach("taken_over");
+    this.takingOver = request.sessionId;
+    try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
-    return config ? this.create(socket, request, config) : null;
+    if (config) return this.create(socket, request, config);
+    // Voice went off between the detach and here: no new attachment will end this conversation, so this is its end.
+    this.discardEmpty(request.sessionId);
+    return this.refuseDisabled(socket);
+  }
+
+  /** Voice was switched off before this socket got an attachment: say so as an attached client would hear it, not as a missing chat. */
+  private refuseDisabled(socket: VoiceSocket): null {
+    if (socket.readyState === 1) socket.send(JSON.stringify({ type: "detached", reason: "disabled" }));
+    socket.close(1000, "disabled");
+    return null;
   }
 
   private create(socket: VoiceSocket, request: AttachRequest, config: ResolvedVoiceConfig): VoiceAttachment {
@@ -151,6 +159,15 @@ export class VoiceHub {
     if (this.attachments.get(attachment.sessionId) === attachment) this.attachments.delete(attachment.sessionId);
     this.cancelExpiry(attachment.sessionId);
     if (this.attachments.size === 0) this.closeRetired();
+    if (this.takingOver !== attachment.sessionId && !this.attachments.has(attachment.sessionId)) this.discardEmpty(attachment.sessionId);
+  }
+
+  private discardEmpty(sessionId: string): void {
+    try {
+      this.deps.discardIfEmptySpokenStart?.(sessionId);
+    } catch (error) {
+      this.deps.log.warn(`voice: could not discard empty session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private cancelExpiry(sessionId: string): void {
