@@ -191,7 +191,7 @@ export class ReplyVoice {
     const cut = this.pipeline.cut(null, 0);
     this.options.send({ type: "stop_playback", reason: "new_reply" });
     const pass = cut.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
-    if (pass) return this.recordPassHeard(cut);
+    if (pass) return this.recordPassHeard(cut, pass);
     const reply = this.reply ?? this.last;
     if (!reply || reply.id !== cut.replyKey) return;
     reply.heard = cut.heard;
