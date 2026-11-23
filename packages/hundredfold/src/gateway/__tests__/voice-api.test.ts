@@ -117,6 +117,7 @@ describe("GET /api/voice/config", () => {
       tts: { provider: "local", voice: "af_heart", voices: ["af_heart", "am_michael", "bf_emma"], status: { available: true } },
       onset: { threshold: 0.02, minSpeechMs: 250 },
       bargeIn: { enabled: true },
+      cues: { enabled: true, volume: 0.3 },
       autoBackground: { enabled: true, afterSeconds: 5 },
       limits: { maxUtteranceSeconds: 60 },
       install: { state: "ready", progress: 1 },
@@ -125,8 +126,8 @@ describe("GET /api/voice/config", () => {
 
   it("reflects the settings the operator chose", () => {
     const { local } = stubLocal(READY);
-    const body = voiceConfigResponse(config({ enabled: true, mode: "push-to-talk", bargeIn: { enabled: false, onsetThreshold: 0.05, minSpeechMs: 400 }, autoBackground: { afterSeconds: 9 }, limits: { maxUtteranceSeconds: 30 } }), { local, home });
-    expect(body).toMatchObject({ mode: "push-to-talk", onset: { threshold: 0.05, minSpeechMs: 400 }, bargeIn: { enabled: false }, autoBackground: { enabled: true, afterSeconds: 9 }, limits: { maxUtteranceSeconds: 30 } });
+    const body = voiceConfigResponse(config({ enabled: true, mode: "push-to-talk", bargeIn: { enabled: false, onsetThreshold: 0.05, minSpeechMs: 400 }, autoBackground: { afterSeconds: 9 }, cues: { enabled: false, volume: 0.6 }, limits: { maxUtteranceSeconds: 30 } }), { local, home });
+    expect(body).toMatchObject({ cues: { enabled: false, volume: 0.6 }, mode: "push-to-talk", onset: { threshold: 0.05, minSpeechMs: 400 }, bargeIn: { enabled: false }, autoBackground: { enabled: true, afterSeconds: 9 }, limits: { maxUtteranceSeconds: 30 } });
   });
 
   it.each<[string, InstallStatus, string]>([

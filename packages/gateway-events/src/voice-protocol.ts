@@ -108,6 +108,13 @@ export interface VoiceOnsetSettings {
   minSpeechMs: number
 }
 
+/** Soft sound cues while the assistant thinks or runs a tool (`voice.cues`). */
+export interface VoiceCueSettings {
+  enabled: boolean
+  /** 0..1. */
+  volume: number
+}
+
 export interface VoiceReadyFrame {
   type: "ready"
   protocol: number
@@ -117,6 +124,8 @@ export interface VoiceReadyFrame {
   stt: { provider: string; partials: boolean }
   tts: { provider: string; voice: string | null }
   onset: VoiceOnsetSettings
+  /** Absent from a gateway that predates cues: the client then uses its own defaults. */
+  cues?: VoiceCueSettings
   backgrounding: VoiceBackgrounding
   limits: { maxUtteranceSeconds: number }
   /**

@@ -67,6 +67,13 @@ export interface VoiceConfig {
     /** A foreground tool call older than this when the user talks is long work. Defaults to 5. */
     afterSeconds?: number;
   };
+  /** Soft repeating sound cues while the assistant is thinking and while a tool runs. */
+  cues?: {
+    /** Defaults to true. */
+    enabled?: boolean;
+    /** 0 (silent) to 1 (still gentle); defaults to 0.3. */
+    volume?: number;
+  };
   /** Inline voice prompt; replaces the built-in one. */
   prompt?: string;
   /** Instance-relative file holding the voice prompt. `prompt` wins when both are set. */
@@ -113,6 +120,9 @@ export const DEFAULT_VOICE_PROMPT =
 /** The one-line reminder that rides on every later voice turn. */
 export const VOICE_TURN_REMINDER = "[Voice: spoken reply. Short, plain sentences; no markdown or code read aloud.]";
 
+/** Low by default: a cue is a hint that work is going on, never something to listen to. */
+export const DEFAULT_CUE_VOLUME = 0.3;
+
 export const DEFAULT_HOLDING_LINE = "Still working on the last thing. I'll come to that as soon as it's done.";
 
 /** Per provider: the model and voice used when the config names none. */
@@ -140,6 +150,7 @@ export interface ResolvedVoiceConfig {
   vad: { threshold: number; minSpeechMs: number; silenceMs: number; unfinishedHoldMs: number; prerollMs: number };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
+  cues: { enabled: boolean; volume: number };
   /** The inline prompt, or the built-in one. */
   prompt: string;
   /** Absolute path of the prompt file, only when no inline `prompt` is set. */
@@ -280,6 +291,11 @@ function autoBackgroundProblems(autoBackground: Obj | undefined): string[] {
   return [...boolean("voice.autoBackground.enabled", autoBackground.enabled), ...inRange("voice.autoBackground.afterSeconds", autoBackground.afterSeconds, [1, 600], false)];
 }
 
+function cuesProblems(cues: Obj | undefined): string[] {
+  if (!cues) return [];
+  return [...boolean("voice.cues.enabled", cues.enabled), ...inRange("voice.cues.volume", cues.volume, [0, 1], false)];
+}
+
 function languageProblems(language: unknown, providers: unknown[]): string[] {
   if (language === undefined) return [];
   if (typeof language !== "string" || !LANGUAGE.test(language)) return [`voice.language must be a language code such as "en" (got ${JSON.stringify(language)})`];
@@ -301,7 +317,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
   const tts = sideProblems("voice.tts", voice.tts);
   const parts = {
     vad: block("voice.vad", voice.vad), bargeIn: block("voice.bargeIn", voice.bargeIn), autoBackground: block("voice.autoBackground", voice.autoBackground),
-    limits: block("voice.limits", voice.limits), local: block("voice.local", voice.local),
+    limits: block("voice.limits", voice.limits), local: block("voice.local", voice.local), cues: block("voice.cues", voice.cues),
   };
   return [
     ...boolean("voice.enabled", voice.enabled),
@@ -309,6 +325,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...languageProblems(voice.language, [stt.side?.provider ?? "local", tts.side?.provider ?? "local"]),
     ...stt.problems, ...tts.problems, ...ttsProblems(tts.side),
     ...vadProblems(parts.vad.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
+    ...cuesProblems(parts.cues.value),
     ...textProblems("voice.prompt", voice.prompt, MAX_PROMPT_CHARS), ...promptFileProblems(voice.promptFile, home),
     ...textProblems("voice.stylePrompt", voice.stylePrompt, MAX_STYLE_PROMPT_CHARS),
     ...textProblems("voice.holdingLine", voice.holdingLine, MAX_HOLDING_LINE_CHARS),
@@ -393,13 +410,15 @@ function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {
   return { enabled: setting(bargeIn, "enabled", true), minSpeechMs: setting(bargeIn, "minSpeechMs", 250), onsetThreshold: setting(bargeIn, "onsetThreshold", 0.02) };
 }
 
-function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "limits" | "local"> {
+function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" | "autoBackground" | "cues" | "limits" | "local"> {
   const autoBackground = sub(voice, "autoBackground");
   const limits = sub(voice, "limits");
+  const cues = sub(voice, "cues");
   return {
     vad: resolveVad(sub(voice, "vad")),
     bargeIn: resolveBargeIn(sub(voice, "bargeIn")),
     autoBackground: { enabled: setting(autoBackground, "enabled", true), afterSeconds: setting(autoBackground, "afterSeconds", 5) },
+    cues: { enabled: setting(cues, "enabled", true), volume: setting(cues, "volume", DEFAULT_CUE_VOLUME) },
     limits: { maxUtteranceSeconds: setting(limits, "maxUtteranceSeconds", 60), maxConcurrentAttachments: setting(limits, "maxConcurrentAttachments", 4) },
     local: { device: setting(sub(voice, "local"), "device", "auto") },
   };

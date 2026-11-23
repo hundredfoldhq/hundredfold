@@ -1,6 +1,7 @@
 import {
   VOICE_CLOSE,
   type VoiceBackgrounding,
+  type VoiceCueSettings,
   type VoiceDetachReason,
   type VoiceMode,
   type VoiceOnsetSettings,
@@ -8,6 +9,7 @@ import {
   type VoiceTurnState,
 } from "@hundredfold/gateway-events"
 import type { NativeStateEvent } from "@/platform/native-bridge"
+import { parseCueSettings } from "./cues"
 
 /** What the control shows. `off` means voice mode is not running for this chat. */
 export type VoicePhase = "off" | "paused" | "connecting" | "listening" | "hearing" | "thinking" | "working" | "speaking" | "suspended"
@@ -20,6 +22,7 @@ export interface VoiceBackgroundTask {
 
 export interface VoiceReadyInfo {
   onset: VoiceOnsetSettings
+  cues: VoiceCueSettings
   backgrounding: VoiceBackgrounding
   partials: boolean
   maxUtteranceSeconds: number
@@ -35,6 +38,8 @@ export interface VoiceUiState {
   partial: string
   /** The tool running while `turn` is `working`. */
   tool: string | null
+  /** The tool running while `turn` is `working` was moved to the background (it no longer holds the foreground). */
+  toolBackgrounded: boolean
   /** Set while a holding line is being spoken. */
   holding: string | null
   ready: VoiceReadyInfo | null
@@ -57,6 +62,7 @@ export const INITIAL_VOICE_STATE: VoiceUiState = {
   vadSpeaking: false,
   partial: "",
   tool: null,
+  toolBackgrounded: false,
   holding: null,
   ready: null,
   background: [],
@@ -158,6 +164,8 @@ type FrameHandlers = { [K in VoiceServerFrame["type"]]?: (state: VoiceUiState, f
 function onTurn(state: VoiceUiState, f: FrameOf<"turn">): VoiceUiState {
   return {
     ...state, turn: f.state, tool: f.state === "working" ? (f.tool ?? null) : null, holding: null,
+    // A new turn state is new work: only the tool that was running when the task was announced counts as moved.
+    toolBackgrounded: false,
     // The utterance was handed to the session: whatever partial is left over is stale.
     partial: f.state === "thinking" ? "" : state.partial,
     syncTick: f.state === "idle" && state.turn !== "idle" ? state.syncTick + 1 : state.syncTick,
@@ -165,8 +173,9 @@ function onTurn(state: VoiceUiState, f: FrameOf<"turn">): VoiceUiState {
 }
 
 function onBackground(state: VoiceUiState, f: FrameOf<"background">, now: number): VoiceUiState {
-  if (state.background.some((task) => task.taskId === f.taskId)) return state
-  return { ...state, background: [...state.background, { taskId: f.taskId, description: f.description, startedAt: now }] }
+  const toolBackgrounded = state.turn === "working" || state.toolBackgrounded
+  if (state.background.some((task) => task.taskId === f.taskId)) return toolBackgrounded === state.toolBackgrounded ? state : { ...state, toolBackgrounded }
+  return { ...state, toolBackgrounded, background: [...state.background, { taskId: f.taskId, description: f.description, startedAt: now }] }
 }
 
 function missedNotice(count: number): string {
@@ -176,7 +185,7 @@ function missedNotice(count: number): string {
 const FRAME_HANDLERS: FrameHandlers = {
   ready: (state, f) => ({
     ...state, status: "on", turn: "idle", error: null, needsTap: false,
-    ready: { onset: f.onset, backgrounding: f.backgrounding, partials: f.stt.partials, maxUtteranceSeconds: f.limits.maxUtteranceSeconds },
+    ready: { onset: f.onset, cues: parseCueSettings(f.cues), backgrounding: f.backgrounding, partials: f.stt.partials, maxUtteranceSeconds: f.limits.maxUtteranceSeconds },
   }),
   vad: (state, f) => ({ ...state, vadSpeaking: f.speaking }),
   transcript: (state, f) => ({

@@ -278,6 +278,17 @@ def _providers(device: str) -> tuple[list[str], str]:
     return ["CPUExecutionProvider"], "cpu"
 
 
+# On the GPU an offline utterance is padded with silence up to the next of these lengths (seconds), and the real length
+# is passed along, as in a padded batch. A longer one keeps its own length: it is rare, and its run is long enough that
+# planning the graph once more is a small share of it (and padding it would cost memory on a shared GPU).
+OFFLINE_PAD_SECONDS = (4, 8, 12, 16, 24, 32)
+
+
+def _out_of_memory(error: BaseException) -> bool:
+    text = str(error)
+    return "Failed to allocate memory" in text or "CUBLAS_STATUS_ALLOC_FAILED" in text or "out of memory" in text.lower()
+
+
 class ParakeetOnnx(SttModel):
     def __init__(self, spec: dict[str, Any], providers: list[str]) -> None:
         import numpy as np
@@ -287,13 +298,37 @@ class ParakeetOnnx(SttModel):
         self._asr = onnx_asr.load_model(
             spec.get("name", "nemo-parakeet-tdt-0.6b-v2"), path=spec["path"], quantization=spec.get("quantization"), providers=providers
         )
+        # The CUDA provider plans the graph again for every input length it has not just seen (about 200 ms, against 30 to 150 ms for the
+        # run itself on a short utterance), so on the GPU the audio is padded to a handful of lengths and `recognize_batch` is told the real one.
+        # The CPU runs any length at no extra cost, and padding would only add work there.
+        self._pad_to = tuple(seconds * VAD_SAMPLE_RATE for seconds in OFFLINE_PAD_SECONDS) if "CUDAExecutionProvider" in providers else ()
 
     def recognize(self, pcm: bytes) -> str:
         np = self._np
         samples = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype="<i2").astype(np.float32) / 32768.0
         if samples.size < MIN_STT_SAMPLES:
             samples = np.pad(samples, (0, MIN_STT_SAMPLES - samples.size))
-        return str(self._asr.recognize(samples, sample_rate=VAD_SAMPLE_RATE)).strip()
+        real = samples.size
+        try:
+            if not self._pad_to:
+                return str(self._asr.recognize(samples, sample_rate=VAD_SAMPLE_RATE)).strip()
+            padded = next((size for size in self._pad_to if size >= real), real)
+            if padded > real:
+                samples = np.pad(samples, (0, padded - real))
+            result = next(self._asr.asr.recognize_batch(samples[None, :], np.array([real], dtype=np.int64)))
+            return str(result.text).strip()
+        except Exception as error:
+            if self._pad_to and _out_of_memory(error):
+                # Only the GPU path: the CPU's own errors are reported as they are.
+                # The encoder's memory grows with the length of the audio (about 3.5 GB in all for a minute, 5 to 7 GB for two) and
+                # onnxruntime keeps what it took; when other programs hold most of the GPU, a long utterance does not fit.
+                raise RuntimeError(f"the GPU ran out of memory on {real / VAD_SAMPLE_RATE:.0f} s of audio; other programs are probably holding it") from error
+            raise
+
+    def warm(self) -> None:
+        # One throwaway decode per padded length, so the first utterance of each does not pay for planning its graph.
+        for size in self._pad_to or (MIN_STT_SAMPLES,):
+            self.recognize(bytes(size * 2))
 
 
 # ── streaming speech-to-text ─────────────────────────────────────────────────

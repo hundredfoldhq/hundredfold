@@ -51,7 +51,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
+| `ready` | `protocol`, `sessionId`, `input {encoding, sampleRate}`, `output {encoding, sampleRate}`, `stt {provider, partials}`, `tts {provider, voice}`, `onset {threshold, minSpeechMs}`, `cues? {enabled, volume}`, `backgrounding: "native" \| "steer" \| "none"`, `limits {maxUtteranceSeconds}`, `keepaliveMs?: number` | after `hello`; `keepaliveMs` is the interval of `keepalive` frames (10 s today), absent from older gateways |
 | `vad` | `speaking: boolean` | the gateway's VAD state (UI only) |
 | `transcript` | `utteranceId`, `text`, `final` | partial or final |
 | `stop_playback` | `reason: "speech"` | the gateway's VAD heard speech over playback before the client's onset did |
@@ -82,3 +82,19 @@ A close the gateway sees as `1000`, `1001`, `1005` (no status), `1009` (oversize
   reply is sent.
 - The gateway never calls an engine's `kill` while that engine reports long foreground
   work.
+
+## Sound cues
+
+`ready.cues` carries `voice.cues` (`enabled`, default true; `volume` 0 to 1, default 0.3). It is
+optional: a client that gets none (an older gateway) uses those defaults. The cue a client plays is a
+function of frames it already receives, so there is no cue frame:
+
+| Cue | While |
+|---|---|
+| none | not running, the user heard (`vad.speaking`, a non-final `transcript`, push-to-talk held), speech audible (a segment announced by `segment_start` and not yet played out), or `turn` is `idle` or `speaking` |
+| `thinking` | `turn.state` is `thinking`, or `working` after a `background` frame arrived during that `working` state |
+| `tool` | `turn.state` is `working` and no `background` frame arrived during it |
+
+A new `turn` frame clears the "moved to the background" mark. The sounds themselves are synthesised
+by the client (web: `packages/web/src/lib/voice/cues.ts`, native: `voice-core/src/cues.rs`), at a
+peak of `0.2 * volume` of full scale, and never go through the speech player.
