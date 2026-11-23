@@ -41,7 +41,7 @@ function gridProps(overrides: Partial<GridProps> = {}): GridProps {
     viewport: { width: 1440, height: 900, mobile: false },
     metaById: {},
     sessionTitleFor: () => undefined,
-    runtime: { portalName: 'Gateway', subscribe: () => noop, events: [] },
+    runtime: { portalName: 'Gateway', subscribe: () => noop },
     scrollTopFor: () => undefined,
     viewModeFor: () => 'chat',
     focusTriggerFor: () => 0,
@@ -81,7 +81,7 @@ describe('MultiChatGrid close labels', () => {
           c: { sessionId: 'c', title: '#3 - Charlie', employee: 'charlie-lead' },
         }}
         sessionTitleFor={() => undefined}
-        runtime={{ portalName: 'Gateway', subscribe: () => noop, events: [] }}
+        runtime={{ portalName: 'Gateway', subscribe: () => noop }}
         scrollTopFor={() => undefined}
         viewModeFor={() => 'chat'}
         focusTriggerFor={() => 0}
@@ -148,7 +148,7 @@ describe('MultiChatGrid close labels', () => {
         viewport={{ width: 1440, height: 900 }}
         metaById={{}}
         sessionTitleFor={() => undefined}
-        runtime={{ portalName: 'Gateway', subscribe: () => noop, events: [] }}
+        runtime={{ portalName: 'Gateway', subscribe: () => noop }}
         scrollTopFor={() => undefined}
         viewModeFor={() => 'chat'}
         focusTriggerFor={() => 0}
@@ -180,7 +180,7 @@ describe('MultiChatGrid close labels', () => {
         viewport={{ width: 390, height: 844, mobile: true }}
         metaById={{}}
         sessionTitleFor={() => undefined}
-        runtime={{ portalName: 'Gateway', subscribe: () => noop, events: [] }}
+        runtime={{ portalName: 'Gateway', subscribe: () => noop }}
         scrollTopFor={() => undefined}
         viewModeFor={() => 'chat'}
         focusTriggerFor={() => 0}

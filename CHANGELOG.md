@@ -124,6 +124,10 @@
 - **Auto-compaction no longer skips the turn that moves a Claude session back from a stand-in.** The sync transcript on that turn was taken for an engine switch, so a long, cold session woke on its full context however large it was, and the context budget was skipped too. The move-back now also restores the context size the conversation had before the swap, and a long session skipped for a reason other than a warm cache or its budget is logged at `info`.
 
 ### 💥 Removed / Not supported
+- **The hold-to-talk microphone is gone from the chat composer; voice mode replaces it.**
+  - **What is gone:** the mic button (tap-and-hold to talk, quick tap to toggle, and the transcript landing in the message box), the "send when the words land" arming of the Send button, the transcription-language picker in the composer, and the composer's own speech-to-text error banner and model-download prompt. Messages from the composer no longer carry the "this was dictated" flag.
+  - **What stays:** the dictation microphones in Notes and in Todo quick capture, with their Whisper model and language settings (the Settings section is now called "Dictation"), and the voice notes the Telegram connector transcribes. `POST /api/stt/*` is unchanged. To speak to a chat, turn on voice mode ([docs/voice.md](docs/voice.md)).
+  - **On upgrade:** nothing. No config key is removed, and a `config.yaml` that sets `stt:` loads as before. The browser keeps its `stt-language` choice for the remaining microphones.
 - **opencode no longer falls back between models by itself; fallback is the gateway's.**
   - **What is gone:** the server turn's handling of a prompt re-sent by a fallback plugin (it adopted the copy as its own), the `model-fallback.js` example plugin and its tests, and the gated fallback end-to-end tests. opencode's own provider-retry handling stays: it is what turns a usage limit into the gateway's rate-limit result.
   - **Replacement:** model and provider hops are [fallback chains](docs/fallback-chains.md): `{engine: opencode, model: openrouter/x}`.

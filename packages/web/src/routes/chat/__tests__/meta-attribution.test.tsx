@@ -45,7 +45,7 @@ function Harness({ paneKey, sessionId, onState }: {
       viewport={{ width: 390, height: 844 }}
       metaById={paneState.metaById}
       sessionTitleFor={() => undefined}
-      runtime={{ portalName: 'Gateway', subscribe: () => noop, events: [] }}
+      runtime={{ portalName: 'Gateway', subscribe: () => noop }}
       scrollTopFor={() => undefined}
       viewModeFor={() => 'chat'}
       focusTriggerFor={() => 0}

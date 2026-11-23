@@ -13,26 +13,6 @@ vi.mock("@/hooks/use-skills", () => ({
   useSkills: () => ({ data: skillsData, refetch: vi.fn() }),
 }))
 
-vi.mock("@/hooks/use-stt", () => ({
-  useStt: () => ({
-    state: "idle",
-    available: true,
-    error: null,
-    analyser: null,
-    languages: ["en"],
-    selectedLanguage: "en",
-    downloadProgress: null,
-    cycleLanguage: vi.fn(),
-    handleMicClick: vi.fn(),
-    startRecording: vi.fn(),
-    stopRecording: vi.fn(async () => null),
-    cancelRecording: vi.fn(),
-    startDownload: vi.fn(),
-    dismissDownload: vi.fn(),
-    dismissError: vi.fn(),
-  }),
-}))
-
 import { ChatInput } from "../chat-input"
 
 function renderInput(terminalActionsSlot?: React.ReactNode) {
@@ -43,7 +23,6 @@ function renderInput(terminalActionsSlot?: React.ReactNode) {
       onSend={vi.fn()}
       onNewSession={vi.fn()}
       onStatusRequest={vi.fn()}
-      events={[]}
       terminalActionsSlot={terminalActionsSlot}
     />,
   )
@@ -64,14 +43,14 @@ describe("ChatInput terminal keys", () => {
     expect(screen.queryByRole("button", { name: "Terminal keys" })).toBeNull()
   })
 
-  it("places the terminal-keys control immediately before the mic", () => {
+  it("places the terminal-keys control immediately before Send", () => {
     renderInput(<CliKeybar onKey={vi.fn()} />)
 
     const keybar = screen.getByRole("button", { name: "Terminal keys" })
-    const mic = screen.getByRole("button", { name: "Voice input" })
-    // Both live in the composer toolbar; the keybar's wrapper is the mic's
+    const send = screen.getByRole("button", { name: "Send message" })
+    // Both live in the composer toolbar; the keybar's wrapper is Send's
     // immediate previous sibling.
-    expect(keybar.closest("div")?.parentElement?.nextElementSibling).toBe(mic)
+    expect(keybar.closest("div")?.parentElement?.nextElementSibling).toBe(send)
   })
 
   it("opens the terminal-keys popover and sends each key's data", () => {

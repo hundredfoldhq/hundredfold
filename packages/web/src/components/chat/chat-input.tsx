@@ -1,20 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import type { MediaAttachment } from '@/lib/conversations'
 import { MediaPreview } from './media-preview'
-import { useStt } from '@/hooks/use-stt'
 import { useOrg } from '@/hooks/use-employees'
 import { useSkills } from '@/hooks/use-skills'
-import { WhisperDownloadModal } from '@/components/stt/whisper-download-modal'
-import { MicWaveform } from './mic-waveform'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { composerCardPresentation } from './chat-composer-presentation'
 import { useChatDraft } from './use-chat-draft'
-import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS, resolveSendTap, resolveTranscriptLanding } from './armed-send'
 import { isCoarsePointer } from '@/lib/terminal-input'
 import { deliveryForSend, readSendDelivery, writeSendDelivery, type SendDelivery } from './send-delivery'
-
-export { classifyMicGesture, MIC_HOLD_THRESHOLD_MS, resolveSendTap, resolveTranscriptLanding } from './armed-send'
-export type { MicGesture } from './armed-send'
 
 interface Employee {
   name: string
@@ -49,31 +42,6 @@ export function resolveClientCommand(text: string): ClientCommand | null {
   return null
 }
 
-/* ── Speech-to-text provenance ─────────────────────────────────────────────
- * One bit per composed message: does its text contain any speech-to-text
- * content? Typing never sets it, any dictated fragment does, a full clear
- * resets it, and sending consumes it. A pure transition so the rule is testable
- * without driving the microphone. The bit rides `onSend` to the gateway, which
- * hands the engine a hidden context note — the operator's text is never changed.
- */
-export type SpeechProvenanceEvent =
-  | { type: 'transcript' }          // a dictated fragment landed in the field
-  | { type: 'edit'; value: string } // a manual keystroke / clear changed the field
-  | { type: 'send' }                // the message was dispatched
-
-export function nextSpeechProvenance(current: boolean, event: SpeechProvenanceEvent): boolean {
-  switch (event.type) {
-    case 'transcript':
-      return true
-    case 'edit':
-      // A full clear wipes provenance; any other edit (incl. typing alongside
-      // dictated text) preserves it, so a mixed message stays speech-derived.
-      return event.value.trim().length === 0 ? false : current
-    case 'send':
-      return false
-  }
-}
-
 interface ChatInputProps {
   /** Existing chat owned by this composer. Null is the new-chat composer. */
   sessionId?: string | null
@@ -81,14 +49,12 @@ interface ChatInputProps {
   isActive?: boolean
   disabled: boolean
   loading: boolean
-  onSend: (message: string, media?: MediaAttachment[], interrupt?: boolean, speech?: boolean) => boolean | void | Promise<boolean | void>
+  onSend: (message: string, media?: MediaAttachment[], interrupt?: boolean) => boolean | void | Promise<boolean | void>
   onInterrupt?: () => void
   onNewSession: () => void
   onStatusRequest: () => void
   /** Incremented when skills change on the gateway, triggers re-fetch */
   skillsVersion?: number
-  /** WebSocket events from useGateway — needed for STT download progress */
-  events?: Array<{ event: string; payload: unknown }>
   /** Files dropped onto the chat area (from parent drag & drop) */
   droppedFiles?: File[]
   /** Called after droppedFiles have been consumed as pending attachments */
@@ -100,11 +66,11 @@ interface ChatInputProps {
   /** Optional ambient status (e.g. background-activity StateLine), rendered in
    *  the toolbar's flexible middle so it never shifts layout. */
   statusSlot?: React.ReactNode
-  /** Optional terminal-key control, rendered in the toolbar beside the mic. */
+  /** Optional terminal-key control, rendered in the toolbar beside Send. */
   terminalActionsSlot?: React.ReactNode
   /** Optional per-session status items (context meter), right after the model chip. */
   sessionStatusSlot?: React.ReactNode
-  /** Voice-mode control, beside the dictation mic. Absent unless the gateway has voice on. */
+  /** Voice-mode control, beside Send. Absent unless the gateway has voice on. */
   voiceSlot?: React.ReactNode
 }
 
@@ -114,16 +80,16 @@ interface ChatInputProps {
  * Minimum widths that keep the model chip's icons (48px) and the waiting-on status (24px for the
  * dot and count, 40px, then 72px for the short label) visible in a narrow composer. A floor only
  * applies once the composer row has room for it. The parts of the row that never shrink (attach,
- * context ring, mic, Send and the gaps) take 190px with phone-sized buttons and 180px on desktop,
- * so each threshold is 190px + the floors that would apply + 2px of slack: a busy row of any width
+ * context ring, Send and the gaps) take 146px with phone-sized buttons and 148px on desktop, so
+ * each threshold is 148px + the floors that would apply + 2px of slack: a busy row of any width
  * never overflows and never pushes Send out. Sized from the composer container, never the
  * viewport, because a chat-grid pane is phone-narrow on a wide screen. A row that also shows the
- * STT language picker or the CLI keys has less to spare, so it gets no floors (TOOLBAR_FLOORS is
- * only applied when `toolbarFloors` holds).
+ * CLI keys or the voice control has less to spare, so it gets no floors (TOOLBAR_FLOORS is only
+ * applied when `toolbarFloors` holds).
  */
 const TOOLBAR_FLOORS = {
-  selector: '@min-[240px]/composer:min-w-12',
-  status: '@min-[264px]/composer:has-[>*]:min-w-6 @min-[280px]/composer:has-[>*]:min-w-10 @min-[312px]/composer:has-[>*]:min-w-[4.5rem]',
+  selector: '@min-[198px]/composer:min-w-12',
+  status: '@min-[222px]/composer:has-[>*]:min-w-6 @min-[238px]/composer:has-[>*]:min-w-10 @min-[270px]/composer:has-[>*]:min-w-[4.5rem]',
 } as const
 
 function resizeImage(file: File, maxPx: number): Promise<string> {
@@ -192,7 +158,6 @@ export function ChatInput({
   onNewSession,
   onStatusRequest,
   skillsVersion,
-  events,
   droppedFiles,
   onDroppedFilesConsumed,
   focusTrigger,
@@ -212,9 +177,6 @@ export function ChatInput({
   const [commandFilter, setCommandFilter] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
-  // Armed-send (STT): true once the operator has queued a send that will fire
-  // automatically the instant the dictated transcript lands in the field.
-  const [sendArmed, setSendArmed] = useState(false)
   // While a turn runs, a sent message either waits for it or cuts it off.
   // The standing choice is remembered; Alt+Enter flips it for one send.
   const [sendDelivery, setSendDelivery] = useState<SendDelivery>(() => readSendDelivery(typeof localStorage === 'undefined' ? null : localStorage))
@@ -230,19 +192,13 @@ export function ChatInput({
   const { data: orgData } = useOrg()
   const { data: skillsData, refetch: refetchSkills } = useSkills()
 
-  // Live mirrors so the async transcript-landing handler reads the latest value
-  // without re-creating itself (and without stale-closure races on send).
+  // Live mirrors so async handlers read the latest value without re-creating
+  // themselves (and without stale-closure races on send).
   const valueRef = useRef('')
-  const armedRef = useRef(false)
-  // Speech-to-text provenance for the CURRENTLY composed message (see
-  // nextSpeechProvenance). A ref, not state: it is read synchronously on send
-  // and must never trigger a re-render.
-  const speechRef = useRef(false)
   const pendingAttachmentsRef = useRef<MediaAttachment[]>([])
   const submittingRef = useRef(false)
   const disabledRef = useRef(disabled)
   const sendTextRef = useRef<(rawText: string, media: MediaAttachment[]) => Promise<boolean>>(async () => false)
-  armedRef.current = sendArmed
   pendingAttachmentsRef.current = pendingAttachments
   valueRef.current = value
   disabledRef.current = disabled
@@ -273,15 +229,8 @@ export function ChatInput({
   }, [focusTrigger, isActive])
   const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
 
-  // applyTranscript is defined below; the ref lets this stable callback reach it.
-  const applyTranscriptRef = useRef<(text: string) => void>(() => {})
-  const stt = useStt(events, (text) => {
-    // Timeout auto-stop completed — route through the same landing handler so an
-    // armed auto-send still fires on this path.
-    applyTranscriptRef.current(text ?? '')
-  })
   // Floors assume the toolbar's fixed parts; extra fixed controls leave no room to spare.
-  const toolbarFloors = stt.languages.length <= 1 && !terminalActionsSlot && !voiceSlot
+  const toolbarFloors = !terminalActionsSlot && !voiceSlot
 
   // Consume files dropped onto the chat area by the parent
   const consumedRef = useRef<File[] | undefined>(undefined)
@@ -367,18 +316,6 @@ export function ChatInput({
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const val = e.target.value
     setValue(val)
-
-    // A manual edit updates provenance: a full clear resets it, any other edit
-    // preserves it (so typing beside dictated text keeps the message speech-
-    // derived). Programmatic transcript fills bypass onChange, so they never
-    // reach here — they set provenance directly in applyTranscript.
-    speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'edit', value: val })
-
-    // Any real keystroke (typing, clearing, editing) while a send is queued
-    // means the operator took over — disarm cleanly so nothing auto-fires under
-    // them. Programmatic transcript fills don't go through onChange, so they
-    // never trip this.
-    if (armedRef.current) setSendArmed(false)
 
     // Detect slash commands: text starts with / and has no space yet (still typing the command name)
     if (val.startsWith('/') && !val.includes(' ')) {
@@ -469,8 +406,8 @@ export function ChatInput({
   }
 
   // Send core — resolves client-only commands, otherwise keeps the draft until
-  // onSend acknowledges it. Shared by the Enter/tap path (handleSubmit) and
-  // the STT auto-send path (applyTranscript), so both behave identically.
+  // onSend acknowledges it. Shared by the Enter/tap path (handleSubmit) and the
+  // composer-control path (Talk drafting and sending).
   async function sendText(rawText: string, media: MediaAttachment[], delivery: SendDelivery = sendDelivery): Promise<boolean> {
     const trimmed = rawText.trim()
     const hasMedia = media.length > 0
@@ -478,16 +415,10 @@ export function ChatInput({
     if ((!trimmed && !hasMedia) || disabledRef.current || submittingRef.current) return false
     submittingRef.current = true
 
-    // Capture provenance before any reset, then consume it — this message's
-    // speech-derived state must not bleed into the next one.
-    const speech = speechRef.current
-    speechRef.current = false
-
     const command = resolveClientCommand(trimmed)
     if (command === 'new') {
       valueRef.current = ''
       setValue('')
-      setSendArmed(false)
       onNewSession()
       submittingRef.current = false
       return true
@@ -495,34 +426,27 @@ export function ChatInput({
     if (command === 'status') {
       valueRef.current = ''
       setValue('')
-      setSendArmed(false)
       onStatusRequest()
       submittingRef.current = false
       return true
     }
     const mediaToSend = hasMedia ? [...media] : undefined
     const acknowledgeDraft = pendingSend()
-    setSendArmed(false)
     setShowMentions(false)
     setShowCommands(false)
     try {
-      const sending = onSend(trimmed, mediaToSend, delivery === 'now', speech)
+      const sending = onSend(trimmed, mediaToSend, delivery === 'now')
       const accepted = typeof sending === 'boolean' ? sending : sending ? (await sending) !== false : true
-      if (!accepted) {
-        if (valueRef.current === rawText) speechRef.current = speech
-        return false
-      }
+      if (!accepted) return false
       acknowledgeDraft()
       if (valueRef.current === rawText) {
         valueRef.current = ''
-        speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'send' })
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
       }
       pendingAttachmentsRef.current = pendingAttachmentsRef.current.filter(attachment => !media.includes(attachment))
       setPendingAttachments(current => current.filter(attachment => !media.includes(attachment)))
       return true
     } catch {
-      if (valueRef.current === rawText) speechRef.current = speech
       return false
     } finally {
       submittingRef.current = false
@@ -567,142 +491,12 @@ export function ChatInput({
     }
   }
 
-  /* ── Speech-to-text (offline whisper.cpp) ─────────────── */
-
-  // Auto-resize textarea when value changes programmatically (e.g., from STT)
+  // Auto-resize textarea when value changes programmatically (e.g., a Talk draft)
   useEffect(() => {
     if (textareaRef.current) {
       resize(textareaRef.current)
     }
   }, [value, resize])
-
-  // The single choke point for a landed transcript — both the tap/hold stop path
-  // and the timeout auto-stop path funnel through here so an armed auto-send is
-  // honored identically. Recreated each render (closes over live state) and
-  // published via a ref so the stable useStt callback can reach the latest copy.
-  function applyTranscript(text: string) {
-    const action = resolveTranscriptLanding(armedRef.current, text)
-    const prev = valueRef.current
-    const merged = prev ? prev + ' ' + text : text
-    if (action === 'send') {
-      // Keep the complete dictated draft available if delivery is refused.
-      // Dictated words landed, so this send is speech-derived.
-      speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'transcript' })
-      valueRef.current = merged
-      setValue(merged)
-      void sendText(merged, pendingAttachmentsRef.current)
-      return
-    }
-    if (action === 'fill') {
-      // Normal dictation (not armed) → drop the text in and keep editing.
-      if (text.trim().length > 0) {
-        speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'transcript' })
-        setValue(merged)
-      }
-      textareaRef.current?.focus()
-      return
-    }
-    // action === 'disarm': armed but the transcript came back empty → never send
-    // a blank message. Cancel the queue and leave the field focused as-is.
-    setSendArmed(false)
-    textareaRef.current?.focus()
-  }
-  applyTranscriptRef.current = applyTranscript
-
-  // Stop the current recording, transcribe, and land the text (honoring an arm).
-  const transcribeAndFill = useCallback(async () => {
-    const text = await stt.stopRecording()
-    applyTranscriptRef.current(text ?? '')
-  }, [stt])
-
-  // Disarm cleanly if STT ends without a transcript reaching applyTranscript —
-  // an error, a declined model, or a timeout-stop that yielded no words. The
-  // successful-landing paths read armedRef synchronously before this commits, so
-  // this only ever tidies a genuinely-orphaned arm (never pre-empts a real send).
-  useEffect(() => {
-    if (!sendArmed) return
-    if (stt.state === 'error' || stt.state === 'no-model' || stt.state === 'idle') {
-      setSendArmed(false)
-    }
-  }, [sendArmed, stt.state])
-
-  /* ── Mic gestures: tap-and-hold (push-to-talk) + quick-tap (toggle) ──── */
-  // Refs avoid stale-closure races between pointerdown and pointerup.
-  const micDownAtRef = useRef<number | null>(null)   // timestamp of an active press
-  const micHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const micToggleActiveRef = useRef(false)           // recording left on by a quick tap
-
-  function clearMicPress() {
-    micDownAtRef.current = null
-    if (micHoldTimerRef.current) clearTimeout(micHoldTimerRef.current)
-    micHoldTimerRef.current = null
-  }
-
-  useEffect(() => {
-    return () => {
-      if (micHoldTimerRef.current) clearTimeout(micHoldTimerRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (stt.state === 'idle' || stt.state === 'no-model' || stt.state === 'error') {
-      micToggleActiveRef.current = false
-    }
-  }, [stt.state])
-
-  function handleMicPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
-    // Keep the card click-to-focus handler from also firing.
-    e.stopPropagation()
-    if (stt.state === 'transcribing') return
-
-    if (stt.state === 'starting') {
-      clearMicPress()
-      micToggleActiveRef.current = false
-      stt.cancelRecording()
-      return
-    }
-
-    // Already recording from a previous quick tap → this press toggles it off.
-    if (micToggleActiveRef.current || stt.state === 'recording') {
-      micToggleActiveRef.current = false
-      clearMicPress()
-      void transcribeAndFill()
-      return
-    }
-
-    // Begin a fresh press: start recording and arm the hold detector.
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* noop */ }
-    micDownAtRef.current = Date.now()
-    if (micHoldTimerRef.current) clearTimeout(micHoldTimerRef.current)
-    micHoldTimerRef.current = setTimeout(() => { micHoldTimerRef.current = null }, MIC_HOLD_THRESHOLD_MS)
-    // handleMicClick() starts recording, or opens the download modal if no model.
-    stt.handleMicClick()
-  }
-
-  function handleMicPointerUp() {
-    const downAt = micDownAtRef.current
-    if (downAt == null) return // no active press (e.g. toggle-off already handled)
-    clearMicPress()
-
-    // If the model wasn't ready, recording never started — leave the modal alone.
-    if (stt.state === 'no-model' || stt.state === 'transcribing') return
-
-    const gesture = classifyMicGesture(downAt, Date.now())
-    if (gesture === 'hold') {
-      // Push-to-talk release → stop + transcribe.
-      void transcribeAndFill()
-    } else {
-      // Quick tap that started recording → leave it running; next tap stops it.
-      micToggleActiveRef.current = true
-    }
-  }
-
-  function handleMicPointerCancel(e: React.PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation()
-    clearMicPress()
-    micToggleActiveRef.current = false
-    stt.cancelRecording()
-  }
 
   const filteredCommands = useMemo(
     () => slashCommands.filter((c) => c.name?.toLowerCase().startsWith(commandFilter)),
@@ -715,9 +509,6 @@ export function ChatInput({
   )
 
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
-  // STT "pending" window: words are being captured or transcribed but haven't
-  // landed in the field yet. During this window the Send button is armable.
-  const sttPending = stt.state === 'recording' || stt.state === 'transcribing'
 
   return (
     <div data-chat-composer className="pt-[var(--space-3)] pb-[max(var(--keyboard-inset),var(--safe-bottom),var(--space-3))] bg-[var(--bg)] shrink-0 relative">
@@ -865,7 +656,7 @@ export function ChatInput({
           onChange={handleFileAttach}
         />
 
-        {/* Toolbar: [+ attach] · [model chip] · spacer · [terminal keys] · [mic] · [send]. A container, so the chip degrades against THIS composer's width — a pane in a 3-column grid is narrow while the viewport is not. */}
+        {/* Toolbar: [+ attach] · [model chip] · spacer · [terminal keys] · [voice mode] · [send]. A container, so the chip degrades against THIS composer's width — a pane in a 3-column grid is narrow while the viewport is not. */}
         <div className="@container/composer flex items-center gap-[var(--space-2)]">
           {/* Attach */}
           <button
@@ -914,115 +705,44 @@ export function ChatInput({
             {statusSlot}
           </div>
 
-          {/* Language picker — only shown when multiple STT languages configured */}
-          {stt.languages.length > 1 && (
-            <button
-              aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={stt.cycleLanguage}
-              className="h-7 px-2 shrink-0 rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] border-none cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-all duration-150 ease-in-out"
-              title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
-            >
-              {stt.selectedLanguage}
-            </button>
-          )}
-
           {/* Terminal keys — only in the CLI view, where they have something to
-              send. Sits with the mic so both read as one cluster of composer
-              controls. */}
+              send. Sits with the other composer controls. */}
           {terminalActionsSlot && (
             <div className="shrink-0" onPointerDown={(e) => e.stopPropagation()}>
               {terminalActionsSlot}
             </div>
           )}
 
-          {/* Voice mode — a spoken conversation with the session. Sits before the
-              dictation mic; absent (no box, no gap) unless voice is on. */}
+          {/* Voice mode — a spoken conversation with the session. Sits before
+              Send; absent (no box, no gap) unless voice is on. */}
           {voiceSlot}
 
-          {/* Voice input / STT button — tap-and-hold = push-to-talk, quick tap =
-              toggle. While recording the button morphs into a compact waveform. */}
-          <button
-            aria-label={
-              stt.state === 'recording' ? 'Stop recording'
-              : stt.state === 'transcribing' ? 'Transcribing…'
-              : stt.state === 'starting' ? 'Starting voice input…'
-              : 'Voice input'
-            }
-            aria-busy={stt.state === 'starting' || stt.state === 'transcribing'}
-            data-state={stt.state}
-            onPointerDown={handleMicPointerDown}
-            onPointerUp={handleMicPointerUp}
-            onPointerCancel={handleMicPointerCancel}
-            disabled={stt.state === 'transcribing'}
-            className={`w-[40px] h-[40px] md:w-[36px] md:h-[36px] shrink-0 rounded-full flex items-center justify-center border-none transition-[scale,background-color,color] duration-150 ease-in-out active:scale-[0.96] touch-none select-none ${stt.state === 'recording' ? 'bg-[var(--system-red)] text-white cursor-pointer' : stt.state === 'starting' ? 'bg-[var(--accent-fill)] text-[var(--accent)] cursor-pointer' : `bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
-            title={
-              stt.state === 'recording' ? 'Stop recording'
-              : stt.state === 'transcribing' ? 'Transcribing…'
-              : stt.state === 'starting' ? 'Starting voice input… · press to cancel'
-              : 'Hold to talk · tap to toggle'
-            }
-          >
-            {stt.state === 'starting' ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
-                <path d="M12 2a10 10 0 0 1 10 10" />
-              </svg>
-            ) : stt.state === 'recording' && stt.analyser ? (
-              <MicWaveform analyser={stt.analyser} />
-            ) : stt.state === 'transcribing' ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
-                <path d="M12 2a10 10 0 0 1 10 10" />
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            )}
-          </button>
-
-          {/* Send ↔ Stop — one persistent circular button with five states:
-                • stop     — a turn is streaming + interruptible (red square)
-                • armed    — an STT auto-send is queued (solid accent + spinning
-                             dashed ring: "locked, will fire when your words land")
-                • armable  — STT is capturing/transcribing (tinted + static dashed
-                             ring: "tap me to queue the send")
-                • ready    — the field has content (solid accent arrow)
-                • idle     — empty field (muted, inert)
+          {/* Send ↔ Stop — one persistent circular button with three states:
+                • stop  — a turn is streaming + interruptible (red square)
+                • ready — the field has content (solid accent arrow)
+                • idle  — empty field (muted, inert)
               Background + arrow/stop crossfade keyed on the mode. */}
           {(() => {
             const showStop = loading && !!onInterrupt
-            const mode: 'stop' | 'armed' | 'armable' | 'ready' | 'idle' =
+            const mode: 'stop' | 'ready' | 'idle' =
               showStop ? 'stop'
-              : sendArmed ? 'armed'
-              : sttPending ? 'armable'
               : hasContent ? 'ready'
               : 'idle'
             // Disabled only when there's genuinely nothing to do: an empty idle
             // field, or the parent is blocking sends (waiting for a response) and
-            // we're not in stop/arm/armable mode.
+            // we're not in stop mode.
             const isDisabled =
               mode === 'idle' ? true
-              : mode === 'stop' || mode === 'armed' ? false
+              : mode === 'stop' ? false
               : disabled
-            const showRing = mode === 'armable' || mode === 'armed'
-            const label =
-              mode === 'stop' ? 'Stop'
-              : mode === 'armed' ? 'Send queued: fires when transcription lands. Tap to cancel.'
-              : mode === 'armable' ? 'Send when transcription lands'
-              : 'Send message'
+            const label = mode === 'stop' ? 'Stop' : 'Send message'
             return (
               <button
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => {
-                  const action = resolveSendTap({ isStop: showStop, armed: sendArmed, sttPending, hasContent })
-                  if (action === 'stop') onInterrupt?.()
-                  else if (action === 'arm') setSendArmed(true)
-                  else if (action === 'disarm') setSendArmed(false)
-                  else if (action === 'send') handleSubmit()
-                  // 'noop' → nothing to do
+                  if (showStop) onInterrupt?.()
+                  else if (hasContent) handleSubmit()
+                  // empty field → nothing to do
                 }}
                 disabled={isDisabled}
                 aria-label={label}
@@ -1030,27 +750,11 @@ export function ChatInput({
                 className={`relative w-[40px] h-[40px] md:w-[38px] md:h-[38px] rounded-full border-none flex items-center justify-center shrink-0 transition-[background-color,color,opacity] duration-200 ease-in-out ${
                   mode === 'stop'
                     ? 'bg-[var(--system-red)] text-white cursor-pointer'
-                    : mode === 'armed' || mode === 'ready'
+                    : mode === 'ready'
                       ? 'bg-[var(--accent)] text-[var(--accent-contrast)] cursor-pointer'
-                      : mode === 'armable'
-                        ? 'bg-[var(--accent-fill)] text-[var(--accent)] cursor-pointer'
-                        : 'bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] cursor-default'
+                      : 'bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] cursor-default'
                 }`}
               >
-                {/* Pending affordance — a dashed ring around the button. Static
-                    while armable (invites the tap); slowly spinning once armed
-                    (queued, waiting for words). Purely decorative. */}
-                {showRing && (
-                  <span
-                    aria-hidden
-                    className={`pointer-events-none absolute rounded-full border-[1.5px] border-dashed ${
-                      mode === 'armed'
-                        ? 'inset-[-4px] motion-safe:animate-[send-ring-spin_2.4s_linear_infinite]'
-                        : 'inset-[-3px]'
-                    }`}
-                    style={{ borderColor: `color-mix(in srgb, var(--accent) ${mode === 'armed' ? 70 : 55}%, transparent)` }}
-                  />
-                )}
                 {/* Send arrow */}
                 <span className={`absolute inset-0 flex items-center justify-center transition-all duration-200 ease-in-out ${mode === 'stop' ? 'opacity-0 scale-50' : 'opacity-100 scale-100'}`}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -1069,38 +773,9 @@ export function ChatInput({
           })()}
         </div>
       </div>
-
-      {/* STT error banner */}
-      {stt.state === 'error' && stt.error && (
-        <div className="flex items-center gap-[var(--space-2)] mt-[var(--space-2)] py-[var(--space-2)] px-[var(--space-3)] rounded-[var(--radius-sm)] text-[length:var(--text-caption1)] text-[var(--system-red)]" style={{ background: 'color-mix(in srgb, var(--system-red) 12%, transparent)' }}>
-          <span className="flex-1">Voice input error: {stt.error}</span>
-          <button
-            onClick={stt.dismissError}
-            className="bg-none border-none cursor-pointer text-[var(--system-red)] text-[length:var(--text-caption1)] font-semibold py-0.5 px-1.5"
-          >Dismiss</button>
-        </div>
-      )}
       </div>{/* /centered measure wrapper */}
 
-      {/* STT model download modal */}
-      <WhisperDownloadModal
-        open={stt.state === 'no-model'}
-        progress={stt.downloadProgress}
-        onDownload={stt.startDownload}
-        onCancel={stt.dismissDownload}
-      />
-
       <style>{`
-        @keyframes stt-spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        /* Armed-send pending ring — a calm 2.4s rotation of the dashed ring so
-           the queued Send reads as "waiting for your words" without being loud. */
-        @keyframes send-ring-spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
         /* Idle base shadow + soft accent ring when the composer holds focus.
            Not a 1px border — a 4px --accent-fill wash. Overridden inline while
            streaming so the brighter loading ring takes precedence. */

@@ -91,7 +91,7 @@ beforeEach(() => {
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const pane = (props: Partial<React.ComponentProps<typeof ChatPane>> = {}) => (
   <QueryClientProvider client={queryClient}>
-    <ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} {...props} />
+    <ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} {...props} />
   </QueryClientProvider>
 )
 function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {

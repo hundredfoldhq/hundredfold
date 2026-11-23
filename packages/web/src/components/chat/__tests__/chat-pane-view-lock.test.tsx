@@ -32,7 +32,7 @@ vi.mock('@/components/chat/chat-pane-title-bar', async (importOriginal) => ({
 const registry = { engines: { musecode: { supportsPty: true, ptyLockedDuringTurn: true } } } as never
 
 function locked() {
-  render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} engineRegistry={registry} multiPane onClose={() => {}} />)
+  render(<ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} engineRegistry={registry} multiPane onClose={() => {}} />)
   return screen.getByTestId('title-bar').getAttribute('data-locked')
 }
 

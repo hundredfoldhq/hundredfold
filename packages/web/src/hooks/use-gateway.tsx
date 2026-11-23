@@ -25,10 +25,10 @@ const GatewayContext = createContext<GatewayContextValue | null>(null);
  *
  * Background: every consumer that destructures `events` re-renders on every
  * event we push. Most consumers have been migrated to subscribe(); the
- * remaining holdout is chat-pane.tsx, which forwards `events` to
- * ChatInput → useStt (filters `stt:*`). We keep only those frames in the array
- * so chat-pane doesn't re-render for every ping/keepalive/log/session-delta on
- * the bus.
+ * remaining holdout is useStt (the Notes and Todo quick-capture dictation mics),
+ * which filters `stt:*`. We keep only those frames in the array so its
+ * consumers don't re-render for every ping/keepalive/log/session-delta on the
+ * bus.
  *
  * Subscribers are unaffected — they still receive every event via subscribe().
  */

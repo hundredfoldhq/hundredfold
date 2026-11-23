@@ -1349,7 +1349,7 @@ export default function SettingsPage() {
               {/* -- Voice mode: the sound cues -- */}
               <VoiceModeSection cues={config.voice?.cues} onChange={updateConfig} />
 
-              {/* -- Section 9: Voice Input (STT) -- */}
+              {/* -- Section 9: Dictation (STT) -- */}
               <SttSettingsSection />
 
               {/* Edits save themselves; reloading is how the operator throws one

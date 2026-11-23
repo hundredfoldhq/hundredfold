@@ -17,7 +17,7 @@ import type { SessionMeta } from './use-chat-pane-state'
 
 type PaneProps = ComponentProps<typeof ChatPane>
 type PaneMetaUpdate = Parameters<NonNullable<PaneProps['onSessionMetaChange']>>[0]
-type PaneRuntime = Pick<PaneProps, 'portalName' | 'subscribe' | 'engineRegistry' | 'connectionSeq' | 'skillsVersion' | 'events'>
+type PaneRuntime = Pick<PaneProps, 'portalName' | 'subscribe' | 'engineRegistry' | 'connectionSeq' | 'skillsVersion'>
 
 export { deriveChatGridIds } from './grid-placement'
 

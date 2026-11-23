@@ -37,7 +37,7 @@ interface MicWaveformProps {
 }
 
 /**
- * Compact, crisp waveform that lives INSIDE the mic button while recording.
+ * Compact, crisp waveform that lives INSIDE the Notes and Todo capture mic buttons while recording.
  * DPR-scaled canvas + requestAnimationFrame reading the live AnalyserNode.
  * Inherits its color from the button's text color (currentColor) so it stays
  * theme-correct without hardcoded values.

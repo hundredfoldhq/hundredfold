@@ -52,7 +52,7 @@ vi.mock('@/components/chat/background-activity-status', () => ({ BackgroundActiv
 vi.mock('@/components/chat/cli-keybar', () => ({ CliKeybar: () => null }))
 
 function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
-  return render(<ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} {...props} />)
+  return render(<ChatPane sessionId={null} isActive onFocus={() => {}} subscribe={() => () => {}} {...props} />)
 }
 
 const latestStarter = () => voiceCalls[voiceCalls.length - 1]?.newChat ?? null

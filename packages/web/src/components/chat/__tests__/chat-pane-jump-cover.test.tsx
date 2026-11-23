@@ -33,7 +33,7 @@ function binding(shownDoc: PaneTabsBinding['shownDoc']): PaneTabsBinding {
 function pane(value: PaneTabsBinding, props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
   return (
     <PaneTabsContext.Provider value={value}>
-      <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} events={[]} multiPane onClose={vi.fn()} {...props} />
+      <ChatPane sessionId="s1" isActive onFocus={() => {}} subscribe={() => () => {}} multiPane onClose={vi.fn()} {...props} />
     </PaneTabsContext.Provider>
   )
 }

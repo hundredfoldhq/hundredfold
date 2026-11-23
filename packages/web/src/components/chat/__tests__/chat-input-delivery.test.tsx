@@ -5,8 +5,6 @@ import { SEND_DELIVERY_STORAGE_KEY } from '../send-delivery'
 
 vi.mock('@/hooks/use-employees', () => { const data = { employees: [] }; return { useOrg: () => ({ data }) } })
 vi.mock('@/hooks/use-skills', () => { const data: never[] = []; const refetch = vi.fn(); return { useSkills: () => ({ data, refetch }) } })
-vi.mock('@/hooks/use-stt', () => ({ useStt: () => ({ state: 'idle', languages: ['en'], selectedLanguage: 'en' }) }))
-vi.mock('@/components/stt/whisper-download-modal', () => ({ WhisperDownloadModal: () => null }))
 
 const props = { disabled: false, loading: true, onNewSession: vi.fn(), onStatusRequest: vi.fn() }
 
@@ -25,7 +23,7 @@ describe('composer delivery choice while a turn runs', () => {
 
     typeAndEnter('wait for it')
 
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('wait for it', undefined, false, false))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('wait for it', undefined, false))
   })
 
   it('send-now interrupts, and the choice is remembered', async () => {
@@ -35,7 +33,7 @@ describe('composer delivery choice while a turn runs', () => {
     expect(localStorage.getItem(SEND_DELIVERY_STORAGE_KEY)).toBe('now')
 
     typeAndEnter('do this instead')
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('do this instead', undefined, true, false))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('do this instead', undefined, true))
     first.unmount()
 
     render(<ChatInput {...props} sessionId="s2" onSend={onSend} />)
@@ -48,7 +46,7 @@ describe('composer delivery choice while a turn runs', () => {
 
     typeAndEnter('just this once', { altKey: true })
 
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('just this once', undefined, true, false))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('just this once', undefined, true))
     expect(screen.getByRole('button', { name: 'Queue' }).getAttribute('aria-pressed')).toBe('true')
   })
 
