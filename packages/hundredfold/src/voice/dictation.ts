@@ -22,6 +22,8 @@ const SEGMENT_SECONDS = 60;
 const CUT_WINDOW_SECONDS = 10;
 const FRAME_BYTES = 320 * 2; // 20 ms
 
+const TOO_LONG_FILE = "The recording is too long to transcribe";
+
 /** An error whose message is fit to show the person who dictated (not a provider's own text, which may name internals). */
 export class DictationError extends Error {}
 
@@ -102,7 +104,9 @@ export async function decodeAudioFile(filePath: string): Promise<Buffer> {
     });
     return stdout;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new DictationError("ffmpeg is not installed, so this audio cannot be decoded");
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new DictationError(TOO_LONG_FILE);
+    if (code === "ENOENT") throw new DictationError("ffmpeg is not installed, so this audio cannot be decoded");
     throw new DictationError(`The audio could not be decoded: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
   }
 }
@@ -121,13 +125,13 @@ export function liveDictationUnavailableReason(deps: ProviderDeps = {}): string 
 }
 
 /** Transcribe an audio file with the live voice config. Throws a message fit to show a person. */
-export async function transcribeAudioFile(filePath: string, deps: ProviderDeps = {}): Promise<string> {
+export async function transcribeAudioFile(filePath: string, deps: ProviderDeps = {}, decode: (filePath: string) => Promise<Buffer> = decodeAudioFile): Promise<string> {
   const config = configGetter?.();
   if (!config) throw new DictationError("Dictation is not available yet");
   const resolved: ResolvedVoiceConfig | null = resolveVoiceConfig(config);
   const reason = dictationUnavailableReason(config, deps);
   if (!resolved || reason) throw new DictationError(reason ?? "voice mode is not turned on");
-  const pcm = await decodeAudioFile(filePath);
-  if (pcm.length > MAX_DICTATION_BYTES) throw new DictationError("The recording is too long to transcribe");
+  const pcm = await decode(filePath);
+  if (pcm.length > MAX_DICTATION_BYTES) throw new DictationError(TOO_LONG_FILE);
   return transcribePcm(createSttProvider(resolved, deps), pcm, { language: resolved.language });
 }

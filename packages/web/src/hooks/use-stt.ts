@@ -43,7 +43,7 @@ export interface UseSttReturn {
 }
 
 /** The longest recording the gateway takes. */
-const MAX_RECORDING_MS = 20 * 60_000
+const MAX_RECORDING_MS = 20 * 60_000 - 5_000
 
 interface StartAttempt {
   cancelled: boolean

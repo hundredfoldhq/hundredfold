@@ -6,7 +6,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DICTATION_SAMPLE_RATE, MAX_DICTATION_BYTES, dictationUnavailableReason, transcribePcm } from "../voice/dictation.js";
-import { readBodyRaw } from "./http-helpers.js";
+import { BodyTooLargeError, readBodyRaw } from "./http-helpers.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { HundredfoldConfig } from "../shared/types.js";
 import { resolveVoiceConfig, voiceOffReason, type ResolvedVoiceConfig } from "../shared/voice-config.js";
@@ -138,10 +138,16 @@ function recordingProblem(pcm: Buffer): { status: number; message: string } | nu
   return null;
 }
 
-/** The recording in the request, or the reply that refuses it. A declared length over the limit is refused before the body is read. */
+/** The recording in the request, or the reply that refuses it. A declared length over the limit is refused before the body is read, and a body that outgrows it is no longer buffered. */
 async function readRecording(req: IncomingMessage): Promise<{ pcm: Buffer } | { status: number; message: string }> {
   if (Number(req.headers["content-length"]) > MAX_DICTATION_BYTES) return { status: 413, message: TOO_LONG };
-  const pcm = await readBodyRaw(req);
+  let pcm: Buffer;
+  try {
+    pcm = await readBodyRaw(req, { maxBytes: MAX_DICTATION_BYTES });
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return { status: 413, message: TOO_LONG };
+    throw error;
+  }
   return recordingProblem(pcm) ?? { pcm };
 }
 

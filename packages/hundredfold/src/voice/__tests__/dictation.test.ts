@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { DICTATION_SAMPLE_RATE, dictationUnavailableReason, splitAtSilence, transcribePcm } from "../dictation.js";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  DICTATION_SAMPLE_RATE,
+  DictationError,
+  MAX_DICTATION_BYTES,
+  decodeAudioFile,
+  dictationUnavailableReason,
+  liveDictationUnavailableReason,
+  setDictationConfig,
+  splitAtSilence,
+  transcribeAudioFile,
+  transcribePcm,
+} from "../dictation.js";
 import { FakeStt, settle } from "./fakes.js";
 
 const SECOND = DICTATION_SAMPLE_RATE * 2;
@@ -93,5 +107,107 @@ describe("dictationUnavailableReason", () => {
   it("carries the provider's reason when it is not ready", () => {
     const keyMissing = { voice: { enabled: true, stt: { provider: "openai-compatible", baseUrl: "http://speech.example", apiKey: "${DICTATION_TEST_KEY_NOT_SET}" }, tts: { provider: "openai-compatible", baseUrl: "http://speech.example" } } };
     expect(dictationUnavailableReason(keyMissing, { env: {} })).toMatch(/API key not set/);
+  });
+});
+
+const SPEECH = { provider: "openai-compatible", baseUrl: "http://speech.example" };
+const READY_CONFIG = { voice: { enabled: true, stt: SPEECH, tts: SPEECH } } as never;
+const NOT_READY_CONFIG = { voice: { enabled: true, stt: { ...SPEECH, apiKey: "${DICTATION_FILE_KEY_NOT_SET}" }, tts: SPEECH } } as never;
+
+afterEach(() => {
+  setDictationConfig(null);
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe("liveDictationUnavailableReason", () => {
+  it("says it is not available before the gateway has handed over its config", () => {
+    expect(liveDictationUnavailableReason()).toMatch(/not available yet/);
+  });
+
+  it("follows the live config: off, not ready, ready", () => {
+    setDictationConfig(() => ({}) as never);
+    expect(liveDictationUnavailableReason()).toMatch(/turn voice mode on/);
+    setDictationConfig(() => NOT_READY_CONFIG);
+    expect(liveDictationUnavailableReason({ env: {} })).toMatch(/not ready/);
+    setDictationConfig(() => READY_CONFIG);
+    expect(liveDictationUnavailableReason()).toBeNull();
+  });
+});
+
+describe("transcribeAudioFile", () => {
+  const decoded = (pcm: Buffer) => async () => pcm;
+
+  it("refuses before decoding while no config has been handed over", async () => {
+    const decode = vi.fn(decoded(tone(1)));
+    await expect(transcribeAudioFile("a.ogg", {}, decode)).rejects.toThrow(/not available yet/);
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("refuses before decoding while voice mode is off", async () => {
+    setDictationConfig(() => ({}) as never);
+    const decode = vi.fn(decoded(tone(1)));
+    const failure = await transcribeAudioFile("a.ogg", {}, decode).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DictationError);
+    expect((failure as Error).message).toMatch(/turn voice mode on/);
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("refuses before decoding while the speech provider is not ready", async () => {
+    setDictationConfig(() => NOT_READY_CONFIG);
+    const decode = vi.fn(decoded(tone(1)));
+    const failure = await transcribeAudioFile("a.ogg", { env: {} }, decode).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DictationError);
+    expect((failure as Error).message).toMatch(/not ready/);
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("refuses audio that decodes to more than 20 minutes without calling the provider", async () => {
+    setDictationConfig(() => READY_CONFIG);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const failure = await transcribeAudioFile("a.ogg", {}, decoded(Buffer.alloc(MAX_DICTATION_BYTES + 2))).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DictationError);
+    expect((failure as Error).message).toMatch(/too long/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("joins the text of every segment of a long note", async () => {
+    setDictationConfig(() => ({ voice: { ...(READY_CONFIG as { voice: object }).voice, language: "en" } }) as never);
+    const replies = ["one", "two", "three"];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: replies.shift() }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(transcribeAudioFile("a.ogg", {}, decoded(tone(130)))).resolves.toBe("one two three");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("decodeAudioFile", () => {
+  const scratch: string[] = [];
+  afterEach(() => { for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+  const bin = (script?: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "dictation-bin-"));
+    scratch.push(dir);
+    if (script) {
+      writeFileSync(join(dir, "ffmpeg"), script);
+      chmodSync(join(dir, "ffmpeg"), 0o755);
+    }
+    return dir;
+  };
+
+  it("says ffmpeg is not installed when there is none on the path", async () => {
+    vi.stubEnv("PATH", bin());
+    const failure = await decodeAudioFile("a.ogg").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DictationError);
+    expect((failure as Error).message).toMatch(/ffmpeg is not installed/);
+  });
+
+  it("returns what ffmpeg wrote, and reports its failure in a message fit to show", async () => {
+    vi.stubEnv("PATH", bin("#!/bin/sh\nprintf 'abcd'\n"));
+    await expect(decodeAudioFile("a.ogg")).resolves.toEqual(Buffer.from("abcd"));
+    vi.stubEnv("PATH", bin("#!/bin/sh\necho 'bad file' >&2\nexit 1\n"));
+    const failure = await decodeAudioFile("a.ogg").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DictationError);
+    expect((failure as Error).message).toMatch(/could not be decoded/);
   });
 });

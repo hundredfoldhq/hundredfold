@@ -60,6 +60,23 @@ describe("POST /api/voice/transcribe", () => {
     expect(out.status).toBe(413);
   });
 
+  it("refuses a recording that outgrows the limit with no length declared, without reading the rest of it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const megabyte = Buffer.alloc(1024 * 1024);
+    let sent = 0;
+    const stream = Readable.from((function* () { for (;;) { sent += 1; yield megabyte; } })()) as unknown as IncomingMessage;
+    stream.headers = {};
+    const out = response();
+    const pathname = "/api/voice/transcribe";
+    await handleVoiceApi(stream, out.res, { method: "POST", pathname, url: new URL(`http://x${pathname}`) }, { getConfig: () => READY as never });
+    expect(out.status).toBe(413);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The sender is cut off at a bounded point rather than read for as long as it keeps sending.
+    await vi.waitFor(() => { expect((stream as unknown as Readable).destroyed).toBe(true); });
+    expect(sent).toBeLessThan(400);
+  });
+
   it("transcribes the posted PCM through the voice provider, in the configured language by default", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: " hello there " }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

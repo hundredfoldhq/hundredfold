@@ -213,7 +213,7 @@ export class TelegramConnector implements Connector {
           try {
             await this.bot.sendMessage(
               telegramMsg.chat.id,
-              `⚠️ Couldn't transcribe your voice message — ${unavailable}. Please type instead.`,
+              `⚠️ Couldn't transcribe your voice message — ${unavailable.charAt(0).toLowerCase()}${unavailable.slice(1)}. Please type instead.`,
             );
           } catch {
             /* non-fatal */
