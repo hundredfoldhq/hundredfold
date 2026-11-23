@@ -43,74 +43,10 @@ export interface IncomingTurn {
   /** Set only for tool-origin lateral sends; absent means no dedupe at all, so
    *  the operator/UI path is unchanged. */
   dedupeKey?: string;
-  /** Preserve this identity after the queue item settles. Used when the caller
-   *  has a true operation id (an external provider's call id), never for content-derived
-   *  lateral-send keys where a later identical sentence is a new intent. */
-  durableDedupe?: boolean;
-  /** Notifications default to an internal queue row. A turn that is visible
-   *  user work opts into the ordinary queue surface. */
-  queueVisibility?: 'internal' | 'visible';
   /** An earlier parked send of the same sender that this turn replaces, taken
    *  back in the same transaction that accepts this one. Only meaningful beside
    *  a lateral `dedupeKey`, which is what names the sender. */
   supersedes?: { callerSessionId: string; queueItemId: string };
-}
-
-interface DurableMessageRow {
-  id: string;
-  session_id: string;
-  role: string;
-  content: string;
-  media: string | null;
-  meta: string | null;
-}
-
-interface DurableQueueRow {
-  id: string;
-  session_id: string;
-  session_key: string;
-  prompt: string;
-  internal: number;
-}
-
-function durableMessageId(key: string): string {
-  return `durable-${createHash('sha256').update(key).digest('hex')}`;
-}
-
-function json(value: unknown): string | null {
-  return value === undefined ? null : JSON.stringify(value);
-}
-
-function messageMatches(message: DurableMessageRow, turn: IncomingTurn): boolean {
-  return message.session_id === turn.sessionId
-    && message.role === turn.role
-    && message.content === turn.content
-    && message.media === json(turn.media)
-    && message.meta === json(turn.meta);
-}
-
-function queueMatches(queue: DurableQueueRow, turn: IncomingTurn): boolean {
-  return queue.session_id === turn.sessionId
-    && queue.session_key === turn.sessionKey
-    && queue.prompt === turn.prompt
-    && queue.internal === (turn.queueVisibility === 'visible' ? 0 : 1);
-}
-
-function durableReplay(db: ReturnType<typeof initDb>, turn: IncomingTurn): IncomingTurnClaim | null {
-  if (!turn.durableDedupe) return null;
-  if (!turn.dedupeKey || !turn.isNotification) throw new Error('durable incoming turns require a queued dedupe identity');
-  const messageId = durableMessageId(turn.dedupeKey);
-  const message = db.prepare(
-    'SELECT id, session_id, role, content, media, meta FROM messages WHERE id = ?',
-  ).get(messageId) as DurableMessageRow | undefined;
-  if (!message) return null;
-  const queue = db.prepare(
-    'SELECT id, session_id, session_key, prompt, internal FROM queue_items WHERE dedupe_key = ? ORDER BY created_at, rowid LIMIT 1',
-  ).get(turn.dedupeKey) as DurableQueueRow | undefined;
-  if (!messageMatches(message, turn) || !queue || !queueMatches(queue, turn)) {
-    throw new Error('incoming turn dedupe key was already used for different input');
-  }
-  return { deduplicated: true, queueItemId: queue.id, messageId };
 }
 
 /**
@@ -127,7 +63,7 @@ function acceptedClaim(
   queueItemId: string | undefined,
   messageId: string,
 ): IncomingTurnClaim {
-  if (queueItemId && turn.queueVisibility !== 'visible') {
+  if (queueItemId) {
     db.prepare('UPDATE queue_items SET message_id = ? WHERE id = ?').run(messageId, queueItemId);
   }
   if (!turn.supersedes) return { deduplicated: false, queueItemId, messageId };
@@ -164,22 +100,18 @@ function duplicateClaim(db: ReturnType<typeof initDb>, turn: IncomingTurn, winne
 export function claimIncomingTurn(turn: IncomingTurn): IncomingTurnClaim {
   const db = initDb();
   const claim = db.transaction((): IncomingTurnClaim => {
-    const replay = durableReplay(db, turn);
-    if (replay) return replay;
     let queueItemId: string | undefined;
     if (turn.isNotification) {
       queueItemId = randomUUID();
       const position = (db.prepare(
         "SELECT COALESCE(MAX(position), 0) + 1 as pos FROM queue_items WHERE session_key = ? AND status = 'pending'",
       ).get(turn.sessionKey) as { pos: number }).pos;
-      const internal = turn.queueVisibility === 'visible' ? 0 : 1;
       const inserted = db.prepare(
         `INSERT INTO queue_items (id, session_id, session_key, prompt, status, internal, position, created_at, dedupe_key)
-         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, ?)
          ON CONFLICT DO NOTHING`,
-      ).run(queueItemId, turn.sessionId, turn.sessionKey, turn.prompt, internal, position, new Date().toISOString(), turn.dedupeKey ?? null);
+      ).run(queueItemId, turn.sessionId, turn.sessionKey, turn.prompt, position, new Date().toISOString(), turn.dedupeKey ?? null);
       if (inserted.changes === 0) {
-        if (turn.durableDedupe) throw new Error('incoming turn dedupe key is owned by a different operation');
         const winner = db.prepare(
           "SELECT id FROM queue_items WHERE dedupe_key = ? AND status IN ('pending', 'running')",
         ).get(turn.dedupeKey) as { id: string } | undefined;
@@ -187,8 +119,7 @@ export function claimIncomingTurn(turn: IncomingTurn): IncomingTurnClaim {
         return duplicateClaim(db, turn, winner.id);
       }
     }
-    const presetId = turn.durableDedupe && turn.dedupeKey ? durableMessageId(turn.dedupeKey) : undefined;
-    const messageId = insertMessage(turn.sessionId, turn.role, turn.content, turn.media, undefined, presetId, turn.meta);
+    const messageId = insertMessage(turn.sessionId, turn.role, turn.content, turn.media, undefined, undefined, turn.meta);
     return acceptedClaim(db, turn, queueItemId, messageId);
   });
   const accepted = claim.immediate();
