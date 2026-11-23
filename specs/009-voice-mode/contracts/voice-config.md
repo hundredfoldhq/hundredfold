@@ -3,9 +3,9 @@
 ## `voice:` in `config.yaml`
 
 Type `VoiceConfig` in `packages/hundredfold/src/shared/voice-config.ts`. The validator
-`voiceConfigProblems(voice)` is wired into the config loader beside the other
-`*Problems`. While there is any problem, voice stays off and each problem names the key
-(FR-025). `resolveVoiceConfig(config)` returns `null` unless `enabled === true`, and
+`voiceConfigProblems(voice)` is not part of the config's shape validation, so a bad block
+never stops the gateway starting or a reload. While there is any problem, voice stays off, the
+loader logs each problem naming its key (FR-025), and `GET /api/voice/config` says why (below). `resolveVoiceConfig(config)` returns `null` unless `enabled === true`, and
 otherwise a `ResolvedVoiceConfig` with every default filled.
 
 | Key | Type | Default | Validation |
@@ -24,7 +24,8 @@ otherwise a `ResolvedVoiceConfig` with every default filled.
 | `tts.baseUrl`, `tts.apiKey` | | | as for `stt` |
 | `vad.threshold` | number | `0.5` | 0 to 1 |
 | `vad.minSpeechMs` | integer | `250` | 50 to 2000 |
-| `vad.silenceMs` | integer | `700` | 200 to 5000 |
+| `vad.silenceMs` | integer | `1000` | 200 to 5000 |
+| `vad.unfinishedHoldMs` | integer | `800` | 0 to 5000 |
 | `vad.prerollMs` | integer | `300` | 0 to 1000 |
 | `bargeIn.enabled` | boolean | `true` | |
 | `bargeIn.minSpeechMs` | integer | `250` | 50 to 2000 |
@@ -85,9 +86,13 @@ Enabled:
 the local sidecar's first-run bootstrap. `available: false` carries a `reason` a person
 can act on ("Python 3.10+ not found", "OpenAI key not set: OPENAI_API_KEY").
 
+When the config asks for voice (`enabled: true`, or an `enabled` that is not a boolean) but the `voice` block has problems, voice is off and the body is `{ "enabled": true, "available": false, "reason": "Voice is off because config.yaml has problems in voice: <each problem, naming its key, joined by \"; \">" }`, with none of the other fields. The reason never carries a key or a URL's user name. A block with `enabled: false` (or no `enabled`) is `{ "enabled": false }` whatever else it holds. A reload that makes a running voice block invalid ends open attachments with `detached {reason: "disabled"}` as turning voice off does.
+
 When the config says `enabled: true` but the gateway started with voice off (voice is set up only at boot, so turning it on needs a restart), the body is the same with `available: false` and `reason: "Restart the gateway to turn voice on"`. When voice was running and the config then turns it off, the body is `{ "enabled": false }`, a new `/ws/voice` upgrade is refused as when voice is off, and open attachments get `detached {reason: "disabled"}`.
 
 Never present: any key, any base URL, the prompt text.
+
+The gateway takes the environment variables named by the enabled block's `apiKey` settings out of its own environment at load and withholds them from every engine child process (as for opencode account keys); only its voice providers read them.
 
 `POST /api/voice/install` (operator only) starts the local bootstrap if it has not run;
 it is idempotent and returns the same `install` object.

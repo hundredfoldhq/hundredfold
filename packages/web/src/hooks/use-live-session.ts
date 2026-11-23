@@ -1,4 +1,4 @@
-import { reconcileCompletedTurnMessages } from './completed-turn-messages'
+import { findStreamedCopyId, isGrownStreamedCopy, reconcileCompletedTurnMessages } from './completed-turn-messages'
 export { reconcileCompletedTurnMessages } from './completed-turn-messages'
 /**
  * useLiveSession — the live read pipeline for one gateway session.
@@ -306,6 +306,11 @@ function sessionMetaOf(session: Record<string, unknown>): SessionMetaUpdate {
   }
 }
 
+/** Rows without the stored copy of a text block that the flushed stream grew from. */
+function withoutGrownStreamedCopy(rows: Message[], copyId: string | null, flushed: string): Message[] {
+  return copyId ? rows.filter((row) => !isGrownStreamedCopy(row, copyId, flushed)) : rows
+}
+
 function normalizeHistoryTimestamp(value: unknown): number {
   const timestamp = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN
   return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0
@@ -546,6 +551,7 @@ export function useLiveSession(
   const loadErrorRef = useRef<Error | null>(null)
   const lastDeltaAtRef = useRef<number>(0)
   const turnStartsRef = useRef(0) // bumped by every turn start, so a late refetch can tell it was overtaken
+  const completionsRef = useRef(0) // bumped by every completion, so a read sent before one can tell it was overtaken
   const streamingTextRef = useRef(initialSnapshot?.streamingText ?? '')
   const [streamingText, setStreamingText] = useState(initialSnapshot?.streamingText ?? '')
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(initialSnapshot?.liveContextTokens ?? null)
@@ -554,6 +560,8 @@ export function useLiveSession(
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
   const [olderMessagesError, setOlderMessagesError] = useState<Error | null>(null)
   const intermediateStartRef = useRef<number>(-1)
+  // The id of the stored copy of the text block still streaming, from a re-read that landed mid-turn.
+  const streamedCopyIdRef = useRef<string | null>(null)
   const statusMessageIdRef = useRef<string | null>(null)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(initialSnapshot?.session ?? null)
   const [loadError, setLoadError] = useState<Error | null>(null)
@@ -754,6 +762,9 @@ export function useLiveSession(
           // A sub-agent's call arrives out of band, not in order with the main
           // agent's text, so it must not split the answer being streamed.
           const sidechain = p.sidechain === true
+          // A main-thread call ends the text block, so a stored copy of it is final from here on.
+          const streamedCopyId = sidechain ? null : streamedCopyIdRef.current
+          if (!sidechain) streamedCopyIdRef.current = null
           if (streamingTextRef.current && !sidechain) {
             const flushed = streamingTextRef.current
             streamingTextRef.current = ''
@@ -761,7 +772,7 @@ export function useLiveSession(
             setMessages((prev) => {
               if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
               const updated = [
-                ...prev,
+                ...withoutGrownStreamedCopy(prev, streamedCopyId, flushed),
                 {
                   id: crypto.randomUUID(),
                   role: 'assistant' as const,
@@ -865,6 +876,9 @@ export function useLiveSession(
               }
             }
           }
+          // A block ends the text block too.
+          const streamedCopyId = streamedCopyIdRef.current
+          streamedCopyIdRef.current = null
           if (streamingTextRef.current) {
             const flushed = streamingTextRef.current
             streamingTextRef.current = ''
@@ -872,7 +886,7 @@ export function useLiveSession(
             setMessages((prev) => {
               if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
               return [
-                ...prev,
+                ...withoutGrownStreamedCopy(prev, streamedCopyId, flushed),
                 {
                   id: crypto.randomUUID(),
                   role: 'assistant' as const,
@@ -959,13 +973,16 @@ export function useLiveSession(
       }
 
       if (event === 'session:completed') {
+        completionsRef.current += 1
         clearStatusMessage()
         const intermediateStart = intermediateStartRef.current
+        const streamedCopyId = streamedCopyIdRef.current
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
         setLiveContextTokens(null)
         intermediateStartRef.current = -1
+        streamedCopyIdRef.current = null
         justCompletedAtRef.current = Date.now()
 
         const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
@@ -982,6 +999,7 @@ export function useLiveSession(
             messages: prev,
             turnStart: intermediateStart,
             exactResult: resultStr,
+            streamedCopyId,
             finalMessage: {
               id: finalResponseId,
               role: 'assistant' as const,
@@ -1075,8 +1093,9 @@ export function useLiveSession(
   }, [subscribe])
 
   // Load session data
-  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean }) => {
+  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean; reissued?: boolean }): Promise<void> => {
     const myToken = ++loadTokenRef.current
+    const completionsAtStart = completionsRef.current
     if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     // Whether the failure came from the fetch (transient, retried) or from
     // processing what it returned (deterministic, so not retried).
@@ -1086,6 +1105,13 @@ export function useLiveSession(
       fetched = true
       if (myToken !== loadTokenRef.current) {
         return
+      }
+      // A turn completed while this read was out and the read still calls a turn running: it
+      // was answered before the completion, so its partial rows and its status would put the
+      // truncated reply back over the final one. Its other rows are real (the history on a first
+      // load, a user row only reads carry), so read again, once, now that the turn is over.
+      if (!options?.reissued && completionsRef.current !== completionsAtStart && turnInFlight(session)) {
+        return loadSession(id, { suppressHydrating: true, reissued: true })
       }
       setHydrating(false)
       setLoadError(null)
@@ -1150,6 +1176,10 @@ export function useLiveSession(
         // remap it inside the updater against whichever array we return. Otherwise a
         // snapshot-space index truncates already-rendered history at turn completion.
         const turnStartAnchorId = firstPartialIndex >= 0 ? backendMessages[firstPartialIndex].id : null
+        // Set now, not in the updater: a frame that lands before React renders
+        // must already see which stored row is the text still streaming.
+        streamedCopyIdRef.current =
+          firstPartialIndex >= 0 ? findStreamedCopyId(backendMessages.slice(firstPartialIndex)) : null
         setMessages((current) => {
           // If the tail snapshot is stale and misses newer live rows, keep current.
           // Older already-loaded rows are still preserved by mergePagedSnapshot.
@@ -1180,6 +1210,7 @@ export function useLiveSession(
         setLiveContextTokens(null)
         if (!readOnlyRef.current) clearIntermediateMessages(id)
         intermediateStartRef.current = -1
+        streamedCopyIdRef.current = null
         setMessages((current) => {
           // If a stale tail misses locally-known newer rows, keep them; if the local
           // state was mid-turn, the idle backend snapshot is canonical collapse.
@@ -1210,6 +1241,7 @@ export function useLiveSession(
         setCurrentSession(null)
         setHasOlderMessages(false)
         intermediateStartRef.current = -1
+        streamedCopyIdRef.current = null
       }
       setLoadError(failure)
     }
@@ -1238,6 +1270,7 @@ export function useLiveSession(
       streamingTextRef.current = ''
       setStreamingText('')
       intermediateStartRef.current = -1
+      streamedCopyIdRef.current = null
       return
     }
     const cached = readLiveSessionSnapshot(sessionId)
@@ -1391,6 +1424,7 @@ export function useLiveSession(
           setStreamingText('')
           setLiveContextTokens(null)
           intermediateStartRef.current = -1
+          streamedCopyIdRef.current = null
           await loadSession(id)
         }
       } catch {
@@ -1419,6 +1453,7 @@ export function useLiveSession(
           setStreamingText('')
           setLiveContextTokens(null)
           intermediateStartRef.current = -1
+          streamedCopyIdRef.current = null
           await loadSession(currentId)
         }
       } catch {
@@ -1499,6 +1534,7 @@ export function useLiveSession(
     streamingTextRef.current = ''
     setStreamingText('')
     intermediateStartRef.current = -1
+    streamedCopyIdRef.current = null
   }, [])
 
   useEffect(() => {

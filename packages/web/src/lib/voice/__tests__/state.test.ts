@@ -126,8 +126,23 @@ describe("endings", () => {
     expect(run([{ type: "closed", code: 1000, reason: "bye", requested: true }], on()).error).toBeNull()
   })
 
+  it("a stale error frame does not replace the lost-connection message", () => {
+    const s = run([frame({ type: "error", code: "stt_failed", message: "Speech recognition failed." }), { type: "closed", code: 1006, reason: "", requested: false }], on())
+    expect(s.error).toBe("Voice connection lost.")
+  })
+
   it("an unexplained close is a lost connection", () => {
     expect(run([{ type: "closed", code: 1006, reason: "", requested: false }], on()).error).toBe("Voice connection lost.")
+  })
+})
+
+describe("an error ends the utterance in progress", () => {
+  it.each(["stt_failed", "utterance_too_long"] as const)("%s does not leave the control on hearing", (code) => {
+    let s = run([frame({ type: "vad", speaking: true }), frame({ type: "transcript", utteranceId: "u", text: "what is the", final: false })], on())
+    expect(voicePhase(s)).toBe("hearing")
+    s = run([frame({ type: "error", code, message: "That did not work." })], s)
+    expect(s).toMatchObject({ partial: "", vadSpeaking: false, error: "That did not work." })
+    expect(voicePhase(s)).toBe("listening")
   })
 })
 

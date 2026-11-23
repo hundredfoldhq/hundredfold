@@ -9,6 +9,7 @@
  */
 import path from "node:path";
 import { HUNDREDFOLD_HOME } from "./paths.js";
+import { logger } from "./logger.js";
 import { isInsidePath } from "./protected-home-entries.js";
 
 export interface VoiceSttConfig {
@@ -44,8 +45,10 @@ export interface VoiceConfig {
     threshold?: number;
     /** Defaults to 250. */
     minSpeechMs?: number;
-    /** Silence that ends an utterance. Defaults to 700. */
+    /** Silence that ends an utterance. Defaults to 1000. */
     silenceMs?: number;
+    /** Extra silence waited when the words so far look unfinished (0 turns it off). Defaults to 800. */
+    unfinishedHoldMs?: number;
     /** Audio kept from before speech started. Defaults to 300. */
     prerollMs?: number;
   };
@@ -121,7 +124,7 @@ export interface ResolvedVoiceConfig {
   language: string;
   stt: ResolvedVoiceSide;
   tts: ResolvedVoiceSide & { voice: string; speed: number };
-  vad: { threshold: number; minSpeechMs: number; silenceMs: number; prerollMs: number };
+  vad: { threshold: number; minSpeechMs: number; silenceMs: number; unfinishedHoldMs: number; prerollMs: number };
   bargeIn: { enabled: boolean; minSpeechMs: number; onsetThreshold: number };
   autoBackground: { enabled: boolean; afterSeconds: number };
   /** The inline prompt, or the built-in one. */
@@ -213,6 +216,7 @@ function vadProblems(vad: Obj | undefined): string[] {
     ...inRange("voice.vad.threshold", vad.threshold, [0, 1], false),
     ...inRange("voice.vad.minSpeechMs", vad.minSpeechMs, [50, 2000], true),
     ...inRange("voice.vad.silenceMs", vad.silenceMs, [200, 5000], true),
+    ...inRange("voice.vad.unfinishedHoldMs", vad.unfinishedHoldMs, [0, 5000], true),
     ...inRange("voice.vad.prerollMs", vad.prerollMs, [0, 1000], true),
   ];
 }
@@ -269,7 +273,8 @@ function languageProblems(language: unknown, providers: unknown[]): string[] {
 
 /**
  * Problems with the `voice` block, each naming its key. Voice stays off while any
- * exists. `home` is the instance home `promptFile` must stay inside.
+ * exists; they are not part of `validateConfigShape`, so a bad block never stops the
+ * gateway starting or a reload (see `voiceOffReason`). `home` is the instance home `promptFile` must stay inside.
  */
 export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_HOME): string[] {
   if (voice === undefined || voice === null) return [];
@@ -291,6 +296,43 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...limitsProblems(parts.limits.value), ...oneOf("voice.local.device", parts.local.value?.device, DEVICES),
     ...Object.values(parts).flatMap((part) => part.problems),
   ];
+}
+
+/**
+ * Why voice is off though the config asks for it: the block's problems, each naming its key, or null
+ * when the block is fine or voice is simply off (absent, or `enabled: false`). The text never carries a
+ * key or a URL's user name: the validator's messages do not echo them.
+ */
+export function voiceOffReason(voice: unknown, home: string = HUNDREDFOLD_HOME): string | null {
+  const problems = voiceConfigProblems(voice, home);
+  if (problems.length === 0) return null;
+  if (isObject(voice) && (voice.enabled === undefined || voice.enabled === false)) return null;
+  return `Voice is off because config.yaml has problems in voice: ${problems.join("; ")}`;
+}
+
+/**
+ * The environment variables the enabled voice block's `apiKey` settings name. The gateway takes them out of its own
+ * environment at load (`setVoiceKeyEnv`), so no engine child inherits a provider key. Empty while voice is off, so a
+ * variable a disabled block names stays where it is.
+ */
+export function voiceKeyEnvNames(voice: unknown): string[] {
+  if (!isObject(voice) || voice.enabled !== true) return [];
+  const names = [voice.stt, voice.tts].map((side) => (isObject(side) && typeof side.apiKey === "string" ? ENV_REFERENCE.exec(side.apiKey) : null));
+  return [...new Set(names.flatMap((match) => (match ? [match[0].slice(2, -1)] : [])))];
+}
+
+let lastWarned = "";
+
+/**
+ * Log the voice block's problems when they change. They do not fail the config (FR-025): voice stays off
+ * and the rest of the gateway carries on. `loadConfig` is polled, so one bad key must not flood the log.
+ */
+export function warnAboutVoiceProblems(voice: unknown): void {
+  const reason = voiceOffReason(voice);
+  const key = reason ?? "";
+  if (key === lastWarned) return;
+  lastWarned = key;
+  if (reason) logger.warn(`config voice: ${reason}`);
 }
 
 const sub = (parent: Obj, key: string): Obj => (isObject(parent[key]) ? (parent[key] as Obj) : {});
@@ -319,7 +361,7 @@ function resolveTts(voice: Obj): ResolvedVoiceConfig["tts"] {
 }
 
 function resolveVad(vad: Obj): ResolvedVoiceConfig["vad"] {
-  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 700), prerollMs: setting(vad, "prerollMs", 300) };
+  return { threshold: setting(vad, "threshold", 0.5), minSpeechMs: setting(vad, "minSpeechMs", 250), silenceMs: setting(vad, "silenceMs", 1000), unfinishedHoldMs: setting(vad, "unfinishedHoldMs", 800), prerollMs: setting(vad, "prerollMs", 300) };
 }
 
 function resolveBargeIn(bargeIn: Obj): ResolvedVoiceConfig["bargeIn"] {
