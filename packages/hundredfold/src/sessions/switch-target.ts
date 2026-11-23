@@ -309,9 +309,14 @@ function switchProfile(
   return balanced ? { ok: true, dir: balanced.claudeConfigDir ?? null } : resolveProfile(config, session, engine, request.profile);
 }
 
-/** What the switch writes of the balancer's record: the pick, null to clear an earlier one (a switch that names a profile, or an opencode model, pins it), or nothing. */
-function pickWrite(engine: string, request: SwitchRequest, balanced: AccountPin | undefined): Pick<Extract<SwitchResolution, { ok: true }>, "accountPick"> {
-  const chosen = (engine === "claude" && request.profile !== undefined) || (engine === "opencode" && namesModel(request));
+/**
+ * What the switch writes of the balancer's record: the pick, null to clear an earlier one (a switch that names a profile, or an
+ * opencode model, pins it; a switch onto another engine leaves the old engine's pick describing an account the session no longer
+ * runs on), or nothing.
+ */
+function pickWrite(engine: string, from: { session: Session; engine: string }, request: SwitchRequest, balanced: AccountPin | undefined): Pick<Extract<SwitchResolution, { ok: true }>, "accountPick"> {
+  const leaves = engine !== from.engine && (from.session.transportMeta as { accountPick?: unknown } | null | undefined)?.accountPick !== undefined;
+  const chosen = (engine === "claude" && request.profile !== undefined) || (engine === "opencode" && namesModel(request)) || leaves;
   const accountPick = balanced?.accountPick ?? (chosen ? null : undefined);
   return accountPick === undefined ? {} : { accountPick };
 }
@@ -367,7 +372,7 @@ function finishSwitch(
   if (refused) return refused;
   return {
     ok: true, target, own, sameTarget: isOwnTarget(config, session, own, target, after),
-    ...pickWrite(engine, request, balanced), ...(remoteAccountPin === undefined ? {} : { remoteAccountPin }),
+    ...pickWrite(engine, { session, engine: own.engine }, request, balanced), ...(remoteAccountPin === undefined ? {} : { remoteAccountPin }),
   };
 }
 

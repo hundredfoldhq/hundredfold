@@ -74,13 +74,17 @@ function opencodeStartPick(
   return home ? startPickOf(env, home, effective, { source, ownAccount: home.ownAccount, model: ownModel }) : undefined;
 }
 
-/** What a new session of this subject would be balanced onto now, when its chain opens with a group holding its own account (a local Claude subject, or an opencode one). */
+/**
+ * What a new session of this subject would be balanced onto now, when its chain opens with a group holding its own account:
+ * a local Claude subject, a remote Claude employee (its own login is the member naming no profile, or the declared remote
+ * account of its own directory, as `pinAccountAtCreation` resolves it), or an opencode subject.
+ */
 function subjectStartPick(
   env: FallbackChainEnv, spec: FallbackChainSpec, effective: readonly ResolvedFallbackLink[], source: Exclude<FallbackChainSource, "session">, model: string | undefined,
 ): AccountPick | undefined {
   if (spec.own.engine === "opencode") return opencodeStartPick(env, spec, effective, source, model);
-  if (spec.mode !== "account" || spec.scope.remote || spec.own.engine !== "claude") return undefined;
-  const home = homeGroupOf(env.config, spec.entries, spec.ownAccount);
+  if (spec.own.engine !== "claude" || (spec.mode !== "account" && !spec.scope.remote)) return undefined;
+  const home = homeGroupOf(env.config, spec.entries, spec.ownAccount, spec.scope.remote ? spec.ownAccount : undefined);
   return home ? startPickOf(env, home, effective, { source, ownAccount: spec.ownAccount, model }) : undefined;
 }
 

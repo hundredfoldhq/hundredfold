@@ -127,6 +127,7 @@ describe("resolveSwitchTarget onto opencode", () => {
     const model = resolveSwitchTarget(config, onOpencode, { model: OTHER_MODEL }, { caller: "operator" });
     expect(model).toMatchObject({ ok: true, target: { model: OTHER_MODEL }, accountPick: null });
     expect(model.ok && model.target).not.toHaveProperty("balanced");
+    // A session holding no pick has none to drop (one holding a pick: the patchSessionTarget case below).
     const toCodex = resolveSwitchTarget(config, onOpencode, { engine: "codex" }, { caller: "operator" });
     expect(toCodex.ok && toCodex).not.toHaveProperty("accountPick");
   });
@@ -178,6 +179,16 @@ describe("the operator's engine-only switch onto opencode (patchSessionTarget)",
     patch(registry.getSession(session.id)!, { engine: "opencode", model: THIRD_MODEL });
     const row = registry.getSession(session.id)!;
     expect(row.model).toBe(THIRD_MODEL);
+    expect(pickOf(row)).toBeUndefined();
+  });
+
+  it("drops the opencode pick when the session switches onto Claude with no group to pick from", () => {
+    const session = codexSession("web:p5");
+    patch(session, { engine: "opencode" });
+    expect(pickOf(registry.getSession(session.id)!)).toMatchObject({ picked: OTHER });
+    expect(patch(registry.getSession(session.id)!, { engine: "claude" })).toMatchObject({ kind: "switched" });
+    const row = registry.getSession(session.id)!;
+    expect(row.engine).toBe("claude");
     expect(pickOf(row)).toBeUndefined();
   });
 

@@ -456,6 +456,20 @@ account on a local one, and a remote account on another `user@host` is refused
 on both. `employeeFallbackProblems` reports each at load, and a chain that
 still names one passes it over as `remote`.
 
+**A remote employee's home group balances its new sessions.** When the group at
+the head of a remote employee's chain (its own `fallback`, else
+`engines.claude.fallback`) holds its own login (the member naming no profile, or
+the declared account of its own directory), each new session is pinned to a
+member by headroom, as a gateway session is, and the other members stay its
+fallback links. Headroom comes from the usage readings the gateway already
+takes over SSH for each login. A member on another `user@host` is no candidate.
+The pin is kept in the session's `transportMeta.remoteAccountPin`
+(`{ account, configDir }`), never in its profile column, which is a directory on
+the gateway, and every launch, wake and return of the session runs on that
+directory. It is honoured only while the employee still runs on the same
+`user@host`: move the employee and its sessions run on its own login again.
+`GET /api/fallback-chains?employee=<name>` reports the next pick as `startPick`.
+
 ### Health keys
 
 A Claude target's health is its account's. An opencode target's health is kept
