@@ -157,6 +157,18 @@ describe('VoiceCaption', () => {
     expect(disabled.container.innerHTML).toBe('')
   })
 
+  it('keeps the status, notice and chip inside the same column as the thread and composer', () => {
+    const state = stateAfter({ type: 'turn', state: 'thinking' })
+    render(<VoiceCaption voice={withPhase(state, { chip: { kind: 'running', label: 'Running in the background' } })} />)
+    const measure = document.querySelector('[data-voice-caption-measure]') as HTMLElement
+    expect(measure.className).toContain('mx-auto')
+    expect(measure.className).toContain('max-w-[var(--chat-measure)]')
+    expect(measure.className).toContain('px-3')
+    expect(measure.className).toContain('lg:px-8')
+    expect(measure.contains(screen.getByRole('status'))).toBe(true)
+    expect(measure.contains(document.querySelector('[data-voice-chip]'))).toBe(true)
+  })
+
   it('shows the live transcript while the user speaks', () => {
     const state = stateAfter({ type: 'vad', speaking: true }, { type: 'transcript', utteranceId: 'u', text: 'run the tests', final: false })
     render(<VoiceCaption voice={withPhase(state)} />)
