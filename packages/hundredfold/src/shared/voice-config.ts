@@ -57,9 +57,9 @@ export interface VoiceConfig {
   filter?: {
     /** Drop a transcript the provider is less sure of than this (mean token probability, 0..1; 0 turns it off). Only providers that report one. Defaults to 0.3. */
     minConfidence?: number;
-    /** Drop a transcript the provider says is probably not speech, above this probability (0..1; 1 turns it off). Only providers that report one. Defaults to 0.8. */
+    /** Drop a transcript the provider says is probably not speech, above this probability, when it reported no confidence for it (0..1; 1 turns it off). Only providers that report one. Defaults to 0.8. */
     noSpeechThreshold?: number;
-    /** A clip voiced for less than this (ms; 0 turns the phrase list off) whose whole transcript is one of `phantomPhrases` is dropped. Defaults to 500. */
+    /** A clip whose speech lasted less than this (ms; 0 turns the phrase list off) whose whole transcript is one of `phantomPhrases` is dropped. Defaults to 500. */
     phantomMaxMs?: number;
     /** Words speech to text invents out of noise. Defaults to a short built-in list; `[]` turns the list off. */
     phantomPhrases?: string[];
