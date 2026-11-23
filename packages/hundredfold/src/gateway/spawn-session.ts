@@ -4,6 +4,7 @@ import { createSession, getSession, insertMessage, updateSession, enqueueQueueIt
 import { validateNewSessionSelection, type NewSessionSelectionResult } from "../sessions/session-patch.js";
 import { chargeAccountStart, metaWithAccountPick } from "../sessions/account-pin.js";
 import type { AccountPick } from "../shared/fallback-chain-wire.js";
+import type { RemoteAccountPin } from "../sessions/remote-account-pin.js";
 import { childFallbackMode } from "../sessions/session-fallback.js";
 import { childFallbackTarget, fallbackTargetRefusal, parseFallbackTargetPatch, prospectiveSession } from "../sessions/fallback-target.js";
 import type { StoredFallbackTarget } from "../shared/session-fallback-config.js";
@@ -86,7 +87,7 @@ function defaultProvenance(): SpawnProvenance {
  *  gateway-default session. */
 type SpawnSelection =
   | { ok: false; error: string; status?: 400 | 403 }
-  | { ok: true; engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; fallbackMode?: SessionFallbackMode; claudeConfigDir?: string; accountPick?: AccountPick };
+  | { ok: true; engineName: string; model?: string; effortLevel?: string; reroute?: SessionReroute; fallbackMode?: SessionFallbackMode; claudeConfigDir?: string; accountPick?: AccountPick; remoteAccountPin?: RemoteAccountPin };
 
 /** The mode a spawn stores: its explicit one, else the parent's rule (undefined for a root). */
 function resolveFallbackMode(
@@ -186,6 +187,7 @@ function spawnSelectionOf(
     ...(named.fallbackMode ? { fallbackMode: named.fallbackMode } : {}),
     ...(claudeConfigDir ? { claudeConfigDir } : {}),
     ...(selection.accountPick ? { accountPick: selection.accountPick } : {}),
+    ...(selection.remoteAccountPin ? { remoteAccountPin: selection.remoteAccountPin } : {}),
   };
 }
 

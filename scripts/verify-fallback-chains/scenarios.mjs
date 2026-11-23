@@ -6,9 +6,11 @@
 import fs from "node:fs";
 import { Harness, parseArgs } from "./lib.mjs";
 import { GROUP_SCENARIOS } from "./group-scenarios.mjs";
+import { OPENCODE_GROUP_SCENARIOS } from "./opencode-group-scenarios.mjs";
+import { REMOTE_GROUP_SCENARIOS } from "./remote-group-scenarios.mjs";
 import { SCENARIOS as BASE_SCENARIOS } from "./scenario-defs.mjs";
 
-const SCENARIOS = [...BASE_SCENARIOS, ...GROUP_SCENARIOS];
+const SCENARIOS = [...BASE_SCENARIOS, ...GROUP_SCENARIOS, ...OPENCODE_GROUP_SCENARIOS, ...REMOTE_GROUP_SCENARIOS];
 
 const args = parseArgs(process.argv.slice(2));
 const csv = (value) => new Set(String(value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
@@ -21,7 +23,7 @@ for (const id of [...pending, ...(only ?? [])]) {
 const harness = new Harness(args);
 const results = [];
 
-/** What went wrong in one scenario, or undefined: its own assertions, then the network guard's log. */
+/** What went wrong in one scenario, or undefined: its own assertions, then the network guard's log, then the stand-in ssh's refusals. */
 async function failureOf(scenario) {
   try {
     await harness.reset();
@@ -30,7 +32,9 @@ async function failureOf(scenario) {
     return error instanceof Error ? error.message : String(error);
   }
   const refused = harness.networkRefusals();
-  return refused.length > 0 ? `network guard refused ${refused.length} connection(s): ${refused.map((row) => row.target).join(", ")}` : undefined;
+  if (refused.length > 0) return `network guard refused ${refused.length} connection(s): ${refused.map((row) => row.target).join(", ")}`;
+  const shimRefused = harness.shimRefusals();
+  return shimRefused.length > 0 ? `network guard: the stand-in ssh refused ${shimRefused.length} call(s): ${shimRefused.map((row) => row.reason).join("; ")}` : undefined;
 }
 
 /** PASS or FAIL, or for a pending scenario PENDING (not yet) or PENDING-PASSED. A refused connection is never pending. */

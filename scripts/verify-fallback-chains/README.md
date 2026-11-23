@@ -31,6 +31,13 @@ a token to the real service. A guard preloaded into every Node process refuses, 
 `network-refusals.jsonl`, any connection that is not loopback; a scenario fails if the log is
 not empty.
 
+Where a scenario restarts the gateway in the middle of an opencode conversation (`ot`), it asks the fake `opencode` to keep the
+ids of the sessions it creates in a file (`h.keepOpencodeSessions()`, `FAKE_OPENCODE_SESSIONS_FILE`), as opencode keeps its
+sessions in its data directory, so a restarted server still finds the session a turn resumes. Every other scenario starts each
+server with no sessions, as before.
+A remote employee runs on a "host" that is this machine, reached through a stand-in `ssh` (see
+[Remote employees](#remote-employees-and-the-stand-in-ssh)): there is no sshd, no key and no network.
+
 The script refuses to start when the port is below 8060 or one of the live gateway ports, or
 when any path (instance home, host home, profile directory) is outside its temporary root or
 inside an operator home. It tears everything down on exit.
@@ -84,6 +91,66 @@ through the sandbox helper (`--helper`, `--instance`, which the script passes).
 
 p, q, s, t, u and v assert the pick a session records at creation, which the start paths pin.
 Every scenario runs and counts: the default `--pending` list is empty.
+
+### opencode account groups
+
+`opencode-group-scenarios.mjs` runs the counterparts of p to v for a group of two opencode accounts
+(`{ group: [{ engine: opencode, profile: oc-a }, { engine: opencode, profile: oc-b }] }`, then an opencode link as the
+rest of the chain). An opencode account is a provider id, so the two accounts are two fake providers that the fake
+`opencode models` lists with one model key: account A is the opencode employee's own provider
+(`own-provider/model-own`) and B is `group-b-provider/model-own`. `h.useOpencodeGroup()` declares them under
+`engines.opencode.accounts` and puts the group at the head of `engines.opencode.fallback`, or, with `{ on: "employee" }`,
+of the opencode employee's own `fallback`; `reset` takes both away. Headroom is seeded the way the gateway reads it: one
+sample in the history keyed `opencode/<provider>` (`h.seedUsage("opencode/group-b-provider", 40)`).
+
+Every scenario asserts that three things agree for each session it starts: the pick (`transportMeta.accountPick`, also
+`fallback.chain.pick`), the session row's `model` (`<picked provider>/<model key>`, which is the pin) and the model the
+fake opencode ran each turn on (the ledger's `model`). They run in both opencode modes like every other scenario.
+
+| id | |
+|---|---|
+| op | distribution: headroom 60/40 splits 20 spaced sessions 12/8, 90/10 splits 18/2, an account with no headroom gets none of 10; each count within ±1 of what is stated |
+| oq | burst: ten sessions started at once across two equally fresh accounts split 5/5 ±1, never all on one |
+| or | group hop then rest: a limit on the picked account (A) moves the turn to B's model, a limit there moves it to the chain's next link; the stand-in runs on the member's model |
+| os | the same walk from the other side: a session the pick put on B moves to A, then to the next link |
+| ot | stickiness: a session pinned to A, and one pinned to B, each take five turns and a turn after a gateway restart while the other account's usage drops below it; every turn on the pinned model, no hop, the pick unchanged |
+| ou | return: pinned to B, moved to A by B's limit; once B is cleared the next turn is back on B's model |
+| ov | start paths: new chat (no engine, `engine: "opencode"`, no employee, the employee's own model), spawn, delegate and a Todo wake each get a pick; a model named on the other account's provider gets none; the Todo Dispatcher (the instance's default engine) none; a board walk tick runs |
+
+### Remote employees and the stand-in ssh
+
+`remote-group-scenarios.mjs` runs the remote counterparts of p, r, t and u on the instance itself, where part G's tests
+answered ssh with a local shell inside a SessionManager. The remote employee (`dev-remote`) has the target
+`harness@127.0.0.1` and runs as remote account A (its `remoteClaudeConfigDir`); the scenarios declare two remote accounts
+(`remote-a`, `remote-b`, directories under the remote home) and put them in a group as its chain.
+The real gateway stages the host, opens its tunnel and runs the fake `claude` there; a pick of A is the employee's own login
+and writes no pin, a pick of B is recorded in `transportMeta.remoteAccountPin` (`{ account, configDir }`), and each turn's
+`CLAUDE_CONFIG_DIR` is what the host ran with, read back from the ledger's profile directory.
+
+| id | |
+|---|---|
+| rp | distribution: headroom 60/40 splits ten spaced sessions 6/4, an account with no headroom gets none of four; the pin, the pick and the directory the host ran each session with agree |
+| rr | group hop: a limit on the own login moves the turn to the other account's directory; a limit on a pinned account moves it to the own login; the pin does not move |
+| rt | stickiness: a session pinned to the second account keeps its directory over five turns and a gateway restart while the other account's usage drops below it, pin and pick unchanged |
+| ru | return: pinned to the second account and moved by its limit, the next turn after it is cleared runs with the pinned account's directory again |
+
+What the stand-in `ssh` is (`ssh-shim.mjs`, installed as `ssh` first on the instance's PATH by `seed.mjs`):
+
+- It accepts only `user@127.0.0.1` and the options the gateway passes (`-T`/`-tt`, `-o`, `-R`, `-L`). Anything else exits 255
+  and is written to `ssh-shim-refusals.jsonl`; a scenario fails if that file is not empty, as it does for the network guard's
+  log. It never runs the real `ssh`, and the scenarios fail if the shim answered nothing.
+- It runs the command words in a local `sh -c`, as sshd would, with exactly a host's environment and nothing of the gateway's:
+  `HOME` is a temporary remote home inside the verification root (`remote-<mode>/`, holding the staging directory, two signed-in
+  fake Claude profile directories, a work directory and a `bin/` with the fake `claude` and a `hundredfold` that runs the build under
+  test), the network guard is preloaded into its Node processes, and the fakes read the same scenario and ledger files.
+- `-R port:127.0.0.1:port` is a loopback forwarder from the tunnel port to the gateway's port for as long as the command runs,
+  which is what carries the hook relay's calls.
+- The gateway's own home is the host's `mount` (the host is this machine, so the sentinel read comes back the same).
+
+The gateway's host readiness probe reads the system-wide Claude policy directories (`/etc/claude-code`, and the macOS
+equivalent) for a bypass-permissions consent. A real host's are its own, so the shim points those two paths at (empty)
+directories inside the remote home: the run reads nothing outside the verification root and writes nothing outside it.
+The only things it executes from outside are the system tools a shell needs (`sh`, `ps`, `git`, `node`).
 
 `--pending a,b` marks scenarios that wait on runtime work not yet merged: a pending scenario is
 reported, never failed; one that passes is reported as "pending but passing", and `--strict` fails the
