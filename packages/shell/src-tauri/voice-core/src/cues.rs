@@ -13,9 +13,9 @@ use crate::protocol::OUTPUT_SAMPLE_RATE;
 /// The sounds. Never both at once, and never over speech.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cue {
-    /// One soft tick about once a second, while the model works and nothing is spoken yet.
+    /// One soft, low note about every 1.6 seconds, while the model works and nothing is spoken yet.
     Thinking,
-    /// A quicker, higher tick-tick about every 1.3 seconds, while a tool runs.
+    /// A pair of notes, the second a little higher, about every 1.8 seconds, while a tool runs.
     Tool,
 }
 
@@ -101,12 +101,13 @@ pub struct CueRequest {
     pub volume: f32,
 }
 
-/// Loudest a tick gets (volume 1), as a share of full scale: about -14 dBFS.
-/// The default volume gives about -24 dBFS.
-pub const CUE_PEAK: f32 = 0.2;
+/// Loudest a note gets (volume 1), as a share of full scale: about -16 dBFS.
+/// The default volume gives about -26 dBFS.
+pub const CUE_PEAK: f32 = 0.16;
 
-/// Weight of the second harmonic, which keeps a tick audible on a phone speaker without making it sharp.
-const HARMONIC: f64 = 0.25;
+/// Share of a note's length spent rising; the rest is a slower, gentler fall, so a note swells and
+/// fades like a soft bell.
+const ATTACK: f64 = 0.3;
 
 struct Blip {
     at_ms: u32,
@@ -119,29 +120,31 @@ struct Pattern {
     blips: &'static [Blip],
 }
 
-/// The first tick comes `at_ms` after the cue starts, so a short pause in the work makes no sound at all.
+/// The first note comes `at_ms` after the cue starts, so a short pause in the work makes no sound at all.
+/// Pitches sit in the warm middle of the voice range, and every note is well under the 250 ms an
+/// utterance needs, with a clear gap before the next.
 fn pattern(cue: Cue) -> Pattern {
     match cue {
         Cue::Thinking => Pattern {
-            loop_ms: 1100,
+            loop_ms: 1600,
             blips: &[Blip {
                 at_ms: 300,
-                dur_ms: 50,
-                hz: 560.0,
+                dur_ms: 140,
+                hz: 392.0,
             }],
         },
         Cue::Tool => Pattern {
-            loop_ms: 1300,
+            loop_ms: 1800,
             blips: &[
                 Blip {
                     at_ms: 300,
-                    dur_ms: 35,
-                    hz: 880.0,
+                    dur_ms: 110,
+                    hz: 349.0,
                 },
                 Blip {
-                    at_ms: 390,
-                    dur_ms: 35,
-                    hz: 880.0,
+                    at_ms: 500,
+                    dur_ms: 110,
+                    hz: 440.0,
                 },
             ],
         },
@@ -152,8 +155,9 @@ fn samples_of(ms: u32, rate: u32) -> usize {
     ((f64::from(ms) * f64::from(rate)) / 1000.0).round() as usize
 }
 
-/// One loop of a cue as mono floats with a peak of at most 1. Every tick is a
-/// sine with a raised-cosine envelope, so it starts and ends at zero.
+/// One loop of a cue as mono floats with a peak of at most 1. Every note is a plain sine (no
+/// overtones) under a raised-cosine rise over the first `ATTACK` of the note and a raised-cosine
+/// fall over the rest, so it starts and ends at zero.
 pub fn render_unit_loop(cue: Cue, sample_rate: u32) -> Vec<f32> {
     let pattern = pattern(cue);
     let mut out = vec![0f32; samples_of(pattern.loop_ms, sample_rate)];
@@ -165,12 +169,16 @@ pub fn render_unit_loop(cue: Cue, sample_rate: u32) -> Vec<f32> {
                 break;
             }
             let t = i as f64 / f64::from(sample_rate);
-            let window = (std::f64::consts::PI * i as f64 / length as f64)
-                .sin()
-                .powi(2);
-            let tone = (2.0 * std::f64::consts::PI * blip.hz * t).sin()
-                + HARMONIC * (4.0 * std::f64::consts::PI * blip.hz * t).sin();
-            out[start + i] += (window * tone / (1.0 + HARMONIC)) as f32;
+            let x = i as f64 / length as f64;
+            let window = if x < ATTACK {
+                (std::f64::consts::FRAC_PI_2 * (x / ATTACK)).sin().powi(2)
+            } else {
+                (std::f64::consts::FRAC_PI_2 * ((x - ATTACK) / (1.0 - ATTACK)))
+                    .cos()
+                    .powi(2)
+            };
+            let tone = (2.0 * std::f64::consts::PI * blip.hz * t).sin();
+            out[start + i] += (window * tone) as f32;
         }
     }
     out
@@ -243,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_loop_has_the_declared_length_and_a_peak_under_the_level() {
-        for (cue, ms) in [(Cue::Thinking, 1100usize), (Cue::Tool, 1300)] {
+        for (cue, ms) in [(Cue::Thinking, 1600usize), (Cue::Tool, 1800)] {
             let pcm = render_loop(cue, 1.0);
             assert_eq!(pcm.len(), ms * 24 * 2);
             let peak = pcm
@@ -265,12 +273,12 @@ mod tests {
             .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
             .max()
             .unwrap();
-        assert!(f32::from(peak) / 32767.0 < 0.065, "default peak {peak}");
+        assert!(f32::from(peak) / 32767.0 < 0.05, "default peak {peak}");
         assert!(render_loop(Cue::Tool, 0.0).iter().all(|b| *b == 0));
     }
 
     #[test]
-    fn the_first_tick_comes_after_its_lead_and_ticks_fade_in_and_out() {
+    fn the_first_note_comes_after_its_lead_and_notes_fade_in_and_out() {
         for cue in [Cue::Thinking, Cue::Tool] {
             let loop_ = render_unit_loop(cue, 24_000);
             let lead = samples_of(300, 24_000);
@@ -292,22 +300,24 @@ mod tests {
             (
                 Cue::Thinking,
                 &[
-                    (7313, -0.034656),
-                    (7421, 0.254384),
-                    (7633, 0.555066),
-                    (7907, 0.007738),
-                    (8051, -0.515088),
+                    (7313, -0.02531),
+                    (7900, 0.320016),
+                    (8500, 0.957177),
+                    (9400, -0.199022),
+                    (10300, -0.022183),
                 ],
             ),
             (
                 Cue::Tool,
                 &[
-                    (7333, -0.172966),
-                    (7457, 0.138743),
-                    (7601, -0.651875),
-                    (9411, -0.028135),
-                    (9533, 0.175136),
-                    (9777, 0.67843),
+                    (7313, -0.038685),
+                    (8100, 0.518108),
+                    (9000, 0.382102),
+                    (9700, 0.011182),
+                    (12150, -0.085925),
+                    (12800, -0.865985),
+                    (13700, 0.444789),
+                    (14500, -0.012206),
                 ],
             ),
         ];
@@ -324,11 +334,11 @@ mod tests {
     }
 
     #[test]
-    fn the_two_cues_differ_in_length_and_in_number_of_ticks() {
+    fn the_two_cues_differ_in_length_and_in_number_of_notes() {
         let thinking = render_unit_loop(Cue::Thinking, 24_000);
         let tool = render_unit_loop(Cue::Tool, 24_000);
         assert_ne!(thinking.len(), tool.len());
-        let ticks = |v: &[f32]| v.windows(2).filter(|w| w[0] == 0.0 && w[1] != 0.0).count();
-        assert!(ticks(&tool) > ticks(&thinking));
+        let notes = |v: &[f32]| v.windows(2).filter(|w| w[0] == 0.0 && w[1] != 0.0).count();
+        assert!(notes(&tool) > notes(&thinking));
     }
 }

@@ -22,7 +22,7 @@ export function VoiceModeSection({ cues, onChange }: VoiceModeSectionProps) {
   return (
     <Section title="Voice mode">
       <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
-        Soft ticks while the assistant is thinking and a different pair while it runs a tool, so silence does not feel
+        A soft note while the assistant is thinking and a rising pair while it runs a tool, so silence does not feel
         like a hang. They stop the moment it speaks or you do. Applies the next time voice mode starts.
       </div>
       <FieldRow label="Sound cues">

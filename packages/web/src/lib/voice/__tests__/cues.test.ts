@@ -61,7 +61,7 @@ describe("the two sounds", () => {
     expect(peak).toBeLessThanOrEqual(1)
   })
 
-  it.each<VoiceCue>(["thinking", "tool"])("%s is silent until its first tick and mostly silent after", (cue) => {
+  it.each<VoiceCue>(["thinking", "tool"])("%s is silent until its first note and mostly silent after", (cue) => {
     const loop = renderCueLoop(cue, 24_000)
     const first = Math.round((CUE_PATTERNS[cue].blips[0].atMs * 24_000) / 1000)
     expect(loop.subarray(0, first).every((v) => v === 0)).toBe(true)
@@ -69,7 +69,7 @@ describe("the two sounds", () => {
     expect(active / loop.length).toBeLessThan(0.15)
   })
 
-  it.each<VoiceCue>(["thinking", "tool"])("%s ticks fade in and out from zero, so nothing clicks", (cue) => {
+  it.each<VoiceCue>(["thinking", "tool"])("%s notes fade in and out from zero, so nothing clicks", (cue) => {
     const loop = renderCueLoop(cue, 24_000)
     expect(loop[0]).toBe(0)
     expect(loop[loop.length - 1]).toBe(0)
@@ -82,9 +82,31 @@ describe("the two sounds", () => {
     expect(Math.abs(loop[last])).toBeLessThan(0.01)
   })
 
-  it("no tick holds a level for as long as the shortest barge-in hold the config allows, and none is long enough to be speech", () => {
+  it("no note is long enough to be speech, and the notes of a pair are clearly apart", () => {
     for (const cue of ["thinking", "tool"] as const) {
-      for (const blip of CUE_PATTERNS[cue].blips) expect(blip.durMs).toBeLessThan(60)
+      const { blips } = CUE_PATTERNS[cue]
+      for (const blip of blips) expect(blip.durMs).toBeLessThanOrEqual(150)
+      for (let i = 1; i < blips.length; i++) expect(blips[i].atMs - (blips[i - 1].atMs + blips[i - 1].durMs)).toBeGreaterThanOrEqual(60)
+    }
+  })
+
+  it.each<VoiceCue>(["thinking", "tool"])("%s is made of plain sines: each note crosses zero as often as its pitch says, with no overtones", (cue) => {
+    const loop = renderCueLoop(cue, 24_000)
+    for (const blip of CUE_PATTERNS[cue].blips) {
+      const start = Math.round((blip.atMs * 24_000) / 1000)
+      const length = Math.round((blip.durMs * 24_000) / 1000)
+      let crossings = 0
+      for (let i = start + 1; i < start + length; i++) if ((loop[i - 1] < 0) !== (loop[i] < 0)) crossings++
+      expect(Math.abs(crossings - 2 * blip.hz * (blip.durMs / 1000))).toBeLessThanOrEqual(2)
+    }
+  })
+
+  it("every note is warm: a pitch between 300 and 500 Hz, never the thin top of a speaker", () => {
+    for (const cue of ["thinking", "tool"] as const) {
+      for (const blip of CUE_PATTERNS[cue].blips) {
+        expect(blip.hz).toBeGreaterThanOrEqual(300)
+        expect(blip.hz).toBeLessThanOrEqual(500)
+      }
     }
   })
 
@@ -103,8 +125,8 @@ describe("the two sounds", () => {
 
   it("renders the same samples as the native synthesiser (voice-core/src/cues.rs holds the same table)", () => {
     const table: Record<VoiceCue, Array<[number, number]>> = {
-      thinking: [[7313, -0.034656], [7421, 0.254384], [7633, 0.555066], [7907, 0.007738], [8051, -0.515088]],
-      tool: [[7333, -0.172966], [7457, 0.138743], [7601, -0.651875], [9411, -0.028135], [9533, 0.175136], [9777, 0.67843]],
+      thinking: [[7313, -0.02531], [7900, 0.320016], [8500, 0.957177], [9400, -0.199022], [10300, -0.022183]],
+      tool: [[7313, -0.038685], [8100, 0.518108], [9000, 0.382102], [9700, 0.011182], [12150, -0.085925], [12800, -0.865985], [13700, 0.444789], [14500, -0.012206]],
     }
     for (const cue of ["thinking", "tool"] as const) {
       const loop = renderCueLoop(cue, 24_000)
@@ -112,9 +134,11 @@ describe("the two sounds", () => {
     }
   })
 
-  it("the two cues differ in pitch and rhythm", () => {
-    expect(CUE_PATTERNS.tool.blips.length).toBeGreaterThan(CUE_PATTERNS.thinking.blips.length)
-    expect(CUE_PATTERNS.tool.blips[0].hz).toBeGreaterThan(CUE_PATTERNS.thinking.blips[0].hz)
+  it("the two cues differ in pitch and rhythm: a rising pair against a single note", () => {
+    const [low, high] = CUE_PATTERNS.tool.blips
+    expect(CUE_PATTERNS.thinking.blips).toHaveLength(1)
+    expect(high.hz).toBeGreaterThan(low.hz)
+    expect([low.hz, high.hz]).not.toContain(CUE_PATTERNS.thinking.blips[0].hz)
     expect(CUE_PATTERNS.tool.loopMs).not.toBe(CUE_PATTERNS.thinking.loopMs)
   })
 })

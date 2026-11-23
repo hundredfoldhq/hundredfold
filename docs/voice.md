@@ -80,7 +80,7 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `autoBackground.enabled` | `true` | Move long work to the background when you speak, where the engine can (see below). |
 | `autoBackground.afterSeconds` | `5` | A tool call older than this when you speak is long work, 1 to 600. |
 | `cues.enabled` | `true` | Soft sound cues while the assistant is thinking and while it runs a tool (see "Sound cues"). `false` turns them off. |
-| `cues.volume` | `0.3` | How loud the cues are, 0 (silent) to 1. Even 1 is a gentle tick. |
+| `cues.volume` | `0.3` | How loud the cues are, 0 (silent) to 1. Even 1 is a soft note. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
 | `promptFile` | — | A path inside the instance home holding the instructions, read the first time the voice config is resolved and again whenever the `voice:` block changes (not only when the gateway starts). `prompt` wins if both are set. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
@@ -186,10 +186,10 @@ Speaking while the assistant is working never stops the work. How the gateway le
 
 So that silence while the assistant works does not feel like a hang, voice mode plays two soft sounds, one at a time:
 
-- **Thinking:** one quiet tick about once a second, while the model is working and nothing is being spoken yet.
-- **Tool:** a quicker, higher tick-tick about every 1.3 seconds, while a tool is running. It takes over from the thinking tick at the first tool call and gives it back when the tool returns.
+- **Thinking:** one soft, low note (about G4) every 1.6 seconds, while the model is working and nothing is being spoken yet.
+- **Tool:** a pair of soft notes, the second a little higher (about F4 then A4), every 1.8 seconds, while a tool is running. It takes over from the thinking note at the first tool call and gives it back when the tool returns.
 
-Both are made on the device (a short sine tick with a soft envelope; no audio file and no network), in the web app and in the mobile app, and the first tick comes about a third of a second after the state starts, so a brief pause makes no sound. They follow the gateway's own `turn`, `vad` and `background` frames, not a guess made on the client.
+Both are made on the device (a plain sine note that swells and fades gently, with no overtones; no audio file and no network), in the web app and in the mobile app, and the first note comes about a third of a second after the state starts, so a brief pause makes no sound. They follow the gateway's own `turn`, `vad` and `background` frames, not a guess made on the client.
 
 **They stop at once** when the assistant starts to speak (a reply or the holding line, from the moment the gateway announces the sentence), when you are heard speaking (the gateway's voice activity, a partial transcript, or push-to-talk held), when the turn ends, and when voice mode stops, is suspended by the device or is paused by a call. A cue that was silenced for speech starts again if the work is still going when the speech has played out.
 
@@ -200,11 +200,11 @@ Both are made on the device (a short sine tick with a soft envelope; no audio fi
 **Why a cue cannot trigger the microphone.** The phone or computer can hear its own speaker, so this is guarded in four ways:
 
 1. A cue never goes through the speech player. Barge-in only listens while speech is playing (browser, Android and iOS alike), and a cue is never playing then, so a cue is never taken for you interrupting.
-2. The gateway only hears a cue if it leaks into the microphone, and the cue is built not to look like speech to it: ticks of 35 to 50 milliseconds with long gaps, at most -14 dBFS at volume 1 and about -24 dBFS at the default, well under the 250 ms hold that starts an utterance. The echo canceller of the browser, Android and iOS removes most of it before that.
+2. The gateway only hears a cue if it leaks into the microphone, and the cue is built not to look like speech to it: notes of 110 to 140 milliseconds with long gaps, at most -16 dBFS at volume 1 and about -26 dBFS at the default, well under the 250 ms hold that starts an utterance. The echo canceller of the browser, Android and iOS removes most of it before that.
 3. A cue that is playing is silenced the moment the gateway says it hears you, so it never sits under your own voice for long.
 4. Its audio is on a player of its own, on the same audio session as the microphone, so the platform's echo canceller knows it is output.
 
-Measured against the real Silero detector on a gateway, with the cue played straight into the microphone uplink and no echo cancelling at all: each cue at volume 1 for 20 seconds (about 0.07 RMS, above the default onset level for the 35 to 50 ms of each tick, never for 250 ms), and a cue at five times that level (about 0.36 RMS), started no utterance, no transcript and no `stop_playback`, while a spoken sentence at normal level did. If a loud room or an open speaker still sets it off on your setup, lower `cues.volume` or turn the cues off.
+Measured against the real Silero detector on a gateway, with the cue played straight into the microphone uplink and no echo cancelling at all: each cue at volume 1 for 20 seconds (about 0.07 RMS, above the default onset level for the 110 to 140 ms of each note, never for 250 ms), and a cue at five times that level (about 0.35 RMS), started no utterance, no transcript and no `stop_playback`, while a spoken sentence at normal level did. If a loud room or an open speaker still sets it off on your setup, lower `cues.volume` or turn the cues off.
 
 ## The screen is locked
 

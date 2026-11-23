@@ -5,9 +5,10 @@ import type { PlayerAudioContext, PlayerBuffer, PlayerSource } from "./player"
  * Soft sound cues for voice mode, so silence while the assistant works does not
  * feel like a hang. Two sounds, never at the same time and never over speech:
  *
- * - `thinking`: one soft tick about once a second, while the model works and
- *   nothing is being spoken yet.
- * - `tool`: a quicker, higher tick-tick about every 1.3 seconds, while a tool runs.
+ * - `thinking`: one soft, low note about every 1.6 seconds, while the model
+ *   works and nothing is being spoken yet.
+ * - `tool`: a pair of notes, the second a little higher, about every 1.8 seconds,
+ *   while a tool runs.
  *
  * They are synthesised here (no file, no network) and the same recipe is
  * implemented natively in `packages/shell/src-tauri/voice-core/src/cues.rs`,
@@ -18,15 +19,15 @@ import type { PlayerAudioContext, PlayerBuffer, PlayerSource } from "./player"
  * Echo: a cue never goes through `VoicePlayer`, so it never arms the barge-in
  * detector (which only listens while speech is playing); it is silenced the
  * moment speech is audible or the user is heard; and it is quiet and made of
- * short soft ticks with long gaps, nothing that holds a level for `minSpeechMs`
+ * short soft notes with long gaps, nothing that holds a level for `minSpeechMs`
  * or that a voice-activity detector takes for speech. docs/voice.md says more.
  */
 export type VoiceCue = "thinking" | "tool"
 
 export const DEFAULT_CUE_SETTINGS: VoiceCueSettings = { enabled: true, volume: 0.3 }
 
-/** Loudest a tick gets (volume 1), as a share of full scale: about -14 dBFS. Default volume gives about -24 dBFS. */
-export const CUE_PEAK = 0.2
+/** Loudest a note gets (volume 1), as a share of full scale: about -16 dBFS. Default volume gives about -26 dBFS. */
+export const CUE_PEAK = 0.16
 
 interface Blip {
   atMs: number
@@ -39,19 +40,24 @@ interface CuePattern {
   blips: Blip[]
 }
 
-/** The first tick comes `atMs` after the cue starts, so a short pause in the work makes no sound at all. */
+/**
+ * The first note comes `atMs` after the cue starts, so a short pause in the work makes no sound at all.
+ * Pitches are in the warm middle of the voice range (about G4, then F4 to A4), and every note is well
+ * under the 250 ms an utterance needs, with a clear gap before the next.
+ */
 export const CUE_PATTERNS: Record<VoiceCue, CuePattern> = {
-  thinking: { loopMs: 1100, blips: [{ atMs: 300, durMs: 50, hz: 560 }] },
-  tool: { loopMs: 1300, blips: [{ atMs: 300, durMs: 35, hz: 880 }, { atMs: 390, durMs: 35, hz: 880 }] },
+  thinking: { loopMs: 1600, blips: [{ atMs: 300, durMs: 140, hz: 392 }] },
+  tool: { loopMs: 1800, blips: [{ atMs: 300, durMs: 110, hz: 349 }, { atMs: 500, durMs: 110, hz: 440 }] },
 }
 
-/** Weight of the second harmonic, which keeps a tick audible on a phone speaker without making it sharp. */
-const HARMONIC = 0.25
+/** Share of a note's length spent rising; the rest is a slower, gentler fall, so a note swells and fades like a soft bell. */
+const ATTACK = 0.3
 
 /**
- * One loop of a cue as mono floats with a peak of at most 1. Every tick is a
- * sine with a raised-cosine (Hann) envelope, so it starts and ends at zero
- * and never clicks.
+ * One loop of a cue as mono floats with a peak of at most 1. Every note is a
+ * plain sine (no overtones, so nothing bright or sharp) under a smooth envelope:
+ * a raised-cosine rise over the first `ATTACK` of the note and a raised-cosine
+ * fall over the rest, so it starts and ends at zero and never clicks.
  */
 export function renderCueLoop(cue: VoiceCue, sampleRate: number): Float32Array {
   const pattern = CUE_PATTERNS[cue]
@@ -61,9 +67,9 @@ export function renderCueLoop(cue: VoiceCue, sampleRate: number): Float32Array {
     const length = Math.round((blip.durMs * sampleRate) / 1000)
     for (let i = 0; i < length && start + i < out.length; i++) {
       const t = i / sampleRate
-      const window = Math.sin((Math.PI * i) / length) ** 2
-      const tone = Math.sin(2 * Math.PI * blip.hz * t) + HARMONIC * Math.sin(4 * Math.PI * blip.hz * t)
-      out[start + i] += (window * tone) / (1 + HARMONIC)
+      const x = i / length
+      const window = x < ATTACK ? Math.sin((Math.PI / 2) * (x / ATTACK)) ** 2 : Math.cos((Math.PI / 2) * ((x - ATTACK) / (1 - ATTACK))) ** 2
+      out[start + i] += window * Math.sin(2 * Math.PI * blip.hz * t)
     }
   }
   return out
