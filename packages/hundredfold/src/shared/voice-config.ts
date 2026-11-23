@@ -71,6 +71,8 @@ export interface VoiceConfig {
   prompt?: string;
   /** Instance-relative file holding the voice prompt. `prompt` wins when both are set. */
   promptFile?: string;
+  /** The operator's own directions for how replies sound, added to the voice instructions on every voice turn. Empty or absent changes nothing. */
+  stylePrompt?: string;
   /** Spoken, with no model turn, when an utterance must wait behind long work. */
   holdingLine?: string;
   limits?: {
@@ -142,6 +144,8 @@ export interface ResolvedVoiceConfig {
   prompt: string;
   /** Absolute path of the prompt file, only when no inline `prompt` is set. */
   promptFile: string | null;
+  /** The operator's style directions, trimmed; "" when there are none. */
+  stylePrompt: string;
   holdingLine: string;
   limits: { maxUtteranceSeconds: number; maxConcurrentAttachments: number };
   local: { device: "auto" | "gpu" | "cpu" };
@@ -153,6 +157,7 @@ const LANGUAGE = /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/;
 const ENV_REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_HOLDING_LINE_CHARS = 300;
+export const MAX_STYLE_PROMPT_CHARS = 2000;
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -305,6 +310,7 @@ export function voiceConfigProblems(voice: unknown, home: string = HUNDREDFOLD_H
     ...stt.problems, ...tts.problems, ...ttsProblems(tts.side),
     ...vadProblems(parts.vad.value), ...bargeInProblems(parts.bargeIn.value), ...autoBackgroundProblems(parts.autoBackground.value),
     ...textProblems("voice.prompt", voice.prompt, MAX_PROMPT_CHARS), ...promptFileProblems(voice.promptFile, home),
+    ...textProblems("voice.stylePrompt", voice.stylePrompt, MAX_STYLE_PROMPT_CHARS),
     ...textProblems("voice.holdingLine", voice.holdingLine, MAX_HOLDING_LINE_CHARS),
     ...limitsProblems(parts.limits.value), ...oneOf("voice.local.device", parts.local.value?.device, DEVICES),
     ...Object.values(parts).flatMap((part) => part.problems),
@@ -399,6 +405,11 @@ function resolveTuning(voice: Obj): Pick<ResolvedVoiceConfig, "vad" | "bargeIn" 
   };
 }
 
+/** The operator's style directions, trimmed; "" when unset or blank. */
+function resolveStylePrompt(voice: Obj): string {
+  return typeof voice.stylePrompt === "string" ? voice.stylePrompt.trim() : "";
+}
+
 /**
  * The effective voice settings, or null when voice is off: absent, not `enabled: true`, or
  * the block has problems (the config loader refuses those, so this is the belt to its braces).
@@ -416,6 +427,7 @@ export function resolveVoiceConfig(config: { voice?: unknown }, home: string = H
     ...resolveTuning(voice),
     prompt: inlinePrompt ?? DEFAULT_VOICE_PROMPT,
     promptFile,
+    stylePrompt: resolveStylePrompt(voice),
     holdingLine: setting(voice, "holdingLine", DEFAULT_HOLDING_LINE),
   };
 }

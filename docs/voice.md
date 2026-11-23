@@ -127,10 +127,24 @@ Every key is optional. `voice:` lives in `config.yaml`; a wrong value is reporte
 | `autoBackground.afterSeconds` | `5` | A tool call older than this when you speak is long work, 1 to 600. |
 | `prompt` | built in | The spoken-conversation instructions, at most 8000 characters. |
 | `promptFile` | — | A path inside the instance home holding the instructions, read the first time the voice config is resolved and again whenever the `voice:` block changes (not only when the gateway starts). `prompt` wins if both are set. |
+| `stylePrompt` | — | Your own directions for how spoken replies sound, added to the voice instructions on every voice turn, in the browser and the app. At most 2000 characters; empty or unset changes nothing. It is read on each turn, so a config reload applies it to the next spoken turn, even in a conversation already open (no gateway restart). Also editable in Settings, under Voice style, once voice mode is on. Example below. |
 | `holdingLine` | "Still working on the last thing. I'll come to that as soon as it's done." | Spoken when your message has to wait behind long work. At most 300 characters. |
 | `limits.maxUtteranceSeconds` | `60` | Longest single utterance, 5 to 120 (the local speech-to-text takes at most about 130 seconds of one utterance). |
 | `limits.maxConcurrentAttachments` | `4` | Chats in voice mode at once, 1 to 64. |
 | `local.device` | `auto` | `auto` uses the GPU when `nvidia-smi` lists one; or `gpu`, or `cpu`. |
+
+### Voice style
+
+`stylePrompt` is for taste, `prompt` is for replacing the instructions. The built-in instructions stay in place and your text is added to them, so the replies keep their spoken shape and take on your voice:
+
+```yaml
+voice:
+  enabled: true
+  stylePrompt: >-
+    Replies much shorter, more personal, a bit funny. Make jokes.
+```
+
+The first spoken turn of a conversation carries the full instructions with your directions under "Style directions from the user"; every later turn carries them again as one line next to the short reminder (a multi-line style is joined into one line there). That line says it replaces any earlier style directions, so an edit takes effect in a conversation already open; clearing the style sends one line saying to ignore the earlier directions. Typed messages never carry the style, and neither does a message that starts with `/`. Voice mode starts with the gateway, so turning `voice.enabled` on needs a restart before the first spoken turn; after that, edits to the style need none.
 
 Provider keys are never sent to a browser, in any response, message or error. The gateway takes each variable an `apiKey` names out of its own environment when the configuration loads and keeps it only inside the gateway: no engine process, tool or shell a model runs inherits it. A variable that only voice needs, such as `VOICE_OPENAI_API_KEY`, is the clearest choice: another tool the gateway starts that expects the same variable will not find it. A `${VAR}` you write elsewhere in `config.yaml` (a realtime key, an MCP server's environment) still resolves it.
 

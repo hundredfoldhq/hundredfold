@@ -22,7 +22,7 @@ describe("voiceConfigProblems", () => {
       vad: { threshold: 0, minSpeechMs: 50, silenceMs: 5000, unfinishedHoldMs: 5000, prerollMs: 1000 },
       bargeIn: { enabled: false, minSpeechMs: 2000, onsetThreshold: 1 },
       autoBackground: { enabled: true, afterSeconds: 600 },
-      prompt: "x".repeat(8000), holdingLine: "y".repeat(300),
+      prompt: "x".repeat(8000), stylePrompt: "z".repeat(2000), holdingLine: "y".repeat(300),
       limits: { maxUtteranceSeconds: 120, maxConcurrentAttachments: 64 }, local: { device: "gpu" },
     })).toEqual([]);
   });
@@ -54,6 +54,8 @@ describe("voiceConfigProblems", () => {
     ["voice.autoBackground.afterSeconds", { autoBackground: { afterSeconds: 601 } }, "voice.autoBackground.afterSeconds"],
     ["voice.prompt", { prompt: "x".repeat(8001) }, "voice.prompt"],
     ["voice.prompt", { prompt: 4 }, "voice.prompt"],
+    ["voice.stylePrompt", { stylePrompt: "z".repeat(2001) }, "voice.stylePrompt"],
+    ["voice.stylePrompt", { stylePrompt: 4 }, "voice.stylePrompt"],
     ["voice.holdingLine", { holdingLine: "y".repeat(301) }, "voice.holdingLine"],
     ["voice.limits.maxUtteranceSeconds", { limits: { maxUtteranceSeconds: 4 } }, "voice.limits.maxUtteranceSeconds"],
     ["voice.limits.maxUtteranceSeconds", { limits: { maxUtteranceSeconds: 121 } }, "voice.limits.maxUtteranceSeconds"],
@@ -236,7 +238,7 @@ describe("resolveVoiceConfig", () => {
       vad: { threshold: 0.5, minSpeechMs: 250, silenceMs: 1000, unfinishedHoldMs: 800, prerollMs: 300 },
       bargeIn: { enabled: true, minSpeechMs: 250, onsetThreshold: 0.02 },
       autoBackground: { enabled: true, afterSeconds: 5 },
-      prompt: DEFAULT_VOICE_PROMPT, promptFile: null, holdingLine: DEFAULT_HOLDING_LINE,
+      prompt: DEFAULT_VOICE_PROMPT, promptFile: null, stylePrompt: "", holdingLine: DEFAULT_HOLDING_LINE,
       limits: { maxUtteranceSeconds: 60, maxConcurrentAttachments: 4 }, local: { device: "auto" },
     });
   });
@@ -265,6 +267,12 @@ describe("resolveVoiceConfig", () => {
     expect(resolved.stt).toEqual({ provider: "openai", model: "gpt-live-transcribe", baseUrl: null, apiKeyRef: "${OPENAI_API_KEY}" });
     expect(resolved.tts).toEqual({ provider: "openai-compatible", model: "tts-1", baseUrl: "http://localhost:8880", apiKeyRef: "${LOCAL_TTS_KEY}", voice: "alloy", speed: 1 });
     expect(JSON.stringify(resolved)).not.toMatch(/sk-/);
+  });
+
+  it("resolves the style prompt trimmed, and to empty when unset or blank", () => {
+    expect(resolve({ enabled: true, stylePrompt: "  Short and funny.\n" })).toMatchObject({ stylePrompt: "Short and funny." });
+    expect(resolve({ enabled: true, stylePrompt: "   " })).toMatchObject({ stylePrompt: "" });
+    expect(resolve({ enabled: true })).toMatchObject({ stylePrompt: "" });
   });
 
   it("lets an inline prompt win over promptFile, and resolves promptFile inside the home", () => {

@@ -10,12 +10,15 @@
  *     [Voice mode]                       (the full prompt, first turn only)
  *     <prompt, any number of lines>
  *     [End of voice instructions]
+ *     <style directions, when configured>   (inside the block)
  *     [Voice: transcribed from speech ...]
- *     [Voice: ...]                       (one line each: reminder, interrupted, backgrounded)
+ *     [Voice: ...]                       (one line each: reminder, style, interrupted, backgrounded)
  *
  * A prompt that starts with `/` gets nothing: text in front of a command turns
  * it into text for the model.
  */
+
+import { MAX_STYLE_PROMPT_CHARS } from "../shared/voice-config.js";
 
 export const VOICE_PROMPT_OPEN = "[Voice mode]";
 export const VOICE_PROMPT_CLOSE = "[End of voice instructions]";
@@ -28,6 +31,10 @@ export interface VoiceEnvelopeInput {
   text: string;
   /** The voice prompt (built in or configured). */
   prompt: string;
+  /** The operator's style directions (`voice.stylePrompt`); empty or absent adds nothing. They ride on every turn. */
+  style?: string;
+  /** The style was set on an earlier turn and is empty now: tell the engine to drop it (a reminder turn only). */
+  styleCleared?: boolean;
   /** The full prompt goes on this turn, not just the reminder. */
   full: boolean;
   /** Extra one-line facts for this turn: an interruption, work moved to the background. */
@@ -44,10 +51,33 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** The prompt text with anything that could close the block early removed. */
+/**
+ * The prompt text with anything that could close the block early removed. Stripped until nothing changes: a
+ * token nested inside another (`[End of voice [End of voice instructions]instructions]`) reassembles after one pass.
+ */
 function safePrompt(prompt: string): string {
-  return prompt.split(VOICE_PROMPT_CLOSE).join("").split(VOICE_PROMPT_OPEN).join("").trim();
+  let text = prompt;
+  for (let previous = ""; previous !== text; ) {
+    previous = text;
+    text = text.split(VOICE_PROMPT_CLOSE).join("").split(VOICE_PROMPT_OPEN).join("");
+  }
+  return text.trim();
 }
+
+/** Heading of the style directions inside the full prompt block. */
+export const VOICE_STYLE_HEADING = "Style directions from the user (follow these in how you sound):";
+
+/**
+ * The style directions as one line, for the turns that carry the reminder instead of the full prompt. It says it
+ * replaces what came before: the first turn's block (and earlier lines) stay in the engine's history, so an
+ * edited style must be told to win over them. A multi-line style is flattened to one line here.
+ */
+function styleLine(style: string): string {
+  return `[Voice: style directions from the user, replacing any earlier style directions: ${oneLine(style, MAX_STYLE_PROMPT_CHARS)}]`;
+}
+
+/** Sent once when the style goes from set to empty: the earlier directions are still in the engine's history. */
+export const VOICE_STYLE_CLEARED = "[Voice: the user's style directions were removed; ignore any earlier style directions.]";
 
 /** The note for a turn that follows an interrupted reply. */
 export function interruptedNote(heardText: string): string {
@@ -66,10 +96,15 @@ export function backgroundedNote(tasks: readonly { taskId: string; description: 
 export function buildVoiceEnvelope(input: VoiceEnvelopeInput): string {
   if (isSlashText(input.text)) return "";
   const lines: string[] = [];
+  const style = safePrompt(input.style ?? "");
   if (input.full) {
-    lines.push(VOICE_PROMPT_OPEN, safePrompt(input.prompt), VOICE_PROMPT_CLOSE, VOICE_TRANSCRIBED);
+    lines.push(VOICE_PROMPT_OPEN, safePrompt(input.prompt));
+    if (style) lines.push("", VOICE_STYLE_HEADING, style);
+    lines.push(VOICE_PROMPT_CLOSE, VOICE_TRANSCRIBED);
   } else {
     lines.push(VOICE_REMINDER);
+    if (style) lines.push(styleLine(style));
+    else if (input.styleCleared) lines.push(VOICE_STYLE_CLEARED);
   }
   for (const note of input.notes ?? []) lines.push(note);
   return `${lines.join("\n")}\n\n`;
