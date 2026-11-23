@@ -11,9 +11,8 @@ export interface AppRouteDescriptor {
 }
 
 /**
- * The paths the shipped router can render. Route elements stay in `main.tsx`,
- * but their identities live here so every consumer reads the same list
- * instead of maintaining uncheckable copies.
+ * The paths the shipped router can render. Route elements stay in `main.tsx`;
+ * the ids and paths live here.
  */
 export const APP_ROUTES = [
   { id: "chat", path: "/", availability: "always", surface: "chat" },

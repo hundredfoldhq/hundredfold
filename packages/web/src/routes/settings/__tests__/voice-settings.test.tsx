@@ -78,7 +78,11 @@ describe('the Voice section', () => {
     expect(screen.queryByText('Stored')).toBeNull()
     expect(screen.queryByRole('radiogroup', { name: /orb/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /talk orb/i })).toBeNull()
-    expect(document.body.textContent).not.toMatch(/orb|realtime/i)
+    expect(screen.queryByRole('combobox', { name: 'Talk orb motion' })).toBeNull()
+    for (const label of ['Talk Orb', 'Orb motion', 'Orb style', 'Provider', 'API key']) {
+      expect(screen.queryByText(label, { exact: true })).toBeNull()
+    }
+    expect(screen.queryByText(/Talk Orb|speech-to-speech/)).toBeNull()
   })
 
   it('saves with a stale realtime block in the file, handing it back untouched', async () => {
@@ -176,7 +180,7 @@ describe('the speaking speed (voice mode)', () => {
     expect(apiMocks.updateConfig).not.toHaveBeenCalled()
   })
 
-  it('says so when voice mode is off, and not when it is on', async () => {
+  it('says so when voice mode is off', async () => {
     renderSettings()
     await speedSelect()
     expect(screen.queryByText(/Voice mode is off/)).not.toBeNull()

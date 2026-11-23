@@ -2,8 +2,7 @@
  * Streamed WAV chunk player.
  *
  * Plays audio chunks (a complete WAV per sentence from the local Kokoro TTS
- * backend) IN ARRIVAL ORDER with low latency, and exposes an AnalyserNode so a
- * caller can read the REAL output audio level while it speaks.
+ * backend, for chat read-aloud) IN ARRIVAL ORDER with low latency.
  *
  * Design:
  *  - One shared AudioContext (created lazily, resumed on the first user gesture).
@@ -16,25 +15,16 @@
  *  - Decode + schedule is serialized on a promise chain so the moving "playhead"
  *    clock stays correct and chunks are scheduled back-to-back with no gaps,
  *    clicks, or overlaps — regardless of how fast each chunk decodes.
- *  - Every source routes through a single AnalyserNode → destination, giving the
- *    page a continuous signal to read regardless of which chunk is playing.
+ *  - Every source routes through a single output GainNode → destination.
  *  - `onIdle` fires once the queue fully drains.
  *
  * Decode errors are swallowed per-chunk (we skip the bad chunk) so playback
  * never stalls on one corrupt chunk.
  */
 
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64)
-  const len = binary.length
-  const bytes = new Uint8Array(len)
-  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes.buffer
-}
-
 export class WavChunkPlayer {
   private ctx: AudioContext | null = null
-  private analyserNode: AnalyserNode | null = null
+  private outputNode: GainNode | null = null
   /** False when the ctx was supplied externally (shared) — don't close it on dispose. */
   private ownsCtx = true
   /** Fired once when the first buffer of a run actually starts playing. */
@@ -78,28 +68,21 @@ export class WavChunkPlayer {
   private ended = false
 
   private idleCb: (() => void) | null = null
-  /** Reused RMS scratch buffer for the level getter. */
-  private rmsBuf: Uint8Array<ArrayBuffer> | null = null
 
-  /** Lazily build the analyser graph (on a supplied or freshly-created context). */
+  /** Lazily build the output graph (on a supplied or freshly-created context). */
   private ensureContext(): AudioContext {
-    if (this.ctx && this.analyserNode) return this.ctx
+    if (this.ctx && this.outputNode) return this.ctx
     const Ctor: typeof AudioContext =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext })
         .webkitAudioContext
     const ctx = this.ctx ?? new Ctor()
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 256
-    analyser.smoothingTimeConstant = 0.7
     const gain = ctx.createGain()
     gain.gain.value = 1
-    // graph: source -> analyser -> gain -> destination
-    analyser.connect(gain)
+    // graph: source -> gain -> destination
     gain.connect(ctx.destination)
     this.ctx = ctx
-    this.analyserNode = analyser
-    this.rmsBuf = new Uint8Array(new ArrayBuffer(analyser.fftSize))
+    this.outputNode = gain
     return ctx
   }
 
@@ -126,36 +109,14 @@ export class WavChunkPlayer {
   }
 
   /**
-   * Enqueue a base64-encoded audio chunk. Each chunk is a standalone WAV and is
-   * played in ARRIVAL ORDER (the `seq` arg is not used to gate — see the file
+   * Enqueue a standalone WAV chunk. Chunks play in ARRIVAL ORDER (see the file
    * header). `last` marks the final frame of a turn; the FIRST frame after a
-   * `last` re-arms a fresh playback run so subsequent turns are never stuck
-   * behind the previous turn's drained/suspended state. Decode+schedule is
-   * serialized so timing stays correct.
-   */
-  enqueue(_seq: number, _mime: string, dataBase64: string, last = false): void {
-    this.ensureContext()
-    let data: ArrayBuffer
-    try {
-      data = base64ToArrayBuffer(dataBase64)
-    } catch {
-      if (last) this.ended = true // still close the turn so the next frame re-arms
-      return // bad base64 — skip
-    }
-    this.accept(data, last)
-  }
-
-  /**
-   * Enqueue a raw WAV ArrayBuffer (no base64) — the chat read-aloud's streamed
-   * per-sentence frames arrive as binary, so this skips the base64 round-trip.
+   * `last` re-arms a fresh playback run so a later turn is never stuck behind
+   * the previous turn's drained/suspended state. Decode+schedule is serialized
+   * so timing stays correct.
    */
   enqueueBuffer(data: ArrayBuffer, last = false): void {
     this.ensureContext()
-    this.accept(data, last)
-  }
-
-  /** Shared decode+schedule entry for both base64 and binary enqueues. */
-  private accept(data: ArrayBuffer, last: boolean): void {
     // A frame after a completed turn (`last:true`) is the next turn's first
     // frame: re-arm so the playhead re-anchors and a suspended context resumes.
     if (this.ended) {
@@ -185,8 +146,8 @@ export class WavChunkPlayer {
 
   private async decodeAndSchedule(data: ArrayBuffer): Promise<void> {
     const ctx = this.ctx
-    const analyser = this.analyserNode
-    if (!ctx || !analyser) {
+    const output = this.outputNode
+    if (!ctx || !output) {
       this.inFlight = Math.max(0, this.inFlight - 1)
       return
     }
@@ -211,7 +172,7 @@ export class WavChunkPlayer {
 
     const source = ctx.createBufferSource()
     source.buffer = buffer
-    source.connect(analyser)
+    source.connect(output)
 
     // Schedule back-to-back. If we've fallen behind (playhead in the past),
     // catch up to "now" to avoid scheduling in the past.
@@ -244,29 +205,9 @@ export class WavChunkPlayer {
     }
   }
 
-  /** The AnalyserNode the page reads for the output audio level. */
-  get analyser(): AnalyserNode | null {
-    return this.analyserNode
-  }
-
   /** True while audio is queued or playing. */
   get playing(): boolean {
     return this._playing
-  }
-
-  /** Current output amplitude 0..1 (RMS from the analyser), or 0 when silent. */
-  get level(): number {
-    const analyser = this.analyserNode
-    const buf = this.rmsBuf
-    if (!analyser || !buf || !this._playing) return 0
-    analyser.getByteTimeDomainData(buf)
-    let sum = 0
-    for (let i = 0; i < buf.length; i++) {
-      const v = (buf[i] - 128) / 128
-      sum += v * v
-    }
-    const rms = Math.sqrt(sum / buf.length)
-    return Math.min(1, rms * 3.2)
   }
 
   /** Register a callback fired each time the queue fully drains. */
@@ -322,8 +263,7 @@ export class WavChunkPlayer {
     const ctx = this.ctx
     const owns = this.ownsCtx
     this.ctx = null
-    this.analyserNode = null
-    this.rmsBuf = null
+    this.outputNode = null
     // Only close a context we created — a shared/external one belongs to the caller.
     if (owns && ctx && ctx.state !== "closed") void ctx.close().catch(() => {})
   }
