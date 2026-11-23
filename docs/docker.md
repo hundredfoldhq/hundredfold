@@ -74,12 +74,12 @@ Prefer `:ro` wherever the agents only need to read — that list is the blast ra
 - **Network egress is unrestricted.** The container has to reach the Anthropic API; it can therefore reach anything else, so treat data inside mounts as exfiltratable.
 - **Credentials in the container are real.** The `hundredfold-claude` volume holds a live token for your account.
 - **Only the `claude` engine is installed.** `codex`, `grok` and `hermes` appear in the default config but their binaries are not in the image, so selecting one in the dashboard will fail. A Homebrew or npm install does not provide them either.
-- **Voice features are not installed.** Speech-to-text needs `whisper-cli` and `ffmpeg`, neither of which is in the image — see [Enabling speech-to-text](#enabling-speech-to-text). Voice *output* (kokoro TTS) additionally shells out to `python`, which the runtime stage does not include, so `/talk` playback is unavailable without extending the image further. [Voice mode](voice.md) is the same: its built-in local speech needs Python 3.10+ (with `venv` and `pip`), which the image lacks, so use a hosted or OpenAI-compatible provider there, or extend the image.
+- **Voice features are not installed.** Speech-to-text needs `whisper-cli` and `ffmpeg`, neither of which is in the image — see [Enabling speech-to-text](#enabling-speech-to-text). Voice *output* (kokoro TTS) additionally shells out to `python`, which the runtime stage does not include, so read-aloud playback is unavailable without extending the image further. [Voice mode](voice.md) is the same: its built-in local speech needs Python 3.10+ (with `venv` and `pip`), which the image lacks, so use a hosted or OpenAI-compatible provider there, or extend the image.
 - **Git has no identity.** `git commit` inside a mounted repo fails with *"Author identity unknown"* unless you supply `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`, and on a Linux host whose user is not uid 1000 the bind-mounted files are not writable by the container's `node` user. Reading them does work: the image sets `safe.directory = *` system-wide, without which git refuses a foreign-owned repository outright — `git status` and `git log` included, not just writes.
 
 ## Enabling speech-to-text
 
-`/talk`, voice notes and the dictation microphones (Notes and Todo quick capture) shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
+Voice notes and the dictation microphones (Notes and Todo quick capture) shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
 
 Installing them inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which `docker compose up -d --build` throws away. They have to be baked into an image.
 

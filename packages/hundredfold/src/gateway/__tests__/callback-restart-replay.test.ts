@@ -36,7 +36,7 @@ const restartCases = [
   },
   {
     source: "talk" as const,
-    deliveryKind: "talk-attachment",
+    deliveryKind: "stored-attachment",
     message: "attached callback after restart",
     displayMessage: "Attached worker replied\nRestart result",
     deliveries: 1,
@@ -97,7 +97,7 @@ describe("accepted callback queue intents survive a restart", () => {
         sourceAttempt: `attempt-missing-engine-${source}`,
         sourceOutcome: "succeeded",
         sourceVersion: 1,
-        deliveryKind: source === "web" ? "parent-completion" : "talk-attachment",
+        deliveryKind: source === "web" ? "parent-completion" : "stored-attachment",
         payload: {
           message: `callback survives ${source} engine outage`,
           displayMessage: "Worker replied\nEngine outage result",

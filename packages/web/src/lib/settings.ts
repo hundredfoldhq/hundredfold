@@ -1,5 +1,3 @@
-import { isOrbIntensity, isOrbVariant, type OrbIntensity, type OrbVariant } from "@/components/talk/orb-motion"
-
 export interface EmployeeOverride {
   emoji?: string
   profileImage?: string
@@ -47,13 +45,6 @@ export interface HundredfoldSettings {
   operatorName: string | null
   operatorEmoji: string | null
   language: string
-  /** The floating Talk orb. Off until something is there for it to talk to. */
-  talkOrb: boolean
-  /** The persisted visual strategy for the floating Talk control. */
-  talkOrbVariant: OrbVariant
-  /** How much the orb is allowed to move. Taste, not accessibility — reduced
-   *  motion is honoured regardless of what this says. */
-  talkOrbIntensity: OrbIntensity
   /** Multiplier on every type step. Per-device on purpose — it tracks the screen
    *  being read, not the account. */
   textScale: number
@@ -74,9 +65,6 @@ export const DEFAULTS: HundredfoldSettings = {
   operatorName: null,
   operatorEmoji: null,
   language: "English",
-  talkOrb: false,
-  talkOrbVariant: "mist",
-  talkOrbIntensity: "standard",
   textScale: 1,
   transparency: "full",
   employeeOverrides: {},
@@ -93,8 +81,8 @@ export function loadSettings(): HundredfoldSettings {
     const merged = { ...DEFAULTS, ...parsed } as HundredfoldSettings
     // Retired: nothing writes it, and a saved copy would be written back for ever.
     delete (merged as { portalIcon?: unknown }).portalIcon
-    if (!isOrbVariant(merged.talkOrbVariant)) merged.talkOrbVariant = DEFAULTS.talkOrbVariant
-    if (!isOrbIntensity(merged.talkOrbIntensity)) merged.talkOrbIntensity = DEFAULTS.talkOrbIntensity
+    // Retired with the floating assistant: stored copies are ignored and not written back.
+    for (const key of ["talkOrb", "talkOrbVariant", "talkOrbIntensity"]) delete (merged as unknown as Record<string, unknown>)[key]
     if (!isTextScale(merged.textScale)) merged.textScale = DEFAULTS.textScale
     if (!isTransparency(merged.transparency)) merged.transparency = DEFAULTS.transparency
     return merged

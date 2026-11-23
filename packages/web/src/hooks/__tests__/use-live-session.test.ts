@@ -1,5 +1,5 @@
 /**
- * useLiveSession — read-only live pipeline (the Talk child-session modal path).
+ * useLiveSession — read-only live pipeline.
  *
  * Verifies the behaviours the modal relies on and that the old refetch-only hook
  * never had: live token streaming, live media, and a running-state spinner.

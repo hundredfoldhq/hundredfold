@@ -76,7 +76,10 @@ impl ClientFrame {
 #[derive(Clone, Debug, PartialEq)]
 pub enum GatewayFrame {
     Ready(Ready),
-    StopPlayback,
+    /// `new_reply` is a stop the gateway sends right before it speaks something new: what follows is meant to be heard.
+    StopPlayback {
+        new_reply: bool,
+    },
     SegmentStart {
         segment_id: u32,
     },
@@ -187,7 +190,9 @@ impl GatewayFrame {
                     cues,
                 })
             }
-            "stop_playback" => Self::StopPlayback,
+            "stop_playback" => Self::StopPlayback {
+                new_reply: value.get("reason").and_then(|r| r.as_str()) == Some("new_reply"),
+            },
             "segment_start" => segment_id_of(&value)
                 .map(|segment_id| Self::SegmentStart { segment_id })
                 .unwrap_or(Self::Other),

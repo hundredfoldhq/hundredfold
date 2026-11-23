@@ -181,7 +181,7 @@ export function QueuedMessageCard({ queued, media }: QueuedMessageCardProps) {
         data-queued-message
         data-editing={editing || undefined}
         className={`w-full max-w-[34rem] rounded-[var(--radius-lg)] bg-[var(--bg-tertiary)] px-[var(--space-4)] pt-[var(--space-3)] pb-[var(--space-2)] ${
-          editing ? 'shadow-[0_0_0_2px_var(--talk-focus-ring)]' : 'shadow-[var(--shadow-subtle)]'
+          editing ? 'shadow-[0_0_0_2px_var(--focus-ring)]' : 'shadow-[var(--shadow-subtle)]'
         }`}
       >
         {editing ? (

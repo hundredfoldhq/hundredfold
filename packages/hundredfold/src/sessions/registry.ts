@@ -516,7 +516,7 @@ export interface CreateSessionOpts {
   claudeConfigDir?: string;
   /**
    * Optional human-facing excerpt override. When the prompt is scaffolded
-   * (e.g. talk delegation wraps the operator's ask in a brief + verbatim
+   * (e.g. a delegation wraps the operator's ask in a brief + verbatim
    * block), callers pass the original ask here so list UIs don't show
    * scaffold junk. Still flattened/truncated via promptExcerptOf.
    */
@@ -1640,7 +1640,8 @@ function isOperatorRootShape(session: Session): boolean {
 }
 
 /** The surfaces the operator talks to the coordinator through: the web
- *  console, Talk, and the chat connectors. */
+ *  console and the chat connectors. `talk` is for stored rows: sessions the retired voice
+ *  assistant opened keep that source and still count as the operator's own chats. */
 const COORDINATOR_SOURCES: ReadonlySet<string> = new Set(["web", "talk", "slack", "telegram", "discord", "whatsapp"]);
 
 /** True when the operator opened this chat on one of {@link COORDINATOR_SOURCES}
@@ -1662,6 +1663,7 @@ function isOperatorOpenedChat(session: Session): boolean {
  *  as `delegation-idempotency:` cannot slip past a bare `delegation:` check. */
 const GATEWAY_STARTED_KEY_PREFIXES: ReadonlySet<string> = new Set([
   "cron", "delegation", "delegation-idempotency",
+  // `talk-handoff` is for stored rows: the retired voice assistant's handoff sessions keep their key.
   "todo", "todo-dispatcher", "todo-shaper", "hook", "talk-handoff", "archived",
 ]);
 
@@ -2103,7 +2105,7 @@ export function getInterruptedSessions(): Session[] {
  * Called from exactly one place: settleTurn, in sessions/turn/completion.ts.
  * It exists because two session runners once kept their own copies of the
  * completion sequence and drifted — the web runner had three completion sites
- * and none accumulated, so every web- and talk-sourced session recorded
+ * and none accumulated, so every web-sourced session recorded
  * total_turns = 0 and total_cost = 0, silently disabling the employee budget
  * caps enforced from SUM(total_cost). Both runners now settle through
  * settleTurn; a caller anywhere else is the second copy that opened the hole.

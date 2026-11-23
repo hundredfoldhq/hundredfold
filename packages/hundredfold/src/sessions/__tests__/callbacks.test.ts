@@ -728,7 +728,7 @@ describe("callback outbox startup recovery", () => {
   });
 });
 
-describe("notifyParentSession — non-talk parent (regression)", () => {
+describe("notifyParentSession — web parent (regression)", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -741,7 +741,7 @@ describe("notifyParentSession — non-talk parent (regression)", () => {
     globalThis.fetch = originalFetch as typeof fetch;
   });
 
-  it("non-talk parent receives MCP-native read and follow-up guidance", async () => {
+  it("web parent receives MCP-native read and follow-up guidance", async () => {
     vi.mocked(getSession).mockReturnValue(
       makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
     );
@@ -762,7 +762,7 @@ describe("notifyParentSession — non-talk parent (regression)", () => {
     expect(body.message).not.toContain("/api/sessions");
   });
 
-  it("non-talk parent error keeps byte-identical message format (regression)", async () => {
+  it("web parent error keeps byte-identical message format (regression)", async () => {
     vi.mocked(getSession).mockReturnValue(
       makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
     );
@@ -776,7 +776,7 @@ describe("notifyParentSession — non-talk parent (regression)", () => {
     expect(body.displayMessage).toBe(`⚠️ test-employee couldn't finish\nSomething broke`);
   });
 
-  it("non-talk parent keeps byte-identical format (regression)", async () => {
+  it("web parent keeps byte-identical format (regression)", async () => {
     vi.mocked(getSession).mockReturnValue(
       makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
     );

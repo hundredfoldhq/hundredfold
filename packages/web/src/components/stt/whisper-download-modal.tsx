@@ -1,7 +1,7 @@
 /**
  * Whisper STT model-download modal — shared by the Notes and Todo quick-capture mics.
  *
- * Both surfaces drive the same useStt flow: when the mic is tapped and no local
+ * The surface drives the useStt flow: when the mic is tapped and no local
  * model is installed, stt.state becomes "no-model" and this modal asks to
  * download it. Progress (downloadProgress) streams over `stt:*` WS events while
  * api.sttDownload() runs. Keep this dependency-free so any surface can mount it.

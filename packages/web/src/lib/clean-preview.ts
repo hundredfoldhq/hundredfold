@@ -3,7 +3,7 @@
  * Strips @mentions, #NNN prefixes, markdown syntax, and capitalizes.
  *
  * Markdown removal is delegated to the shared `stripMarkdown` (also used by the
- * Talk transcript). The @mention/#NNN stripping and capitalization are
+ * voice caption). The @mention/#NNN stripping and capitalization are
  * preview-specific and stay here.
  */
 import { stripMarkdown } from "./strip-markdown"

@@ -999,3 +999,118 @@ describe("a connection that dies silently (keepalive)", () => {
     expect(r.tracks[0].stopped).toBe(false)
   })
 })
+
+describe("start, stop and start again", () => {
+  const live = (r: Rig) => r.tracks.filter((t) => t.readyState === "live")
+
+  /** One whole run: tap, ready, the assistant speaks and is heard to the end, tap again. */
+  async function oneRun(r: Rig, run: number) {
+    await r.session.start()
+    const socket = r.sockets[run]
+    socket.serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(live(r)).toHaveLength(1)
+    r.emitCapture(frameAt(0.1))
+    expect(socket.audio).toHaveLength(1)
+    socket.serverFrame({ type: "turn", state: "speaking" })
+    socket.serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: `Reply ${run}.` })
+    socket.serverAudio(1, 4_800)
+    socket.serverFrame({ type: "segment_end", segmentId: 1 })
+    r.session.stop()
+    expect(voicePhase(r.session.getSnapshot())).toBe("off")
+    expect(socket.types()).toContain("bye")
+    expect(live(r)).toHaveLength(0)
+    expect(r.contexts[run].close).toHaveBeenCalled()
+  }
+
+  it("starts, stops and starts again three times in one chat, each a clean run on its own socket", async () => {
+    const r = rig()
+    for (let run = 0; run < 3; run += 1) await oneRun(r, run)
+    expect(r.sockets).toHaveLength(3)
+    expect(r.contexts).toHaveLength(3)
+    // Nothing of an earlier run is still talking: the old sockets got only their own audio.
+    expect(r.sockets.map((s) => s.audio.length)).toEqual([1, 1, 1])
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: null })
+  })
+
+  it("a second chat's own session starts while the first one's has run and stopped before", async () => {
+    const first = rig({ sessionId: "s1" })
+    await oneRun(first, 0)
+    await oneRun(first, 1)
+    const other = rig({ sessionId: "s2" })
+    await oneRun(other, 0)
+    expect(first.sockets).toHaveLength(2)
+    expect(other.sockets).toHaveLength(1)
+  })
+
+  it("stopping and starting again at once, before the gateway answers, still ends in one live run", async () => {
+    const r = rig()
+    const firstStart = r.session.start()
+    r.session.stop()
+    await firstStart
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(r.sockets[0].closed).not.toBeNull()
+    r.session.stop()
+    expect(live(r)).toHaveLength(0)
+  })
+
+  it("after an error ends a run (a lost connection, a detach, a refused microphone) a tap starts the next", async () => {
+    const r = rig()
+    await r.session.start()
+    r.sockets[0].serverFrame(READY)
+    r.sockets[0].drop(1006)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: "Voice connection lost." })
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    r.sockets[1].serverFrame({ type: "detached", reason: "taken_over" })
+    expect(r.session.getSnapshot().status).toBe("off")
+    r.micError.value = new DOMException("denied", "NotAllowedError")
+    await r.session.start()
+    expect(r.session.getSnapshot().error).toBe("Microphone permission was denied.")
+    r.micError.value = null
+    await r.session.start()
+    r.sockets[3].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    expect(live(r)).toHaveLength(1)
+    expect(r.session.getSnapshot().error).toBeNull()
+  })
+
+  it("after a barge-in the next run starts with nothing left over from it", async () => {
+    const r = rig()
+    await r.session.start()
+    r.sockets[0].serverFrame(READY)
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: "Long reply." })
+    r.sockets[0].serverAudio(1, 12_000)
+    r.sockets[0].serverFrame({ type: "stop_playback", reason: "new_reply" })
+    r.session.stop()
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    // A segment of the new run plays: the player of the old run does not swallow it or replay the old one.
+    r.sockets[1].serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: "Fresh reply." })
+    r.sockets[1].serverAudio(1, 4_800)
+    expect(r.sockets[1].types()).toEqual([])
+    r.emitCapture(frameAt(0.001))
+    expect(r.sockets[1].audio).toHaveLength(1)
+  })
+
+  it("a new reply cuts the old one's playback on the gateway's stop and plays only the new text", async () => {
+    const r = await started()
+    const socket = r.sockets[0]
+    socket.serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: "Old one." })
+    socket.serverAudio(1, 12_000)
+    socket.serverFrame({ type: "stop_playback", reason: "new_reply" })
+    // Audio of the cut reply that was already in flight is dropped; the new reply's is played.
+    socket.serverAudio(1, 4_800)
+    socket.serverFrame({ type: "segment_start", segmentId: 2, messageId: null, text: "New answer." })
+    socket.serverAudio(2, 4_800)
+    const sources = r.contexts[0].sources
+    // The old reply's first chunk was stopped; the dropped in-flight chunk made no source; the new text is playing.
+    expect(sources).toHaveLength(2)
+    expect(sources[0].stoppedAt).toBe(0)
+    expect(sources[1].stoppedAt).toBeNull()
+    expect(sources[1].startedAt).not.toBeNull()
+    expect(socket.types()).not.toContain("barge_in")
+  })
+})

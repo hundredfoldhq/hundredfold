@@ -85,7 +85,7 @@ const IN_FLIGHT: ReadonlySet<Session["status"]> = new Set(["running", "waiting"]
  * already running. Two shapes count as already running:
  *
  *   - an execution attempt in flight. A pickup path that claimed the Todo is
- *     refused by the claim as well, but cron and talk link sessions without
+ *     refused by the claim as well, but cron links sessions without
  *     claiming, and the claim alone would let a Dispatcher in beside them;
  *   - an `executing` Todo whose newest attempt is its assignee's, idle between
  *     turns. That is a producer waiting on a review or a reply, not a dead one,

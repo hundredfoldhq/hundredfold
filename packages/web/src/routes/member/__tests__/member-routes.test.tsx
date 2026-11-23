@@ -105,7 +105,7 @@ describe("the member app's routes", () => {
   })
 
   it("sends every operator route back to their boards", async () => {
-    for (const path of ["/settings", "/org", "/cron", "/talk", "/chat/abc", "/todos"]) {
+    for (const path of ["/settings", "/org", "/cron", "/chat/abc", "/todos"]) {
       const { unmount } = renderAt(path)
       await screen.findByTestId("where")
       await vi.waitFor(() => expect(screen.getByTestId("where").textContent, path).not.toBe(path))

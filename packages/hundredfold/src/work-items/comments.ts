@@ -207,7 +207,7 @@ export function editComment(id: string, body: string, editor: CommentEditor): Wo
  *  retained. Author-or-operator. Idempotent — deleting a tombstone is a no-op.
  *
  *  `origin` is the surface the deletion was issued from, same audit colour as
- *  `addComment`'s: taking a spoken comment back is itself a talk write, and an
+ *  `addComment`'s: taking a comment back is itself a declared-surface write, and an
  *  audit that labels the add but not its reversal tells half the story. */
 export function tombstoneComment(id: string, editor: CommentEditor, origin?: WriteOrigin): WorkItemComment {
   const db = initDb();

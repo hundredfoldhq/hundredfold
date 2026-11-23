@@ -53,7 +53,7 @@ describe("deliverConnectorReply", () => {
     expect(slack.replyMessage).not.toHaveBeenCalled();
   });
 
-  it("does not deliver for source 'talk'", async () => {
+  it("does not deliver for source 'talk' (a stored row)", async () => {
     await deliverConnectorReply(makeSession({ source: "talk" }), "hi", map);
     expect(slack.replyMessage).not.toHaveBeenCalled();
   });

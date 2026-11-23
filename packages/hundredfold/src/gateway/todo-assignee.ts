@@ -3,7 +3,7 @@ import { OPERATOR_ASSIGNEE } from "../work-items/assignment.js";
 
 /**
  * Who may hold a Todo. One answer for every surface that sets an assignee: the
- * assign route, the operator pen's PATCH, delegation and Talk.
+ * assign route, the operator pen's PATCH, and delegation.
  *
  * A Todo's assignee is an employee on the roster, or the operator (stored as
  * `@operator`), but never a system employee: the Dispatcher and the Shaper

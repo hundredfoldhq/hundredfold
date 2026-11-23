@@ -11,9 +11,8 @@ export interface AppRouteDescriptor {
 }
 
 /**
- * The paths the shipped router can render. Route elements stay in `main.tsx`,
- * but their identities live here so Talk coverage and the router consume the
- * same list instead of maintaining two uncheckable copies.
+ * The paths the shipped router can render. Route elements stay in `main.tsx`;
+ * the ids and paths live here.
  */
 export const APP_ROUTES = [
   { id: "chat", path: "/", availability: "always", surface: "chat" },
@@ -37,7 +36,6 @@ export const APP_ROUTES = [
   { id: "skill-detail", path: "/skills/:name", availability: "always", surface: "skill" },
   { id: "file", path: "/file", availability: "always", surface: "file" },
   { id: "more", path: "/more", availability: "always", surface: "more" },
-  { id: "talk-orb", path: "/talk-orb", availability: "always", surface: "talk-orb" },
   { id: "plugin-contributed", path: "/*", availability: "always", surface: "plugin" },
 ] as const satisfies readonly AppRouteDescriptor[]
 

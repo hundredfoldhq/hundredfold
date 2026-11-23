@@ -503,10 +503,15 @@ impl Session {
                 actions.push(Action::ConfigureOnset(ready.onset));
                 actions.push(state(self.state(), None));
             }
-            GatewayFrame::StopPlayback => {
+            GatewayFrame::StopPlayback { new_reply } => {
                 if self.phase == Phase::Running {
                     self.interrupt(now_ms);
                     self.cues.speech.clear();
+                    if new_reply {
+                        // The gateway cut the old reply and goes on to speak the new one on this same
+                        // socket, in order: the guard window would throw the new text away.
+                        self.guard_until_ms = 0;
+                    }
                     actions.push(Action::FlushPlayback);
                 }
             }
@@ -864,6 +869,29 @@ mod tests {
             .is_empty());
         // The gateway initiated it, so the client does not send a barge_in.
         assert!(texts(&actions).is_empty());
+    }
+
+    #[test]
+    fn a_new_reply_stop_drops_the_old_audio_but_not_the_new_text_that_follows_at_once() {
+        let mut session = running(Mode::HandsFree);
+        session.handle(Input::GatewayBinary(down(7, &[1, 2])), 10);
+        let frame = r#"{"type":"stop_playback","reason":"new_reply"}"#;
+        let actions = session.handle(Input::GatewayText(frame.into()), 20);
+        assert_eq!(
+            actions,
+            vec![Action::Forward(frame.into()), Action::FlushPlayback]
+        );
+        // What was queued of the old reply stays dropped, even late.
+        assert!(session
+            .handle(Input::GatewayBinary(down(7, &[1, 2])), 30)
+            .is_empty());
+        // The new reply's first audio, well inside the speech guard window, is played.
+        assert_eq!(
+            session
+                .handle(Input::GatewayBinary(down(8, &[1, 2])), 170)
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -4,7 +4,6 @@ import { MediaPreview } from './media-preview'
 import { useOrg } from '@/hooks/use-employees'
 import { useSkills } from '@/hooks/use-skills'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
-import { useChatComposerControl } from './chat-composer-control'
 import { composerCardPresentation } from './chat-composer-presentation'
 import { useChatDraft } from './use-chat-draft'
 import { isCoarsePointer } from '@/lib/terminal-input'
@@ -454,11 +453,6 @@ export function ChatInput({
     }
   }
   sendTextRef.current = sendText
-
-  useChatComposerControl({
-    sessionId, isActive, textareaRef, disabledRef, submittingRef, valueRef,
-    pendingAttachmentsRef, sendTextRef, setValue, setShowMentions, setShowCommands,
-  })
 
   function handleSubmit(flipDelivery = false) {
     void sendText(value, pendingAttachments, deliveryForSend(sendDelivery, flipDelivery))

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VOICE_PROMPT_OPEN, VOICE_REMINDER, VOICE_STYLE_CLEARED, interruptedNote } from "../envelope.js";
-import { baseConfig, createHarness, SESSION } from "./hub-harness.js";
+import { baseConfig, createHarness, playedAll, SESSION } from "./hub-harness.js";
 import { settle } from "./fakes.js";
 
 describe("a spoken round trip (US1)", () => {
@@ -191,10 +191,11 @@ describe("time to first audio on an engine that answers all at once", () => {
 
   it("a reply still pins its own stored message when a newer one appears before it is touched again", async () => {
     const h = createHarness();
-    const { attachment } = h.connect();
+    const { socket, attachment } = h.connect();
     await h.say(attachment, "one");
     h.state.replyMessage = "row-1";
     await h.reply("First reply.");
+    playedAll(socket, attachment);
     h.state.replyMessage = "row-2";
     await h.reply("Second reply.");
     h.state.replyMessage = "row-3";
@@ -216,10 +217,12 @@ describe("an engine that answers all at once", () => {
 
   it("a result that only repeats what streamed adds nothing, and one that is not an extension of it is left alone", async () => {
     const h = createHarness();
-    const { socket } = h.connect();
+    const { socket, attachment } = h.connect();
     h.event("session:started");
     h.delta("text", "Streamed in pieces. ");
     h.event("session:completed", { result: "Streamed in pieces. ", error: null });
+    await settle();
+    playedAll(socket, attachment);
     h.event("session:started");
     h.delta("text", "First block. ");
     h.delta("tool_use", "", { toolName: "Bash" });

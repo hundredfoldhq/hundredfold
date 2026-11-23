@@ -12,9 +12,8 @@ export { reconcileCompletedTurnMessages } from './completed-turn-messages'
 /**
  * useLiveSession — the live read pipeline for one gateway session.
  *
- * Extracted verbatim from ChatPane so it can be reused read-only by the Talk
- * child-session modal (which previously only refetched on terminal events and
- * thus never showed live streaming or live media). It owns:
+ * Extracted verbatim from ChatPane so it can be reused read-only by other
+ * surfaces that need live streaming and live media. It owns:
  *   - the message list + the optimistic streaming-text bubble
  *   - the full WS event set (session:delta text/tool/context, :notification,
  *     :attachment, :interrupted, :stopped, :completed)
@@ -137,7 +136,7 @@ export interface UseLiveSessionOptions {
   subscribe: (fn: GatewayEventListener) => () => void
   /** Gateway connection seq — bumping it triggers reconnect backfill. */
   connectionSeq?: number
-  /** Read-only consumers (the Talk modal) seed loading from running state and
+  /** Read-only consumers seed loading from running state and
    *  never write the localStorage intermediate cache. */
   readOnly?: boolean
   /** Initial optimistic message (just-created-from-new-chat user bubble). */

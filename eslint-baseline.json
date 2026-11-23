@@ -396,10 +396,10 @@
     "packages/hundredfold/src/stt/stt.ts": [
       "max-lines-per-function"
     ],
-    "packages/hundredfold/src/talk/kokoro.ts": [
+    "packages/hundredfold/src/tts/kokoro.ts": [
       "max-lines-per-function"
     ],
-    "packages/hundredfold/src/talk/speakable.ts": [
+    "packages/hundredfold/src/voice/speakable.ts": [
       "max-lines-per-function"
     ],
     "packages/hundredfold/src/work-items/approvals.ts": [

@@ -2,8 +2,7 @@
  * Environment-variable indirection for config values that hold secrets.
  *
  * Lets a user write `apiKey: "${OPENAI_API_KEY}"` in config.yaml and keep the
- * key itself in the environment. Shared by the MCP server resolver and the
- * realtime provider factory.
+ * key itself in the environment. Used by the MCP server resolver and the voice providers.
  */
 
 import { voiceKeyEnvironment } from "./child-env.js";

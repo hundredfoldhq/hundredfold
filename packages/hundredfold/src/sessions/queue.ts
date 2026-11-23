@@ -21,8 +21,7 @@ export class SessionQueue {
   private inFlightItems = new Set<string>();
   /** Per lane, the dispatches of rows that no slot has claimed yet. */
   private waitingRows = new WaitingRows((row) => this.inFlightItems.delete(row.id));
-  /** Tasks waiting per key that have no durable row (connector turns, the talk
-   * handoff). The row count alone cannot see them; they leave when they start. */
+  /** Tasks waiting per key that have no durable row (connector turns). The row count alone cannot see them; they leave when they start. */
   private rowlessWaiting = new Map<string, number>();
 
   /**
@@ -155,7 +154,7 @@ export class SessionQueue {
     return queueItemId ? this.enqueueRow(sessionKey, fn, queueItemId) : this.enqueueRowless(sessionKey, fn);
   }
 
-  /** A task with no durable row (a connector turn, the talk handoff): it runs in its own slot. */
+  /** A task with no durable row (a connector turn): it runs in its own slot. */
   private enqueueRowless(sessionKey: string, fn: () => Promise<void>): Promise<void> {
     this.rowlessWaiting.set(sessionKey, this.getRowlessWaitingCount(sessionKey) + 1);
     const runTask = async () => {

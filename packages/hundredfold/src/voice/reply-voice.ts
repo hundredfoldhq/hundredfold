@@ -172,12 +172,31 @@ export class ReplyVoice {
   // ── session events ─────────────────────────────────────────────────────────
 
   onStarted(): void {
+    this.jumpToNewText();
     this.suppress = false;
     this.reply = this.newReply();
     if (this.exchange) this.exchange.turnStarted = true;
     this.engineTurn = "thinking";
     this.tool = undefined;
     this.emitTurn();
+  }
+
+  /**
+   * A new reply is about to be spoken: whatever is still queued, being made or playing belongs to an older reply, so
+   * it stops now and speech starts on the new text. A cut waiting for the words that follow it (a barge-in) and a
+   * holding line on its own are left alone.
+   */
+  private jumpToNewText(): void {
+    if (this.suspended || this.pipeline.isHeld() || !this.pipeline.hasUnplayedReply()) return;
+    const cut = this.pipeline.cut(null, 0);
+    this.options.send({ type: "stop_playback", reason: "new_reply" });
+    const pass = cut.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
+    if (pass) return this.recordPassHeard(cut, pass);
+    const reply = this.reply ?? this.last;
+    if (!reply || reply.id !== cut.replyKey) return;
+    reply.heard = cut.heard;
+    if (reply === this.reply) this.pendingMeta = reply;
+    else this.safeApplyMeta(reply);
   }
 
   /** A text delta, or a snapshot that reconciles the reply so far. */
@@ -313,6 +332,9 @@ export class ReplyVoice {
       for (const row of speakable) this.missed.push({ messageId: row.id, text: row.content });
       return;
     }
+    // The engine's own report is a new reply too, unless a pass is still being spoken (a burst of reports is one reply)
+    // or a gateway reply is mid-stream (the two interleave by design).
+    if (!this.reply && !this.livePass()) this.jumpToNewText();
     const pass = this.passToSpeakIn();
     pass.rows = [...(pass.rows ?? []), ...speakable];
     for (const row of speakable) this.pipeline.speakText(row.content, row.id);

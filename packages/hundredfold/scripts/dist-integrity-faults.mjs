@@ -28,11 +28,11 @@ if (fault && path.basename(process.argv[1] ?? "") === "build.mjs") {
     return realRm(target, options);
   };
 
-  // Step 5 of the build makes dist/src/talk once tsc and the protocol embedding are done.
+  // Step 5 of the build makes dist/src/tts once tsc and the protocol embedding are done.
   const realMkdir = fs.mkdirSync;
   fs.mkdirSync = (target, options) => {
     const result = realMkdir(target, options);
-    if (path.basename(String(target)) === "talk" && path.basename(path.dirname(String(target))) === "src") {
+    if (path.basename(String(target)) === "tts" && path.basename(path.dirname(String(target))) === "src") {
       const shared = path.join(path.dirname(String(target)), "shared");
       if (fault === "emitted-gone") realRm(path.join(shared, "local-db-guard.js"), { force: true });
       if (fault === "import-dangles") fs.writeFileSync(path.join(shared, "stray.js"), 'import "./ghost.js";\n');
