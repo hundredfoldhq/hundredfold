@@ -4,7 +4,7 @@
  * the same process and the same install state.
  */
 import { voiceKeyEnvironment } from "../../shared/child-env.js";
-import type { ResolvedVoiceConfig } from "../../shared/voice-config.js";
+import { localSttModel, type ResolvedVoiceConfig } from "../../shared/voice-config.js";
 import type { VoiceProviderSet } from "../hub-types.js";
 import type { SttProvider, TtsProvider, VadStream } from "../provider.js";
 import { SpeechInstaller, helloModels, resolveDevice, spawnSidecar, voicePaths, type InstallStatus } from "../sidecar/bootstrap.js";
@@ -32,17 +32,18 @@ export function onVoiceInstallChange(listener: (status: InstallStatus) => void):
   return () => installListeners.delete(listener);
 }
 
-/** The one local sidecar and installer for this home and device setting, created on first ask. */
+/** The one local sidecar and installer for this home, device setting and speech-to-text model, created on first ask. */
 export function sharedLocalSpeech(resolved: ResolvedVoiceConfig, home?: string): LocalSpeech {
-  const key = `${home ?? ""}|${resolved.local.device}`;
+  const model = localSttModel(resolved.stt);
+  const key = `${home ?? ""}|${resolved.local.device}|${model}`;
   const existing = shared.get(key);
   if (existing) return existing;
   const paths = voicePaths(home);
   const device = () => resolveDevice(resolved.local.device);
-  const installer = new SpeechInstaller({ home, device, onChange: (status) => installListeners.forEach((listener) => listener(status)) });
+  const installer = new SpeechInstaller({ home, device, sttModel: () => model, onChange: (status) => installListeners.forEach((listener) => listener(status)) });
   const client = new SpeechSidecarClient({
     spawnProcess: () => spawnSidecar(paths),
-    hello: () => ({ device: device(), models: helloModels(paths, device()) }),
+    hello: () => ({ device: device(), models: helloModels(paths, device(), model) }),
   });
   const local = { client, installer };
   shared.set(key, local);
