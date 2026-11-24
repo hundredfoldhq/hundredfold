@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, vi, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 
 /**
  * Live test of cutting a running turn between two tool calls (interruptAtToolBoundary) against a
@@ -37,9 +37,16 @@ import { InteractiveClaudeEngine } from "../claude-interactive.js";
 import { PtyLifecycleManager } from "../pty-lifecycle.js";
 import { HookRegistry } from "../../gateway/hook-registry.js";
 import { claudeProfileFromDir } from "../../shared/claude-profile.js";
+import { isolateLiveClaudeEnv } from "./live-claude-env.js";
 
 const dirs: string[] = [];
-afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+// The real claude gets its own HOME and no auto-updater (see live-claude-env.ts), and the host's launcher link is checked after.
+let liveEnv: ReturnType<typeof isolateLiveClaudeEnv> | undefined;
+beforeAll(() => { if (LIVE) liveEnv = isolateLiveClaudeEnv(); });
+afterAll(() => {
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  liveEnv?.restore();
+});
 
 /** One engine on a real claude, with its hooks relayed into a real HookRegistry. */
 async function liveEngine(id: string) {
