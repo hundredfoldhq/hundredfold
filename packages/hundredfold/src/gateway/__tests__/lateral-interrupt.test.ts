@@ -39,12 +39,19 @@ interface Stub {
   aborts: Array<{ reason: string; waitMs: number }>;
   /** Ends the running turn as the target finishing it on its own. */
   finish: () => void;
+  /**
+   * For a `waiting` answer: the call in flight reaches its boundary now, while
+   * the turn is still running. Asks the armed `beforeAbort` as a real engine
+   * does, and returns its answer; the abort itself lands on `finish()`.
+   */
+  reachBoundary: () => boolean;
 }
 
 /** A target mid-turn; `outcome` is what its engine answers a request to stop at a boundary. */
 function boundaryEngine(outcome: ToolBoundaryOutcome): Stub {
   const prompts: string[] = [];
   const aborts: Stub["aborts"] = [];
+  let armed: (() => boolean) | undefined;
   let endTurn!: () => void;
   const running = new Promise<void>((resolve) => { endTurn = resolve; });
   const engine: BoundaryInterruptibleEngine = {
@@ -64,10 +71,17 @@ function boundaryEngine(outcome: ToolBoundaryOutcome): Stub {
         if (opts.beforeAbort && !opts.beforeAbort()) return "over";
         endTurn();
       }
+      if (outcome === "waiting") armed = opts.beforeAbort ?? (() => true);
       return outcome;
     },
   };
-  return { engine, prompts, aborts, finish: () => endTurn() };
+  const reachBoundary = () => {
+    if (!armed) throw new Error("no abort is armed");
+    const go = armed;
+    armed = undefined;
+    return go();
+  };
+  return { engine, prompts, aborts, finish: () => endTurn(), reachBoundary };
 }
 
 async function post(context: ApiContext, sessionId: string, body: unknown, headers: Record<string, string> = {}) {
@@ -195,20 +209,50 @@ describe("what is folded into the cut turn", () => {
   });
 
   it("leaves another sender's message readable when the interrupting sender replaces its own send", async () => {
-    // `waiting`: the cut has not happened yet, so the interrupting message is still the sender's to replace.
-    const { prompts, queue, context, finish, target, caller } = await busyTarget("supersede", "waiting");
+    // `waiting`, then the boundary arrives while the turn is still running: the fold happens, and before the
+    // abort lands the interrupting sender replaces its (now merged) send. Only its own sends were in it.
+    const { prompts, queue, events, context, finish, reachBoundary, target, caller } = await busyTarget("supersede", "waiting");
     const other = createParent("interrupt-supersede-other");
 
     await post(context, target.id, { message: "A says: use plan alpha" }, toolHeaders(other.id));
+    await post(context, target.id, { message: "B says: first" }, toolHeaders(caller.id));
     const urgent = await post(context, target.id, { message: "B says: urgent", interrupt: true }, toolHeaders(caller.id));
-    const replaced = await post(context, target.id, { message: "B says: never mind", supersedes: (urgent.body as { queueItemId: string }).queueItemId }, toolHeaders(caller.id));
+    expect(urgent.body).toMatchObject({ interrupt: "waiting" });
 
+    expect(reachBoundary()).toBe(true);
+    expect(events).toContainEqual({ event: "session:interrupted", data: expect.objectContaining({ sessionId: target.id }) });
+    const replaced = await post(context, target.id, { message: "B says: never mind", supersedes: (urgent.body as { queueItemId: string }).queueItemId }, toolHeaders(caller.id));
     expect(replaced.body).toMatchObject({ superseded: "withdrawn" });
+    finish();
+
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(prompts.join("\n")).toContain("B says: never mind");
+    });
+    expect(prompts.join("\n")).toContain("A says: use plan alpha");
+    expect(prompts.join("\n")).not.toContain("B says: urgent");
+  });
+
+  it("is not done, and the turn is not cut, when the interrupting send was withdrawn before the boundary", async () => {
+    const { prompts, queue, events, context, reachBoundary, finish, target, caller } = await busyTarget("withdrawn", "waiting");
+
+    const urgent = await post(context, target.id, { message: "B says: urgent", interrupt: true }, toolHeaders(caller.id));
+    expect(urgent.body).toMatchObject({ interrupt: "waiting" });
+    const replaced = await post(context, target.id, { message: "B says: never mind", supersedes: (urgent.body as { queueItemId: string }).queueItemId }, toolHeaders(caller.id));
+    expect(replaced.body).toMatchObject({ superseded: "withdrawn" });
+
+    expect(reachBoundary()).toBe(false);
+    expect(events.filter((e) => e.event === "session:interrupted")).toHaveLength(0);
+    expect(prompts).toHaveLength(1);
+    expect(queue.isRunning(target.sessionKey)).toBe(true);
+    // The turn runs to its own end and the replacement is read after it, in a turn of its own.
     finish();
     await eventually(() => {
       expect(queue.isRunning(target.sessionKey)).toBe(false);
-      expect(prompts.join("\n")).toContain("A says: use plan alpha");
+      expect(prompts).toHaveLength(2);
     });
+    expect(prompts[1]).toContain("B says: never mind");
+    expect(prompts[1]).not.toContain("B says: urgent");
   });
 
   it("is nothing when the engine cannot cut the turn: one turn per message, as before", async () => {
