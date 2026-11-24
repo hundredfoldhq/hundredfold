@@ -203,6 +203,36 @@ export function isSteerableEngine(engine: Engine): engine is SteerableEngine {
   return typeof candidate.canSteer === "function" && typeof candidate.steer === "function";
 }
 
+/** How a request to stop a turn between two tool calls ended. */
+export type ToolBoundaryOutcome =
+  /** The turn was aborted at a boundary. */
+  | "interrupted"
+  /** A call was still executing after the wait. The abort stays armed for the boundary, and goes ahead only if `beforeAbort` still agrees. */
+  | "waiting"
+  /** The turn ended before it reached a boundary: nothing was aborted. */
+  | "over"
+  /** This engine, or this turn of it, cannot be stopped at a boundary. */
+  | "unsupported";
+
+/**
+ * An engine that can end a running turn between two tool calls, so that nothing
+ * a call was writing is cut off. {@link InterruptibleEngine.kill} cannot promise
+ * that: on Claude it ends the whole process, with its tool call, background
+ * shells and subagents.
+ */
+export interface BoundaryInterruptibleEngine extends InterruptibleEngine {
+  /**
+   * Abort the session's running turn once no tool call is executing, waiting up
+   * to `waitMs` for that; see {@link ToolBoundaryOutcome}. `beforeAbort` is asked
+   * right before the abort, and a `false` answer calls it off.
+   */
+  interruptAtToolBoundary(sessionId: string, reason: string, opts: { waitMs: number; beforeAbort?: () => boolean }): Promise<ToolBoundaryOutcome>;
+}
+
+export function isBoundaryInterruptibleEngine(engine: Engine): engine is BoundaryInterruptibleEngine {
+  return isInterruptibleEngine(engine) && typeof (engine as Partial<BoundaryInterruptibleEngine>).interruptAtToolBoundary === "function";
+}
+
 /** A tool call running in the foreground of a session's turn. */
 export interface ForegroundWork {
   tool: string;

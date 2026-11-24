@@ -79,6 +79,9 @@
 //               reply to the same prompt, which answers
 //   NEWERREPLYDONE  the first reply finishes "stop" with nothing written; 300 ms
 //               later a new reply to the same prompt opens and answers
+//   TOOLCHAIN   six tool round trips in a row, each executing 600 ms after 200 ms of model turnaround (the part is `running`, then `completed`),
+//               then a final reply: a long turn with a tool boundary every 600 ms. A call that an abort lands
+//               in the middle of is recorded in /test/log as `TOOL-CUT-MID-RUN`
 //   TOOLFIRST   one tool round trip (finish=tool-calls) before any provider directive,
 //               so the trouble lands on the turn's second step
 //   TOOLNARRATE as TOOLFIRST, with the tool step also writing narration text
@@ -240,6 +243,22 @@ function serve() {
     newReply(sessionID, turn);
   }
 
+  /** One tool round trip whose call executes for `ms`; true when an abort cut it off. */
+  async function slowToolRound(sessionID, turn, n, ms) {
+    const callID = `call_${turn.userId}_${n}`;
+    // The model's turnaround before it calls its next tool: the gap an abort at a boundary lands in.
+    for (let waited = 0; waited < 200 && !turn.aborted; waited += 20) await sleep(20);
+    if (turn.aborted) return true;
+    part(sessionID, turn, { type: "tool", callID, tool: "bash", state: { status: "running", input: { command: `sleep ${ms}` }, time: { start: Date.now() } } });
+    for (let waited = 0; waited < ms && !turn.aborted; waited += 20) await sleep(20);
+    if (turn.aborted) {
+      log.push({ method: "FAKE", url: "TOOL-CUT-MID-RUN", body: { callID }, at: Date.now() });
+      return true;
+    }
+    toolRound(sessionID, turn, n);
+    return false;
+  }
+
   async function runTurn(sessionID, turn) {
     const { text, body } = turn;
     if (text.includes("SLOWSTART")) await sleep(800);
@@ -271,6 +290,9 @@ function serve() {
     if (text.includes("TOOLNARRATE")) part(sessionID, turn, { type: "text", text: "Let me read the file first.", time: { start: 1, end: 2 } });
     if (text.includes("TOOLFIRST") || text.includes("TOOLNARRATE")) toolRound(sessionID, turn, 1);
     if (/PROVIDER|NEWERREPLY|COPYAFTERABORT/.test(text) && await providerTrouble(sessionID, turn)) return;
+    if (text.includes("TOOLCHAIN")) {
+      for (let n = 1; n <= 6; n++) if (await slowToolRound(sessionID, turn, n, 600)) return;
+    }
     if (text.includes("MULTISTEP")) { toolRound(sessionID, turn, 1); toolRound(sessionID, turn, 2); }
     if (text.includes("TOOLONLY")) {
       toolRound(sessionID, turn, 1);

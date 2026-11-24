@@ -16,6 +16,7 @@ import {
 } from "./opencode-server-turn.js";
 import { fallbackModelNotice, requestedModel, stepModel } from "./opencode-fallback-notice.js";
 import { abandonedRetryError, providerFailureReason, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
+import { ToolBoundary } from "./opencode-tool-boundary.js";
 import { isAbortError, record, runLinesFromStoredReply, str, V2ForegroundTools, V2RunLines, v2ReplyIsDone, type V2Event, type V2Message } from "./opencode-v2-events.js";
 import { cancelledV2Requests, HUNDREDFOLD_V2_PROMPT_METADATA, hundredfoldSessionNotes, type HundredfoldSessionNotes } from "./opencode-v2-history.js";
 import { sessionRoute, V2_REQUEST_TIMEOUT_MS, v2Headers, v2InInbox, v2Messages, v2Request, v2RunningSessions, v2UpdateSessionNotes, v2WithdrawInbox } from "./opencode-v2-api.js";
@@ -115,6 +116,8 @@ export class OpencodeV2ServerTurn {
   private delivered = false;
   /** The tool calls the turn's steps have running (see foregroundWork). */
   private readonly foreground = new V2ForegroundTools();
+  /** The same calls, for a caller that wants the turn stopped between two of them (see ToolBoundary). */
+  readonly toolBoundary = new ToolBoundary();
   /** Inputs steered into the turn (see steer) the server has not yet delivered. */
   private readonly pendingSteers = new Map<string, PendingSteer>();
   /** The turn is waiting for a steer past the end of its execution (see onExecutionEnded). */
@@ -679,13 +682,25 @@ export class OpencodeV2ServerTurn {
     // Text and tool events: the turn's own steps only.
     if (data.sessionID === this.sessionId && this.own.has(str(data.assistantMessageID) ?? "")) {
       this.foreground.onEvent(event);
+      this.trackToolCall(event, data);
       this.feed(this.lines.lineFor(event));
     }
   }
 
   /** A step that ended, failed or was aborted has no tool still running (an aborted tool reports no result). */
   private noteForegroundEnd(event: V2Event, data: Record<string, unknown>): void {
-    if (data.sessionID === this.sessionId && FOREGROUND_ENDING_EVENTS.has(event.type)) this.foreground.clear();
+    if (data.sessionID === this.sessionId && FOREGROUND_ENDING_EVENTS.has(event.type)) {
+      this.foreground.clear();
+      this.toolBoundary.clear();
+    }
+  }
+
+  /** A call executes from `session.tool.called` to its success or failure. */
+  private trackToolCall(event: V2Event, data: Record<string, unknown>): void {
+    const callId = str(data.id);
+    if (!callId) return;
+    if (event.type === "session.tool.called") this.toolBoundary.start(callId);
+    else if (event.type === "session.tool.success" || event.type === "session.tool.failed") this.toolBoundary.end(callId);
   }
 
   /** Note which inputs others queue (see onDelivered). */
@@ -921,6 +936,7 @@ export class OpencodeV2ServerTurn {
     if (this.settled) return;
     this.settled = true;
     this.settle.cancel();
+    this.toolBoundary.close();
     this.resolveDone();
   }
 }

@@ -6,6 +6,7 @@ import { unsupportedServerFlags, variantOf } from "./opencode-variant.js";
 import { basicAuthHeader, type OpencodeServer } from "./opencode-server.js";
 import { USER_STOP_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { abandonedRetryError, providerFailureReason, providerRetryOf, SettleWait, type ProviderRetry, type SettleKind } from "./opencode-server-settle.js";
+import { ToolBoundary } from "./opencode-tool-boundary.js";
 import { metadataTag, readMetadataTag } from "./opencode-metadata-tag.js";
 import { lastUserModel, RESEED_FAILED_NOTICE, reseedSystemPrompt } from "./opencode-server-compaction.js";
 
@@ -568,6 +569,8 @@ export class OpencodeServerTurn {
   /** Assistant messages answering this turn, and messages that are someone else's. */
   private readonly own = new Set<string>();
   private readonly foreign = new Set<string>();
+  /** The tool calls the turn's own replies are executing (see ToolBoundary). */
+  readonly toolBoundary = new ToolBoundary();
   /** Parts that arrived before their message said whose it is. */
   private readonly pendingParts = new Map<string, ServerEvent[]>();
   /** The newest assistant message in the session: whose step is running now. */
@@ -1231,6 +1234,7 @@ export class OpencodeServerTurn {
   private onOwnReply(id: string, info: Record<string, unknown>): void {
     // A newer reply: a next step. The turn goes on.
     if (id > this.newestOwn) this.settle.cancel();
+    this.clearToolsOfClosedReply(info);
     if (id >= this.newestOwn) {
       this.newestOwn = id;
       this.ownReply = info;
@@ -1278,7 +1282,23 @@ export class OpencodeServerTurn {
       this.pendingParts.set(messageId, waiting);
       return;
     }
+    this.trackToolCall(part);
     this.feed(runLineForEvent({ type: "message.part.updated", properties: props }, this.sessionId));
+  }
+
+  /** A reply that closed, or failed, executes no call any more; an aborted call reports no result. */
+  private clearToolsOfClosedReply(info: Record<string, unknown>): void {
+    if (record(info.time)?.completed || info.error) this.toolBoundary.clear();
+  }
+
+  /** A tool part executes from `running` to `completed` or `error`; `pending` is its input still streaming. */
+  private trackToolCall(part: Record<string, unknown>): void {
+    if (part.type !== "tool") return;
+    const callId = str(part.callID) ?? str(part.id);
+    const status = str(record(part.state)?.status);
+    if (!callId) return;
+    if (status === "running") this.toolBoundary.start(callId);
+    else if (status === "completed" || status === "error") this.toolBoundary.end(callId);
   }
 
   private feed(line: string | undefined): void {
@@ -1348,6 +1368,7 @@ export class OpencodeServerTurn {
     if (this.settled) return;
     this.settled = true;
     this.settle.cancel();
+    this.toolBoundary.close();
     this.resolveDone();
   }
 

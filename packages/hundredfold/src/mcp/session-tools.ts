@@ -167,6 +167,28 @@ interface SendReceipt {
   targetRunning?: boolean;
   queuedFromYou?: number;
   superseded?: string;
+  /** Set when the send asked to interrupt: how that went (`interrupted`, `waiting`, `over`, `held`, `refused`, `reading` or `unsupported`). */
+  interrupt?: string;
+}
+
+/** Why an interrupt that was asked for did not cut the turn, undefined when it was not asked for or did. */
+function interruptRefusal(interrupt: string | undefined): string | undefined {
+  switch (interrupt) {
+    case "waiting":
+      return "Queued: a tool call is still running, so the interrupt waits for it to end and then cuts the turn (a call is never cut mid-way).";
+    case "unsupported":
+      return "Queued, not interrupted: this target's engine cannot be cut short between tool calls (only opencode server-mode sessions can); it reads this when its turn ends.";
+    case "over":
+      return "Queued: the target's turn ended before it could be cut; it reads this next.";
+    case "held":
+      return "Queued, not interrupted: the target is compacting or its queue is paused, or its turn had just ended; it reads this next.";
+    case "refused":
+      return "Queued, not interrupted: only the session the target's current turn reports to (its parent or delegator, or whoever asked for that turn) may cut it short; it reads this when its turn ends.";
+    case "reading":
+      return "Queued: the target is reading this message in its current turn already.";
+    default:
+      return undefined;
+  }
 }
 
 /** What to do next, given where the message landed. A busy target reads it only when its turn ends. */
@@ -174,8 +196,15 @@ function sendHint(sent: SendReceipt): string {
   const next = "Next: END YOUR TURN for reply or read_session.";
   if (sent.status === "duplicate") {
     const replaced = sent.superseded === "withdrawn" ? " The message it replaces was withdrawn unread." : "";
-    return `Not queued again: an identical message of yours is already queued.${replaced} ${next}`;
+    if (sent.interrupt === "interrupted") return `Not queued again: an identical message of yours is already queued, and the target's turn was cut short so it reads that next.${replaced} ${next}`;
+    const refused = interruptRefusal(sent.interrupt);
+    return `Not queued again: an identical message of yours is already queued.${replaced}${refused ? ` Interrupt: ${refused.replace(/^Queued(, not interrupted)?: /, "")}` : ""} ${next}`;
   }
+  if (sent.interrupt === "interrupted") {
+    return `Delivered: the target's turn was cut short between tool calls, and it reads this (after any message of yours queued before it) as its next turn. Nothing it had already done is lost. ${next}`;
+  }
+  const refused = interruptRefusal(sent.interrupt);
+  if (refused) return `${refused} ${next}`;
   if (sent.superseded === "too-late") return `Queued, but the message it replaces had already left the queue (read by the target, or cancelled). ${next}`;
   if (sent.superseded === "withdrawn") return `Queued; the message it replaces was withdrawn unread. ${next}`;
   if (!sent.targetRunning) return `Queued. ${next}`;
@@ -206,7 +235,7 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
           type: "string",
           enum: [...SESSION_FALLBACK_MODES],
           description:
-            "Usage-limit behaviour for the new session: fallback, fallback-children (its children inherit), or auto-resume (never switch model). Default: fallback-children if this session has it, else auto-resume.",
+            "Usage-limit behaviour: fallback, fallback-children (its children inherit), or auto-resume (never switch model). Default: fallback-children if this session has it, else auto-resume.",
         },
       },
       required: ["prompt"],
@@ -242,6 +271,7 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
         sessionId: { type: "string" },
         message: { type: "string" },
         supersedes: { type: "string" },
+        interrupt: { type: "boolean" },
       },
       required: ["sessionId", "message"],
     },
@@ -254,16 +284,18 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
         throw new HundredfoldMcpToolError("cannot message your own session — write your conclusion in your reply instead.");
       }
       const supersedes = optionalString(args, "supersedes");
-      const { status, body } = await gatewayRequest(ctx, "POST", `${sessionPath(sessionId)}/message`, { message, ...(supersedes ? { supersedes } : {}) });
+      const interrupt = args.interrupt === true;
+      const { status, body } = await gatewayRequest(ctx, "POST", `${sessionPath(sessionId)}/message`, { message, ...(supersedes ? { supersedes } : {}), ...(interrupt ? { interrupt } : {}) });
       if (status >= 400) throw gatewayFailure(`messaging session "${sessionId}"`, status, body);
       const sent = (body ?? {}) as SendReceipt;
       return {
-        status: sent.status === "duplicate" ? "duplicate" : "queued",
+        status: sent.interrupt === "interrupted" ? "delivered (interrupted turn)" : sent.status === "duplicate" ? "duplicate" : "queued",
         sessionId,
         ...(sent.queueItemId ? { queueId: sent.queueItemId } : {}),
         ...(sent.targetRunning !== undefined ? { targetRunning: sent.targetRunning } : {}),
         ...(sent.queuedFromYou !== undefined ? { queuedFromYou: sent.queuedFromYou } : {}),
         ...(sent.superseded ? { superseded: sent.superseded } : {}),
+        ...(sent.interrupt ? { interrupt: sent.interrupt } : {}),
         hint: sendHint(sent),
       };
     },
@@ -312,7 +344,7 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
     inputSchema: {
       type: "object",
       properties: {
-        scope: { type: "string", enum: ["children", "employee", "recent", "pinned"], description: "Which sessions (default children)." },
+        scope: { type: "string", enum: ["children", "employee", "recent", "pinned"], description: "Default children." },
         employee: { type: "string" },
         limit: { type: "number" },
       },
