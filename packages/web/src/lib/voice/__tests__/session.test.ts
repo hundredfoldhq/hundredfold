@@ -840,6 +840,21 @@ describe("paused state and resume without a reload", () => {
     expect(r.tracks.every((t) => t.stopped)).toBe(true)
     expect(voicePhase(r.session.getSnapshot())).toBe("off")
   })
+
+  it("a stop while the audio context is being woken on return leaves voice off, with no tap asked for", async () => {
+    const r = await started()
+    let wake: () => void = () => {}
+    r.contexts[0].resume = vi.fn(() => new Promise<void>((resolve) => { wake = () => { r.contexts[0].state = "running"; resolve() } }))
+    r.doc.set("hidden")
+    r.contexts[0].setState("suspended")
+    r.doc.set("visible")
+    await vi.waitFor(() => expect(r.contexts[0].resume).toHaveBeenCalled())
+    r.session.stop()
+    wake()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(voicePhase(r.session.getSnapshot())).toBe("off")
+    expect(r.session.getSnapshot().needsTap).toBe(false)
+  })
 })
 
 describe("reconnecting", () => {
