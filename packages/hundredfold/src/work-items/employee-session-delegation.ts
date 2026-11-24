@@ -164,6 +164,22 @@ export function reportingParentSessionId(session: ReportingSession): string | nu
   return hop.to && reportsUpTo(hop.to, session.id) ? own : hop.to;
 }
 
+/**
+ * Whether a turn in this session reports to another session, now or once a
+ * brief already waiting in it starts. A turn's reply is relayed only when the
+ * session reports to someone when it ends (`noticeTargetSessionId`), and a
+ * waiting brief runs ahead of anything queued after it, so a message sent to
+ * the session now is answered to its parent, to the delegator of the last
+ * brief that started, or to the delegator of a brief still waiting. A brief
+ * from the operator, who has no session, reports to nobody.
+ */
+export function reportsToASession(session: ReportingSession): boolean {
+  if (reportingParentSessionId(session)) return true;
+  return briefsTable().prepare(
+    'SELECT 1 FROM work_item_delegation_briefs WHERE session_id = ? AND delegator_session_id IS NOT NULL LIMIT 1',
+  ).get(session.id) !== undefined;
+}
+
 /** The same session with its callbacks pointed where they now go. */
 export function withReportingParent<T extends ReportingSession>(session: T): T {
   const parentSessionId = reportingParentSessionId(session);
