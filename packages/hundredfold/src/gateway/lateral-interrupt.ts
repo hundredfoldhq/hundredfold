@@ -34,10 +34,14 @@ export type LateralInterruptOutcome = ToolBoundaryOutcome | "held" | "refused" |
  * session whose message it is answering). A cut turn settles without a notice,
  * and the turn that replaces it answers the interrupting sender, so anyone else
  * cutting it would take the notice away from whoever is waiting on it. A turn
- * nobody is waiting on (an operator's own chat) cannot be cut by a session at all.
+ * nobody is waiting on (an operator's own chat), or that the operator started,
+ * cannot be cut by a session at all: its answer is the operator's.
  */
 export function mayCutRunningTurn(target: Session, callerSessionId: string): boolean {
-  return noticeTargetSessionId(getSession(target.id) ?? target) === callerSessionId;
+  const fresh = getSession(target.id) ?? target;
+  // A turn the operator started (in a spawned session's own chat) answers the operator, whoever its notice goes to.
+  if (fresh.attemptOperatorTurn === true) return false;
+  return noticeTargetSessionId(fresh) === callerSessionId;
 }
 
 /**

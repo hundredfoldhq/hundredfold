@@ -121,7 +121,8 @@ async function busyTarget(suffix: string, outcome: ToolBoundaryOutcome = "interr
   // The caller is the target's parent: the session its running turn reports to.
   const caller = createParent(`interrupt-${suffix}-caller`);
   const target = createChild(caller.id, `interrupt-${suffix}-target`);
-  await post(context, target.id, { message: "start a long turn" });
+  // The parent asks for the long turn: an operator-started turn could not be cut (see "who may cut a turn").
+  await post(context, target.id, { message: "start a long turn" }, toolHeaders(caller.id));
   await eventually(() => expect(stub.prompts).toHaveLength(1));
   return { ...stub, queue, context, events, target, caller };
 }
@@ -153,8 +154,8 @@ describe("a send that asks to interrupt", () => {
     const statuses = queueRows(target.id).map((row) => row.status);
     expect(statuses.filter((status) => status === "cancelled")).toHaveLength(2);
     expect(statuses.filter((status) => status === "completed")).toHaveLength(2);
-    // Each message was sent, so each keeps its bubble in the transcript.
-    expect(registry.getMessages(target.id).filter((m) => m.role === "notification")).toHaveLength(3);
+    // Each message was sent, so each keeps its bubble in the transcript (the parent's opening one too).
+    expect(registry.getMessages(target.id).filter((m) => m.role === "notification")).toHaveLength(4);
   });
 
   it("leaves the turn alone, and the message queued, when the target's queue is paused", async () => {
@@ -268,7 +269,7 @@ describe("what is folded into the cut turn", () => {
     const context = makeContext(stub.engine, queue, []);
     const caller = createParent("interrupt-no-fold-caller");
     const target = createChild(caller.id, "interrupt-no-fold-target");
-    await post(context, target.id, { message: "start a long turn" });
+    await post(context, target.id, { message: "start a long turn" }, toolHeaders(caller.id));
     await eventually(() => expect(stub.prompts).toHaveLength(1));
 
     await post(context, target.id, { message: "first" }, toolHeaders(caller.id));
@@ -361,6 +362,23 @@ describe("who may cut a turn", () => {
 
     expect(urgent.body).toMatchObject({ interrupt: "refused" });
     expect(stub.aborts).toHaveLength(0);
+    stub.finish();
+  });
+
+  it("is refused for the parent when the operator started the turn in the child's chat", async () => {
+    const stub = boundaryEngine("interrupted");
+    const events: Array<{ event: string; data: unknown }> = [];
+    const context = makeContext(stub.engine, new queueModule.SessionQueue(), events);
+    const caller = createParent("interrupt-operator-turn-caller");
+    const target = createChild(caller.id, "interrupt-operator-turn-target");
+    await post(context, target.id, { message: "operator asks something" });
+    await eventually(() => expect(stub.prompts).toHaveLength(1));
+
+    const urgent = await post(context, target.id, { message: "parent says: stop", interrupt: true }, toolHeaders(caller.id));
+
+    expect(urgent.body).toMatchObject({ interrupt: "refused" });
+    expect(stub.aborts).toHaveLength(0);
+    expect(events.filter((e) => e.event === "session:interrupted")).toHaveLength(0);
     stub.finish();
   });
 
