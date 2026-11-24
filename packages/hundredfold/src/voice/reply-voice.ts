@@ -136,7 +136,18 @@ export class ReplyVoice {
     } else {
       this.resumeStreamed(cut, unheard);
     }
+    // Replies the cut caught beside it are spoken again after it, and told once they are.
+    for (const other of cut?.others ?? []) this.applyWhenSpoken(other);
     this.pipeline.release();
+  }
+
+  /** Tell the stored message(s) of a cut reply that is being spoken again what went out, once it is idle. */
+  private applyWhenSpoken(cut: CutResult): void {
+    const pass = cut.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
+    const reply = pass ? undefined : this.replyOf(cut);
+    if (pass) void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
+    // A reply still streaming is told when its turn ends; one that finished is told now that its sentences are spoken.
+    else if (reply && reply !== this.reply) void this.pipeline.whenIdle().then(() => this.safeApplyMeta(reply));
   }
 
   /** A streamed reply's sentences go on as its own; one that had already finished is told once they are spoken. */
@@ -152,11 +163,7 @@ export class ReplyVoice {
   abandonHeld(heard: string): void {
     const cut = this.lastCut;
     this.lastCut = null;
-    // A report that became a pass of its own while the cut was held has only queued sentences: dropping them leaves it unheard.
-    const dropped = this.passes.filter((p) => !p.closed && p.id !== cut?.replyKey && this.pipeline.hasUnplayedFor(p.id));
-    this.pipeline.discardQueued();
-    this.pipeline.release();
-    for (const pass of dropped) this.recordNothingHeard(pass);
+    this.dropOtherReplies(cut);
     const pass = cut && cut.heard === heard && cut.replyKey !== undefined ? this.passes.find((p) => p.id === cut.replyKey) : undefined;
     if (cut && pass) return this.recordPassHeard(cut, pass);
     const reply = this.reply ?? this.last;
@@ -165,6 +172,19 @@ export class ReplyVoice {
     // A reply still being written has no stored message of its own yet: it is told when its turn ends.
     if (reply === this.reply) this.pendingMeta = reply;
     else this.safeApplyMeta(reply);
+  }
+
+  /**
+   * Words were said, so the sentences of every reply but the cut one are dropped. A report that became a pass of its
+   * own while the cut was held has only queued sentences, so it was not heard at all; replies the cut caught
+   * mid-speech were not said either: each records only what of it was heard.
+   */
+  private dropOtherReplies(cut: CutResult | null): void {
+    const dropped = this.passes.filter((p) => !p.closed && p.id !== cut?.replyKey && this.pipeline.hasUnplayedFor(p.id));
+    this.pipeline.discardQueued();
+    this.pipeline.release();
+    for (const pass of dropped) this.recordNothingHeard(pass);
+    for (const other of cut?.others ?? []) this.recordCut(other);
   }
 
   markPlayed(segmentId: number): void {
@@ -193,10 +213,21 @@ export class ReplyVoice {
     if (this.suspended || this.pipeline.isHeld() || !this.pipeline.hasUnplayedReply()) return;
     const cut = this.pipeline.cut(null, 0);
     this.options.send({ type: "stop_playback", reason: "new_reply" });
+    this.recordCut(cut);
+    for (const other of cut.others ?? []) this.recordCut(other);
+  }
+
+  /** The streamed reply a cut belongs to, when it is the one still streaming or the last that finished. */
+  private replyOf(cut: CutResult): Reply | undefined {
+    return [this.reply, this.last].find((r) => r !== null && r.id === cut.replyKey) ?? undefined;
+  }
+
+  /** A cut reply's stored message(s) learn what was heard of it. */
+  private recordCut(cut: CutResult): void {
     const pass = cut.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
     if (pass) return this.recordPassHeard(cut, pass);
-    const reply = this.reply ?? this.last;
-    if (!reply || reply.id !== cut.replyKey) return;
+    const reply = this.replyOf(cut);
+    if (!reply) return;
     reply.heard = cut.heard;
     if (reply === this.reply) this.pendingMeta = reply;
     else this.safeApplyMeta(reply);

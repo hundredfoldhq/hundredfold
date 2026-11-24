@@ -267,6 +267,73 @@ describe("replies the engine wrote outside a gateway turn (FR-016)", () => {
     });
   });
 
+  describe("a report sent between a streamed reply's sentences, which the client then barges in on", () => {
+    const report = "Report text. More report.";
+    const lastPatch = (h: ReturnType<typeof createHarness>, id: string) => h.merges.filter((m) => m.id === id).map((m) => m.patch).at(-1);
+
+    /** The reply streams and the report lands between its sentences; nothing is played yet. */
+    async function interleaved() {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.state.replyMessage = h.store("assistant", "Alpha one two three. Beta one two three four.");
+      h.event("session:started");
+      h.delta("text", "Alpha one two three. ");
+      const [late] = h.externalTurn(report);
+      h.delta("text", "Beta one two three four. ");
+      h.event("session:completed", { result: "", error: null });
+      await settle();
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Alpha one two three.", "Report text.", "More report.", "Beta one two three four."]);
+      return { h, socket, attachment, late };
+    }
+    const talkOver = (attachment: { onText(text: string): void }, segmentId: number) => attachment.onText(JSON.stringify({ type: "barge_in", segmentId, playedMs: 0 }));
+
+    it("when words follow, the report records only what was heard of it: nothing", async () => {
+      const { h, attachment, late } = await interleaved();
+      talkOver(attachment, 1);
+      await h.say(attachment, "actually stop");
+      await settle();
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: null, interrupted: true } });
+    });
+
+    it("when words follow a cut that fell in the report, the reply keeps what was played of it and the report what of it was heard", async () => {
+      const { h, socket, attachment, late } = await interleaved();
+      // The first two segments played to their end; the person talks over the third (the report's second sentence).
+      const [alpha, first, second] = socket.ofType("segment_start").map((f) => f.segmentId);
+      for (const id of [alpha, first]) attachment.onText(h.json({ type: "played", segmentId: id }));
+      talkOver(attachment, Number(second));
+      await h.say(attachment, "actually stop");
+      await settle();
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: "Report text.", interrupted: true } });
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three.", interrupted: true } });
+    });
+
+    it("with no words, the report is spoken once, after the reply's own replay, and recorded as spoken", async () => {
+      const { h, socket, attachment, late } = await interleaved();
+      talkOver(attachment, 1);
+      socket.clear();
+      h.clock.advance(BARGE_IN_GRACE_MS + 1);
+      await settle();
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual([
+        "Alpha one two three.", "Beta one two three four.", "Report text.", "More report.",
+      ]);
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: report } });
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three. Beta one two three four." } });
+    });
+
+    it("a new reply that starts over a report and a reply still unplayed records neither as heard", async () => {
+      const h = createHarness();
+      const { socket } = h.connect();
+      h.event("session:started");
+      const [late] = h.externalTurn(report);
+      h.delta("text", "Alpha one two three. ");
+      await settle();
+      expect(socket.ofType("segment_start").map((f) => f.text)).toEqual(["Report text.", "More report.", "Alpha one two three."]);
+      h.event("session:started");
+      await settle();
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: null, interrupted: true } });
+    });
+  });
+
   it("a session with no attachment reads nothing", () => {
     const h = createHarness();
     let reads = 0;
