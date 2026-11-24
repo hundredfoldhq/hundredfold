@@ -166,6 +166,7 @@ import { clearDelegationCompletionContract, DELEGATION_COMPLETION_TRACKED_META_K
 import { callerMayActOnSession, coordinatorSessionId, isAboveSession, sessionIsWithinReach } from "./session-reach-guard.js";
 import { handleAccountsApi } from "../accounts/routes.js";
 import { buildAuthState } from "../accounts/state.js";
+import { accountEmailOf, requestUserId } from "../accounts/request-account.js";
 import { PUBLIC_ACCOUNT_POST_PATHS } from "../accounts/public-paths.js";
 import { signOutUserSession } from "../accounts/logout.js";
 import type { AccountsRuntime } from "../accounts/runtime.js";
@@ -997,6 +998,15 @@ function workItemCommentAuthor(caller: WorkItemCaller): { author: string; author
  *  agent never supplies it. The operator's own surface has none. */
 function workItemCommentSession(caller: WorkItemCaller): { sessionId?: string } {
   return caller.kind === 'session' ? { sessionId: caller.callerId } : {};
+}
+
+/** The account an operator-surface comment is written under: the signed-in owner, or the forwarded proxy identity when
+ *  one is configured. A session's comment names none here (the wake takes the session's own account), and the bearer
+ *  token names no one. */
+function workItemCommentAccount(req: HttpRequest, context: ApiContext, caller: WorkItemCaller): { userId?: string } {
+  if (caller.kind !== 'operator') return {};
+  const userId = requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader);
+  return userId ? { userId } : {};
 }
 
 /** Attachment identity mirrors the comments model: server-stamped, pair-safe. */
@@ -1930,8 +1940,13 @@ export async function handleApiRequest(
         });
       }
 
+      // Who the session is attributed to, for the instance's own callers: an email is not for a scoped session's eyes.
+      const attribution = resolveScopedWriteCallerIdentity(req, context).kind === "operator"
+        ? { userEmail: accountEmailOf(session.userId, context.accounts) }
+        : {};
       return json(res, withFallbackView({
         ...serializeSessionResponse(session, context),
+        ...attribution,
         ...(includeMessages ? { messages } : {}),
         ...(liveStream ? { liveStream } : {}),
         ...(page ? { messagesPage: { hasOlder: page.hasOlder } } : {}),
@@ -2140,7 +2155,7 @@ export async function handleApiRequest(
       let newSessionId: string | null = null;
       try {
         // 1. Duplicate session + messages in the registry
-        const { session: newSession, messageCount } = duplicateSession(params.id);
+        const { session: newSession, messageCount } = duplicateSession(params.id, undefined, requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader));
         newSessionId = newSession.id;
 
         // 2. Fork the engine session (Claude/Codex). For Claude, route through
@@ -2739,7 +2754,7 @@ export async function handleApiRequest(
         }
         if (result.item.status !== item.status) result.item = linkSelfStartedTodo(caller, result.item, actor);
         // A review handoff or send-back note is a comment under whoever moved it; a retried move posts it too.
-        if (target === "in_review" || target === "executing") postReviewNote(params.id, { actor, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), origin: caller.origin });
+        if (target === "in_review" || target === "executing") postReviewNote(params.id, { actor, ...workItemCommentAuthor(caller), ...workItemCommentSession(caller), ...workItemCommentAccount(req, context, caller), origin: caller.origin });
         const activityReceiptId = persistTodoMutationActivity(
           req,
           context,
@@ -2913,6 +2928,10 @@ export async function handleApiRequest(
         actor: workItemActor(caller),
         // The Dispatcher hands the Todo on with the presser's standing.
         ...(caller.kind === "session" ? { transportMeta: { [DISPATCH_PRESSED_BY_META_KEY]: caller.callerId } } : {}),
+        // The Dispatcher is a root: it carries whoever pressed the button, the account or the pressing session's own.
+        userId: caller.kind === "session"
+          ? getSession(caller.callerId)?.userId ?? undefined
+          : requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader),
         emitProjectionEvent: (id, action) => emitTodoProjectionEvent(context, id, action),
       });
       return json(res, started.body, started.status);
@@ -2987,6 +3006,7 @@ export async function handleApiRequest(
           body: text,
           ...workItemCommentAuthor(caller),
           ...workItemCommentSession(caller),
+          ...workItemCommentAccount(req, context, caller),
           parentCommentId,
           origin: caller.origin,
         });
@@ -3738,6 +3758,8 @@ export async function handleApiRequest(
           replyContext: { source: "web" },
           employee: employeeName ?? null,
           parentSessionId,
+          // A delegation asked for from the dashboard is the signed-in account's; from a tool it inherits its parent's.
+          userId: requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader),
           model: selection.model,
           effortLevel: selection.effortLevel,
           fallbackMode,
@@ -3888,7 +3910,9 @@ export async function handleApiRequest(
       // Opt-in SSO identity capture: when an auth proxy fronts the gateway and
       // `gateway.userHeader` is configured, persist the forwarded identity on the
       // session. Unset config → undefined → stored as NULL (single-user no-op).
-      const userId = resolveUserHeader(req.headers, config.gateway.userHeader);
+      // Otherwise the account the request's device was signed in with; a spawn from a tool carries neither
+      // and inherits its parent's.
+      const userId = requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, context.getConfig().gateway.userHeader);
       const spawned = await spawnSession(context, {
         prompt,
         employee: employeeName,
@@ -4936,28 +4960,4 @@ function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string, 
   });
 }
 
-/**
- * Resolve the forwarded SSO identity from request headers, given the configured
- * `gateway.userHeader` (a single header name or a priority-ordered list). Node
- * lowercases incoming header keys, so we look up case-insensitively. Returns the
- * first present, non-empty, trimmed value; `undefined` when the config is unset
- * or no configured header is present. Unset config = single-user no-op: the
- * header is never read and the caller falls back to "web-user".
- */
-export function resolveUserHeader(
-  headers: Record<string, string | string[] | undefined>,
-  userHeaderConfig: string | string[] | undefined,
-): string | undefined {
-  if (!userHeaderConfig) return undefined;
-  const names = Array.isArray(userHeaderConfig) ? userHeaderConfig : [userHeaderConfig];
-  for (const name of names) {
-    if (!name) continue;
-    const raw = headers[name.toLowerCase()];
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (trimmed) return trimmed;
-    }
-  }
-  return undefined;
-}
+export { resolveUserHeader } from "../accounts/request-account.js";

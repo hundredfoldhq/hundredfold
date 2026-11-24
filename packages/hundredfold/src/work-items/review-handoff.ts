@@ -9,6 +9,7 @@ export interface ReviewNoteAuthor {
   author: string;
   authorKind: AddCommentInput['authorKind'];
   sessionId?: string;
+  userId?: string;
   origin?: WriteOrigin;
 }
 

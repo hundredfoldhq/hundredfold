@@ -5,6 +5,8 @@ import { createSession, getSession, insertMessage, updateSession } from "../sess
 import { enqueueQueueItem } from "../sessions/queue-item-registry.js";
 import { getWorkItem, linkSession } from "../work-items/store.js";
 import { logger } from "../shared/logger.js";
+import { HUNDREDFOLD_HOME } from "../shared/paths.js";
+import { requestUserId } from "../accounts/request-account.js";
 import { readJsonBody } from "./http-helpers.js";
 import { resolveCallerIdentity } from "./session-comm-guards.js";
 import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
@@ -137,6 +139,8 @@ async function startCapture(req: HttpRequest, res: ServerResponse, context: ApiC
     model: pin.model ?? shaper.model,
     effortLevel: shaper.effortLevel,
     prompt: visible,
+    // The Shaper is the signed-in account's, like any chat it started.
+    userId: requestUserId(req, context.hundredfoldHome ?? HUNDREDFOLD_HOME, context.accounts, config.gateway.userHeader),
     title: "Quick capture",
     portalName: config.portal?.portalName,
   });

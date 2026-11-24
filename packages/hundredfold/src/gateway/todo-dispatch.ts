@@ -54,6 +54,8 @@ export interface StartTodoDispatcherOptions {
   /** Stamped on the Dispatcher's session, so the registry can say what started
    *  it (the board walk marks its own starts this way). */
   transportMeta?: Record<string, string>;
+  /** The account the start is attributed to (the signed-in person who pressed Dispatch); a start nobody pressed leaves the Dispatcher unattributed. */
+  userId?: string;
   /** Who asked for the start (`operator`, `session:<id>`, `board-walk`), recorded
    *  on the link's audit event so board hooks can tell, and loop-guard, a start
    *  a hook session made. */
@@ -171,7 +173,7 @@ function planDispatcher(item: WorkItem, context: ApiContext, suffix: string | un
   };
 }
 
-function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: ApiContext, transportMeta?: Record<string, string>): Session {
+function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: ApiContext, transportMeta?: Record<string, string>, userId?: string): Session {
   const sessionKey = todoDispatcherSessionKey(item.id);
   const pin = pinAccountAtCreation({ config: context.getConfig(), employee: plan.dispatcher, engine: plan.engineName, model: plan.model });
   const session = createSession({
@@ -184,6 +186,7 @@ function createDispatcherSession(item: WorkItem, plan: DispatcherPlan, context: 
     connector: "web",
     sessionKey,
     replyContext: { source: "web" },
+    userId,
     employee: plan.dispatcher.name,
     model: pin.model ?? plan.model,
     effortLevel: plan.dispatcher.effortLevel,
@@ -227,7 +230,7 @@ export function startTodoDispatcher(
   if (!planned.ok) return planned.result;
   const { plan } = planned;
 
-  const session = createDispatcherSession(item, plan, context, opts.transportMeta);
+  const session = createDispatcherSession(item, plan, context, opts.transportMeta, opts.userId);
   insertMessage(session.id, "user", plan.prompt);
   try {
     linkSession(item.id, session.id, opts.actor, "execute", { via: "dispatch" });

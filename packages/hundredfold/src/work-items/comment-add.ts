@@ -97,7 +97,7 @@ function insertComment(
     `INSERT INTO work_item_comments (id, work_item_id, parent_comment_id, author_kind, author, body, created_at, edited_at, deleted_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
   ).run(comment.id, comment.workItemId, comment.parentCommentId, comment.authorKind, comment.author, comment.body, comment.createdAt);
-  recordCommentMeta(db, comment.id, { sessionId: comment.sessionId, repliedToId: comment.repliedToId });
+  recordCommentMeta(db, comment.id, { sessionId: comment.sessionId, repliedToId: comment.repliedToId, userId: input.userId });
   appendWorkItemEvent({
     workItemId: comment.workItemId,
     kind: 'comment_added',
