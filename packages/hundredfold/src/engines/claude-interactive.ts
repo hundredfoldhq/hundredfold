@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import * as pty from "node-pty";
-import type { BackgroundedWork, CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, ForegroundWork, SoftInterruptibleEngine, SoftInterruptOutcome, SteerableEngine, SteerOutcome, StreamDelta, TurnProgress } from "../shared/types.js";
+import type { BackgroundedWork, BoundaryInterruptibleEngine, CompactionStats, InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, ForegroundWork, SoftInterruptibleEngine, SoftInterruptOutcome, SteerableEngine, SteerOutcome, StreamDelta, ToolBoundaryOutcome, TurnProgress } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { ENGINE_SWITCHED_REASON, type LostBackgroundCause } from "../shared/engine-switch.js";
 import { HUNDREDFOLD_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
@@ -1513,6 +1513,8 @@ interface ActiveTurn {
   steers?: SteerInFlight[];
   /** Watches this turn's transcript for the entries that show it took a steered input in. */
   steerWatch?: { offset: number; taken: string[]; timer: NodeJS.Timeout };
+  /** Callers of interruptAtToolBoundary waiting for the turn to have no call running; each is run after every hook and when the turn ends. */
+  boundaryWatchers?: Set<() => void>;
 }
 
 /** One input handed to a running turn (see InteractiveClaudeEngine.steer). */
@@ -1726,7 +1728,7 @@ function localClaudeBin(opts: Pick<EngineRunOpts, "bin"> & Parameters<typeof isR
   return isRemoteTarget(opts) ? undefined : resolveBin("claude", opts.bin);
 }
 
-export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEngine, SoftInterruptibleEngine, PtyViewEngine, BackgroundTasksSource {
+export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInterruptibleEngine, SteerableEngine, SoftInterruptibleEngine, PtyViewEngine, BackgroundTasksSource {
   name = "claude" as const;
   /** Active turn resolvers keyed by Hundredfold session id. `boundProc` is the specific
    *  PTY serving this turn (captured at spawn / warm-reuse). A PTY's onExit only
@@ -2762,6 +2764,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
           entry.blockedOnPermissionAt = Date.now();
           void this.answerPermissionPrompt(hundredfoldSessionId, entry);
         }
+        this.notifyBoundaryWatchers(entry);
       };
       const registerTurnHooks = () => {
         replaying = true;
@@ -2959,6 +2962,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       this.settleSteers(hundredfoldSessionId, entry);
       this.hookRegistry.unregister(hundredfoldSessionId);
       this.active.delete(hundredfoldSessionId);
+      this.notifyBoundaryWatchers(entry);
       // A prompt typed in the terminal during this turn runs next: the next
       // gateway turn must wait for it rather than paste behind it.
       if (entry.terminalPromptQueued) this.terminalTurns.set(hundredfoldSessionId, Date.now());
@@ -3908,6 +3912,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
     // The turn ended by itself meanwhile: nothing left to interrupt, and Esc would hit whatever runs next.
     if (turnOver()) return { ended: true, backgrounded };
 
+    await this.endTurnWithEsc(sessionId, entry, proc, reason);
+    return { ended: true, backgrounded };
+  }
+
+  /**
+   * Press Esc and settle the turn as interrupted once the TUI has stopped running it. The caller has
+   * checked that no running call would be aborted by it; the key is written before the first await.
+   */
+  private async endTurnWithEsc(sessionId: string, entry: ActiveTurn, proc: Pick<pty.IPty, "write">, reason: string): Promise<void> {
+    const turnOver = () => this.active.get(sessionId) !== entry || entry.resolver.isSettled;
     logger.info(`InteractiveClaudeEngine: soft-interrupting ${sessionId}'s turn (${reason})`);
     proc.write(INTERRUPT_KEY);
     await this.pollUntil(async () => turnOver() || !(await this.screenShowsTurnRunning(sessionId)), INTERRUPT_SETTLE_MS);
@@ -3917,7 +3931,84 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, SteerableEn
       // The next turn must not start until this one has torn down.
       await this.pollUntil(() => this.active.get(sessionId) !== entry, INTERRUPT_SETTLE_MS);
     }
-    return { ended: true, backgrounded };
+  }
+
+  /** Whether the turn is between two tool calls: its prompt is in, and no call of its own is running, waiting on a dialog or about to be. */
+  private atToolBoundary(entry: ActiveTurn): boolean {
+    return entry.promptSubmitted && !entry.resolver.isSettled && !entry.holdingPaste && !entry.resolver.awaitingBackgroundRerun
+      && entry.blockedOnPermissionAt === undefined && entry.foreground.oldest() === null;
+  }
+
+  private notifyBoundaryWatchers(entry: ActiveTurn): void {
+    if (!entry.boundaryWatchers?.size) return;
+    for (const watcher of [...entry.boundaryWatchers]) watcher();
+  }
+
+  /**
+   * End the session's running turn between two tool calls, never inside one: the turn is cut the moment none
+   * of its calls is running (a PostToolUse seen for every PreToolUse), by Esc and with the process kept, so
+   * nothing a call was writing is lost. `softInterrupt` would instead move a running Bash to the background,
+   * and abort an MCP call or a sub-agent; this waits for the call to end, as the OpenCode engine does.
+   *
+   * - A call running in the foreground (a Bash, an MCP call, a sub-agent the turn waits on) is a call in
+   *   flight. Work the turn left in the background (a background Bash, a background sub-agent, a Monitor) is
+   *   not: Esc ends the turn and leaves it running, and its task-notification wakes the session later.
+   * - A turn that is only generating has no call running and is cut at once.
+   * - Past `waitMs` the answer is "waiting", and the cut stays armed for the boundary until the turn ends or
+   *   `beforeAbort` calls it off. A call whose end hook never comes keeps the cut waiting until the turn ends.
+   * - The key is written in the same tick as the last check that no call is running, so only a call the
+   *   model starts within the few milliseconds the hook takes to reach the TUI can still be hit.
+   * - Not a turn this can stop: a Claude-native command, a remote session, a turn behind a Rewind menu.
+   */
+  interruptAtToolBoundary(sessionId: string, reason: string, opts: { waitMs: number; beforeAbort?: () => boolean }): Promise<ToolBoundaryOutcome> {
+    const entry = this.active.get(sessionId);
+    if (!entry || entry.resolver.isSettled || this.softInterrupts.has(sessionId)) return Promise.resolve("over");
+    if (entry.native || entry.remote || !this.steerTarget(sessionId, entry)) return Promise.resolve("unsupported");
+    return new Promise<ToolBoundaryOutcome>((resolve) => {
+      const watchers = (entry.boundaryWatchers ??= new Set());
+      let answered = false;
+      let acting = false;
+      const answer = (outcome: ToolBoundaryOutcome): void => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(timer);
+        resolve(outcome);
+      };
+      const timer = setTimeout(() => answer("waiting"), opts.waitMs);
+      timer.unref?.();
+      const stop = (outcome: ToolBoundaryOutcome): void => {
+        watchers.delete(check);
+        answer(outcome);
+      };
+      const act = async (): Promise<void> => {
+        // The Rewind menu owns the keyboard: Esc would close it and end nothing.
+        const rewind = await this.screenShowsRewindMenu(sessionId);
+        acting = false;
+        if (this.active.get(sessionId) !== entry || entry.resolver.isSettled) return stop("over");
+        if (rewind) return stop("unsupported");
+        // A call may have started while the screen was read: wait for the next boundary.
+        if (!this.atToolBoundary(entry)) return;
+        const proc = this.steerTarget(sessionId, entry);
+        if (!proc || entry.native) return stop("unsupported");
+        if (this.softInterrupts.has(sessionId) || (opts.beforeAbort && !opts.beforeAbort())) return stop("over");
+        watchers.delete(check);
+        const ending = this.endTurnWithEsc(sessionId, entry, proc, reason)
+          .catch((err) => { logger.warn(`InteractiveClaudeEngine: cutting ${sessionId}'s turn at a tool boundary failed: ${err instanceof Error ? err.message : String(err)}`); })
+          .then((): SoftInterruptOutcome => ({ ended: true, backgrounded: [] }))
+          .finally(() => { this.softInterrupts.delete(sessionId); });
+        this.softInterrupts.set(sessionId, ending);
+        answer("interrupted");
+      };
+      const check = (): void => {
+        if (acting) return;
+        if (this.active.get(sessionId) !== entry || entry.resolver.isSettled) return stop("over");
+        if (!this.atToolBoundary(entry)) return;
+        acting = true;
+        void act();
+      };
+      watchers.add(check);
+      check();
+    });
   }
 
   /** Whether the TUI's footer still says a turn is running. Fails open, like the other screen reads. */

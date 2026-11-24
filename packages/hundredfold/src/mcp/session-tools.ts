@@ -177,7 +177,7 @@ function interruptRefusal(interrupt: string | undefined): string | undefined {
     case "waiting":
       return "Queued: a tool call is still running, so the interrupt waits for it to end and then cuts the turn (a call is never cut mid-way).";
     case "unsupported":
-      return "Queued, not interrupted: this target's engine cannot be cut short between tool calls (only opencode server-mode sessions can); it reads this when its turn ends.";
+      return "Queued, not interrupted: this target's engine cannot be cut short between tool calls (only opencode server-mode and Claude Code sessions can, and not a Claude-native command or a remote session); it reads this when its turn ends.";
     case "over":
       return "Queued: the target's turn ended before it could be cut; it reads this next.";
     case "held":
