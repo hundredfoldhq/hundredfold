@@ -520,9 +520,15 @@ verified against 2.0.28 and 2.0.29:
 
 This is the boundary cut of a session's `send_to_session`. The operator's own message API also takes `interrupt`, where it keeps its older meaning, the same as `delivery: "now"`.
 
-Only an OpenCode server-mode turn can be cut this way. `run` mode has no events that say what the process is executing, so it is `unsupported`.
+Of OpenCode, only a server-mode turn can be cut this way. `run` mode has no events that say what the process is executing, so it is `unsupported`.
 
-**Claude sessions** are `unsupported` for now. A Claude interrupt ends the whole process, with its tool call, background shells and subagents, so it cannot promise to stop between calls. The engine does have a soft interrupt that keeps the process (the one voice barge-in uses) and reports the call running in the foreground, so the same behaviour is feasible there, but it moves a running Bash to the background rather than aborting it and has to be designed for agent senders; it is a separate change.
+**Claude sessions** can be cut this way too, by their own mechanism (the section above describes OpenCode's):
+
+- **Where it cuts.** Between two tool calls, never inside one. The engine follows the turn's hook stream: a call is running from its `PreToolUse` to its `PostToolUse` (or `PostToolUseFailure`), and the turn is ended with Esc, in the same tick as the last check that none is, so the process, and with it everything the turn started, stays. A turn that is only generating has no call running and is cut at once, once it has written something (streamed text, a tool call or a tool result). Before that Esc would take the turn's own prompt out of the conversation (on 2.1.331, cut in its first seconds, the resumed session no longer knew the task), so the cut waits for the first output: `waiting`, and armed. A cold-started turn counts the same way, so a cut cannot hit a CLI that is still booting.
+- **Calls in flight are waited for, not moved.** A running Bash, an MCP call and a sub-agent the turn waits on all count as a call in flight: the interrupt waits for them to end (`waiting` past the sender's 4 s wait, and the cut stays armed). It does not do what voice barge-in does and move a running Bash to the background: the sender asked for a boundary, not for the command to change how it reports back. Work the turn left in the background (a `run_in_background` Bash or sub-agent, a Monitor) is not a call in flight: it keeps running through the cut, and its task notification wakes the session as usual.
+- **What the target reads.** The cut turn settles as interrupted, the composer is emptied, and the folded message runs as the session's next turn on the same process: about 0.5 s after the boundary when the TUI stops at once, at most about 3 s when it is slow to say so.
+- **Same limit as OpenCode.** A call the model starts in the few milliseconds the hook takes to reach the TUI can still be hit by the Esc; a model takes far longer than that between steps.
+- **`unsupported`** for a Claude-native command (`/usage`, `/compact`), a session running on another host, and a turn behind the Rewind menu. A turn waiting on a permission dialog is not at a boundary: the cut waits until it is answered.
 
 ## Model discovery
 
