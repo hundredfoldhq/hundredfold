@@ -1,7 +1,8 @@
 import { Readable } from "node:stream";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   api,
+  createChild,
   createParent,
   dbModule,
   eventually,
@@ -20,6 +21,8 @@ import {
   ensureSessionCapability,
 } from "../../mcp/identity.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../../sessions/interruption-reasons.js";
+import * as completion from "../../sessions/turn/completion.js";
+import { noticeTargetSessionId } from "../../sessions/turn-requester.js";
 import type { BoundaryInterruptibleEngine, EngineRunOpts, InterruptibleEngine, ToolBoundaryOutcome } from "../../shared/types.js";
 
 /**
@@ -31,6 +34,7 @@ import type { BoundaryInterruptibleEngine, EngineRunOpts, InterruptibleEngine, T
  */
 
 beforeEach(resetCallbackState);
+afterEach(() => vi.restoreAllMocks());
 
 interface Stub {
   engine: BoundaryInterruptibleEngine;
@@ -114,9 +118,11 @@ async function busyTarget(suffix: string, outcome: ToolBoundaryOutcome = "interr
   const events: Array<{ event: string; data: unknown }> = [];
   const queue = new queueModule.SessionQueue();
   const context = makeContext(stub.engine, queue, events);
-  const target = createParent(`interrupt-${suffix}-target`);
+  // The caller is the target's parent: the session its running turn reports to.
   const caller = createParent(`interrupt-${suffix}-caller`);
-  await post(context, target.id, { message: "start a long turn" });
+  const target = createChild(caller.id, `interrupt-${suffix}-target`);
+  // The parent asks for the long turn: an operator-started turn could not be cut (see "who may cut a turn").
+  await post(context, target.id, { message: "start a long turn" }, toolHeaders(caller.id));
   await eventually(() => expect(stub.prompts).toHaveLength(1));
   return { ...stub, queue, context, events, target, caller };
 }
@@ -148,8 +154,8 @@ describe("a send that asks to interrupt", () => {
     const statuses = queueRows(target.id).map((row) => row.status);
     expect(statuses.filter((status) => status === "cancelled")).toHaveLength(2);
     expect(statuses.filter((status) => status === "completed")).toHaveLength(2);
-    // Each message was sent, so each keeps its bubble in the transcript.
-    expect(registry.getMessages(target.id).filter((m) => m.role === "notification")).toHaveLength(3);
+    // Each message was sent, so each keeps its bubble in the transcript (the parent's opening one too).
+    expect(registry.getMessages(target.id).filter((m) => m.role === "notification")).toHaveLength(4);
   });
 
   it("leaves the turn alone, and the message queued, when the target's queue is paused", async () => {
@@ -208,9 +214,9 @@ describe("what is folded into the cut turn", () => {
     expect(prompts[2]).not.toContain("A says");
   });
 
-  it("leaves another sender's message readable when the interrupting sender replaces its own send", async () => {
+  it("cannot be taken back once folded: replacing the interrupting send then reads every folded send, and another sender's", async () => {
     // `waiting`, then the boundary arrives while the turn is still running: the fold happens, and before the
-    // abort lands the interrupting sender replaces its (now merged) send. Only its own sends were in it.
+    // abort lands the interrupting sender tries to replace its send, which now carries its earlier one too.
     const { prompts, queue, events, context, finish, reachBoundary, target, caller } = await busyTarget("supersede", "waiting");
     const other = createParent("interrupt-supersede-other");
 
@@ -222,15 +228,17 @@ describe("what is folded into the cut turn", () => {
     expect(reachBoundary()).toBe(true);
     expect(events).toContainEqual({ event: "session:interrupted", data: expect.objectContaining({ sessionId: target.id }) });
     const replaced = await post(context, target.id, { message: "B says: never mind", supersedes: (urgent.body as { queueItemId: string }).queueItemId }, toolHeaders(caller.id));
-    expect(replaced.body).toMatchObject({ superseded: "withdrawn" });
+    expect(replaced.body).toMatchObject({ superseded: "too-late" });
     finish();
 
     await eventually(() => {
       expect(queue.isRunning(target.sessionKey)).toBe(false);
       expect(prompts.join("\n")).toContain("B says: never mind");
     });
-    expect(prompts.join("\n")).toContain("A says: use plan alpha");
-    expect(prompts.join("\n")).not.toContain("B says: urgent");
+    const read = prompts.join("\n");
+    expect(read).toContain("A says: use plan alpha");
+    expect(read).toContain("B says: first");
+    expect(read).toContain("B says: urgent");
   });
 
   it("is not done, and the turn is not cut, when the interrupting send was withdrawn before the boundary", async () => {
@@ -259,9 +267,9 @@ describe("what is folded into the cut turn", () => {
     const stub = boundaryEngine("unsupported");
     const queue = new queueModule.SessionQueue();
     const context = makeContext(stub.engine, queue, []);
-    const target = createParent("interrupt-no-fold-target");
     const caller = createParent("interrupt-no-fold-caller");
-    await post(context, target.id, { message: "start a long turn" });
+    const target = createChild(caller.id, "interrupt-no-fold-target");
+    await post(context, target.id, { message: "start a long turn" }, toolHeaders(caller.id));
     await eventually(() => expect(stub.prompts).toHaveLength(1));
 
     await post(context, target.id, { message: "first" }, toolHeaders(caller.id));
@@ -303,6 +311,90 @@ describe("a send that asks to interrupt and repeats a queued message", () => {
 
     expect(again.body).toMatchObject({ status: "duplicate", interrupt: "held" });
     expect(aborts).toHaveLength(0);
+  });
+});
+
+describe("who may cut a turn", () => {
+  it("is refused for a sibling: the turn stays the parent's, and the parent still gets its notice", async () => {
+    const settled: Array<{ outcome: string; notifies: boolean; noticeTo: string | null }> = [];
+    const settle = completion.settleTurn;
+    vi.spyOn(completion, "settleTurn").mockImplementation(async (input) => {
+      settled.push({ outcome: input.outcome, notifies: input.notifyParent !== false, noticeTo: noticeTargetSessionId(registry.getSession(input.sessionId)!) });
+      return await settle(input);
+    });
+    const { prompts, aborts, queue, events, context, finish, target, caller } = await busyTarget("sibling");
+    const sibling = createChild(caller.id, "interrupt-sibling-other");
+
+    const urgent = await post(context, target.id, { message: "sibling says: stop", interrupt: true }, toolHeaders(sibling.id));
+
+    expect(urgent.body).toMatchObject({ status: "queued", targetRunning: true, interrupt: "refused" });
+    expect(aborts).toHaveLength(0);
+    expect(events.filter((e) => e.event === "session:interrupted")).toHaveLength(0);
+    expect(prompts).toHaveLength(1);
+    finish();
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(prompts).toHaveLength(2);
+    });
+    // The parent's turn ran to its end, and its notice went to the parent.
+    expect(settled[0]).toEqual({ outcome: "succeeded", notifies: true, noticeTo: caller.id });
+  });
+
+  it("is refused for a child cutting its parent's turn", async () => {
+    const { aborts, context, target } = await busyTarget("upward");
+    const grandchild = createChild(target.id, "interrupt-upward-child");
+
+    const urgent = await post(context, target.id, { message: "child says: stop", interrupt: true }, toolHeaders(grandchild.id));
+
+    expect(urgent.body).toMatchObject({ interrupt: "refused" });
+    expect(aborts).toHaveLength(0);
+  });
+
+  it("is refused for any session when the turn reports to nobody", async () => {
+    const stub = boundaryEngine("interrupted");
+    const context = makeContext(stub.engine, new queueModule.SessionQueue(), []);
+    const target = createParent("interrupt-top-target");
+    const peer = createParent("interrupt-top-peer");
+    await post(context, target.id, { message: "start a long turn" });
+    await eventually(() => expect(stub.prompts).toHaveLength(1));
+
+    const urgent = await post(context, target.id, { message: "peer says: stop", interrupt: true }, toolHeaders(peer.id));
+
+    expect(urgent.body).toMatchObject({ interrupt: "refused" });
+    expect(stub.aborts).toHaveLength(0);
+    stub.finish();
+  });
+
+  it("is refused for the parent when the operator started the turn in the child's chat", async () => {
+    const stub = boundaryEngine("interrupted");
+    const events: Array<{ event: string; data: unknown }> = [];
+    const context = makeContext(stub.engine, new queueModule.SessionQueue(), events);
+    const caller = createParent("interrupt-operator-turn-caller");
+    const target = createChild(caller.id, "interrupt-operator-turn-target");
+    await post(context, target.id, { message: "operator asks something" });
+    await eventually(() => expect(stub.prompts).toHaveLength(1));
+
+    const urgent = await post(context, target.id, { message: "parent says: stop", interrupt: true }, toolHeaders(caller.id));
+
+    expect(urgent.body).toMatchObject({ interrupt: "refused" });
+    expect(stub.aborts).toHaveLength(0);
+    expect(events.filter((e) => e.event === "session:interrupted")).toHaveLength(0);
+    stub.finish();
+  });
+
+  it("says `reading`, and cuts nothing, for a repeat of the message the running turn is reading", async () => {
+    const stub = boundaryEngine("interrupted");
+    const context = makeContext(stub.engine, new queueModule.SessionQueue(), []);
+    const caller = createParent("interrupt-reading-caller");
+    const target = createChild(caller.id, "interrupt-reading-target");
+    await post(context, target.id, { message: "same words" }, toolHeaders(caller.id));
+    await eventually(() => expect(stub.prompts).toHaveLength(1));
+
+    const again = await post(context, target.id, { message: "same words", interrupt: true }, toolHeaders(caller.id));
+
+    expect(again.body).toMatchObject({ status: "duplicate", interrupt: "reading" });
+    expect(stub.aborts).toHaveLength(0);
+    stub.finish();
   });
 });
 
