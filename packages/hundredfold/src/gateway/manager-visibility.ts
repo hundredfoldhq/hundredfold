@@ -34,14 +34,24 @@ export interface ManagerVisibilityDeps {
 }
 
 /** Passive visibility may join a conversation already in flight, but must not
- * start a new turn on a completed, stopped, or otherwise idle manager thread. */
+ * start a new turn on a completed, stopped, or otherwise idle manager thread.
+ * A session spawned by another session is working a brief it was handed, not
+ * managing a team: it knows nothing of this delegation, so the notice would
+ * only wake it for a turn that answers "nothing for me", and that answer is
+ * relayed to the session that spawned it. When the manager's only live
+ * sessions are such children, the Todo carries the fallback reference instead. */
 export function isEligibleManagerVisibilitySession(session: Session): boolean {
+  if (session.parentSessionId) return false;
   return session.status === "running" || session.status === "waiting";
 }
 
+/** The manager's live session that can take the notice, if it has one. */
+export function findManagerVisibilitySession(manager: string): Session | undefined {
+  return searchSessionsFiltered({ employee: manager }, 20).find(isEligibleManagerVisibilitySession);
+}
+
 const defaultDeps: ManagerVisibilityDeps = {
-  findManagerSession: (manager) =>
-    searchSessionsFiltered({ employee: manager }, 20).find(isEligibleManagerVisibilitySession),
+  findManagerSession: findManagerVisibilitySession,
   notifyManager: notifyManagerVisibility,
   appendFallback: (fallback) => {
     appendWorkItemEvent({
