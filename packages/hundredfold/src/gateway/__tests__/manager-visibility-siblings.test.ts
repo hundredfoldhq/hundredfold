@@ -14,6 +14,9 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hundredfold-visibility-siblin
 process.env.HUNDREDFOLD_HOME = tmp;
 const reg = await import("../../sessions/registry.js");
 const { surfaceManagerVisibility, findManagerVisibilitySession } = await import("../manager-visibility.js");
+const store = await import("../../work-items/store.js");
+const { swapEmployeeSession } = await import("../../work-items/employee-sessions.js");
+const { recordLandedBrief, startBriefTurn } = await import("../../work-items/employee-session-delegation.js");
 
 function employee(name: string, rank: Employee["rank"], reportsTo?: string): Employee {
   return { name, displayName: name, department: "platform", rank, engine: "claude", model: "test-model", persona: name, reportsTo } as Employee;
@@ -77,5 +80,29 @@ describe("manager visibility with an orchestrator and its children", () => {
     expect(notifyManager).toHaveBeenCalledOnce();
     expect(notifyManager.mock.calls[0][0]).toBe(topLevelManager.id);
     expect(notifyManager.mock.calls[0][0]).not.toBe(child1.id);
+  });
+
+  it("passes over a top-level session that a delegation landed in, which now reports to the delegator", () => {
+    const orchestrator = spawn("lead");
+    const todo = store.createWorkItem({ title: "reused" });
+    const reused = spawn("builder");
+    store.linkSession(todo.id, reused.id);
+    expect(swapEmployeeSession(todo.id, "builder", null, reused.id)).toBe(true);
+    recordLandedBrief({ briefKey: "brief-1", workItemId: todo.id, employee: "builder", sessionId: reused.id, delegatorSessionId: orchestrator.id });
+    startBriefTurn(reused.id, ["brief-1"]);
+    const child2 = spawn("reviewer", orchestrator.id);
+    const notifyManager = vi.fn();
+    const appendFallback = vi.fn();
+    const deps = { findManagerSession: findManagerVisibilitySession, notifyManager, appendFallback, warn: vi.fn() };
+
+    // The session's own row has no parent, yet its replies go to the orchestrator.
+    expect(reg.getSession(reused.id)!.parentSessionId ?? null).toBeNull();
+    surfaceManagerVisibility(
+      { roster, employee: "reviewer", delegatorSession: orchestrator, childSession: child2, workItemId: "wi_r", title: "Work" },
+      deps,
+    );
+
+    expect(notifyManager).not.toHaveBeenCalled();
+    expect(appendFallback).toHaveBeenCalledOnce();
   });
 });
