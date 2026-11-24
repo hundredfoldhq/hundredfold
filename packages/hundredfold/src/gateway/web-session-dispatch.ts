@@ -25,6 +25,7 @@ import { withVoiceEnvelope } from "../voice/envelope.js";
 // carries without this module and api.ts importing each other at runtime.
 import { startDelegatedTurn } from "./delegation-handoff.js";
 import { recordTurnRequester } from "../sessions/turn-requester.js";
+import { recordTurnStartedByChildReport } from "../sessions/settled-session-reply.js";
 import { isHeartbeatQueueItem, markHeartbeatTurn } from "../heartbeats/turn-origin.js";
 import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
 import type { ApiContext } from "./api.js";
@@ -107,6 +108,7 @@ async function runQueuedTurn(
   if (isHeartbeatQueueItem(opts.queueItemId)) markHeartbeatTurn(session.id, startedAttempt.attemptToken);
   startDelegatedTurn(startedAttempt, opts.queueItemId);
   recordTurnRequester(startedAttempt, opts.queueItemId);
+  recordTurnStartedByChildReport(startedAttempt, opts.queueItemId);
   context.emit("session:started", { sessionId: session.id });
   // Item moved pending → running: refresh the queue panel.
   if (opts.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey: opts.sessionKey });
