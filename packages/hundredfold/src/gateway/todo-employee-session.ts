@@ -78,6 +78,8 @@ export interface WakeOnTodoInput extends TodoSessionDelivery {
   /** The actor the link event records. */
   actor: string;
   title: string;
+  /** The account a new session is attributed to (the one who woke it); none leaves it unattributed. A delivery into a live session changes nothing. */
+  userId?: string;
 }
 
 export interface WakeEmployeeInput extends WakeOnTodoInput {
@@ -140,6 +142,7 @@ function createLinkedSession(context: ApiContext, input: WakeOnTodoInput, employ
     connector: "web",
     sessionKey,
     replyContext: { source: "web" },
+    userId: input.userId,
     employee: employee?.name,
     model: spawn.model,
     effortLevel: spawn.effortLevel,

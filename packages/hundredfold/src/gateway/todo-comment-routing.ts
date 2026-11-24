@@ -3,6 +3,8 @@ import { scopedMentionRefusal, scopedReplyAllowed } from "./department-scope/com
 import type { Employee, Session } from "../shared/types.js";
 import { getSession } from "../sessions/registry.js";
 import { isRemoteMcpSession } from "../sessions/remote-mcp-session.js";
+import { initDb } from "../shared/db.js";
+import { commentAccountId } from "../work-items/comment-meta.js";
 import { addComment, getComment, setTodoCommentListener, type WorkItemComment } from "../work-items/comments.js";
 import { canMessageSession } from "../work-items/employee-sessions.js";
 import { parseMentions } from "../work-items/mentions.js";
@@ -56,6 +58,12 @@ function authorLabel(comment: WorkItemComment): string {
 /** Whether the operator wrote the comment. The remote MCP connector is the operator's own door, though its comments carry its session. */
 function writtenByOperator(comment: WorkItemComment): boolean {
   return comment.authorKind === "operator" || isRemoteMcpSession(comment.sessionId ? getSession(comment.sessionId) : undefined);
+}
+
+/** The account a session this comment wakes is attributed to: the one whose request wrote it, else the account of the
+ *  session that wrote it. A comment made with the bearer token, or by a session with no account, names none. */
+function commentAccountOf(comment: WorkItemComment): string | undefined {
+  return commentAccountId(initDb(), comment.id) ?? (comment.sessionId ? getSession(comment.sessionId)?.userId ?? undefined : undefined);
 }
 
 function threadHint(comment: WorkItemComment): string {
@@ -131,6 +139,7 @@ function wakeTarget(context: ApiContext, item: WorkItem, comment: WorkItemCommen
     role: "consult" as const,
     actor: comment.sessionId ? `session:${comment.sessionId}` : comment.author,
     title: `Tagged on ${item.id}: ${item.title}`,
+    userId: commentAccountOf(comment),
     sourceAttempt: `mention:${comment.id}`,
     deliveryKind: "todo-mention",
     message: mentionPrompt(item, comment),

@@ -9,6 +9,11 @@ import type { Database as DatabaseType } from 'better-sqlite3';
  * lost; it is recorded here before that happens. The session comes from the
  * caller's verified identity, never from the agent.
  *
+ * It also records the account that wrote the comment (`userId`): the signed-in owner whose request wrote it. A session
+ * the comment wakes is attributed to that account, or to the writing session's own when a session wrote it. The
+ * account is read only through {@link commentAccountId}; it is not part of a comment's outward shape, so a reader of
+ * the thread never learns which account an id belongs to.
+ *
  * A table of its own, created lazily, never a column on `work_item_comments`
  * and never in `REQUIRED_TABLE_SQL`: the boot verifier compares the Todo DB's
  * shape byte for byte, so an additive table it does not know about is the only
@@ -21,6 +26,8 @@ export interface CommentMeta {
   sessionId?: string;
   /** The comment this one replied to, before flattening to the thread root. */
   repliedToId?: string;
+  /** The account the comment was written under; absent for the bearer token, a session or a system write. */
+  userId?: string;
 }
 
 const ready = new WeakSet<DatabaseType>();
@@ -30,17 +37,35 @@ function ensureCommentMetaTable(db: DatabaseType): void {
   db.exec(`CREATE TABLE IF NOT EXISTS work_item_comment_meta (
     comment_id    TEXT PRIMARY KEY REFERENCES work_item_comments(id) ON DELETE CASCADE,
     session_id    TEXT,
-    replied_to_id TEXT
+    replied_to_id TEXT,
+    user_id       TEXT
   )`);
+  // A table made before the account was recorded gains the column in place; its rows read as no account.
+  const columns = db.prepare('PRAGMA table_info(work_item_comment_meta)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'user_id')) {
+    try {
+      db.exec('ALTER TABLE work_item_comment_meta ADD COLUMN user_id TEXT');
+    } catch (err) {
+      // Another process opened the same old table first and added it.
+      if (!/duplicate column name/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
+  }
   ready.add(db);
 }
 
 /** Record a new comment's meta. Writes nothing when there is nothing to say. */
 export function recordCommentMeta(db: DatabaseType, commentId: string, meta: CommentMeta): void {
-  if (!meta.sessionId && !meta.repliedToId) return;
+  if (!meta.sessionId && !meta.repliedToId && !meta.userId) return;
   ensureCommentMetaTable(db);
-  db.prepare('INSERT OR IGNORE INTO work_item_comment_meta (comment_id, session_id, replied_to_id) VALUES (?, ?, ?)')
-    .run(commentId, meta.sessionId ?? null, meta.repliedToId ?? null);
+  db.prepare('INSERT OR IGNORE INTO work_item_comment_meta (comment_id, session_id, replied_to_id, user_id) VALUES (?, ?, ?, ?)')
+    .run(commentId, meta.sessionId ?? null, meta.repliedToId ?? null, meta.userId ?? null);
+}
+
+/** The account a comment was written under, or undefined when none was recorded (the bearer token, a session, a comment from before accounts were recorded). */
+export function commentAccountId(db: DatabaseType, commentId: string): string | undefined {
+  ensureCommentMetaTable(db);
+  const row = db.prepare('SELECT user_id FROM work_item_comment_meta WHERE comment_id = ?').get(commentId) as { user_id: string | null } | undefined;
+  return row?.user_id ?? undefined;
 }
 
 /** The same comments with their meta merged in. A comment with no meta row is
