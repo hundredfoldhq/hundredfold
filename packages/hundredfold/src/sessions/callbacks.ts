@@ -24,7 +24,7 @@ import { withNoticeTarget } from "./turn-requester.js";
 import type { SessionDeliveryPayload } from "../shared/types.js";
 import { releaseChildWatchIfSettled } from "../heartbeats/child-watch.js";
 import { isHeartbeatTurn, isNoChangeReply } from "../heartbeats/turn-origin.js";
-import { isSettledSessionReplyToChildReports } from "./settled-session-reply.js";
+import { isSettledSessionReplyToChildReport } from "./settled-session-reply.js";
 import { isSpentDispatcher } from "../gateway/work-item-authority.js";
 
 export const CALLBACK_DELIVERY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
@@ -142,8 +142,8 @@ export async function notifyParentSessionAndWait(
     result = { ...result, result: REPEATED_REPLY_NOTE };
   }
   if (!result.error && holdsInterimRelay(childSession, result.result ?? "", { ...options, settledTurn: true })) return;
-  if (!result.error && isSettledSessionReplyToChildReports(childSession, result.result)) {
-    logger.info(`[callbacks] Session ${childSession.id} has finished its task and only answered its children's reports; keeping its reply from parent ${childSession.parentSessionId}`);
+  if (!result.error && isSettledSessionReplyToChildReport(childSession, result.result)) {
+    logger.info(`[callbacks] Session ${childSession.id} has finished its task and only answered a child's report; keeping its reply from parent ${childSession.parentSessionId}`);
     reviewHeldInterimReply(childSession.id);
     return;
   }

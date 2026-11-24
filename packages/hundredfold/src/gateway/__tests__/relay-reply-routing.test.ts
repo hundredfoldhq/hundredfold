@@ -162,6 +162,36 @@ describe("a reused reviewer's replies reach the session that asked", () => {
       expect(childReplies(orchestrator.id, spawner.id)).toHaveLength(1);
     });
 
+    it("still answers its parent's question when a child's report lands while it works", async () => {
+      const orchestrator = createParent("mid-orchestrator");
+      const spawner = createChild(orchestrator.id, "mid-spawner");
+      const reviewer = createChild(spawner.id, "mid-reviewer");
+      const item = workItems.createWorkItem({ title: "Spawner's task", status: "in_review", source: "delegation" });
+      workItems.linkSession(item.id, spawner.id);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let started = false;
+      const engine: Engine = {
+        name: "stub",
+        run: async (opts: EngineRunOpts) => {
+          if (opts.sessionId !== spawner.id) return { sessionId: "stub", result: "fine" };
+          started = true;
+          await gate;
+          return { sessionId: "stub", result: "Yes, the migration is complete and the numbers are in the attached file" };
+        },
+      };
+      const context = makeContext(engine, new queueModule.SessionQueue());
+      await withRouteBackedFetch(context, {}, async () => {
+        await post(context, spawner.id, { message: "is the migration finished and where are the numbers?" }, toolHeaders(orchestrator.id));
+        await eventually(() => expect(started).toBe(true));
+        // Written on arrival, after the turn's own rows: the prompt is no longer the newest inbound row.
+        registry.insertMessage(spawner.id, "assistant", "checking the logs");
+        registry.insertMessage(spawner.id, "notification", "reviewer replied", undefined, undefined, undefined, { kind: "child-reply", childSessionId: reviewer.id });
+        release();
+        await eventually(() => expect(childReplies(orchestrator.id, spawner.id)).toHaveLength(1));
+      });
+    });
+
     it("still tells the parent when a finished spawner has something to ask", async () => {
       const { orchestrator, spawner } = await spawnerWokenByReviewer("in_review", "The reviewer found a bug: should I reopen the task?");
       expect(childReplies(orchestrator.id, spawner.id)).toHaveLength(1);
