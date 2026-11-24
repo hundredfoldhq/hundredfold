@@ -416,7 +416,8 @@ export class BrowserVoiceSession implements VoiceController {
     if (!ctx || this.closing) return
     if (!(await this.putBackAudio(ctx, generation))) return
     if (!this.recovered(ctx)) {
-      this.apply({ type: "needs-tap" })
+      // A tap made meanwhile already resumed the session and is bringing the microphone back itself; only a session still paused asks for one.
+      if (this.store.snapshot.status === "suspended") this.apply({ type: "needs-tap" })
       return
     }
     this.watcher?.clear()
@@ -428,7 +429,7 @@ export class BrowserVoiceSession implements VoiceController {
   private async putBackAudio(ctx: VoiceAudioContext, generation: number): Promise<boolean> {
     if (ctx.state !== "running") await this.tryResumeContext(ctx)
     if (generation !== this.generation) return false
-    // A lost socket is only reopened inside a tap (spec 009, T026), and that tap asks for the microphone too, so don't ask twice.
+    // A lost socket is only reopened inside a tap, and that tap asks for the microphone too, so don't ask twice.
     if (this.socket?.isOpen && !this.microphoneLive()) await this.reacquireMicrophone(generation)
     return generation === this.generation
   }

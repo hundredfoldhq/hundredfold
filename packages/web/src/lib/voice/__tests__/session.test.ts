@@ -841,6 +841,36 @@ describe("paused state and resume without a reload", () => {
     expect(voicePhase(r.session.getSnapshot())).toBe("off")
   })
 
+  it("a tap while the automatic microphone request is still pending does not leave a tap asked for once that request times out", async () => {
+    const r = rig({ deferMic: true })
+    const starting = r.session.start()
+    r.micGates[0].open({} as MediaStream)
+    await starting
+    r.sockets[0].serverFrame(READY)
+    r.doc.set("hidden")
+    r.tracks[0].readyState = "ended"
+    r.tracks[0].emit("ended")
+    vi.useFakeTimers()
+    try {
+      r.doc.set("visible") // request A, made without a tap, is pending
+      await vi.advanceTimersByTimeAsync(0)
+      expect(r.micGates).toHaveLength(2)
+      const tapped = r.session.resumeFromTap() // request B, made inside the tap
+      await vi.advanceTimersByTimeAsync(0)
+      expect(r.micGates).toHaveLength(3)
+      expect(r.session.getSnapshot()).toMatchObject({ status: "on", needsTap: false })
+      await vi.advanceTimersByTimeAsync(2_500) // A gives up
+      expect(r.session.getSnapshot()).toMatchObject({ status: "on", needsTap: false })
+      r.micGates[2].open({} as MediaStream)
+      await tapped
+      await vi.advanceTimersByTimeAsync(0)
+      expect(r.session.getSnapshot()).toMatchObject({ status: "on", needsTap: false })
+      expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("a stop while the audio context is being woken on return leaves voice off, with no tap asked for", async () => {
     const r = await started()
     let wake: () => void = () => {}
