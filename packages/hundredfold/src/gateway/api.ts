@@ -7,7 +7,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { ChatBlockEnvelope, DelegatedActivity, Employee, Engine, HundredfoldConfig, JsonObject, Session } from "../shared/types.js";
-import { isInterruptibleEngine, isSteerableEngine, reportsTurnProgress } from "../shared/types.js";
+import { isBoundaryInterruptibleEngine, isInterruptibleEngine, isSteerableEngine, reportsTurnProgress } from "../shared/types.js";
 import { fullMessageMeta, readFullMessageMeta } from "../shared/full-message.js";
 import { resolveStaleChatPolicy } from "../shared/stale-chat.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
@@ -88,7 +88,7 @@ import {
   RESTART_ACK_META_KEY,
 } from "../sessions/registry.js";
 import { claimIncomingTurn, lateralSendDedupeKey } from "../sessions/incoming-turn.js";
-import { sendReceipt, supersedeRequestError, type SupersedeOutcome } from "../sessions/queued-send-supersede.js";
+import { foldParkedLateralSends, sendReceipt, supersedeRequestError, type SupersedeOutcome } from "../sessions/queued-send-supersede.js";
 import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { endStopOnDeliberateSend, isStoppedByUser, refuseStoppedSession, STOPPED_SESSION_NOT_DELIVERED, stopSession } from "./session-stop.js";
@@ -349,7 +349,8 @@ import { handleHeartbeatApi } from "./heartbeat-api.js";
 import { armChildWatch } from "../heartbeats/child-watch.js";
 import { handleSelfCompactionApi } from "./self-compaction-api.js";
 import { handleSessionContextApi } from "./session-context-api.js";
-import { messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
+import { interruptsAtToolBoundary, messageDeliveryError, resolveMessageDelivery, runningTurnAction } from "./message-interrupt.js";
+import { interruptForLateralSend, type LateralInterruptOutcome } from "./lateral-interrupt.js";
 import { registerSteeredDelivery } from "../sessions/steered-deliveries.js";
 import { mergePendingQueueItems } from "../sessions/queue-merge.js";
 import { compactionInFlight } from "../sessions/compaction-in-flight.js";
@@ -4007,6 +4008,7 @@ export async function handleApiRequest(
       let parentFollowUp: { caller: Session; message: string } | undefined;
       let lateralDedupeKey: string | undefined;
       let supersedes: { callerSessionId: string; queueItemId: string } | undefined;
+      let lateralInterrupt = false;
       if (msgCaller.kind === "unidentified-tool") {
         res.writeHead(403, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: UNIDENTIFIED_TOOL_CALL_ERROR }));
@@ -4029,6 +4031,8 @@ export async function handleApiRequest(
         const supersedeError = supersedeRequestError(body.supersedes, caller.id, params.id);
         if (supersedeError) return badRequest(res, supersedeError);
         if (typeof body.supersedes === "string") supersedes = { callerSessionId: caller.id, queueItemId: body.supersedes };
+        if (body.interrupt !== undefined && typeof body.interrupt !== "boolean") return badRequest(res, "interrupt must be true or false");
+        lateralInterrupt = body.interrupt === true;
         const callerParentId = reportingParentSessionId(caller);
         const targetParentId = reportingParentSessionId(session);
         // Whoever may stop a session may start it again by messaging it; anyone
@@ -4251,6 +4255,15 @@ export async function handleApiRequest(
         canSteer: () => isSteerableEngine(engine) && !runningQueuePromptsForSession(targetSessionId).some(isCompactCommand) && engine.canSteer(targetSessionId),
       });
       const shouldInterruptRunningTurn = runningAction === "interrupt";
+      // An agent's send that asked to interrupt (`interrupt: true`) cuts the turn short between two tool calls;
+      // an engine that cannot stop at one leaves the message queued, and the sender is told.
+      const boundaryInterrupt = lateralInterrupt && interruptsAtToolBoundary({
+        requested: true,
+        turnRunning,
+        compacting: turnRunning && compactionInFlight(session.id),
+        queuePaused: () => context.sessionManager.getQueue().isPaused(pausableKey),
+      });
+      const boundaryEngine = boundaryInterrupt && isBoundaryInterruptibleEngine(engine) ? engine : undefined;
       if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
 
       // Persist the message immediately. For notifications, store the clean
@@ -4320,6 +4333,8 @@ export async function handleApiRequest(
         endStopOnDeliberateSend(session);
         queueItemId = claim.queueItemId;
         incomingMessageId = claim.messageId;
+        // What was parked ahead is read with it, in send order, as one turn.
+        if (boundaryEngine && queueItemId) foldParkedLateralSends(sessionKey, queueItemId);
       }
       if (parentFollowUp) {
         const preview = clipSessionMessage(parentFollowUp.message, 220);
@@ -4465,12 +4480,18 @@ export async function handleApiRequest(
         });
       }
 
+      // After the dispatch, so the row is already waiting in its lane when the turn ahead of it is cut.
+      let interrupt: LateralInterruptOutcome | undefined;
+      if (boundaryEngine && queueItemId) interrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId });
+      else if (lateralInterrupt && session.status === "running") interrupt = isBoundaryInterruptibleEngine(engine) ? "held" : "unsupported";
+
       return json(res, {
         status: "queued",
         sessionId: session.id,
         messageId: incomingMessageId,
         queueItemId,
         ...(msgCaller.kind === "session" ? sendReceipt(msgCaller.callerId, { id: session.id, sessionKey }, session.status === "running", supersededSend) : {}),
+        ...(interrupt ? { interrupt } : {}),
         ...(delivery ? { delivery } : {}),
         ...(callbackDelivery ? { callbackDeliveryId: callbackDelivery.id } : {}),
       });

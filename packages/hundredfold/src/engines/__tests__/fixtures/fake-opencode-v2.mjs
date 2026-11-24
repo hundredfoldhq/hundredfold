@@ -32,6 +32,10 @@
 // LAST `---` (Hundredfold puts its notices and the system prompt before it):
 //   TOOL        one shell tool step (finish tool-calls), then the text "tool done"
 //   SLOWTOOL    the same, with a tool that runs 1.5 s (time to steer an input in)
+//   TOOLCHAIN   six tool steps in a row, each running 600 ms after 200 ms of model turnaround, then the text "chain done": a long turn
+//               with a tool boundary every 600 ms. A tool that an interrupt lands in the middle of
+//               is recorded in the request log as `TOOL-CUT-MID-RUN` (a real server aborts it
+//               without a result, and what it was writing is gone)
 //   SLOW        a text step that takes 2 s
 //   LATESTART   the input is delivered, and its step starts only 1.2 s later (a
 //               gap in which nothing says the input is being answered)
@@ -277,7 +281,10 @@ function serve() {
     publish("session.tool.called", { sessionID: s.id, assistantMessageID: item.id, id, input, executed: false });
     streamed(s, item);
     const outcome = spec.during ? await spec.during(item, id) : undefined;
-    if (s.interrupted) return failAborted(s, item);
+    if (s.interrupted) {
+      requests.push({ at: Date.now(), method: "FAKE", path: "TOOL-CUT-MID-RUN", body: { tool: id } });
+      return failAborted(s, item);
+    }
     const name = spec.name ?? "shell";
     if (outcome?.fail) {
       const error = { type: "tool.execution", message: outcome.fail };
@@ -415,6 +422,16 @@ function serve() {
     return await textStep(s, "tool done");
   }
 
+  async function toolChainTurn(s) {
+    for (let step = 0; step < 6; step++) {
+      // The model's turnaround before it calls its next tool: the gap an abort at a boundary lands in.
+      if (await sleep(s, 200)) return "interrupted";
+      const outcome = await toolStep(s, { during: async () => { await sleep(s, 600); } });
+      if (outcome !== "ok") return outcome;
+    }
+    return await textStep(s, "chain done");
+  }
+
   async function hangTurn(s) {
     const item = startStep(s);
     startText(s, item);
@@ -467,6 +484,7 @@ function serve() {
 
   /** The directives, in the order they are tried. */
   const DIRECTIVES = [
+    ["TOOLCHAIN", toolChainTurn],
     ["TOOL", toolTurn],
     ["SLOWTOOL", toolTurn],
     ["SLOW", (s) => textStep(s, "fake:slow", { waitMs: 2000 })],

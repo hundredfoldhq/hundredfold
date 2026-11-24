@@ -102,3 +102,20 @@ export function runningTurnAction(o: {
 function reachableTurnRunning(o: { prompt: string; turnRunning: boolean; compacting?: boolean; queuePaused?: () => boolean }): boolean {
   return o.turnRunning && !o.compacting && !isCompactCommand(o.prompt) && !o.queuePaused?.();
 }
+
+/**
+ * Whether an agent-to-agent send that asked to interrupt cuts the target's
+ * running turn short. The sender's request is the only thing that opts a
+ * notification in: a callback or a notice never reaches here. The same guards as
+ * an operator's message hold it back: no turn running, a compaction under way or
+ * queued, a paused queue (nothing would drain, so the cut turn's reply would
+ * only be lost).
+ */
+export function interruptsAtToolBoundary(o: {
+  requested: boolean;
+  turnRunning: boolean;
+  compacting?: boolean;
+  queuePaused?: () => boolean;
+}): boolean {
+  return o.requested && o.turnRunning && !o.compacting && !o.queuePaused?.();
+}

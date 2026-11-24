@@ -94,3 +94,39 @@ export function withdrawOwnSend(db: Db, callerSessionId: string, targetSessionId
   if (row.messageId) db.prepare('DELETE FROM messages WHERE id = ?').run(row.messageId);
   return { outcome: 'withdrawn', queueItemId, messageId: row.messageId };
 }
+
+/** What the engine reads between two folded sends. */
+const FOLDED_SEND_SEPARATOR = '\n\n';
+
+/**
+ * Fold the sends parked in a lane into `intoId`, one turn in send order: the
+ * turn that cut the running one short reads every message that was waiting
+ * behind it, then the one that cut it, instead of answering each in a turn of
+ * its own before the next is read. `intoId` takes the earliest place among them,
+ * so the turn runs where the first of them would have; the others are cancelled,
+ * and their bubbles stay: each was sent, and the one turn reads them all.
+ *
+ * Only agent-to-agent sends are folded (a callback delivery, an operator message
+ * and a `/compact` keep their own turns and their own place in the line).
+ *
+ * Returns the ids folded in, empty when nothing was parked ahead.
+ */
+export function foldParkedLateralSends(sessionKey: string, intoId: string): string[] {
+  const db = initDb();
+  return db.transaction(() => {
+    const rows = db.prepare(
+      "SELECT id, prompt, position, message_id AS messageId FROM queue_items WHERE session_key = ? AND status = 'pending' AND instr(dedupe_key, 'lateral:') = 1 ORDER BY position ASC, created_at ASC, rowid ASC",
+    ).all(sessionKey) as Array<{ id: string; prompt: string; position: number; messageId: string | null }>;
+    if (rows.length < 2 || !rows.some((row) => row.id === intoId)) return [];
+    const folded = rows.filter((row) => row.id !== intoId);
+    db.prepare("UPDATE queue_items SET prompt = ?, dispatch_payload = ?, position = ? WHERE id = ? AND status = 'pending'").run(
+      rows.map((row) => row.prompt).join(FOLDED_SEND_SEPARATOR),
+      JSON.stringify({ attachments: [], speechDerived: false, foldedMessageIds: folded.flatMap((row) => (row.messageId ? [row.messageId] : [])) }),
+      rows[0].position,
+      intoId,
+    );
+    const cancel = db.prepare("UPDATE queue_items SET status = 'cancelled' WHERE id = ? AND status = 'pending'");
+    for (const row of folded) cancel.run(row.id);
+    return folded.map((row) => row.id);
+  }).immediate();
+}

@@ -1,7 +1,7 @@
 import { withRemoteAttachments } from "../shared/remote-attachments.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult, ForegroundWork, SteerableEngine, SteerOutcome, StreamDelta } from "../shared/types.js";
+import type { BoundaryInterruptibleEngine, EngineRunOpts, EngineResult, ForegroundWork, SteerableEngine, SteerOutcome, StreamDelta, ToolBoundaryOutcome } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isRemoteTarget } from "../shared/remote-target.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
@@ -20,6 +20,7 @@ import { HUNDREDFOLD_HOME } from "../shared/paths.js";
 import { type OpencodeServer, type OpencodeServerPool, type OpencodeServerSpec } from "./opencode-server.js";
 import type { OpencodeAccountsReader } from "./opencode-accounts.js";
 import { OpencodeServerTurn } from "./opencode-server-turn.js";
+import { interruptAtToolBoundary, type ToolBoundary } from "./opencode-tool-boundary.js";
 import { OpencodeServerCompaction } from "./opencode-server-compaction.js";
 import { OpencodeV2ServerTurn } from "./opencode-v2-turn.js";
 import { OpencodeV2ServerCompaction } from "./opencode-v2-compaction.js";
@@ -74,7 +75,7 @@ const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
  * machine, with an `ssh` client standing in for the local process.
  * `REMOTE_ENGINE_NAMES` in shared/models.ts names the adapters that can do that.
  */
-export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
+export class OpencodeEngine implements BoundaryInterruptibleEngine, SteerableEngine {
   name = "opencode" as const;
   private liveProcesses = new Map<string, LiveProcess>();
   /** Server-mode turns in flight: no process of their own, only HTTP. The slot
@@ -162,6 +163,27 @@ export class OpencodeEngine implements InterruptibleEngine, SteerableEngine {
     }
 
     this.terminate(live, sessionId);
+  }
+
+  /**
+   * Stop the session's turn between two tool calls, never inside one (see
+   * interruptAtToolBoundary). Only a server-mode turn can: a `run`-mode
+   * process has no events to say what it is executing, and killing it cuts
+   * whatever it is doing. A turn still waiting for its server has no call
+   * executing, so it is stopped as `kill` stops it.
+   */
+  async interruptAtToolBoundary(sessionId: string, reason: string, opts: { waitMs: number; beforeAbort?: () => boolean }): Promise<ToolBoundaryOutcome> {
+    const slot = this.serverTurns.get(sessionId);
+    if (!slot) return "unsupported";
+    if (!slot.turn) {
+      if (opts.beforeAbort && !opts.beforeAbort()) return "over";
+      this.kill(sessionId, reason);
+      return "interrupted";
+    }
+    if (slot.turn.isSettled()) return "over";
+    const { toolBoundary } = slot.turn;
+    if (!toolBoundary) return "unsupported";
+    return await interruptAtToolBoundary({ toolBoundary, interrupt: (why) => slot.turn!.interrupt(why) }, reason, opts);
   }
 
   /** Stop a turn still waiting for its account's models; false when the session has no such wait. */
@@ -694,7 +716,8 @@ interface ServerTurnSlot {
   interrupted?: string;
   /** Wakes a turn still waiting for its server when it is interrupted. */
   wake?: () => void;
-  turn?: Pick<OpencodeServerTurn, "run" | "interrupt" | "isSettled">;
+  /** A compaction has no tool calls, hence no `toolBoundary`: it is never stopped at one. */
+  turn?: Pick<OpencodeServerTurn, "run" | "interrupt" | "isSettled"> & { toolBoundary?: ToolBoundary };
 }
 
 /** The result of a turn interrupted before its prompt reached a server: nothing

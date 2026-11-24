@@ -315,9 +315,16 @@ const ATTESTED = {
   // 28, to 4399, and Pi sits ON it again. The tool count is unchanged. The list of valid
   // targets rides on the gateway's refusal and costs nothing here; two new tools for the
   // same job measured +168.
-  rpc: { tokens: 4064, sha256: "a40959236cc84e282d9eebdd56bb39ba678165d63b7fa1ff447ba6b5b0bd8e29" },
-  pi: { tokens: 4450, sha256: "eaeec9dbe805a94824f7375c5b016fdd2c9db335009ff5f90fd4e78043490541" },
-  openai: { tokens: 4203, sha256: "7f2a7ae3964e959e06fc162f4087870f374fc32e1d4f7683f3bd1096f27a7e4c" },
+  // Reattested for `interrupt` on send_to_session: a bare `{"type":"boolean"}`
+  // that cuts the target's running turn between two tool calls, 7 tokens and not
+  // one word of prose (the gateway's reply teaches the rest). It buys them back
+  // rather than moving the ceiling: `list_sessions.scope` said "Which sessions
+  // (default children)." where the enum already says which, and spawn_session's
+  // `fallbackMode` said "for the new session" about a field of spawn_session.
+  // One token under the old totals; the ceiling and the tool count are unchanged.
+  rpc: { tokens: 4063, sha256: "84dc3a3098560fb23f74560ed8f9cfc323a1db4519bd3c773bf1d4ddd5ec416d" },
+  pi: { tokens: 4449, sha256: "b96b05abbe6a9e94614d314a5535c5ce1e25a6ad1698075e02fb7d4966011c25" },
+  openai: { tokens: 4202, sha256: "7596570083ddbecec52d3b368080dda5df11febe5c76601510a70a8b0a6d62a6" },
 } as const;
 
 type TokenizerLoader = () => Promise<[{ Tiktoken: typeof import("js-tiktoken/lite").Tiktoken }, { default: typeof import("js-tiktoken/ranks/o200k_base").default }]>;

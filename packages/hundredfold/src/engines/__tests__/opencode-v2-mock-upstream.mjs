@@ -6,6 +6,10 @@
  *   MCPCALL   the same with the `hundredfold_echo` MCP tool (when it is offered)
  *   CALLTOOL=<name>  the same with the named tool, and the arguments in
  *             ARGS64=<base64 JSON> (none without it)
+ *   TOOLCHAIN=<n>:<s>  n shell calls in a row, each `echo start-i; sleep s; echo done-i` appended to chain.log in
+ *             the working directory (a call cut off in the middle leaves a start with no done), then "chain done"
+ *             The model answers each step 300 ms late, as a real one takes at least that to start streaming:
+ *             that gap, between a call ending and the next one starting, is where an abort at a boundary lands.
  *   SLOW      streams forty words, 250 ms apart (time to stop the turn)
  *   STEERED_MARKER  in the newest user message (an input steered into a running turn):
  *             answers "heard the steer", whatever else the turn was doing
@@ -86,6 +90,14 @@ function answer(req, res, body) {
   if (lastUser.includes("E400ONCE") && !failedOnce) {
     failedOnce = true;
     return fail(res, 400, { model: body.model });
+  }
+  const chain = /TOOLCHAIN=(\d+):(\d+)/.exec(lastUser);
+  if (chain) {
+    const done = messages.slice(messages.lastIndexOf(users.at(-1))).filter((m) => m.role === "tool").length;
+    if (done >= Number(chain[1])) return text(res, ["chain done"], 0);
+    const i = done + 1;
+    const command = `echo start-${i} >> chain.log; sleep ${chain[2]}; echo done-${i} >> chain.log`;
+    return void setTimeout(() => toolCall(res, tools.includes("shell") ? "shell" : "bash", { command, description: `step ${i}` }), 300);
   }
   if (lastUser.includes("TOOLCALL") && last?.role !== "tool") return toolCall(res, "shell", { command: "echo hi-from-tool", description: "echo" });
   if (lastUser.includes("MCPCALL") && last?.role !== "tool" && tools.includes("hundredfold_echo")) return toolCall(res, "hundredfold_echo", {});
