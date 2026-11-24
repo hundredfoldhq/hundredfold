@@ -31,7 +31,7 @@ const LABELS: Record<VoiceControlView, LabelFn> = {
   working: (v) => `Voice mode on, working${v.state.tool ? ` on ${v.state.tool}` : ''}. Tap to stop`,
   speaking: () => 'Voice mode on, speaking. Talk to interrupt, or tap to stop',
   paused: () => 'Voice mode paused by a call or another app. Tap to stop',
-  suspended: (v) => (v.state.needsTap ? 'Voice mode was suspended. Tap to resume' : 'Voice mode suspended by the device'),
+  suspended: (v) => (v.state.needsTap ? 'Voice paused. Tap to resume' : 'Voice paused by the device. Tap to stop'),
 }
 
 export function voiceControlLabel(voice: UseVoice): string {

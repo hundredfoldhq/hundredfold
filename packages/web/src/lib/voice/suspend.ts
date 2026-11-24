@@ -17,6 +17,8 @@ export interface SuspendDocument {
 }
 
 export interface SuspendTrack {
+  readonly readyState?: string
+  readonly muted?: boolean
   addEventListener(type: "mute" | "unmute" | "ended", listener: () => void): void
   removeEventListener(type: "mute" | "unmute" | "ended", listener: () => void): void
 }
@@ -36,6 +38,8 @@ export interface SuspendCallbacks {
 
 /** A socket close this soon after the page became visible again is the suspension's, not a fresh failure. */
 export const RETURN_GRACE_MS = 3_000
+/** How long a track that is still muted on return gets to unmute by itself before it is treated as lost. */
+export const MUTED_RETURN_WAIT_MS = 2_000
 
 export class SuspendWatcher {
   private suspended: { at: number; reason: SuspendReason } | null = null
@@ -43,6 +47,9 @@ export class SuspendWatcher {
   private lastHiddenAt: number | null = null
   private lastVisibleAt: number | null = null
   private readonly cleanups: Array<() => void> = []
+  private track: SuspendTrack | null = null
+  private ctx: SuspendContext | null = null
+  private mutedTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private readonly doc: SuspendDocument,
@@ -60,12 +67,14 @@ export class SuspendWatcher {
   }
 
   watchTrack(track: SuspendTrack): void {
+    this.track = track
     this.listen(track, "mute", () => this.markSuspended("track-muted"))
     this.listen(track, "ended", () => this.markSuspended("track-ended"))
     this.listen(track, "unmute", () => this.handBack())
   }
 
   watchContext(ctx: SuspendContext): void {
+    this.ctx = ctx
     const changed = () => (ctx.state === "running" ? this.handBack() : this.markSuspendedUnlessClosed(ctx))
     ctx.addEventListener("statechange", changed)
     this.cleanups.push(() => ctx.removeEventListener("statechange", changed))
@@ -84,6 +93,7 @@ export class SuspendWatcher {
   }
 
   stop(): void {
+    this.clearMutedTimer()
     for (const cleanup of this.cleanups.splice(0)) cleanup()
   }
 
@@ -114,15 +124,45 @@ export class SuspendWatcher {
   private visibilityChanged(): void {
     if (this.doc.visibilityState === "hidden") {
       this.hiddenAt = this.lastHiddenAt = this.now()
+      this.clearMutedTimer()
       return
     }
     this.hiddenAt = null
     this.lastVisibleAt = this.now()
+    this.checkLiveness()
+    if (this.suspended?.reason === "track-muted" && this.track?.muted === true) {
+      // It may unmute by itself, which hands back via its own `unmute`. Browsers do not always say, so give it a moment, then treat it as lost.
+      this.clearMutedTimer()
+      this.mutedTimer = setTimeout(() => {
+        this.mutedTimer = null
+        this.handBack()
+      }, MUTED_RETURN_WAIT_MS)
+      return
+    }
     this.handBack()
+  }
+
+  private clearMutedTimer(): void {
+    if (this.mutedTimer === null) return
+    clearTimeout(this.mutedTimer)
+    this.mutedTimer = null
+  }
+
+  /**
+   * A browser does not always deliver the `ended` or `mute` event a suspension
+   * caused (or delivers it only while the page is hidden), so on return look at
+   * the microphone and the audio context directly.
+   */
+  private checkLiveness(): void {
+    if (this.suspended) return
+    if (this.track?.readyState === "ended") this.markSuspended("track-ended")
+    else if (this.track?.muted === true) this.markSuspended("track-muted")
+    else if (this.ctx && this.ctx.state !== "running" && this.ctx.state !== "closed") this.markSuspended("audio-context")
   }
 
   private handBack(): void {
     if (!this.suspended || this.doc.visibilityState === "hidden") return
+    this.clearMutedTimer()
     const { at, reason } = this.suspended
     this.suspended = null
     this.callbacks.onReturn({ suspendedMs: Math.max(0, this.now() - at), reason })

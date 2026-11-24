@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { installMediaSession, RETURN_GRACE_MS, SuspendWatcher, type MediaSessionLike } from "../suspend"
+import { installMediaSession, MUTED_RETURN_WAIT_MS, RETURN_GRACE_MS, SuspendWatcher, type MediaSessionLike } from "../suspend"
 
 class FakeEmitter {
   private listeners = new Map<string, Set<() => void>>()
@@ -28,6 +28,113 @@ function setup() {
   watcher.watchContext(ctx)
   return { doc, track, ctx, callbacks, watcher, tick: (ms: number) => { now += ms } }
 }
+
+describe("SuspendWatcher on return, without any event", () => {
+  function watched(track: { readyState?: string; muted?: boolean }) {
+    let now = 1_000_000
+    const doc = new FakeDocument()
+    const emitter = Object.assign(new FakeEmitter(), track)
+    const ctx = new FakeContext()
+    const callbacks = { onSuspended: vi.fn(), onReturn: vi.fn() }
+    const watcher = new SuspendWatcher(doc, callbacks, () => now)
+    watcher.watchTrack(emitter)
+    watcher.watchContext(ctx)
+    return { doc, emitter, ctx, callbacks, watcher, tick: (ms: number) => { now += ms } }
+  }
+
+  it("finds a microphone track that ended while the page was hidden and reports the return", () => {
+    const { doc, emitter, callbacks, tick } = watched({ readyState: "live" })
+    doc.set("hidden")
+    tick(40_000)
+    emitter.readyState = "ended" // no `ended` event reached the page
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("track-ended")
+    expect(callbacks.onReturn).toHaveBeenCalledWith({ suspendedMs: 40_000, reason: "track-ended" })
+  })
+
+  it("finds a track still muted on return, and waits for its unmute", () => {
+    const { doc, emitter, callbacks } = watched({ readyState: "live", muted: false })
+    doc.set("hidden")
+    emitter.muted = true
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("track-muted")
+    expect(callbacks.onReturn).not.toHaveBeenCalled()
+    emitter.muted = false
+    emitter.emit("unmute")
+    expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+  })
+
+  describe("a track that stays muted after return", () => {
+    it("is treated as lost once it has had a moment to unmute", () => {
+      vi.useFakeTimers()
+      try {
+        const { doc, emitter, callbacks } = watched({ readyState: "live", muted: false })
+        doc.set("hidden")
+        emitter.muted = true
+        emitter.emit("mute")
+        doc.set("visible")
+        vi.advanceTimersByTime(MUTED_RETURN_WAIT_MS - 1)
+        expect(callbacks.onReturn).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(2)
+        expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+        expect(callbacks.onReturn).toHaveBeenCalledWith(expect.objectContaining({ reason: "track-muted" }))
+      } finally { vi.useRealTimers() }
+    })
+
+    it("hands back once when it unmutes first", () => {
+      vi.useFakeTimers()
+      try {
+        const { doc, emitter, callbacks } = watched({ readyState: "live", muted: false })
+        doc.set("hidden")
+        emitter.muted = true
+        emitter.emit("mute")
+        doc.set("visible")
+        emitter.muted = false
+        emitter.emit("unmute")
+        vi.advanceTimersByTime(MUTED_RETURN_WAIT_MS * 2)
+        expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+      } finally { vi.useRealTimers() }
+    })
+
+    it("waits no longer if the page is hidden again, and stopping cancels the wait", () => {
+      vi.useFakeTimers()
+      try {
+        const first = watched({ readyState: "live", muted: false })
+        first.doc.set("hidden")
+        first.emitter.muted = true
+        first.emitter.emit("mute")
+        first.doc.set("visible")
+        first.doc.set("hidden")
+        vi.advanceTimersByTime(MUTED_RETURN_WAIT_MS * 2)
+        expect(first.callbacks.onReturn).not.toHaveBeenCalled()
+        const second = watched({ readyState: "live", muted: false })
+        second.doc.set("hidden")
+        second.emitter.muted = true
+        second.emitter.emit("mute")
+        second.doc.set("visible")
+        second.watcher.stop()
+        vi.advanceTimersByTime(MUTED_RETURN_WAIT_MS * 2)
+        expect(second.callbacks.onReturn).not.toHaveBeenCalled()
+      } finally { vi.useRealTimers() }
+    })
+  })
+
+  it("finds an audio context that is no longer running on return", () => {
+    const { doc, ctx, callbacks } = watched({ readyState: "live" })
+    doc.set("hidden")
+    ctx.state = "interrupted" // no `statechange` reached the page
+    doc.set("visible")
+    expect(callbacks.onSuspended).toHaveBeenCalledWith("audio-context")
+    expect(callbacks.onReturn).toHaveBeenCalledTimes(1)
+  })
+
+  it("a track that is fine on return is not a suspension", () => {
+    const { doc, callbacks } = watched({ readyState: "live", muted: false })
+    doc.set("hidden")
+    doc.set("visible")
+    expect(callbacks.onSuspended).not.toHaveBeenCalled()
+  })
+})
 
 describe("SuspendWatcher", () => {
   it("does not treat a hidden page as suspended by itself", () => {

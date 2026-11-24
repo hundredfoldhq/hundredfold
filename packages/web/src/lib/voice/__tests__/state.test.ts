@@ -159,6 +159,17 @@ describe("suspension", () => {
     expect(s).toMatchObject({ status: "suspended", needsTap: true, error: null })
   })
 
+  it("resuming bumps syncTick so the chat is re-read for replies that finished meanwhile", () => {
+    const before = on().syncTick
+    expect(run([{ type: "suspended" }, { type: "resumed" }], on()).syncTick).toBe(before + 1)
+  })
+
+  it("a resume clears the suspended notice but keeps any other notice", () => {
+    expect(run([{ type: "suspended" }, { type: "resumed" }], on()).notice).toBeNull()
+    const other = run([{ type: "suspended" }, { type: "frame", frame: { type: "missed", messageIds: ["a"] } as never, now: 0 }, { type: "resumed" }], on())
+    expect(other.notice).not.toBeNull()
+  })
+
   it("a resume brings it back on, no longer needing a tap", () => {
     const s = run([{ type: "suspended" }, { type: "needs-tap" }, { type: "resumed" }], on())
     expect(s).toMatchObject({ status: "on", needsTap: false })

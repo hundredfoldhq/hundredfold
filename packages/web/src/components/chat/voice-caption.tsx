@@ -15,7 +15,14 @@ const STATUS: Record<VoicePhase, (voice: UseVoice) => string | null> = {
   working: (v) => (v.state.tool ? `Working · ${v.state.tool}` : 'Working…'),
   speaking: (v) => v.state.holding ?? 'Speaking',
   paused: () => 'Paused',
-  suspended: (v) => (v.state.needsTap ? 'Tap the voice button to resume' : 'Suspended'),
+  suspended: (v) => (v.state.needsTap ? 'Voice paused. Tap the voice button to resume' : 'Voice paused'),
+}
+
+/** Said once while voice is paused in a browser: only the mobile app keeps it going with the screen locked. */
+export const LOCKED_SCREEN_HINT = 'Voice keeps working with the screen locked in the mobile app.'
+
+export function voiceHintText(voice: UseVoice): string | null {
+  return voice.phase === 'suspended' && !voice.inShell ? LOCKED_SCREEN_HINT : null
 }
 
 export function voiceStatusText(voice: UseVoice): string | null {
@@ -41,11 +48,14 @@ function Message({ voice, text }: { voice: UseVoice; text: string }) {
   )
 }
 
+function captionParts(voice: UseVoice) {
+  return { status: voiceStatusText(voice), message: voice.state.error ?? voice.state.notice ?? voice.note, hint: voiceHintText(voice) }
+}
+
 export function VoiceCaption({ voice }: { voice: UseVoice }) {
   if (!voice.enabled) return null
-  const status = voiceStatusText(voice)
-  const message = voice.state.error ?? voice.state.notice ?? voice.note
-  if (!status && !message && !voice.chip) return null
+  const { status, message, hint } = captionParts(voice)
+  if (!status && !message && !hint && !voice.chip) return null
   return (
     <div data-voice-caption className="relative z-[12] mb-[var(--composer-overlap,0px)] shrink-0 text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
       {/* The same centred column and side insets as the composer card and the
@@ -54,6 +64,7 @@ export function VoiceCaption({ voice }: { voice: UseVoice }) {
       <div data-voice-caption-measure className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-wrap items-center gap-x-[var(--space-3)] gap-y-[var(--space-1)] px-3 py-[var(--space-2)] lg:px-8">
         {status && <span role="status" aria-live="polite" data-voice-status={voice.phase} className="min-w-0 truncate">{status}</span>}
         {message && <Message voice={voice} text={message} />}
+        {hint && <span data-voice-hint>{hint}</span>}
         {voice.chip && (
           <span data-voice-chip={voice.chip.kind} className="rounded-full bg-[var(--fill-secondary)] px-[var(--space-3)] py-[2px] text-[var(--text-secondary)]">
             {voice.chip.label}

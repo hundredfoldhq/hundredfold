@@ -22,7 +22,7 @@ function voiceWith(overrides: Partial<UseVoice> = {}, state: VoiceUiState = INIT
   return {
     enabled: true, unavailable: null, installing: null, mode: 'hands-free', state,
     phase: state.status === 'off' ? 'off' : 'listening', controller: controller as unknown as UseVoice['controller'],
-    chip: null, note: null, showNote: vi.fn(), onTap: vi.fn(), ...overrides,
+    inShell: false, chip: null, note: null, showNote: vi.fn(), onTap: vi.fn(), ...overrides,
   }
 }
 
@@ -80,11 +80,11 @@ describe('VoiceControl', () => {
     expect(voiceControlLabel(voice)).toBe('Setting up voice mode, 40 percent')
   })
 
-  it('says it was suspended and, when a tap is needed, to tap', () => {
+  it('says it is paused and, when a tap is needed, to tap', () => {
     const suspended = voiceReducer(stateAfter(), { type: 'suspended' })
-    expect(voiceControlLabel(withPhase(suspended))).toMatch(/suspended by the device/)
+    expect(voiceControlLabel(withPhase(suspended))).toBe('Voice paused by the device. Tap to stop')
     const needsTap = voiceReducer(suspended, { type: 'needs-tap' })
-    expect(voiceControlLabel(withPhase(needsTap))).toBe('Voice mode was suspended. Tap to resume')
+    expect(voiceControlLabel(withPhase(needsTap))).toBe('Voice paused. Tap to resume')
   })
 
   it('shows a paused state when a call or another app took the audio', () => {
@@ -197,6 +197,23 @@ describe('VoiceCaption', () => {
     expect(document.querySelector('[data-voice-message]')?.textContent).toBe('Voice mode was suspended by the device.')
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(voice.controller?.dismissNotice).toHaveBeenCalled()
+  })
+
+  it('says voice is paused, and in a browser (not the shell) that the mobile app keeps it going with the screen locked', () => {
+    const state = voiceReducer(stateAfter(), { type: 'suspended' })
+    const { rerender } = render(<VoiceCaption voice={withPhase(state, { inShell: false })} />)
+    expect(document.querySelector('[data-voice-status]')?.textContent).toBe('Voice paused')
+    expect(document.querySelector('[data-voice-hint]')?.textContent).toBe('Voice keeps working with the screen locked in the mobile app.')
+    const needsTap = voiceReducer(state, { type: 'needs-tap' })
+    rerender(<VoiceCaption voice={withPhase(needsTap, { inShell: false })} />)
+    expect(document.querySelector('[data-voice-status]')?.textContent).toBe('Voice paused. Tap the voice button to resume')
+    rerender(<VoiceCaption voice={withPhase(state, { inShell: true })} />)
+    expect(document.querySelector('[data-voice-hint]')).toBeNull()
+  })
+
+  it('shows no hint while voice is on', () => {
+    render(<VoiceCaption voice={withPhase(stateAfter(), { inShell: false })} />)
+    expect(document.querySelector('[data-voice-hint]')).toBeNull()
   })
 
   it('shows an error as an alert', () => {

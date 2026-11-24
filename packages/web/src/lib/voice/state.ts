@@ -226,7 +226,9 @@ const ACTION_HANDLERS: ActionHandlers = {
   closed,
   suspended: (state) => (state.status === "off" ? state : { ...state, status: "suspended", notice: SUSPENDED_NOTICE, vadSpeaking: false, partial: "" }),
   "native-state": nativeState,
-  resumed: (state) => ({ ...state, status: "on", needsTap: false }),
+  // The chat is re-read on return: replies that finished while the device was away are in it by now.
+  // The suspended notice described a state that is over; any other notice stays until dismissed.
+  resumed: (state) => ({ ...state, status: "on", needsTap: false, notice: state.notice === SUSPENDED_NOTICE ? null : state.notice, syncTick: state.syncTick + 1 }),
   "needs-tap": (state) => ({ ...state, needsTap: true }),
   "dismiss-notice": (state) => ({ ...state, notice: null, error: null }),
   "background-cleared": (state) => (state.background.length === 0 ? state : { ...state, background: [] }),

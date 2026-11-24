@@ -15,6 +15,7 @@ import {
   type SuspendTrack,
 } from "./suspend"
 import type { VoiceAction, VoiceUiState } from "./state"
+import { ScreenWakeLock, type WakeLockLike } from "./wake-lock"
 
 export interface VoiceAudioContext extends CueAudioContext, SuspendContext {
   resume(): Promise<void>
@@ -56,6 +57,8 @@ export interface BrowserVoiceDeps {
   createCuePlayer(ctx: VoiceAudioContext): VoiceCuePlayerLike
   doc: SuspendDocument
   mediaSession?: MediaSessionLike
+  /** `navigator.wakeLock`, where the browser has one. */
+  wakeLock?: WakeLockLike
   createMediaMetadata?: () => unknown
   now(): number
 }
@@ -71,6 +74,9 @@ export interface BrowserVoiceOptions {
 /** How long to wait for an AudioContext to run again before asking for a tap. */
 const CONTEXT_RESUME_WAIT_MS = 300
 
+/** How long a microphone request made without a tap may take before the tap is asked for instead. */
+const MICROPHONE_REACQUIRE_WAIT_MS = 2_000
+
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
@@ -81,6 +87,7 @@ export function defaultBrowserDeps(): BrowserVoiceDeps {
     createCuePlayer: (ctx) => new VoiceCuePlayer(ctx),
     doc: document,
     mediaSession: typeof navigator !== "undefined" && "mediaSession" in navigator ? (navigator.mediaSession as unknown as MediaSessionLike) : undefined,
+    wakeLock: typeof navigator !== "undefined" && "wakeLock" in navigator ? (navigator.wakeLock as unknown as WakeLockLike) : undefined,
     createMediaMetadata: () => new MediaMetadata({ title: "Voice mode is on", artist: "Hundredfold" }),
     now: () => Date.now(),
   }
@@ -112,6 +119,7 @@ export class BrowserVoiceSession implements VoiceController {
   private detector: OnsetDetector | null = null
   private cuePlayer: VoiceCuePlayerLike | null = null
   private removeMediaSession: (() => void) | null = null
+  private wakeLock: ScreenWakeLock | null = null
   private closing = false
   /** Bumped on every start and every teardown; an await that resumes under a different value belongs to a run that is over. */
   private generation = 0
@@ -141,6 +149,8 @@ export class BrowserVoiceSession implements VoiceController {
     void ctx.resume().catch(() => undefined)
     const microphone = this.deps.requestMicrophone()
     this.ctx = ctx
+    this.wakeLock = new ScreenWakeLock(this.deps.wakeLock, this.deps.doc)
+    this.wakeLock.acquire()
     if (this.session !== null) {
       this.openSocket(this.session)
       return this.attachMicrophone(microphone, generation)
@@ -210,8 +220,7 @@ export class BrowserVoiceSession implements VoiceController {
     const ctx = this.ctx
     if (!ctx || this.session === null) return this.start()
     void ctx.resume().catch(() => undefined)
-    const trackLive = this.capture?.track?.readyState === "live"
-    const microphone = trackLive ? null : this.deps.requestMicrophone()
+    const microphone = this.microphoneLive() ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
     if (this.socket?.isOpen) {
       this.apply({ type: "resumed" })
@@ -359,6 +368,8 @@ export class BrowserVoiceSession implements VoiceController {
       throw error
     }
     if (generation !== this.generation) { handle.stop(); stopTracks(stream); return }
+    // A return and a tap can both have asked for a microphone: the later one wins, the earlier is let go.
+    this.capture?.stop()
     this.capture = handle
     this.watchForSuspension(ctx)
   }
@@ -392,13 +403,21 @@ export class BrowserVoiceSession implements VoiceController {
 
   // ── suspension ────────────────────────────────────────────────────────────
 
+  /**
+   * The page is back after a suspension. Put back whatever the device took,
+   * without a tap where the browser allows it: the audio context and the
+   * microphone. A lost socket, or a microphone the browser will not hand
+   * over without a gesture, is left for the one tap-to-resume.
+   */
   private async handleReturn(suspendedMs: number): Promise<void> {
     this.pendingResumeMs = suspendedMs
     const ctx = this.ctx
+    const generation = this.generation
     if (!ctx || this.closing) return
-    if (ctx.state !== "running") await this.tryResumeContext(ctx)
+    if (!(await this.putBackAudio(ctx, generation))) return
     if (!this.recovered(ctx)) {
-      this.apply({ type: "needs-tap" })
+      // A tap made meanwhile already resumed the session and is bringing the microphone back itself; only a session still paused asks for one.
+      if (this.store.snapshot.status === "suspended") this.apply({ type: "needs-tap" })
       return
     }
     this.watcher?.clear()
@@ -406,9 +425,46 @@ export class BrowserVoiceSession implements VoiceController {
     this.sendResume()
   }
 
+  /** The audio context, then the microphone. False when the run ended meanwhile. */
+  private async putBackAudio(ctx: VoiceAudioContext, generation: number): Promise<boolean> {
+    if (ctx.state !== "running") await this.tryResumeContext(ctx)
+    if (generation !== this.generation) return false
+    // A lost socket is only reopened inside a tap, and that tap asks for the microphone too, so don't ask twice.
+    if (this.socket?.isOpen && !this.microphoneLive()) await this.reacquireMicrophone(generation)
+    return generation === this.generation
+  }
+
+  /** A microphone that died with the suspension, asked for again with no tap. A refusal or a wait leaves the tap to do it. */
+  private async reacquireMicrophone(generation: number): Promise<void> {
+    this.capture?.stop()
+    this.capture = null
+    const microphone = this.deps.requestMicrophone()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const wait = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), MICROPHONE_REACQUIRE_WAIT_MS) })
+    try {
+      const stream = await Promise.race([microphone, wait])
+      if (!stream) {
+        // Too slow: the tap asks again, so whatever this request yields later is let go.
+        void microphone.then(stopTracks, () => undefined)
+        return
+      }
+      await this.beginCapture(stream, generation)
+    } catch {
+      /* refused or failed: it needs a tap */
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** A microphone that is neither ended nor muted by the device. */
+  private microphoneLive(): boolean {
+    const track = this.capture?.track
+    return track?.readyState === "live" && track.muted !== true
+  }
+
   /** Socket open, microphone live and audio running: nothing needs a gesture. */
   private recovered(ctx: VoiceAudioContext): boolean {
-    return this.socket?.isOpen === true && this.capture?.track?.readyState === "live" && ctx.state === "running"
+    return this.socket?.isOpen === true && this.microphoneLive() && ctx.state === "running"
   }
 
   private async tryResumeContext(ctx: VoiceAudioContext): Promise<void> {
@@ -441,6 +497,8 @@ export class BrowserVoiceSession implements VoiceController {
     this.detector = null
     this.removeMediaSession?.()
     this.removeMediaSession = null
+    this.wakeLock?.release()
+    this.wakeLock = null
     const ctx = this.ctx
     this.ctx = null
     this.socket = null
