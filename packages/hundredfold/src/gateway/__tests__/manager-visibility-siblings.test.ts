@@ -17,6 +17,7 @@ const { surfaceManagerVisibility, findManagerVisibilitySession } = await import(
 const store = await import("../../work-items/store.js");
 const { swapEmployeeSession } = await import("../../work-items/employee-sessions.js");
 const { recordLandedBrief, startBriefTurn } = await import("../../work-items/employee-session-delegation.js");
+const { noticeTargetSessionId } = await import("../../sessions/turn-requester.js");
 
 function employee(name: string, rank: Employee["rank"], reportsTo?: string): Employee {
   return { name, displayName: name, department: "platform", rank, engine: "claude", model: "test-model", persona: name, reportsTo } as Employee;
@@ -104,5 +105,59 @@ describe("manager visibility with an orchestrator and its children", () => {
 
     expect(notifyManager).not.toHaveBeenCalled();
     expect(appendFallback).toHaveBeenCalledOnce();
+  });
+
+  it("passes over a session with a brief waiting to start, whose turns will report to the delegator", () => {
+    const orchestrator = spawn("lead");
+    const todo = store.createWorkItem({ title: "queued" });
+    const reused = spawn("builder");
+    store.linkSession(todo.id, reused.id);
+    expect(swapEmployeeSession(todo.id, "builder", null, reused.id)).toBe(true);
+    // The brief landed behind the session's current turn and has not started.
+    recordLandedBrief({ briefKey: "brief-waiting", workItemId: todo.id, employee: "builder", sessionId: reused.id, delegatorSessionId: orchestrator.id });
+    const child2 = spawn("reviewer", orchestrator.id);
+    const notifyManager = vi.fn();
+    const appendFallback = vi.fn();
+    const deps = { findManagerSession: findManagerVisibilitySession, notifyManager, appendFallback, warn: vi.fn() };
+
+    // Nothing reports upward yet, so a check on the hop alone would pick it.
+    expect(noticeTargetSessionId(reg.getSession(reused.id)!)).toBeNull();
+    surfaceManagerVisibility(
+      { roster, employee: "reviewer", delegatorSession: orchestrator, childSession: child2, workItemId: "wi_r", title: "Work" },
+      deps,
+    );
+
+    expect(notifyManager).not.toHaveBeenCalled();
+    expect(appendFallback).toHaveBeenCalledOnce();
+    // A notice queued now would run after the brief, and its reply would reach the orchestrator.
+    startBriefTurn(reused.id, ["brief-waiting"]);
+    expect(noticeTargetSessionId(reg.getSession(reused.id)!)).toBe(orchestrator.id);
+  });
+
+  it("still reaches a manager session the operator delegated into, whose replies go to no session", () => {
+    const orchestrator = spawn("lead");
+    const started = store.createWorkItem({ title: "operator started" });
+    const waiting = store.createWorkItem({ title: "operator waiting" });
+    const managerSession = spawn("builder");
+    store.linkSession(started.id, managerSession.id);
+    store.linkSession(waiting.id, managerSession.id);
+    expect(swapEmployeeSession(started.id, "builder", null, managerSession.id)).toBe(true);
+    expect(swapEmployeeSession(waiting.id, "builder", null, managerSession.id)).toBe(true);
+    recordLandedBrief({ briefKey: "op-started", workItemId: started.id, employee: "builder", sessionId: managerSession.id, delegatorSessionId: null });
+    startBriefTurn(managerSession.id, ["op-started"]);
+    recordLandedBrief({ briefKey: "op-waiting", workItemId: waiting.id, employee: "builder", sessionId: managerSession.id, delegatorSessionId: null });
+    const child2 = spawn("reviewer", orchestrator.id);
+    const notifyManager = vi.fn();
+    const deps = { findManagerSession: findManagerVisibilitySession, notifyManager, appendFallback: vi.fn(), warn: vi.fn() };
+
+    surfaceManagerVisibility(
+      { roster, employee: "reviewer", delegatorSession: orchestrator, childSession: child2, workItemId: "wi_r", title: "Work" },
+      deps,
+    );
+
+    expect(notifyManager).toHaveBeenCalledOnce();
+    expect(notifyManager.mock.calls[0][0]).toBe(managerSession.id);
+    startBriefTurn(managerSession.id, ["op-waiting"]);
+    expect(noticeTargetSessionId(reg.getSession(managerSession.id)!)).toBeNull();
   });
 });

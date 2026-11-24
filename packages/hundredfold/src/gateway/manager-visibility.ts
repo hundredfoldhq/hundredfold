@@ -4,7 +4,7 @@ import {
   type ManagerVisibilityDetails,
 } from "../sessions/callbacks.js";
 import { logger } from "../shared/logger.js";
-import { reportingParentSessionId } from "../work-items/employee-session-delegation.js";
+import { reportsToASession } from "../work-items/employee-session-delegation.js";
 import type { Employee, Session } from "../shared/types.js";
 import { appendWorkItemEvent } from "../work-items/store.js";
 import { resolveOrgHierarchy } from "./org-hierarchy.js";
@@ -36,14 +36,15 @@ export interface ManagerVisibilityDeps {
 
 /** Passive visibility may join a conversation already in flight, but must not
  * start a new turn on a completed, stopped, or otherwise idle manager thread.
- * A session that reports to another session, whether it was spawned by it or
- * a delegation landed in it, is working a brief it was handed, not managing a
- * team: it knows nothing of this delegation, so the notice would only wake it
- * for a turn that answers "nothing for me", and that answer is relayed to the
- * session it reports to. When the manager's only live sessions report upward,
- * the Todo carries the fallback reference instead. */
+ * A session that reports to another session, because it was spawned by it, a
+ * delegation landed in it, or a delegation's brief is waiting to start in it,
+ * is working a brief it was handed, not managing a team: it knows nothing of
+ * this delegation, so the notice would only wake it for a turn that answers
+ * "nothing for me", and that answer is relayed to the session it reports to.
+ * When the manager's only live sessions report upward, the Todo carries the
+ * fallback reference instead. */
 export function isEligibleManagerVisibilitySession(session: Session): boolean {
-  if (reportingParentSessionId(session)) return false;
+  if (reportsToASession(session)) return false;
   return session.status === "running" || session.status === "waiting";
 }
 
