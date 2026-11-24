@@ -1513,6 +1513,11 @@ interface ActiveTurn {
   steers?: SteerInFlight[];
   /** Watches this turn's transcript for the entries that show it took a steered input in. */
   steerWatch?: { offset: number; taken: string[]; timer: NodeJS.Timeout };
+  /** The model has written something of this turn that Esc would keep: streamed text, a tool call, or a tool result.
+   *  Before that, Esc takes the turn's own prompt back out of the conversation (verified on 2.1.331: cut during the
+   *  first second or two, the resumed session no longer knows it), so no cut is made. Set only by the turn's own
+   *  events, never by a background re-invocation's or a held paste's. */
+  producedOutput?: boolean;
   /** Callers of interruptAtToolBoundary waiting for the turn to have no call running; each is run after every hook and when the turn ends. */
   boundaryWatchers?: Set<() => void>;
 }
@@ -2733,6 +2738,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
         // The turn's own tool calls only: a replayed hook predates it, a foreign or held one is another turn's.
         if (!replaying && !foreign && !held) {
           entry.foreground.onHook(h);
+          // A call of the turn's own (a sub-agent's hooks carry an agent_id) means the model has written something.
+          if (typeof h.agent_id !== "string" && (h.hook_event_name === "PreToolUse" || h.hook_event_name === "PostToolUse" || h.hook_event_name === "PostToolUseFailure")) entry.producedOutput = true;
           const moved = backgroundedByPostToolUse(h);
           if (moved?.toolUseId) entry.movedToBackground.set(moved.toolUseId, { taskId: moved.taskId, description: moved.description });
         }
@@ -3114,10 +3121,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
     const entry = this.active.get(hundredfoldSessionId);
     if (!entry) return; // idle PTY / no turn in flight — nothing to stream
     entry.resolver.noteActivity();
-    if (!entry.onStream) return;
     // A background re-invocation running ahead of this turn's prompt is not
     // this turn's reply.
     if (entry.resolver.awaitingBackgroundRerun || entry.holdingPaste) return;
+    if (!entry.producedOutput && sseEventToDeltas(e).some((d) => d.type === "text" || d.type === "tool_use")) {
+      entry.producedOutput = true;
+      this.notifyBoundaryWatchers(entry);
+    }
+    if (!entry.onStream) return;
     // Only the main agent's events reach here (the proxy suppresses sub-agent and
     // auxiliary streams) — but compaction shares those credentials, so deltas pass
     // through the gate before reaching the transcript.
@@ -3933,9 +3944,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
     }
   }
 
-  /** Whether the turn is between two tool calls: its prompt is in, and no call of its own is running, waiting on a dialog or about to be. */
+  /** Whether the turn is between two tool calls: the model has written something Esc keeps (see producedOutput), and no call of its own is running or waiting on a dialog. */
   private atToolBoundary(entry: ActiveTurn): boolean {
-    return entry.promptSubmitted && !entry.resolver.isSettled && !entry.holdingPaste && !entry.resolver.awaitingBackgroundRerun
+    return entry.producedOutput === true && !entry.resolver.isSettled && !entry.holdingPaste
       && entry.blockedOnPermissionAt === undefined && entry.foreground.oldest() === null;
   }
 
@@ -3953,7 +3964,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
    * - A call running in the foreground (a Bash, an MCP call, a sub-agent the turn waits on) is a call in
    *   flight. Work the turn left in the background (a background Bash, a background sub-agent, a Monitor) is
    *   not: Esc ends the turn and leaves it running, and its task-notification wakes the session later.
-   * - A turn that is only generating has no call running and is cut at once.
+   * - A turn that is only generating has no call running and is cut at once, once it has written something (streamed
+   *   text or a tool call): before that Esc would take its prompt out of the conversation, so the cut waits for it.
    * - Past `waitMs` the answer is "waiting", and the cut stays armed for the boundary until the turn ends or
    *   `beforeAbort` calls it off. A call whose end hook never comes keeps the cut waiting until the turn ends.
    * - The key is written in the same tick as the last check that no call is running, so only a call the

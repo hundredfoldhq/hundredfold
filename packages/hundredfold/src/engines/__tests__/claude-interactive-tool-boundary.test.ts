@@ -45,11 +45,12 @@ vi.mock("node-pty", () => ({
     return p;
   }),
 }));
+const sseHandlers: Array<(e: unknown) => void> = vi.hoisted(() => []);
 vi.mock("../sse-pty-proxy.js", () => ({
   MAIN_AGENT_SENTINEL: "<!-- hundredfold-main-agent:5c1f -->",
   SsePtyProxy: class {
     port = 0;
-    constructor(_label: string, _onEvent: (e: unknown) => void) {}
+    constructor(_label: string, onEvent: (e: unknown) => void) { sseHandlers.push(onEvent); }
     async start() { return 41300; }
     stop() {}
   },
@@ -81,6 +82,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     ptys.length = 0;
+    sseHandlers.length = 0;
     unclaimed = [];
     released = [];
     killed = [];
@@ -138,6 +140,9 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
 
   const WAIT = { waitMs: 4_000 };
+  /** The model streams some text of the turn: from here on Esc keeps what it wrote. */
+  const streamText = (text = "Working on it") =>
+    sseHandlers[sseHandlers.length - 1]!({ type: "content_block_delta", delta: { type: "text_delta", text } });
   const postBash = (id: string, toolUseId = BASH_ID) =>
     deliver(id, { hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: toolUseId, tool_response: { stdout: "ok" } });
   const stop = (id: string, text = "finished") => deliver(id, { hook_event_name: "Stop", last_assistant_message: text });
@@ -155,6 +160,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("cuts a turn that is only generating at once: Esc, the turn settles interrupted, the process stays", async () => {
     const { turn } = await runningTurn("s-gen");
+    streamText();
     const before = vi.fn(() => true);
     const outcome = await engine.interruptAtToolBoundary("s-gen", "Interrupted: new message received", { ...WAIT, beforeAbort: before });
     expect(outcome).toBe("interrupted");
@@ -264,6 +270,53 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
     expect((await turn).result).toBe("finished");
   });
 
+  it("does not cut a turn that has written nothing yet: Esc would take its prompt out of the conversation", async () => {
+    const { turn } = await runningTurn("s-early");
+    const before = vi.fn(() => true);
+    const outcome = engine.interruptAtToolBoundary("s-early", "new message", { waitMs: 4_000, beforeAbort: before });
+    await vi.advanceTimersByTimeAsync(4_100);
+    expect(await outcome).toBe("waiting");
+    expect(keys()).toEqual([]);
+    expect(before).not.toHaveBeenCalled();
+    // Thinking is not output, nor is a sub-agent's call.
+    sseHandlers[sseHandlers.length - 1]!({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } });
+    deliver("s-early", { hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "sub", agent_id: "ag", tool_input: { file_path: "/x" } });
+    deliver("s-early", { hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "sub", agent_id: "ag" });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(keys()).toEqual([]);
+    // The first text the model writes opens the boundary, and the armed cut goes ahead.
+    streamText();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(before).toHaveBeenCalledTimes(1);
+    expect(keys()[0]).toBe(ESC);
+    expect((await turn).error).toBe("Interrupted: new message");
+  });
+
+  it("does not cut a cold-started turn before the CLI has said anything: its prompt is in argv, so it counts as submitted from the first tick", async () => {
+    const turn = engine.run({ sessionId: "s-cold", prompt: "first", cwd: "/tmp" } as any);
+    await vi.advanceTimersByTimeAsync(300);
+    const outcome = engine.interruptAtToolBoundary("s-cold", "new message", { waitMs: 100_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(keys()).toEqual([]);
+    expect(engine.holdsTurn("s-cold")).toBe(true);
+    deliver("s-cold", { hook_event_name: "SessionStart", session_id: "c1" });
+    deliver("s-cold", { hook_event_name: "Stop", last_assistant_message: "first answer" });
+    expect((await turn).result).toBe("first answer");
+    expect(await outcome).toBe("over");
+    expect(keys()).toEqual([]);
+  });
+
+  it("answers over, and drops the watcher, when the turn ends while the cut still waits for its first output", async () => {
+    const { turn } = await runningTurn("s-endwait");
+    const outcome = engine.interruptAtToolBoundary("s-endwait", "new message", { waitMs: 100_000 });
+    // Ended by the engine, not by a Stop hook: no hook reaches the watcher, only the turn's teardown does.
+    engine.kill("s-endwait", "Interrupted: stopped");
+    await turn;
+    // Answered by the turn's end, not by the 100 s wait.
+    expect(await outcome).toBe("over");
+    expect(keys()).toEqual([]);
+  });
+
   it("answers over when the turn ends before a boundary, and presses nothing", async () => {
     const { turn } = await runningTurn("s-ended");
     preBash("s-ended");
@@ -292,6 +345,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("cuts nothing when a call starts while the screen is read: waits for the next boundary", async () => {
     const { turn } = await runningTurn("s-gap");
+    streamText();
     const outcome = engine.interruptAtToolBoundary("s-gap", "new message", { waitMs: 100_000 });
     // The check ran synchronously and is now reading the screen; a call starts meanwhile.
     preBash("s-gap");
@@ -316,6 +370,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("cuts one turn once: a second request while it ends finds the turn over", async () => {
     const { turn } = await runningTurn("s-twice");
+    streamText();
     const a = engine.interruptAtToolBoundary("s-twice", "new message", WAIT);
     const b = engine.interruptAtToolBoundary("s-twice", "new message", WAIT);
     expect(await a).toBe("interrupted");
@@ -327,6 +382,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("settles the cut turn once, empties the composer, and the next turn starts clean", async () => {
     const { turn } = await runningTurn("s-next", "line one\nline two");
+    streamText();
     expect(await engine.interruptAtToolBoundary("s-next", "new message", WAIT)).toBe("interrupted");
     await vi.advanceTimersByTimeAsync(300);
     expect((await turn).error).toBe("Interrupted: new message");
@@ -343,6 +399,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("gives up waiting for the footer after a few seconds, and still settles", async () => {
     const { turn } = await runningTurn("s-stuck");
+    streamText();
     ptys[0]!.emit(RUNNING_FRAME);
     await vi.advanceTimersByTimeAsync(50);
     expect(await engine.interruptAtToolBoundary("s-stuck", "new message", WAIT)).toBe("interrupted");
@@ -352,6 +409,7 @@ describe("InteractiveClaudeEngine — interrupt at a tool boundary", () => {
 
   it("does not start a voice soft interrupt's turn twice: a soft interrupt in flight makes it over", async () => {
     const { turn } = await runningTurn("s-soft");
+    streamText();
     const soft = engine.softInterrupt("s-soft", "voice");
     expect(await engine.interruptAtToolBoundary("s-soft", "new message", WAIT)).toBe("over");
     await vi.advanceTimersByTimeAsync(300);
