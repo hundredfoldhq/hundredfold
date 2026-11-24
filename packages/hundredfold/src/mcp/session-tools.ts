@@ -167,7 +167,7 @@ interface SendReceipt {
   targetRunning?: boolean;
   queuedFromYou?: number;
   superseded?: string;
-  /** Set when the send asked to interrupt: how that went (`interrupted`, `waiting`, `over`, `held` or `unsupported`). */
+  /** Set when the send asked to interrupt: how that went (`interrupted`, `waiting`, `over`, `held`, `refused`, `reading` or `unsupported`). */
   interrupt?: string;
 }
 
@@ -182,6 +182,10 @@ function interruptRefusal(interrupt: string | undefined): string | undefined {
       return "Queued: the target's turn ended before it could be cut; it reads this next.";
     case "held":
       return "Queued, not interrupted: the target is compacting or its queue is paused, or its turn had just ended; it reads this next.";
+    case "refused":
+      return "Queued, not interrupted: only the session the target's current turn reports to (its parent or delegator, or whoever asked for that turn) may cut it short; it reads this when its turn ends.";
+    case "reading":
+      return "Queued: the target is reading this message in its current turn already.";
     default:
       return undefined;
   }

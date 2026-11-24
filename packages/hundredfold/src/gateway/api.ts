@@ -4330,7 +4330,7 @@ export async function handleApiRequest(
         if (claim.deduplicated) {
           // The identical message is already queued; asking to interrupt acts on that row.
           let duplicateInterrupt: LateralInterruptOutcome | undefined;
-          if (boundaryEngine && claim.queueItemId) duplicateInterrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId: claim.queueItemId });
+          if (boundaryEngine && claim.queueItemId && msgCaller.kind === "session") duplicateInterrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId: claim.queueItemId, callerSessionId: msgCaller.callerId });
           else if (lateralInterrupt && session.status === "running") duplicateInterrupt = isBoundaryInterruptibleEngine(engine) ? "held" : "unsupported";
           return json(res, { status: "duplicate", sessionId: session.id, queueItemId: claim.queueItemId, ...(supersededSend ? { superseded: supersededSend.outcome } : {}), ...(duplicateInterrupt ? { interrupt: duplicateInterrupt } : {}) });
         }
@@ -4484,7 +4484,7 @@ export async function handleApiRequest(
 
       // After the dispatch, so the row is already waiting in its lane when the turn ahead of it is cut.
       let interrupt: LateralInterruptOutcome | undefined;
-      if (boundaryEngine && queueItemId) interrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId });
+      if (boundaryEngine && queueItemId && msgCaller.kind === "session") interrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId, callerSessionId: msgCaller.callerId });
       else if (lateralInterrupt && session.status === "running") interrupt = isBoundaryInterruptibleEngine(engine) ? "held" : "unsupported";
 
       return json(res, {

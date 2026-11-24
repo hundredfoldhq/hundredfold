@@ -47,6 +47,8 @@ describe("send_to_session interrupt", () => {
     ["waiting", /tool call is still running/],
     ["unsupported", /cannot be cut short/],
     ["held", /compacting or its queue is paused/],
+    ["refused", /only the session the target's current turn reports to/],
+    ["reading", /reading this message in its current turn/],
     ["over", /turn ended before/],
   ])("reports queued, with the reason, when the interrupt was %s", async (interrupt, hint) => {
     const { ctx } = gateway({ status: 200, body: { status: "queued", queueItemId: "q3", targetRunning: true, queuedFromYou: 1, interrupt } });

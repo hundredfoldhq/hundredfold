@@ -9,6 +9,7 @@
 // replaced it. The operator has always been able to cancel a parked message; the
 // sender of an internal row had no way to.
 import { initDb } from '../shared/db.js';
+import { parseDispatchPayload } from './queue-dispatch.js';
 
 type Db = ReturnType<typeof initDb>;
 
@@ -87,9 +88,11 @@ function countPendingSends(callerSessionId: string, target: { id: string; sessio
  */
 export function withdrawOwnSend(db: Db, callerSessionId: string, targetSessionId: string, queueItemId: string): SupersedeOutcome {
   const row = db.prepare(
-    "SELECT message_id AS messageId FROM queue_items WHERE id = ? AND session_id = ? AND status = 'pending' AND instr(dedupe_key, ?) = 1",
-  ).get(queueItemId, targetSessionId, lateralSendPrefix(callerSessionId, targetSessionId)) as { messageId: string | null } | undefined;
-  if (!row) return { outcome: 'too-late', queueItemId };
+    "SELECT message_id AS messageId, dispatch_payload AS payload FROM queue_items WHERE id = ? AND session_id = ? AND status = 'pending' AND instr(dedupe_key, ?) = 1",
+  ).get(queueItemId, targetSessionId, lateralSendPrefix(callerSessionId, targetSessionId)) as { messageId: string | null; payload: string | null } | undefined;
+  // A row other sends were folded into is the turn that cut the running one: it now carries
+  // those sends too, so taking it back would drop them unread. It is read as it stands.
+  if (!row || (parseDispatchPayload(row.payload)?.foldedMessageIds?.length ?? 0) > 0) return { outcome: 'too-late', queueItemId };
   db.prepare("UPDATE queue_items SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(queueItemId);
   if (row.messageId) db.prepare('DELETE FROM messages WHERE id = ?').run(row.messageId);
   return { outcome: 'withdrawn', queueItemId, messageId: row.messageId };
