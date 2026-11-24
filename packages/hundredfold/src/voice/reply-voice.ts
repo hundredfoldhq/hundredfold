@@ -136,18 +136,7 @@ export class ReplyVoice {
     } else {
       this.resumeStreamed(cut, unheard);
     }
-    // Replies the cut caught beside it are spoken again after it, and told once they are.
-    for (const other of cut?.others ?? []) this.applyWhenSpoken(other);
     this.pipeline.release();
-  }
-
-  /** Tell the stored message(s) of a cut reply that is being spoken again what went out, once it is idle. */
-  private applyWhenSpoken(cut: CutResult): void {
-    const pass = cut.replyKey === undefined ? undefined : this.passes.find((p) => p.id === cut.replyKey);
-    const reply = pass ? undefined : this.replyOf(cut);
-    if (pass) void this.pipeline.whenIdle().then(() => this.applyPassMeta(pass)).catch((error: unknown) => this.logMetaFailure(error));
-    // A reply still streaming is told when its turn ends; one that finished is told now that its sentences are spoken.
-    else if (reply && reply !== this.reply) void this.pipeline.whenIdle().then(() => this.safeApplyMeta(reply));
   }
 
   /** A streamed reply's sentences go on as its own; one that had already finished is told once they are spoken. */

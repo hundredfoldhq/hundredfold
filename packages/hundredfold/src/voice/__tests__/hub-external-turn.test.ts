@@ -320,6 +320,88 @@ describe("replies the engine wrote outside a gateway turn (FR-016)", () => {
       expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three. Beta one two three four." } });
     });
 
+    /** The client's last words of the cut: the replay of the cut, with the sentence played and the one talked over. */
+    async function replayThenTalkOver(h: ReturnType<typeof createHarness>, socket: { ofType(t: string): Array<Record<string, unknown>>; clear(): void }, attachment: Parameters<ReturnType<typeof createHarness>["say"]>[0], playedCount: number, talkOverIndex: number) {
+      socket.clear();
+      h.clock.advance(BARGE_IN_GRACE_MS + 1);
+      await settle();
+      const replay = socket.ofType("segment_start");
+      for (const f of replay.slice(0, playedCount)) attachment.onText(h.json({ type: "played", segmentId: Number(f.segmentId) }));
+      talkOver(attachment, Number(replay[talkOverIndex].segmentId));
+      await h.say(attachment, "actually stop");
+      await settle();
+      return replay.map((f) => f.text);
+    }
+
+    it("a report that arrived while the cut was held is replayed after the sentences that were cut, and each records what was heard", async () => {
+      const h = createHarness();
+      const { socket, attachment } = h.connect();
+      h.state.replyMessage = h.store("assistant", "Alpha one two three. Beta one two three four.");
+      h.event("session:started");
+      h.delta("text", "Alpha one two three. ");
+      await settle();
+      talkOver(attachment, 1);
+      const [late] = h.externalTurn(report);
+      h.delta("text", "Beta one two three four. ");
+      h.event("session:completed", { result: "", error: null });
+      await settle();
+      // No words: the sentence cut goes again, then the report and the rest of the reply. The first replayed
+      // sentence plays and the person talks over the report's second sentence.
+      const replayed = await replayThenTalkOver(h, socket, attachment, 1, 2);
+      expect(replayed).toEqual(["Alpha one two three.", "Report text.", "More report.", "Beta one two three four."]);
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three.", interrupted: true } });
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: "Report text.", interrupted: true } });
+    });
+
+    it("a sentence heard whole before the cut is still counted when the replay is cut again, though the client never said it played", async () => {
+      const { h, socket, attachment, late } = await interleaved();
+      const [, , third] = socket.ofType("segment_start").map((f) => f.segmentId);
+      // Nothing was reported played; the person talks over the report's second sentence, and again over the replay.
+      talkOver(attachment, Number(third));
+      const replayed = await replayThenTalkOver(h, socket, attachment, 1, 1);
+      expect(replayed).toEqual(["More report.", "Beta one two three four."]);
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three.", interrupted: true } });
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: "Report text. More report." } });
+    });
+
+    it("a reply whose sentences were all heard before the cut keeps its record when the replay of the others is cut again", async () => {
+      const { h, socket, attachment, late } = await interleaved();
+      const [alpha, first, second] = socket.ofType("segment_start").map((f) => f.segmentId);
+      for (const id of [alpha, first]) attachment.onText(h.json({ type: "played", segmentId: id }));
+      talkOver(attachment, Number(second));
+      const replayed = await replayThenTalkOver(h, socket, attachment, 1, 1);
+      expect(replayed).toEqual(["More report.", "Beta one two three four."]);
+      expect(lastPatch(h, h.state.replyMessage!)).toEqual({ voice: { spokenText: "Alpha one two three.", interrupted: true } });
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: "Report text. More report." } });
+    });
+
+    it("a reply still streaming is not recorded against the report's stored message when the cut falls in the report", async () => {
+      const { h, socket, attachment, late } = await (async () => {
+        const h = createHarness();
+        const { socket, attachment } = h.connect();
+        h.state.replyMessage = h.store("assistant", "Alpha one two three. Beta one two three four.");
+        h.event("session:started");
+        h.delta("text", "Alpha one two three. ");
+        const [late] = h.externalTurn(report);
+        await settle();
+        return { h, socket, attachment, late };
+      })();
+      const reply = h.state.replyMessage!;
+      // While the reply is still streaming, the newest assistant message is the report's.
+      h.state.replyMessage = late;
+      const [alpha, first, second] = socket.ofType("segment_start").map((f) => f.segmentId);
+      for (const id of [alpha, first]) attachment.onText(h.json({ type: "played", segmentId: id }));
+      talkOver(attachment, Number(second));
+      await h.say(attachment, "actually stop");
+      await settle();
+      h.state.replyMessage = reply;
+      h.event("session:completed", { result: "", error: null });
+      await settle();
+      expect(lastPatch(h, late)).toEqual({ voice: { spokenText: "Report text.", interrupted: true } });
+      expect(h.merges.filter((m) => m.id === late).every((m) => JSON.stringify(m.patch).includes("Report text"))).toBe(true);
+      expect(lastPatch(h, reply)).toBeDefined();
+    });
+
     it("a new reply that starts over a report and a reply still unplayed records neither as heard", async () => {
       const h = createHarness();
       const { socket } = h.connect();
