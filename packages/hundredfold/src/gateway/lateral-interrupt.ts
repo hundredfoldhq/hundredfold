@@ -1,4 +1,5 @@
 import { getQueueItem, getSession } from "../sessions/registry.js";
+import { foldParkedLateralSends } from "../sessions/queued-send-supersede.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { supersedeRunningTurn } from "../sessions/turn/superseded.js";
 import type { BoundaryInterruptibleEngine, Session, ToolBoundaryOutcome } from "../shared/types.js";
@@ -41,6 +42,9 @@ export async function interruptForLateralSend(o: {
     waitMs: o.waitMs ?? LATERAL_INTERRUPT_WAIT_MS,
     beforeAbort: () => {
       if (getQueueItem(queueItemId)?.status !== "pending") return false;
+      // The turn is going to be cut: what this sender had parked is read with the message, in send order, as one turn.
+      // (Folded only now, so a send that does not end up cutting anything keeps today's turn per message.)
+      foldParkedLateralSends(session.sessionKey || session.sourceRef || session.id, queueItemId);
       // The cut turn's own answer is no longer wanted: it settles as interrupted, as for any message that cuts a turn.
       supersedeRunningTurn(getSession(session.id) ?? session);
       context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });

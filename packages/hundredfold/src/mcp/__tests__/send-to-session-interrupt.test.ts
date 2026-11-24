@@ -62,4 +62,17 @@ describe("send_to_session interrupt", () => {
     expect(out).not.toHaveProperty("interrupt");
     expect(out.hint).toMatch(/target is mid-turn and reads this when it ends/);
   });
+
+  it("tells the caller what happened to an interrupt asked for on a message that was already queued", async () => {
+    const cut = gateway({ status: 200, body: { status: "duplicate", queueItemId: "q3", interrupt: "interrupted" } });
+    const done = (await sendTool().handler({ sessionId: "target", message: "same", interrupt: true }, cut.ctx)) as Out;
+    expect(done.status).toBe("delivered (interrupted turn)");
+    expect(done.hint).toContain("identical message");
+
+    const held = gateway({ status: 200, body: { status: "duplicate", queueItemId: "q3", interrupt: "held" } });
+    const out = (await sendTool().handler({ sessionId: "target", message: "same", interrupt: true }, held.ctx)) as Out;
+    expect(out.status).toBe("duplicate");
+    expect(out.hint).toContain("identical message");
+    expect(out.hint).toContain("Interrupt:");
+  });
 });

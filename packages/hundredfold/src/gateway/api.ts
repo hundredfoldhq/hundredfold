@@ -88,7 +88,7 @@ import {
   RESTART_ACK_META_KEY,
 } from "../sessions/registry.js";
 import { claimIncomingTurn, lateralSendDedupeKey } from "../sessions/incoming-turn.js";
-import { foldParkedLateralSends, sendReceipt, supersedeRequestError, type SupersedeOutcome } from "../sessions/queued-send-supersede.js";
+import { sendReceipt, supersedeRequestError, type SupersedeOutcome } from "../sessions/queued-send-supersede.js";
 import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
 import { USER_MESSAGE_INTERRUPTION_REASON } from "../sessions/interruption-reasons.js";
 import { endStopOnDeliberateSend, isStoppedByUser, refuseStoppedSession, STOPPED_SESSION_NOT_DELIVERED, stopSession } from "./session-stop.js";
@@ -4328,13 +4328,15 @@ export async function handleApiRequest(
           context.emit("queue:updated", { sessionId: session.id, sessionKey, withdrawnMessageId: supersededSend.messageId });
         }
         if (claim.deduplicated) {
-          return json(res, { status: "duplicate", sessionId: session.id, queueItemId: claim.queueItemId, ...(supersededSend ? { superseded: supersededSend.outcome } : {}) });
+          // The identical message is already queued; asking to interrupt acts on that row.
+          let duplicateInterrupt: LateralInterruptOutcome | undefined;
+          if (boundaryEngine && claim.queueItemId) duplicateInterrupt = await interruptForLateralSend({ context, engine: boundaryEngine, session, queueItemId: claim.queueItemId });
+          else if (lateralInterrupt && session.status === "running") duplicateInterrupt = isBoundaryInterruptibleEngine(engine) ? "held" : "unsupported";
+          return json(res, { status: "duplicate", sessionId: session.id, queueItemId: claim.queueItemId, ...(supersededSend ? { superseded: supersededSend.outcome } : {}), ...(duplicateInterrupt ? { interrupt: duplicateInterrupt } : {}) });
         }
         endStopOnDeliberateSend(session);
         queueItemId = claim.queueItemId;
         incomingMessageId = claim.messageId;
-        // What was parked ahead is read with it, in send order, as one turn.
-        if (boundaryEngine && queueItemId) foldParkedLateralSends(sessionKey, queueItemId);
       }
       if (parentFollowUp) {
         const preview = clipSessionMessage(parentFollowUp.message, 220);

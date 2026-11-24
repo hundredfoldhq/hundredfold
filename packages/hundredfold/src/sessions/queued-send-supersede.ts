@@ -106,17 +106,22 @@ const FOLDED_SEND_SEPARATOR = '\n\n';
  * so the turn runs where the first of them would have; the others are cancelled,
  * and their bubbles stay: each was sent, and the one turn reads them all.
  *
- * Only agent-to-agent sends are folded (a callback delivery, an operator message
- * and a `/compact` keep their own turns and their own place in the line).
+ * Only the sends of the one sender that `intoId` came from are folded: another
+ * session's parked message keeps its own turn, since the merged row belongs to
+ * this sender (it is the row this sender can withdraw or replace). A callback
+ * delivery, an operator message and a `/compact` keep their own turns too.
  *
  * Returns the ids folded in, empty when nothing was parked ahead.
  */
 export function foldParkedLateralSends(sessionKey: string, intoId: string): string[] {
   const db = initDb();
   return db.transaction(() => {
+    const own = db.prepare('SELECT dedupe_key AS dedupeKey FROM queue_items WHERE id = ? AND session_key = ?').get(intoId, sessionKey) as { dedupeKey: string | null } | undefined;
+    const sender = own?.dedupeKey ? parseLateralSendKey(own.dedupeKey) : undefined;
+    if (!sender) return [];
     const rows = db.prepare(
-      "SELECT id, prompt, position, message_id AS messageId FROM queue_items WHERE session_key = ? AND status = 'pending' AND instr(dedupe_key, 'lateral:') = 1 ORDER BY position ASC, created_at ASC, rowid ASC",
-    ).all(sessionKey) as Array<{ id: string; prompt: string; position: number; messageId: string | null }>;
+      "SELECT id, prompt, position, message_id AS messageId FROM queue_items WHERE session_key = ? AND status = 'pending' AND instr(dedupe_key, ?) = 1 ORDER BY position ASC, created_at ASC, rowid ASC",
+    ).all(sessionKey, lateralSendPrefix(sender.callerSessionId, sender.targetSessionId)) as Array<{ id: string; prompt: string; position: number; messageId: string | null }>;
     if (rows.length < 2 || !rows.some((row) => row.id === intoId)) return [];
     const folded = rows.filter((row) => row.id !== intoId);
     db.prepare("UPDATE queue_items SET prompt = ?, dispatch_payload = ?, position = ? WHERE id = ? AND status = 'pending'").run(

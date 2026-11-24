@@ -192,7 +192,9 @@ function sendHint(sent: SendReceipt): string {
   const next = "Next: END YOUR TURN for reply or read_session.";
   if (sent.status === "duplicate") {
     const replaced = sent.superseded === "withdrawn" ? " The message it replaces was withdrawn unread." : "";
-    return `Not queued again: an identical message of yours is already queued.${replaced} ${next}`;
+    if (sent.interrupt === "interrupted") return `Not queued again: an identical message of yours is already queued, and the target's turn was cut short so it reads that next.${replaced} ${next}`;
+    const refused = interruptRefusal(sent.interrupt);
+    return `Not queued again: an identical message of yours is already queued.${replaced}${refused ? ` Interrupt: ${refused.replace(/^Queued(, not interrupted)?: /, "")}` : ""} ${next}`;
   }
   if (sent.interrupt === "interrupted") {
     return `Delivered: the target's turn was cut short between tool calls, and it reads this (after any message of yours queued before it) as its next turn. Nothing it had already done is lost. ${next}`;
@@ -283,7 +285,7 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
       if (status >= 400) throw gatewayFailure(`messaging session "${sessionId}"`, status, body);
       const sent = (body ?? {}) as SendReceipt;
       return {
-        status: sent.status === "duplicate" ? "duplicate" : sent.interrupt === "interrupted" ? "delivered (interrupted turn)" : "queued",
+        status: sent.interrupt === "interrupted" ? "delivered (interrupted turn)" : sent.status === "duplicate" ? "duplicate" : "queued",
         sessionId,
         ...(sent.queueItemId ? { queueId: sent.queueItemId } : {}),
         ...(sent.targetRunning !== undefined ? { targetRunning: sent.targetRunning } : {}),

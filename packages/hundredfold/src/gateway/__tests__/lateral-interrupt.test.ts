@@ -175,6 +175,93 @@ describe("a send that asks to interrupt", () => {
   });
 });
 
+describe("what is folded into the cut turn", () => {
+  it("is the interrupting sender's own parked sends only: another session's message keeps its own turn", async () => {
+    const { prompts, queue, context, target, caller } = await busyTarget("two-senders");
+    const other = createParent("interrupt-two-senders-other");
+
+    await post(context, target.id, { message: "A says: use plan alpha" }, toolHeaders(other.id));
+    await post(context, target.id, { message: "B says: first" }, toolHeaders(caller.id));
+    await post(context, target.id, { message: "B says: urgent", interrupt: true }, toolHeaders(caller.id));
+
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(prompts).toHaveLength(3);
+    });
+    expect(prompts[1]).toContain("A says: use plan alpha");
+    expect(prompts[1]).not.toContain("B says");
+    expect(prompts[2].indexOf("B says: first")).toBeLessThan(prompts[2].indexOf("B says: urgent"));
+    expect(prompts[2]).not.toContain("A says");
+  });
+
+  it("leaves another sender's message readable when the interrupting sender replaces its own send", async () => {
+    // `waiting`: the cut has not happened yet, so the interrupting message is still the sender's to replace.
+    const { prompts, queue, context, finish, target, caller } = await busyTarget("supersede", "waiting");
+    const other = createParent("interrupt-supersede-other");
+
+    await post(context, target.id, { message: "A says: use plan alpha" }, toolHeaders(other.id));
+    const urgent = await post(context, target.id, { message: "B says: urgent", interrupt: true }, toolHeaders(caller.id));
+    const replaced = await post(context, target.id, { message: "B says: never mind", supersedes: (urgent.body as { queueItemId: string }).queueItemId }, toolHeaders(caller.id));
+
+    expect(replaced.body).toMatchObject({ superseded: "withdrawn" });
+    finish();
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(prompts.join("\n")).toContain("A says: use plan alpha");
+    });
+  });
+
+  it("is nothing when the engine cannot cut the turn: one turn per message, as before", async () => {
+    const stub = boundaryEngine("unsupported");
+    const queue = new queueModule.SessionQueue();
+    const context = makeContext(stub.engine, queue, []);
+    const target = createParent("interrupt-no-fold-target");
+    const caller = createParent("interrupt-no-fold-caller");
+    await post(context, target.id, { message: "start a long turn" });
+    await eventually(() => expect(stub.prompts).toHaveLength(1));
+
+    await post(context, target.id, { message: "first" }, toolHeaders(caller.id));
+    await post(context, target.id, { message: "second", interrupt: true }, toolHeaders(caller.id));
+    stub.finish();
+
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(stub.prompts).toHaveLength(3);
+    });
+    expect(stub.prompts[1]).toContain("first");
+    expect(stub.prompts[1]).not.toContain("second");
+  });
+});
+
+describe("a send that asks to interrupt and repeats a queued message", () => {
+  it("acts on the message already queued and reports the interrupt", async () => {
+    const { prompts, aborts, queue, context, target, caller } = await busyTarget("duplicate");
+
+    await post(context, target.id, { message: "same words" }, toolHeaders(caller.id));
+    const again = await post(context, target.id, { message: "same words", interrupt: true }, toolHeaders(caller.id));
+
+    expect(again.body).toMatchObject({ status: "duplicate", interrupt: "interrupted" });
+    expect(aborts).toHaveLength(1);
+    await eventually(() => {
+      expect(queue.isRunning(target.sessionKey)).toBe(false);
+      expect(prompts).toHaveLength(2);
+    });
+    expect(prompts[1]).toContain("same words");
+  });
+
+  it("says why when it could not, rather than staying silent", async () => {
+    const { aborts, context, target, caller } = await busyTarget("duplicate-held");
+    await post(context, target.id, { message: "same words" }, toolHeaders(caller.id));
+    const queueModulePause = (context as unknown as { sessionManager: { getQueue: () => { pauseQueue: (k: string) => void } } }).sessionManager.getQueue();
+    queueModulePause.pauseQueue(target.sessionKey);
+
+    const again = await post(context, target.id, { message: "same words", interrupt: true }, toolHeaders(caller.id));
+
+    expect(again.body).toMatchObject({ status: "duplicate", interrupt: "held" });
+    expect(aborts).toHaveLength(0);
+  });
+});
+
 describe("a send that does not ask to interrupt", () => {
   it("queues behind the running turn exactly as before, whatever the engine could do", async () => {
     const { prompts, aborts, queue, context, finish, target, caller } = await busyTarget("plain");
