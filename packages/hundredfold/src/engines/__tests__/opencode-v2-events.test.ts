@@ -300,6 +300,48 @@ const STORED_ABORTED: V2Message = {
   error: { type: "aborted", message: "Step interrupted" },
 };
 
+describe("text that introduces a call", () => {
+  // The order a real 2.0.32 server sends: the call starts before the text that introduced it ends.
+  const STEP_TWO = "msg_test_step2";
+  const STEP_THREE = "msg_test_step3";
+  const events: V2Event[] = [
+    ev("session.text.started", { assistantMessageID: STEP_TWO, ordinal: 0 }),
+    ev("session.text.delta", { assistantMessageID: STEP_TWO, ordinal: 0, delta: "Now I'll" }),
+    ev("session.text.delta", { assistantMessageID: STEP_TWO, ordinal: 0, delta: " run it." }),
+    ev("session.tool.input.started", { assistantMessageID: STEP_TWO, id: CALL, name: "shell" }),
+    ev("session.tool.input.ended", { assistantMessageID: STEP_TWO, id: CALL }),
+    ev("session.tool.called", { assistantMessageID: STEP_TWO, id: CALL, input: { command: "sleep 5" } }),
+    ev("session.text.ended", { assistantMessageID: STEP_TWO, ordinal: 0, text: "Now I'll run it." }),
+    ev("session.tool.success", { assistantMessageID: STEP_TWO, id: CALL, content: [{ type: "text", text: "ok" }] }),
+    ev("session.step.ended", { assistantMessageID: STEP_TWO, finish: "tool-calls", cost: 0, tokens: TOKENS }),
+    ev("session.text.started", { assistantMessageID: STEP_THREE, ordinal: 0 }),
+    ev("session.text.delta", { assistantMessageID: STEP_THREE, ordinal: 0, delta: "Done." }),
+    ev("session.text.ended", { assistantMessageID: STEP_THREE, ordinal: 0, text: "Done." }),
+  ];
+
+  it("is reported before the call it introduced, once", () => {
+    const lines = new V2RunLines(SES);
+    const out = events.flatMap((event) => lines.linesFor(event)).map((line) => JSON.parse(line));
+    expect(out.map((line) => line.type === "tool_use" ? `tool:${line.part.state.status}` : line.type === "text" ? `text:${line.part.text}` : line.type))
+      .toEqual(["text:Now I'll run it.", "tool:running", "tool:completed", "step_finish", "text:Done."]);
+  });
+
+  it("reaches the chat in the order it was written, and the answer is the last text alone", () => {
+    const lines = new V2RunLines(SES);
+    const turn = new OpencodeTurn("");
+    const deltas: StreamDelta[] = [];
+    for (const event of events) for (const line of lines.linesFor(event)) turn.readLine(line, (d) => deltas.push(d));
+    expect(deltas.map((d) => d.type === "text" ? `text:${d.content}` : d.type)).toEqual(["text:Now I'll run it.", "tool_use", "tool_result", "text:Done."]);
+    expect(turn.result({ code: 0, terminationReason: null, stderr: "" }).result).toBe("Done.");
+  });
+
+  it("is reported at its end when no call cut it short", () => {
+    const lines = new V2RunLines(SES);
+    const out = events.slice(9).flatMap((event) => lines.linesFor(event)).map((line) => JSON.parse(line));
+    expect(out).toEqual([{ type: "text", sessionID: SES, part: { id: `${STEP_THREE}#0`, messageID: STEP_THREE, type: "text", text: "Done.", time: { end: 1_700_000_000_000 } } }]);
+  });
+});
+
 const EDIT_PATCH = "Index: f.txt\n===================================================================\n--- f.txt\n+++ f.txt\n@@ -1,5 +1,5 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n epsilon\n";
 const EDIT_INPUT = { path: "f.txt", oldString: "gamma", newString: "GAMMA" };
 const EDIT_METADATA = { files: [{ file: "f.txt", patch: EDIT_PATCH, status: "modified", additions: 1, deletions: 1 }], truncated: false };

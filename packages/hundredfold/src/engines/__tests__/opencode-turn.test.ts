@@ -180,6 +180,23 @@ describe("OpencodeTurn — a tool call's detail", () => {
     expect(deltas[1]!.content).toBe("Edit applied successfully.");
   });
 
+  it("names a 2.x run's call by its id, so its whole detail can be kept and loaded", () => {
+    const line = (state: Record<string, unknown>) => JSON.stringify({
+      type: "tool_use",
+      sessionID: SES,
+      part: { partID: "prt_2", sessionID: SES, messageID: "msg_2", type: "tool", id: "call_2", tool: "shell", state },
+    });
+    const output = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join("\n");
+    const deltas = read(line({ status: "running", input: { command: "seq 3000" } }), line({ status: "completed", input: { command: "seq 3000" }, output }));
+    expect(deltas.map((d) => [d.type, d.toolId])).toEqual([["tool_use", "call_2"], ["tool_result", "call_2"]]);
+    expect(deltas[1]).toMatchObject({ toolDetail: { full: true }, toolFull: { output } });
+  });
+
+  it("does not take a 1.x part's own id for its call's", () => {
+    const deltas = read(JSON.stringify({ type: "tool_use", sessionID: SES, part: { id: "prt_1", messageID: "msg_1", type: "tool", tool: "bash", state: { status: "completed", input: {}, output: "a" } } }));
+    expect(deltas.every((d) => d.toolId === undefined)).toBe(true);
+  });
+
   it("shows a 2.x run's edit as numbered hunks, from the one file's patch it reports", () => {
     const patch = "Index: g.txt\n===================================================================\n--- g.txt\n+++ g.txt\n@@ -1,4 +1,4 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n";
     const input = { path: "/work/g.txt", oldString: "gamma", newString: "GAMMA" };
