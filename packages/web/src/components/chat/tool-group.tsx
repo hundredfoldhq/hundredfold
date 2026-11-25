@@ -1,10 +1,10 @@
 import { useRef, type CSSProperties } from 'react'
-import { ChevronDown, FileText, Globe, Search, Terminal, Wrench, type IconComponent } from '@/components/ui/icon'
+import { Bot, ChevronDown, FileText, Globe, ListTodo, PenLine as FilePen, Plug, Search, Terminal, Wrench, type IconComponent } from '@/components/ui/icon'
 import type { Message } from '@/lib/conversations'
 import type { SubagentRef } from '@/lib/subagent-transcript'
 import { statusMark } from './chat-blocks'
 import { ToolCallCard } from './tool-call-card'
-import { identifyTool, summarizeTool, toolDetailOf } from '@/lib/tool-summary'
+import { identifyTool, summarizeTool, toolDetailOf, type ToolKind } from '@/lib/tool-summary'
 import { commsArrivalDelayMs } from './message-arrival'
 import { usePersistentExpansion } from './transcript-expansion'
 import { cn } from '@/lib/utils'
@@ -32,10 +32,25 @@ const TOOL_GLYPH_RULES: ReadonlyArray<{
   { glyph: Globe, matches: ['fetch', 'web', 'browser', 'http'] },
 ]
 
+const KIND_GLYPHS: Partial<Record<ToolKind, IconComponent>> = {
+  bash: Terminal,
+  read: FileText,
+  write: FilePen,
+  edit: FilePen,
+  search: Search,
+  web: Globe,
+  agent: Bot,
+  todo: ListTodo,
+}
+
+/** A builtin by its kind; any other tool by what its name suggests, an MCP tool falling back to a plug. */
 export function toolGlyphForName(toolName: string): IconComponent {
+  const { kind } = identifyTool(toolName)
+  const kindGlyph = KIND_GLYPHS[kind]
+  if (kindGlyph) return kindGlyph
   const normalized = toolName.replace(/^mcp__.*?__/i, '').toLowerCase()
   return TOOL_GLYPH_RULES.find(({ matches }) => matches.some((match) => normalized.includes(match)))?.glyph
-    ?? Wrench
+    ?? (kind === 'mcp' ? Plug : Wrench)
 }
 
 /** The stagger this arrival sits at, as the shared `--arrive-delay` rail reads
@@ -79,7 +94,7 @@ function visibleToolEntries(msgs: Message[], activeIndex: number, showAll: boole
   return indexed.slice(0, 10)
 }
 
-const CHIP_BASE = 'inline-flex min-h-9 max-w-full items-center gap-1.5 px-2.5 py-1 text-left'
+const CHIP_BASE = 'flex min-h-8 w-full min-w-0 items-center gap-2 px-2 py-1 text-left'
 const CHIP_BUTTON = 'cursor-pointer rounded-md border-none bg-transparent font-[inherit] transition-colors duration-150 hover:bg-[var(--fill-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]'
 
 type ChipStatus = 'done' | 'running' | 'queued' | 'error'
@@ -111,13 +126,13 @@ function ToolChipContent({ msg, index, status, summary, expanded }: {
         {statusMark(status)}
       </span>
       <ToolGlyph size={13} aria-hidden="true" className="shrink-0 text-[var(--text-tertiary)]" />
-      <span className="min-w-0 max-w-[50%] shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
+      <span className="min-w-0 max-w-[45%] shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
         {chipTitle(msg.toolCall, index)}
       </span>
       {summary && (
         <span
           data-testid="tool-summary"
-          className="min-w-0 truncate font-[family-name:var(--font-mono)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]"
+          className="min-w-0 flex-1 truncate font-[family-name:var(--font-code)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]"
         >
           {summary}
         </span>
@@ -126,7 +141,7 @@ function ToolChipContent({ msg, index, status, summary, expanded }: {
         <ChevronDown
           size={12}
           aria-hidden="true"
-          className={`ml-0.5 shrink-0 text-[var(--text-quaternary)] transition-transform duration-150 ease-[var(--ease-smooth)] ${expanded ? 'rotate-180' : 'rotate-0'}`}
+          className={`ml-auto shrink-0 text-[var(--text-quaternary)] transition-transform duration-150 ease-[var(--ease-smooth)] ${expanded ? 'rotate-180' : 'rotate-0'}`}
         />
       )}
     </>
@@ -151,7 +166,7 @@ function SubagentChipRow({ msg, index, status, summary, agentId, onOpen, classNa
       <button
         type="button"
         data-pane-focus-preserving
-        className={cn(CHIP_BASE, CHIP_BUTTON, 'min-w-0')}
+        className={cn(CHIP_BASE, CHIP_BUTTON, 'min-w-0 flex-1')}
         aria-label={`Open the ${msg.toolCall || 'Agent'} sub-agent transcript`}
         onClick={(event) => onOpen({ id: agentId, description: null, agentType: null }, event.currentTarget)}
       >
@@ -217,7 +232,7 @@ function ToolChipRow({ entry, status, summary, toggle, arrival, enter, onOpenSub
     return (
       <SubagentChipRow
         msg={msg} index={index} status={status} summary={summary} agentId={agentId} onOpen={onOpenSubagent}
-        className={cn('inline-flex min-h-9 max-w-full items-center', enter && 'tool-arrive')}
+        className={cn('flex w-full min-w-0 items-center', enter && 'tool-arrive')}
         style={style} enter={enter} toggle={toggle}
       />
     )
@@ -241,9 +256,13 @@ function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
 }) {
   const { detail, toggle, status, summary } = useChipModel(entry, activeIndex)
   return (
-    <div className="flex min-w-0 max-w-full flex-col items-start">
+    <div className="flex w-full min-w-0 flex-col">
       <ToolChipRow entry={entry} status={status} summary={summary} toggle={toggle} arrival={arrival} enter={enter} onOpenSubagent={onOpenSubagent} />
-      {detail && toggle?.open && <ToolCallCard toolCall={entry.msg.toolCall || ''} detail={detail} running={status !== 'done' && status !== 'error'} />}
+      {detail && toggle?.open && (
+        <div className="min-w-0 pl-2">
+          <ToolCallCard toolCall={entry.msg.toolCall || ''} toolId={entry.msg.toolId} detail={detail} running={status !== 'done' && status !== 'error'} />
+        </div>
+      )}
     </div>
   )
 }
@@ -274,7 +293,7 @@ function ToolChipList({ msgs, activeIndex, showAll, onShowAll, arrivals, isEnter
   const hiddenToolCount = Math.max(0, msgs.length - entries.length)
   return (
     <div
-      className="mt-1.5 flex max-w-[min(620px,calc(100vw_-_var(--space-6)))] flex-col items-start gap-1 pl-1"
+      className="mt-1.5 flex w-full min-w-0 flex-col items-stretch gap-0.5"
       data-testid="tool-group-list"
     >
       {entries.map((entry, position) => {
@@ -296,7 +315,7 @@ function ToolChipList({ msgs, activeIndex, showAll, onShowAll, arrivals, isEnter
         <button
           type="button"
           onClick={onShowAll}
-          className="ml-6 inline-flex min-h-8 items-center gap-1 rounded-full border-none bg-transparent px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-[background-color,color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)] active:scale-[0.96]"
+          className="ml-6 inline-flex min-h-8 self-start items-center gap-1 rounded-full border-none bg-transparent px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-[background-color,color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)] active:scale-[0.96]"
         >
           Show {hiddenToolCount} more
           <ChevronDown size={13} className="shrink-0 text-[var(--text-quaternary)]" />

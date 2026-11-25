@@ -13,6 +13,8 @@ export interface ToolDetailView {
   inputTruncated?: boolean
   /** The output's length before the gateway cut it. */
   outputChars?: number
+  /** The gateway kept the whole input and output, to fetch on demand. */
+  full?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,7 +32,13 @@ function cleanDetail(raw: Record<string, unknown>): ToolDetailView {
     isError: raw.isError === true ? true : undefined,
     inputTruncated: raw.inputTruncated === true ? true : undefined,
     outputChars: typeof raw.outputChars === 'number' ? raw.outputChars : undefined,
+    full: raw.full === true ? true : undefined,
   }
+}
+
+/** A tool-details payload, read as defensively as a row's meta. */
+export function toolDetailFromWire(raw: unknown): ToolDetailView {
+  return isRecord(raw) ? cleanDetail(raw) : {}
 }
 
 /** The detail a tool row carries, read defensively: meta crosses the wire untyped. */
@@ -132,9 +140,9 @@ function argumentsSummary(input: Record<string, unknown>): string {
     .join(', ')
 }
 
-/** A line of an edit's diff. */
+/** A line of an edit's diff: added, removed, unchanged context, or the gap between two hunks. */
 export interface DiffLine {
-  sign: '+' | '-' | ' '
+  sign: '+' | '-' | ' ' | '…'
   text: string
 }
 
@@ -143,28 +151,139 @@ function rawText(input: Input, ...keys: string[]): string | undefined {
   return keys.map((key) => input[key]).find((value): value is string => typeof value === 'string')
 }
 
+/** Past this many cells the line diff gives up on alignment and shows old against new whole. */
+const DIFF_CELLS_MAX = 250_000
+
+function lcsTable(before: readonly string[], after: readonly string[]): Uint32Array {
+  const width = after.length + 1
+  const table = new Uint32Array((before.length + 1) * width)
+  for (let i = before.length - 1; i >= 0; i--) {
+    for (let j = after.length - 1; j >= 0; j--) {
+      table[i * width + j] = before[i] === after[j]
+        ? table[(i + 1) * width + j + 1] + 1
+        : Math.max(table[(i + 1) * width + j], table[i * width + j + 1])
+    }
+  }
+  return table
+}
+
+/**
+ * The lines of `before` and `after` aligned, as a reader expects a diff: unchanged lines
+ * as context, and only the lines that changed marked removed or added (removals first).
+ */
+export function lineDiff(before: readonly string[], after: readonly string[]): DiffLine[] {
+  if ((before.length + 1) * (after.length + 1) > DIFF_CELLS_MAX) {
+    return [...before.map((text) => ({ sign: '-' as const, text })), ...after.map((text) => ({ sign: '+' as const, text }))]
+  }
+  const table = lcsTable(before, after)
+  const width = after.length + 1
+  const out: DiffLine[] = []
+  let i = 0
+  let j = 0
+  while (i < before.length || j < after.length) {
+    if (i < before.length && j < after.length && before[i] === after[j]) {
+      out.push({ sign: ' ', text: before[i] })
+      i++
+      j++
+    } else if (j >= after.length || (i < before.length && table[(i + 1) * width + j] >= table[i * width + j + 1])) {
+      out.push({ sign: '-', text: before[i] })
+      i++
+    } else {
+      out.push({ sign: '+', text: after[j] })
+      j++
+    }
+  }
+  return out
+}
+
 function replacement(edit: Input): DiffLine[] {
   const before = rawText(edit, 'old_string', 'oldString')
   const after = rawText(edit, 'new_string', 'newString')
   if (before === undefined && after === undefined) return []
-  return [
-    ...(before ?? '').split('\n').map((line) => ({ sign: '-' as const, text: line })),
-    ...(after ?? '').split('\n').map((line) => ({ sign: '+' as const, text: line })),
-  ]
+  const split = (value: string | undefined) => (value ? value.split('\n') : [])
+  return lineDiff(split(before), split(after))
 }
 
-/** What an edit replaced, as a diff of old lines against new ones: every old line removed, every new line added. */
+/** A unified patch's body lines (opencode's `patch`, `apply_patch`), headers and hunk marks dropped. */
+function patchLines(patch: string): DiffLine[] {
+  const out: DiffLine[] = []
+  // A file's `---`/`+++` header comes before its first hunk; inside one, `---` is a removed line.
+  let inHunk = false
+  for (const line of patch.split('\n')) {
+    if (/^(\*\*\* |diff |index )/.test(line)) {
+      inHunk = false
+      continue
+    }
+    if (line.startsWith('@@')) {
+      if (out.length > 0) out.push({ sign: '…', text: '' })
+      inHunk = true
+      continue
+    }
+    if (!inHunk && /^(---|\+\+\+)( |$)/.test(line)) continue
+    const sign = line[0]
+    if (sign === '+' || sign === '-' || sign === ' ') out.push({ sign, text: line.slice(1) })
+  }
+  return out
+}
+
+/**
+ * What an edit changed, as a line diff: the lines it kept as context, the ones it removed
+ * and the ones it added. A MultiEdit's edits are separate hunks, with a gap between them.
+ */
 export function editDiff(input: Input | undefined): DiffLine[] | undefined {
   if (!input) return undefined
+  const patch = rawText(input, 'patchText', 'patch', 'diff')
+  if (patch) {
+    const lines = patchLines(patch)
+    if (lines.length > 0) return lines
+  }
   const edits = Array.isArray(input.edits) ? input.edits.filter(isRecord) : [input]
-  const lines = edits.flatMap(replacement)
+  const hunks = edits.map(replacement).filter((hunk) => hunk.length > 0)
+  const lines = hunks.flatMap((hunk, index) => (index === 0 ? hunk : [{ sign: '…' as const, text: '' }, ...hunk]))
   return lines.length > 0 ? lines : undefined
 }
 
-/** The body a Write wrote: the lines the card shows, as additions. */
-export function writtenLines(input: Record<string, unknown> | undefined): DiffLine[] | undefined {
-  const content = text(input, 'content')
-  return content === undefined ? undefined : content.split('\n').map((line) => ({ sign: '+' as const, text: line }))
+/** How many lines a diff adds and removes. */
+export function diffStats(lines: readonly DiffLine[]): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const line of lines) {
+    if (line.sign === '+') added++
+    else if (line.sign === '-') removed++
+  }
+  return { added, removed }
+}
+
+/** The body a Write wrote, as its lines. */
+export function writtenLines(input: Record<string, unknown> | undefined): string[] | undefined {
+  const content = input && rawText(input, 'content')
+  return content === undefined ? undefined : content.split('\n')
+}
+
+/** The first line number of what a Read returned: Claude's `offset` is a line number, opencode's counts from 0. */
+export function readStartLine(toolCall: string, input: Record<string, unknown> | undefined): number {
+  const offset = input?.offset
+  if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0) return 1
+  return toolCall === 'Read' ? Math.max(1, Math.floor(offset)) : Math.floor(offset) + 1
+}
+
+/** True when the text already carries its own line numbers (opencode's read, `cat -n`), so the card adds none. */
+export function hasOwnLineNumbers(lines: readonly string[]): boolean {
+  const filled = lines.filter((line) => line.trim())
+  if (filled.length < 2) return false
+  const numbered = filled.filter((line) => /^\s*\d+(\||→|\t|: )/.test(line)).length
+  return numbered / filled.length >= 0.8
+}
+
+/** A result that is JSON, laid out to be read; anything else as it came. */
+export function readableOutput(output: string): { text: string; json: boolean } {
+  const trimmed = output.trim()
+  if (!/^[[{]/.test(trimmed)) return { text: output, json: false }
+  try {
+    return { text: JSON.stringify(JSON.parse(trimmed), null, 2), json: true }
+  } catch {
+    return { text: output, json: false }
+  }
 }
 
 /** The input as labelled fields for a call with no tailored view: every field, in order. */

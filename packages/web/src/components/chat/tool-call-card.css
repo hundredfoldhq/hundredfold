@@ -1,0 +1,47 @@
+/* A tool call's card is a code-block slab (code-block-chrome.css) holding its parts edge to edge:
+   each part a lid over its body, parted from the next by the slab's own hairline. */
+.tool-call-card .tool-panel + .tool-panel {
+  box-shadow: inset 0 1px 0 var(--code-border);
+}
+.tool-call-card .tool-panel > [data-code-head] {
+  background-image: var(--glass-sheen), linear-gradient(var(--fill-secondary), var(--fill-secondary));
+  box-shadow: inset 0 -1px 0 var(--code-border);
+}
+.tool-call-card .tool-panel > [data-code-head].tool-panel-error-lid {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--system-red) 12%, transparent),
+    color-mix(in srgb, var(--system-red) 12%, transparent)
+  );
+}
+.tool-call-card .tool-panel[data-tone="error"] {
+  background-color: color-mix(in srgb, var(--system-red) 5%, transparent);
+}
+
+/* A diff's rows run the full width of the card, tinted by what happened to the line. */
+.tool-call-card .tool-diff-add {
+  background-color: color-mix(in srgb, var(--system-green) 13%, transparent);
+}
+.tool-call-card .tool-diff-add > .tool-diff-sign {
+  color: var(--system-green);
+  background-color: color-mix(in srgb, var(--system-green) 10%, transparent);
+}
+.tool-call-card .tool-diff-del {
+  background-color: color-mix(in srgb, var(--system-red) 12%, transparent);
+}
+.tool-call-card .tool-diff-del > .tool-diff-sign {
+  color: var(--system-red);
+  background-color: color-mix(in srgb, var(--system-red) 9%, transparent);
+}
+.tool-call-card .tool-diff-gap {
+  background-color: var(--fill-quaternary);
+  line-height: 1.4;
+}
+
+/* A folded block fades into its footer rather than stopping mid-line. */
+.tool-call-card .tool-lines-folded {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+.tool-call-card .tool-fold-footer {
+  box-shadow: inset 0 1px 0 var(--code-border);
+}

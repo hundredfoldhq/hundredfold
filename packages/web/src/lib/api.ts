@@ -1,4 +1,5 @@
 import { authFetch, authUrl, isMemberSession } from "@/lib/auth"
+import { toolDetailFromWire, type ToolDetailView } from "@/lib/tool-summary"
 import { memberAttachmentPath } from "@/lib/member-source"
 import type { TodoStopCauseWire } from "@/lib/parked"
 import type {
@@ -642,6 +643,11 @@ export const api = {
       `/api/sessions/${id}${query ? `?${query}` : ""}`,
       options?.signal ? { signal: options.signal } : undefined,
     )
+  },
+  /** The whole input and output the gateway kept for a tool call whose card it had to cut. */
+  getToolDetail: async (sessionId: string, toolId: string): Promise<ToolDetailView> => {
+    const raw = await get<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/tool-details/${encodeURIComponent(toolId)}`)
+    return toolDetailFromWire(raw)
   },
   getSessionMessages: (id: string, options: { before?: string; limit?: number }) => {
     const params = new URLSearchParams()

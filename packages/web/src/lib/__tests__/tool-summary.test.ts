@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editDiff, identifyTool, summarizeTool, toolDetailOf, withToolDetail, writtenLines } from '../tool-summary'
+import { diffStats, editDiff, hasOwnLineNumbers, identifyTool, lineDiff, readStartLine, readableOutput, summarizeTool, toolDetailOf, withToolDetail, writtenLines } from '../tool-summary'
 
 describe('toolDetailOf', () => {
   it('reads the detail a tool row carries, and nothing from a row without one', () => {
@@ -64,15 +64,37 @@ describe('editDiff and writtenLines', () => {
     ])
   })
 
-  it('shows an edit as its old lines removed and its new ones added, for either spelling', () => {
-    expect(editDiff({ old_string: 'a\nb', new_string: 'c' })).toEqual([
-      { sign: '-', text: 'a' }, { sign: '-', text: 'b' }, { sign: '+', text: 'c' },
+  it('marks only the lines that changed, keeping the rest as context, for either spelling', () => {
+    expect(editDiff({ old_string: 'a\nb\nc', new_string: 'a\nB\nc' })).toEqual([
+      { sign: ' ', text: 'a' }, { sign: '-', text: 'b' }, { sign: '+', text: 'B' }, { sign: ' ', text: 'c' },
     ])
     expect(editDiff({ oldString: 'x', newString: 'y' })).toEqual([{ sign: '-', text: 'x' }, { sign: '+', text: 'y' }])
   })
 
-  it('shows every edit of a MultiEdit', () => {
-    expect(editDiff({ edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] })?.map((l) => l.text)).toEqual(['a', 'b', 'c', 'd'])
+  it('shows a pure insertion or deletion without touching the lines around it', () => {
+    expect(editDiff({ old_string: 'a\nc', new_string: 'a\nb\nc' })?.map((l) => l.sign)).toEqual([' ', '+', ' '])
+    expect(editDiff({ old_string: 'a\nb', new_string: '' })?.map((l) => l.sign)).toEqual(['-', '-'])
+  })
+
+  it('shows every edit of a MultiEdit as its own hunk', () => {
+    expect(editDiff({ edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] })).toEqual([
+      { sign: '-', text: 'a' }, { sign: '+', text: 'b' }, { sign: '…', text: '' }, { sign: '-', text: 'c' }, { sign: '+', text: 'd' },
+    ])
+  })
+
+  it('reads a unified patch, dropping its headers but not a removed line that starts with dashes', () => {
+    const patch = ['--- a/x.sql', '+++ b/x.sql', '@@ -1,2 +1,2 @@', ' keep', '--- old comment', '+-- new comment', '@@ -9 +9 @@', '-z', '+Z'].join('\n')
+    expect(editDiff({ patchText: patch })).toEqual([
+      { sign: ' ', text: 'keep' }, { sign: '-', text: '-- old comment' }, { sign: '+', text: '-- new comment' },
+      { sign: '…', text: '' }, { sign: '-', text: 'z' }, { sign: '+', text: 'Z' },
+    ])
+  })
+
+  it('falls back to old against new whole when the edit is too big to align', () => {
+    const big = Array.from({ length: 600 }, (_, i) => `l${i}`)
+    const lines = lineDiff(big, [...big].reverse())
+    expect(lines.slice(0, 600).every((l) => l.sign === '-')).toBe(true)
+    expect(lines.slice(600).every((l) => l.sign === '+')).toBe(true)
   })
 
   it('has no diff for an input that is not an edit', () => {
@@ -80,8 +102,30 @@ describe('editDiff and writtenLines', () => {
     expect(editDiff(undefined)).toBeUndefined()
   })
 
-  it('shows a written body as additions', () => {
-    expect(writtenLines({ content: 'a\nb' })).toEqual([{ sign: '+', text: 'a' }, { sign: '+', text: 'b' }])
+  it('reads a written body as its lines, and counts what a diff adds and removes', () => {
+    expect(writtenLines({ content: 'a\nb' })).toEqual(['a', 'b'])
+    expect(writtenLines({ file_path: '/a' })).toBeUndefined()
+    expect(diffStats([{ sign: '+', text: '' }, { sign: '-', text: '' }, { sign: '+', text: '' }, { sign: ' ', text: '' }])).toEqual({ added: 2, removed: 1 })
+  })
+})
+
+describe('reading a result', () => {
+  it('lays out a JSON result and leaves anything else alone', () => {
+    expect(readableOutput('{"a":1}')).toEqual({ text: '{\n  "a": 1\n}', json: true })
+    expect(readableOutput('{not json')).toEqual({ text: '{not json', json: false })
+    expect(readableOutput('plain')).toEqual({ text: 'plain', json: false })
+  })
+
+  it('knows a result that numbers its own lines', () => {
+    expect(hasOwnLineNumbers(['00001| a', '00002| b', '00003| c'])).toBe(true)
+    expect(hasOwnLineNumbers(['     1→a', '     2→b'])).toBe(true)
+    expect(hasOwnLineNumbers(['const a = 1', 'const b = 2'])).toBe(false)
+  })
+
+  it("starts a read's line numbers where the read did, in either engine's spelling", () => {
+    expect(readStartLine('Read', { offset: 40 })).toBe(40)
+    expect(readStartLine('read', { offset: 40 })).toBe(41)
+    expect(readStartLine('Read', {})).toBe(1)
   })
 })
 
