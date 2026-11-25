@@ -14,6 +14,7 @@ import {
   writtenLines,
   type DiffLine,
   type ToolDetailView,
+  withFullDetail,
   type ToolKind,
 } from '@/lib/tool-summary'
 import { copyText } from '@/platform'
@@ -460,9 +461,10 @@ function cutNotice(detail: ToolDetailView): { text: string; testId: string; acti
   const chars = detail.output !== undefined ? detail.outputChars : undefined
   if (chars !== undefined) {
     const what = detail.inputTruncated ? 'input and output' : 'output'
+    // A card's copy ends in the "…" the gateway put where it cut; the stored whole, cut at its cap, has none.
+    const kept = detail.output!.endsWith('…') ? detail.output!.length - 1 : detail.output!.length
     return {
-      // The kept part ends in the "…" the gateway put where it cut.
-      text: `Showing the first ${(detail.output!.length - 1).toLocaleString()} of ${chars.toLocaleString()} characters`,
+      text: `Showing the first ${kept.toLocaleString()} of ${chars.toLocaleString()} characters`,
       testId: 'tool-output-cut',
       action: `Load full ${what} · ${plural(chars, 'character')}`,
     }
@@ -510,9 +512,7 @@ export function ToolCallCard({ toolCall, toolId, detail: stored, running }: {
   running: boolean
 }) {
   const full = useFullDetail(toolId)
-  const detail: ToolDetailView = full.detail
-    ? { ...stored, ...full.detail, inputTruncated: undefined, outputChars: full.detail.outputChars, inputChars: full.detail.inputChars, full: undefined }
-    : stored
+  const detail: ToolDetailView = full.detail ? withFullDetail(stored, full.detail) : stored
   const input = detail.input ? inputPanel(toolCall, detail.input, detail.isError ? undefined : detail.output) : null
   return (
     <div

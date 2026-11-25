@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffStats, editDiff, hasOwnLineNumbers, identifyTool, lineDiff, readStartLine, readableOutput, summarizeTool, toolDetailOf, withToolDetail, writtenLines } from '../tool-summary'
+import { diffStats, editDiff, hasOwnLineNumbers, identifyTool, lineDiff, readStartLine, readableOutput, summarizeTool, toolDetailFromWire, toolDetailOf, withFullDetail, withToolDetail, writtenLines } from '../tool-summary'
 
 describe('toolDetailOf', () => {
   it('reads the detail a tool row carries, and nothing from a row without one', () => {
@@ -161,5 +161,47 @@ describe('withToolDetail', () => {
   it('lays new detail over what the row held and keeps its other meta', () => {
     const row = { id: 'r', role: 'assistant' as const, content: 'Using Bash', timestamp: 1, meta: { sidechain: true, tool: { input: { command: 'ls' } } } }
     expect(withToolDetail(row, { output: 'a' }).meta).toEqual({ sidechain: true, tool: { input: { command: 'ls' }, output: 'a' } })
+  })
+})
+
+describe('a tool-details payload', () => {
+  it('carries only the keys it was sent', () => {
+    expect(toolDetailFromWire({ input: { command: 'ls' } })).toStrictEqual({ input: { command: 'ls' } })
+    expect(Object.keys(toolDetailFromWire({ output: 'x', isError: true, outputChars: 9 }))).toEqual(['output', 'isError', 'outputChars'])
+  })
+})
+
+describe('the detail with what Load full fetched', () => {
+  const runningCut = { input: { command: 'xx…' }, inputTruncated: true, full: true as const }
+
+  it('takes the fetched input and keeps a result the fetch did not carry', () => {
+    const merged = withFullDetail({ ...runningCut, output: 'done', isError: true }, toolDetailFromWire({ input: { command: 'x'.repeat(9) } }))
+    expect(merged).toMatchObject({ input: { command: 'x'.repeat(9) }, output: 'done', isError: true })
+    expect(merged.inputTruncated).toBeUndefined()
+    expect(merged.full).toBeUndefined()
+  })
+
+  it('still offers Load full for a result that arrived cut after the input was loaded', () => {
+    const merged = withFullDetail({ ...runningCut, output: 'part…', outputChars: 9_000 }, toolDetailFromWire({ input: { command: 'x'.repeat(9) } }))
+    expect(merged).toMatchObject({ output: 'part…', outputChars: 9_000, full: true })
+  })
+
+  it('takes the fetched output, and says so when even that was cut at the store', () => {
+    const merged = withFullDetail({ input: { command: 'cat' }, output: 'part…', outputChars: 2_000_000, full: true }, toolDetailFromWire({ input: { command: 'cat' }, output: 'y'.repeat(50), outputChars: 2_000_000 }))
+    expect(merged).toMatchObject({ output: 'y'.repeat(50), outputChars: 2_000_000 })
+    expect(merged.full).toBeUndefined()
+  })
+})
+
+describe('a numbered patch', () => {
+  it('reads an empty line inside a hunk as an empty context line, numbering on', () => {
+    const lines = editDiff(undefined, '@@ -1,3 +1,3 @@\n a\n\n-b\n+B')!
+    expect(lines.map((l) => `${l.sign}${l.line}`)).toEqual([' 1', ' 2', '-3', '+3'])
+  })
+
+  it("drops the next file's header after a hunk that has run its course", () => {
+    const patch = '--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n keep\n--- a/y\n+++ b/y\n@@ -5 +5 @@\n-c\n+C\n'
+    const lines = editDiff(undefined, patch)!
+    expect(lines.map((l) => (l.sign === '…' ? '…' : `${l.sign}${l.text}@${l.line}`))).toEqual(['-a@1', '+A@1', ' keep@2', '…', '-c@5', '+C@5'])
   })
 })

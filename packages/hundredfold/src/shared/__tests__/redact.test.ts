@@ -142,3 +142,18 @@ describe("redactLargeText", () => {
     expect(out.match(/\[REDACTED\]/g)).toHaveLength(3_000);
   });
 });
+
+describe("credentials in a URL", () => {
+  it("are found behind a long scheme with dots, pluses and dashes", () => {
+    const out = redactText("postgresql+asyncpg://app:pw-value-9@db.example/app and git+ssh-tunnel.v2://bot:tok-value-7@host/x");
+    expect(out).not.toContain("pw-value-9");
+    expect(out).not.toContain("tok-value-7");
+    expect(out).toContain("postgresql+asyncpg://app:[REDACTED]@");
+  });
+
+  it("take linear time on a long run of dotted words", () => {
+    const started = Date.now();
+    redactText("a.".repeat(100_000));
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});

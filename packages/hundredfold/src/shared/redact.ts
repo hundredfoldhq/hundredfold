@@ -53,7 +53,8 @@ export function redactText(input: string): string {
   s = s.replace(/\b(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+/gi, "$1[REDACTED]");
   s = redactAssignments(s);
   s = s.replace(/\b((?:sk|pk|rk|xox[baprs]|gh[pousr]|glpat|hf|api)[-_][A-Za-z0-9._-]{8,})\b/g, "[REDACTED]");
-  s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, "$1$2:[REDACTED]@");
+  // The scheme is bounded: unbounded, a long run like `a.a.a.…` is rescanned from every `\b` in it.
+  s = s.replace(/\b([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, "$1$2:[REDACTED]@");
   s = s.replace(/("(?:token|secret|password|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2");
   // `[ \t]*`, not `\s*`: a run of blank lines must not be matched from every one of its starts.
   s = s.replace(/^([ \t]*)([\w.-]+)([ \t]*:[ \t]*)[^\n#]+/gim, (whole, indent: string, name: string, colon: string) =>

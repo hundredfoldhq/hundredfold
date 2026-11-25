@@ -27,8 +27,9 @@ function nonEmptyRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) && Object.keys(value).length > 0 ? value : undefined
 }
 
+/** Only the keys the payload carries: a key it lacks is absent, never present as `undefined`. */
 function cleanDetail(raw: Record<string, unknown>): ToolDetailView {
-  return {
+  const detail: ToolDetailView = {
     input: nonEmptyRecord(raw.input),
     output: typeof raw.output === 'string' && raw.output ? raw.output : undefined,
     isError: raw.isError === true ? true : undefined,
@@ -37,6 +38,24 @@ function cleanDetail(raw: Record<string, unknown>): ToolDetailView {
     inputChars: typeof raw.inputChars === 'number' ? raw.inputChars : undefined,
     full: raw.full === true ? true : undefined,
   }
+  return Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined)) as ToolDetailView
+}
+
+/**
+ * A call's detail with what "Load full" fetched in place of the cut parts. A part the fetch did
+ * not carry stays as the row has it: the result of a call that was still running when its input
+ * was loaded arrives later, on the row. "Load full" stays on offer while a part is still cut.
+ */
+export function withFullDetail(stored: ToolDetailView, fetched: ToolDetailView): ToolDetailView {
+  const hasInput = fetched.input !== undefined
+  const hasOutput = fetched.output !== undefined
+  const merged: ToolDetailView = {
+    ...stored,
+    ...(hasInput ? { input: fetched.input, inputTruncated: undefined, inputChars: fetched.inputChars } : {}),
+    ...(hasOutput ? { output: fetched.output, outputChars: fetched.outputChars, isError: fetched.isError ?? stored.isError } : {}),
+  }
+  const stillCut = (!hasInput && stored.inputTruncated === true) || (!hasOutput && stored.outputChars !== undefined)
+  return { ...merged, full: stored.full === true && stillCut ? true : undefined }
 }
 
 /** A tool-details payload, read as defensively as a row's meta. */
@@ -210,7 +229,10 @@ function replacement(edit: Input): DiffLine[] {
   return lineDiff(split(before), split(after))
 }
 
-const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+
+/** Where a hunk's lines are numbered from, and how many of each side it still holds (unknown for a bare `@@`). */
+interface HunkCursor { old?: number; new?: number; oldLeft?: number; newLeft?: number }
 
 /**
  * A unified patch's body lines (claude's edit result, opencode's `patch`, `apply_patch`, an edit's
@@ -219,33 +241,56 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 function patchLines(patch: string): DiffLine[] {
   const out: DiffLine[] = []
   // A file's `---`/`+++` header comes before its first hunk; inside one, `---` is a removed line.
-  let inHunk = false
-  const cursor: { old?: number; new?: number } = {}
+  let cursor: HunkCursor | undefined
   for (const line of patch.split('\n')) {
     if (/^(\*\*\* |diff |index |Index: |={10,})/.test(line)) {
-      inHunk = false
+      cursor = undefined
     } else if (line.startsWith('@@')) {
       if (out.length > 0) out.push({ sign: '…', text: '' })
-      const header = HUNK_HEADER.exec(line)
-      cursor.old = header ? Number(header[1]) : undefined
-      cursor.new = header ? Number(header[2]) : undefined
-      inHunk = true
-    } else if (inHunk || !/^(---|\+\+\+)( |$)/.test(line)) {
-      const body = bodyLine(line, cursor)
-      if (body) out.push(body)
+      cursor = hunkCursor(line)
+    } else if (cursor || !/^(---|\+\+\+)( |$)/.test(line)) {
+      cursor = takeBodyLine(out, line, cursor)
     }
   }
   return out
 }
 
-/** One body line of a hunk, numbered from (and advancing) the hunk's old and new line cursors. */
-function bodyLine(line: string, cursor: { old?: number; new?: number }): DiffLine | undefined {
-  const sign = line[0]
+/** Adds a body line, and returns the hunk's cursor, or undefined once the hunk has run its course. */
+function takeBodyLine(out: DiffLine[], line: string, cursor: HunkCursor | undefined): HunkCursor | undefined {
+  const body = bodyLine(line, cursor ?? {})
+  if (body) out.push(body)
+  return cursor && cursor.oldLeft === 0 && cursor.newLeft === 0 ? undefined : cursor
+}
+
+/** Whether a hunk has lines of both sides still to come, so an empty line is one of its context lines. */
+function midHunk(cursor: HunkCursor): boolean {
+  return (cursor.oldLeft ?? 0) > 0 && (cursor.newLeft ?? 0) > 0
+}
+
+function hunkCursor(header: string): HunkCursor {
+  const match = HUNK_HEADER.exec(header)
+  if (!match) return {}
+  const count = (value: string | undefined) => (value === undefined ? 1 : Number(value))
+  return { old: Number(match[1]), new: Number(match[3]), oldLeft: count(match[2]), newLeft: count(match[4]) }
+}
+
+/**
+ * One body line of a hunk, numbered from (and advancing) the hunk's cursors. An empty line inside
+ * a hunk that still has lines to come is an empty context line whose leading space was lost.
+ */
+function bodyLine(line: string, cursor: HunkCursor): DiffLine | undefined {
+  const sign = line === '' && midHunk(cursor) ? ' ' : line[0]
   if (sign !== '+' && sign !== '-' && sign !== ' ') return undefined
   const number = sign === '-' ? cursor.old : cursor.new
-  if (sign !== '+' && cursor.old !== undefined) cursor.old++
-  if (sign !== '-' && cursor.new !== undefined) cursor.new++
+  if (sign !== '+') advance(cursor, 'old')
+  if (sign !== '-') advance(cursor, 'new')
   return { sign, text: line.slice(1), ...(number !== undefined ? { line: number } : {}) }
+}
+
+function advance(cursor: HunkCursor, side: 'old' | 'new'): void {
+  const left = side === 'old' ? 'oldLeft' : 'newLeft'
+  if (cursor[side] !== undefined) cursor[side]! += 1
+  if (cursor[left] !== undefined) cursor[left] = Math.max(0, cursor[left]! - 1)
 }
 
 /** Whether a result is a unified patch with numbered hunks: an edit's answer that shows the change in place. */

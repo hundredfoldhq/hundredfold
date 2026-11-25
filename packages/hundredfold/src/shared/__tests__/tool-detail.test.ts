@@ -189,6 +189,16 @@ describe("work on huge text", () => {
     expect(input.truncated).toBe(true);
   });
 
+  it("a megabyte of dotted or dashed words is redacted in well under a second, card and store both", () => {
+    const uuids = Array.from({ length: 28_000 }, (_, i) => `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`).join("-");
+    for (const output of ["a.".repeat(500_000), uuids]) {
+      const started = Date.now();
+      const parts = toolEndParts({ input: { command: output.slice(0, 200_000) }, output });
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(parts.toolFull?.output?.length).toBe(Math.min(output.length, 1_000_000));
+    }
+  });
+
   it("a megabyte of output is cut and still reports its full length", () => {
     const bounded = boundToolOutput("y".repeat(1_000_000))!;
     expect(bounded.output.length).toBe(TOOL_OUTPUT_MAX + 1);

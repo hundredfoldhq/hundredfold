@@ -19,6 +19,13 @@ function ev(type: string, data: Record<string, unknown>, created = 1_700_000_000
   return { type, created, data: { sessionID: SES, assistantMessageID: MSG, ...data } };
 }
 
+/** The one line an event makes, or undefined when it makes none. */
+function lineFor(lines: V2RunLines, event: V2Event): string | undefined {
+  const out = lines.linesFor(event);
+  expect(out.length).toBeLessThanOrEqual(1);
+  return out[0];
+}
+
 function parsed(line: string | undefined): any {
   expect(line).toBeDefined();
   return JSON.parse(line!);
@@ -27,14 +34,14 @@ function parsed(line: string | undefined): any {
 describe("V2RunLines.lineFor", () => {
   it("reports a tool once, with its name, call id, input and output, when it succeeds", () => {
     const lines = new V2RunLines(SES);
-    expect(lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "shell" }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.tool.input.started", { id: CALL, name: "shell" }))).toBeUndefined();
     // The call starts: it is reported running, with its input and name, before it has a result.
-    expect(parsed(lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "echo hi" }, executed: false })))).toEqual({
+    expect(parsed(lineFor(lines, ev("session.tool.called", { id: CALL, input: { command: "echo hi" }, executed: false })))).toEqual({
       type: "tool_use",
       sessionID: SES,
       part: { id: CALL, callID: CALL, messageID: MSG, type: "tool", tool: "shell", state: { status: "running", input: { command: "echo hi" } } },
     });
-    const line = parsed(lines.lineFor(ev("session.tool.success", {
+    const line = parsed(lineFor(lines, ev("session.tool.success", {
       id: CALL,
       content: [{ type: "text", text: "hi\n" }, { type: "image", data: "x" }, { type: "text", text: "second" }],
       metadata: { exit: 0 },
@@ -58,13 +65,13 @@ describe("V2RunLines.lineFor", () => {
     const turn = new OpencodeTurn("");
     const deltas: StreamDelta[] = [];
     const feed = (line: string | undefined) => { if (line) turn.readLine(line, (d) => deltas.push(d)); };
-    feed(lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "bash" })));
-    feed(lines.lineFor(ev("session.tool.input.delta", { id: CALL, delta: "{" })));
+    feed(lineFor(lines, ev("session.tool.input.started", { id: CALL, name: "bash" })));
+    feed(lineFor(lines, ev("session.tool.input.delta", { id: CALL, delta: "{" })));
     expect(deltas).toEqual([]);
-    feed(lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "sleep 3", description: "wait" } })));
+    feed(lineFor(lines, ev("session.tool.called", { id: CALL, input: { command: "sleep 3", description: "wait" } })));
     expect(deltas.map((d) => d.type)).toEqual(["tool_use"]);
     expect(deltas[0]).toMatchObject({ toolName: "bash", toolId: CALL, toolDetail: { input: { command: "sleep 3", description: "wait" } } });
-    feed(lines.lineFor(ev("session.tool.success", { id: CALL, content: [{ type: "text", text: "done" }] })));
+    feed(lineFor(lines, ev("session.tool.success", { id: CALL, content: [{ type: "text", text: "done" }] })));
     expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
     expect(deltas[1]).toMatchObject({ toolId: CALL, toolDetail: { input: { command: "sleep 3", description: "wait" }, output: "done" } });
   });
@@ -77,92 +84,92 @@ describe("V2RunLines.lineFor", () => {
       ev("session.tool.input.started", { id: CALL, name: "bash" }),
       ev("session.tool.called", { id: CALL, input: { command: "x" } }),
       ev("session.tool.failed", { id: CALL, error: { message: "exit 2" } }),
-    ]) { const line = lines.lineFor(e); if (line) turn.readLine(line, (d) => deltas.push(d)); }
+    ]) { const line = lineFor(lines, e); if (line) turn.readLine(line, (d) => deltas.push(d)); }
     expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
     expect(deltas[1]!.toolDetail).toMatchObject({ isError: true, output: "exit 2" });
   });
 
   it("reports a failed tool as an error with the error message as its output", () => {
     const lines = new V2RunLines(SES);
-    lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "bash" }));
-    lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "x" } }));
-    const line = parsed(lines.lineFor(ev("session.tool.failed", { id: CALL, error: { type: "tool.execution", message: 'No tool named "bash"' } })));
+    lineFor(lines, ev("session.tool.input.started", { id: CALL, name: "bash" }));
+    lineFor(lines, ev("session.tool.called", { id: CALL, input: { command: "x" } }));
+    const line = parsed(lineFor(lines, ev("session.tool.failed", { id: CALL, error: { type: "tool.execution", message: 'No tool named "bash"' } })));
     expect(line.part.state).toEqual({ status: "error", input: { command: "x" }, output: 'No tool named "bash"' });
     expect(line.part.tool).toBe("bash");
   });
 
   it("gives a failed tool without a message a plain output, and a tool never announced no name", () => {
     const lines = new V2RunLines(SES);
-    const line = parsed(lines.lineFor(ev("session.tool.failed", { id: CALL })));
+    const line = parsed(lineFor(lines, ev("session.tool.failed", { id: CALL })));
     expect(line.part.state).toEqual({ status: "error", input: {}, output: "the tool failed" });
     expect(line.part).not.toHaveProperty("tool");
   });
 
   it("turns a reasoning block into a reasoning line when it ends, from its text or from what streamed", () => {
     const lines = new V2RunLines(SES);
-    expect(lines.lineFor(ev("session.reasoning.started", { ordinal: 0 }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.reasoning.delta", { ordinal: 0, delta: "Let me " }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.reasoning.delta", { ordinal: 0, delta: "think." }))).toBeUndefined();
-    const streamed = parsed(lines.lineFor(ev("session.reasoning.ended", { ordinal: 0 })));
+    expect(lineFor(lines, ev("session.reasoning.started", { ordinal: 0 }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.reasoning.delta", { ordinal: 0, delta: "Let me " }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.reasoning.delta", { ordinal: 0, delta: "think." }))).toBeUndefined();
+    const streamed = parsed(lineFor(lines, ev("session.reasoning.ended", { ordinal: 0 })));
     expect(streamed).toMatchObject({ type: "reasoning", sessionID: SES, part: { messageID: MSG, type: "reasoning", text: "Let me think." } });
-    const carried = parsed(lines.lineFor(ev("session.reasoning.ended", { ordinal: 1, text: "Whole text." })));
+    const carried = parsed(lineFor(lines, ev("session.reasoning.ended", { ordinal: 1, text: "Whole text." })));
     expect(carried.part.text).toBe("Whole text.");
     expect(carried.part.id).not.toBe(streamed.part.id);
-    expect(lines.lineFor(ev("session.reasoning.ended", { ordinal: 2, text: "  " }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.reasoning.ended", { ordinal: 2, text: "  " }))).toBeUndefined();
   });
 
   it("makes a reasoning line a thinking delta and nothing that decides the turn", () => {
     const lines = new V2RunLines(SES);
     const turn = new OpencodeTurn("");
     const deltas: StreamDelta[] = [];
-    turn.readLine(lines.lineFor(ev("session.reasoning.ended", { ordinal: 0, text: "hmm" }))!, (d) => deltas.push(d));
+    turn.readLine(lineFor(lines, ev("session.reasoning.ended", { ordinal: 0, text: "hmm" }))!, (d) => deltas.push(d));
     expect(deltas).toEqual([{ type: "thinking", content: "hmm" }]);
     expect(turn.result({ code: 0, terminationReason: null, stderr: "" }).result).toBe("");
   });
 
   it("says nothing for a tool result without a call id, or for events it does not read", () => {
     const lines = new V2RunLines(SES);
-    expect(lines.lineFor(ev("session.tool.success", { content: [] }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.step.started", {}))).toBeUndefined();
-    expect(lines.lineFor(ev("session.usage.updated", {}))).toBeUndefined();
-    expect(lines.lineFor({ type: "session.step.streamed" })).toBeUndefined();
+    expect(lineFor(lines, ev("session.tool.success", { content: [] }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.step.started", {}))).toBeUndefined();
+    expect(lineFor(lines, ev("session.usage.updated", {}))).toBeUndefined();
+    expect(lineFor(lines, { type: "session.step.streamed" })).toBeUndefined();
   });
 
   it("turns text.ended into a text line, and an empty text into nothing", () => {
     const lines = new V2RunLines(SES);
-    const line = parsed(lines.lineFor(ev("session.text.ended", { ordinal: 2, text: "the answer" }, 1234)));
+    const line = parsed(lineFor(lines, ev("session.text.ended", { ordinal: 2, text: "the answer" }, 1234)));
     expect(line).toEqual({
       type: "text",
       sessionID: SES,
       part: { id: `${MSG}#2`, messageID: MSG, type: "text", text: "the answer", time: { end: 1234 } },
     });
-    expect(lines.lineFor(ev("session.text.ended", { ordinal: 0, text: "" }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.text.started", { ordinal: 0 }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.text.ended", { ordinal: 0, text: "" }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.text.started", { ordinal: 0 }))).toBeUndefined();
   });
 
   it("turns step.ended into a step_finish with its cost, tokens and finish reason", () => {
-    const line = parsed(new V2RunLines(SES).lineFor(ev("session.step.ended", { finish: "stop", rawFinish: "stop", cost: 0.25, tokens: TOKENS })));
+    const line = parsed(lineFor(new V2RunLines(SES), ev("session.step.ended", { finish: "stop", rawFinish: "stop", cost: 0.25, tokens: TOKENS })));
     expect(line).toEqual({ type: "step_finish", sessionID: SES, part: { type: "step-finish", cost: 0.25, tokens: TOKENS, reason: "stop" } });
   });
 
   it("turns step.failed and execution.failed into errors named after the v2 error type, with the HTTP status", () => {
     const error = { type: "provider.invalid-request", message: "bad body", status: 400, response: { body: "{}" } };
     for (const type of ["session.step.failed", "session.execution.failed"]) {
-      const line = parsed(new V2RunLines(SES).lineFor(ev(type, { error })));
+      const line = parsed(lineFor(new V2RunLines(SES), ev(type, { error })));
       expect(line).toEqual({ type: "error", sessionID: SES, error: { name: "provider.invalid-request", data: { message: "bad body (HTTP 400)" } } });
     }
   });
 
   it("leaves the status off an error that has none, and names an error without a type or message", () => {
-    expect(parsed(new V2RunLines(SES).lineFor(ev("session.step.failed", { error: { type: "tool.execution", message: "boom" } }))).error.data.message).toBe("boom");
+    expect(parsed(lineFor(new V2RunLines(SES), ev("session.step.failed", { error: { type: "tool.execution", message: "boom" } }))).error.data.message).toBe("boom");
     expect(JSON.parse(v2ErrorLine(SES, {})).error).toEqual({ name: "error", data: { message: "no message" } });
   });
 
   it("says nothing for an aborted error (the turn's own interrupt), or a failure with no error", () => {
     const lines = new V2RunLines(SES);
-    expect(lines.lineFor(ev("session.step.failed", { error: { type: "aborted", message: "Step interrupted" } }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.execution.failed", { error: { type: "aborted", message: "x" } }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.step.failed", {}))).toBeUndefined();
+    expect(lineFor(lines, ev("session.step.failed", { error: { type: "aborted", message: "Step interrupted" } }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.execution.failed", { error: { type: "aborted", message: "x" } }))).toBeUndefined();
+    expect(lineFor(lines, ev("session.step.failed", {}))).toBeUndefined();
   });
 });
 
@@ -172,7 +179,7 @@ describe("the lines fed to OpencodeTurn", () => {
     const deltas: StreamDelta[] = [];
     const lines = new V2RunLines(SES);
     for (const event of events) {
-      const line = lines.lineFor(event);
+      const line = lineFor(lines, event);
       if (line) turn.readLine(line, (d) => deltas.push(d));
     }
     return { turn, deltas };
@@ -352,7 +359,7 @@ describe("an edit's change", () => {
     const turn = new OpencodeTurn("");
     const deltas: StreamDelta[] = [];
     for (const event of events) {
-      const line = lines.lineFor(event);
+      const line = lineFor(lines, event);
       if (line) turn.readLine(line, (d) => deltas.push(d));
     }
     return deltas;

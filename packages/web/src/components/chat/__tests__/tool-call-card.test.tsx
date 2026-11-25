@@ -6,6 +6,8 @@ import type { OpenSubagentCard } from '../tool-group'
 import type { Message } from '@/lib/conversations'
 import { api } from '@/lib/api'
 import { FileLinkSessionContext } from '../file-link-session-context'
+import { ToolCallCard } from '../tool-call-card'
+import { toolDetailFromWire } from '@/lib/tool-summary'
 
 /** The tool chip's card: what the call was about at a glance, and its input and result once opened. */
 
@@ -170,7 +172,7 @@ describe('a tool call with detail', () => {
   })
 
   it('fetches the whole of a cut call the gateway kept, and shows it in place', async () => {
-    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue({ input: { command: 'cat big' }, output: 'all of it' })
+    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue(toolDetailFromWire({ input: { command: 'cat big' }, output: 'all of it' }))
     render(
       <MemoryRouter>
         <FileLinkSessionContext.Provider value="s-1">
@@ -191,7 +193,7 @@ describe('a tool call with detail', () => {
   })
 
   it('says so when even the kept input was a head of a longer one, with nothing more to load', async () => {
-    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue({ input: { content: 'head…' }, inputChars: 400_000 })
+    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue(toolDetailFromWire({ input: { content: 'head…' }, inputChars: 400_000 }))
     render(
       <MemoryRouter>
         <FileLinkSessionContext.Provider value="s-1">
@@ -207,6 +209,41 @@ describe('a tool call with detail', () => {
     fireEvent.click(screen.getByRole('button', { name: /load full input/i }))
     await waitFor(() => expect(screen.getByTestId('tool-input-cut').textContent).toContain('400,000 characters in all'))
     expect(screen.queryByRole('button', { name: /load full/i })).toBeNull()
+    getToolDetail.mockRestore()
+  })
+
+  it('counts the loaded output exactly when the store kept only its first part', async () => {
+    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue(toolDetailFromWire({ output: 'y'.repeat(50), outputChars: 2_000_000 }))
+    render(
+      <FileLinkSessionContext.Provider value="s-1">
+        <ToolCallCard toolCall="Bash" toolId="c1" detail={{ input: { command: 'cat' }, output: 'yy…', outputChars: 2_000_000, full: true }} running={false} />
+      </FileLinkSessionContext.Provider>,
+    )
+    expect(screen.getByTestId('tool-output-cut').textContent).toContain('Showing the first 2 of 2,000,000 characters')
+    fireEvent.click(screen.getByRole('button', { name: /load full output/i }))
+    await waitFor(() => expect(screen.getByTestId('tool-output-cut').textContent).toContain('Showing the first 50 of 2,000,000 characters'))
+    expect(screen.queryByRole('button', { name: /load full/i })).toBeNull()
+    getToolDetail.mockRestore()
+  })
+
+  it('keeps the result that arrives after the input of a running call was loaded', async () => {
+    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue(toolDetailFromWire({ input: { command: 'x'.repeat(50) } }))
+    const running = { input: { command: 'xx…' }, inputTruncated: true, full: true as const }
+    const card = (detail: Record<string, unknown>, isRunning: boolean) => (
+      <FileLinkSessionContext.Provider value="s-1">
+        <ToolCallCard toolCall="Bash" toolId="c1" detail={detail} running={isRunning} />
+      </FileLinkSessionContext.Provider>
+    )
+    const { rerender } = render(card(running, true))
+    fireEvent.click(screen.getByRole('button', { name: /load full input/i }))
+    await waitFor(() => expect(screen.getByTestId('tool-input-command').textContent).toContain('x'.repeat(50)))
+    rerender(card({ ...running, output: 'the result', isError: true }, false))
+    expect(screen.getByTestId('tool-output').textContent).toContain('the result')
+    expect(screen.getByTestId('tool-input-command').textContent).toContain('x'.repeat(50))
+    expect(screen.queryByRole('button', { name: /load full/i })).toBeNull()
+    // A result that arrives cut can still be loaded whole.
+    rerender(card({ ...running, output: 'part…', outputChars: 9_000 }, false))
+    expect(screen.getByRole('button', { name: /load full output · 9,000 characters/i })).toBeTruthy()
     getToolDetail.mockRestore()
   })
 

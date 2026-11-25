@@ -188,11 +188,6 @@ export class V2RunLines {
     return line === undefined ? lead : [...lead, line];
   }
 
-  /** The last line for an event: what a reader that takes one line at a time is given. */
-  lineFor(event: V2Event): string | undefined {
-    return this.linesFor(event).at(-1);
-  }
-
   private textAheadOfCall(event: V2Event): string[] {
     const lines: string[] = [];
     for (const [key, open] of this.openText) {
