@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../shared/logger.js';
+import { mergeToolDetail, type ToolDetail } from '../shared/tool-detail.js';
 import { initDb } from '../shared/db.js';
 import { recordEngineSpend } from './engine-spend.js';
 import { stripControlChars } from '../shared/sanitize.js';
@@ -2756,23 +2757,37 @@ export function updatePartialMessage(id: string, content: string): void {
   db.prepare('UPDATE messages SET content = ? WHERE id = ? AND partial = 1').run(content, id);
 }
 
-/** Settle one exact partial tool row and attach its durable activity receipt and,
- *  for an `Agent`/`Task` launch, the sub-agent id its result carries. */
-export function settlePartialToolMessage(id: string, content: string, activityReceiptId?: string, agentId?: string): void {
+/** Settle one exact partial tool row and attach its durable activity receipt, the
+ *  sub-agent id an `Agent`/`Task` launch's result carries, and the call's detail
+ *  (input, output, failure) for the card a reload draws. */
+export function settlePartialToolMessage(id: string, content: string, activityReceiptId?: string, agentId?: string, toolDetail?: ToolDetail): void {
   const db = initDb();
   const row = db.prepare('SELECT meta FROM messages WHERE id = ? AND partial = 1').get(id) as { meta: string | null } | undefined;
   if (!row) return;
   const current = parseMetaColumn(row.meta) ?? {};
+  const detail = mergeToolDetail(current.tool as ToolDetail | undefined, toolDetail);
   const meta = {
     ...current,
     ...(activityReceiptId ? { activityReceiptId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...(detail ? { tool: detail } : {}),
   };
   db.prepare('UPDATE messages SET content = ?, meta = ? WHERE id = ? AND partial = 1').run(
     content,
     Object.keys(meta).length > 0 ? JSON.stringify(meta) : null,
     id,
   );
+}
+
+/** Add the call's detail to a still-running partial tool row: the input the engine assembled after it announced the call. */
+export function updatePartialToolDetail(id: string, toolDetail: ToolDetail): void {
+  const db = initDb();
+  const row = db.prepare('SELECT meta FROM messages WHERE id = ? AND partial = 1').get(id) as { meta: string | null } | undefined;
+  if (!row) return;
+  const current = parseMetaColumn(row.meta) ?? {};
+  const detail = mergeToolDetail(current.tool as ToolDetail | undefined, toolDetail);
+  if (!detail) return;
+  db.prepare('UPDATE messages SET meta = ? WHERE id = ? AND partial = 1').run(JSON.stringify({ ...current, tool: detail }), id);
 }
 
 /** Replace a stored (non-partial) message's text in place. Used by external-turn

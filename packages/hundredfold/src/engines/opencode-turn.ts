@@ -2,6 +2,7 @@ import type { EngineResult, StreamDelta } from "../shared/types.js";
 import { isBillingFailureMessage } from "../shared/engine-failure.js";
 import { isRateLimitMessage } from "../shared/rateLimit.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
+import { toolEndDetail, toolStartDetail } from "../shared/tool-detail.js";
 import {
   asRecord,
   contextTokensFromStep,
@@ -48,6 +49,8 @@ export class OpencodeTurn {
   /** The first assistant message this turn's events named: where the turn begins in the session's history. */
   private firstMessageId: string | undefined;
   private contextTokens: number | undefined;
+  /** Calls already announced as a `tool_use`, so a call reported again at its end is not announced twice. */
+  private readonly announcedTools = new Set<string>();
   /** opencode assigns this; until it speaks, the id we asked it to resume. */
   private sessionId: string;
 
@@ -104,26 +107,41 @@ export class OpencodeTurn {
     if (!onStream) return;
     const identity = toolIdentity(part);
     const state = asRecord(part.state) ?? {};
-
-    onStream({
-      type: "tool_use",
-      content: describeToolCall(identity.toolName, asRecord(state.input)),
-      ...identity,
-    });
-
-    // A tool part is reported at whatever state it reached. `pending` and
-    // `running` have no output yet, so only the two terminal states produce a
-    // result — verified against opencode's own status union.
+    if (this.firstSighting(identity.toolId ?? trimmedString(part.id))) {
+      const toolDetail = toolStartDetail(state.input);
+      onStream({
+        type: "tool_use",
+        content: describeToolCall(identity.toolName, asRecord(state.input)),
+        ...identity,
+        ...(toolDetail ? { toolDetail } : {}),
+      });
+    }
+    // `pending` and `running` have no output yet, so only the two terminal states
+    // produce a result — verified against opencode's own status union.
     const status = trimmedString(state.status);
-    if (status !== "completed" && status !== "error") return;
+    if (status === "completed" || status === "error") onStream(this.toolResult(identity, state, status === "error"));
+  }
+
+  /** A call is announced once: a server turn reports it at `running` (its input is assembled by
+   *  then) and again at its end, and only the first report is a `tool_use`. */
+  private firstSighting(callKey: string | undefined): boolean {
+    if (callKey === undefined) return true;
+    const announced = this.announcedTools.has(callKey);
+    this.announcedTools.add(callKey);
+    return !announced;
+  }
+
+  private toolResult(identity: { toolName?: string; toolId?: string }, state: Record<string, unknown>, failed: boolean): StreamDelta {
     const output = typeof state.output === "string" ? state.output : "";
-    const activityReceiptId = extractActivityReceiptId(output, { isError: status === "error" });
-    onStream({
+    const activityReceiptId = extractActivityReceiptId(output, { isError: failed });
+    const toolDetail = toolEndDetail({ input: state.input, output: failed ? trimmedString(state.error) ?? output : output, isError: failed });
+    return {
       type: "tool_result",
       content: output.slice(0, 500),
       ...identity,
       ...(activityReceiptId ? { activityReceiptId } : {}),
-    });
+      ...(toolDetail ? { toolDetail } : {}),
+    };
   }
 
   /** One model round trip finished. A turn is several of these, so cost

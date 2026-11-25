@@ -6,6 +6,7 @@ import {
   insertPartialMessage,
   settlePartialToolMessage,
   updatePartialMessage,
+  updatePartialToolDetail,
 } from "./registry.js";
 
 function scopeBlockEnvelopeForTurn(
@@ -162,7 +163,10 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
           partialSeq++,
           tool,
           delta.toolId,
-          sidechain ? { sidechain: true } : undefined,
+          {
+            ...(sidechain ? { sidechain: true } : {}),
+            ...(delta.toolDetail ? { tool: delta.toolDetail } : {}),
+          },
         );
         openPartialTools.push({
           messageId,
@@ -170,6 +174,13 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
           ...(delta.toolId ? { toolId: delta.toolId } : {}),
         });
         if (!sidechain) startBlock();
+        return outgoing;
+      }
+
+      if (delta.type === "tool_update") {
+        // The input of a call already announced: it joins that call's row and card.
+        const match = delta.toolId ? openPartialTools.find((entry) => entry.toolId === delta.toolId) : undefined;
+        if (match && delta.toolDetail) updatePartialToolDetail(match.messageId, delta.toolDetail);
         return outgoing;
       }
 
@@ -194,6 +205,7 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
           `Used ${match.toolName}`,
           activityReceiptId,
           delta.agentId,
+          delta.toolDetail,
         );
         return outgoing;
       }

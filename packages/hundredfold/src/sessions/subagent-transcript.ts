@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SubagentEntry, SubagentTranscriptResponse } from "../shared/subagent-transcript.js";
+import { mergeToolDetail, toolEndDetail, toolStartDetail } from "../shared/tool-detail.js";
 
 /** What the gateway reads of a transcript, from its end: a long sub-agent is shown from where this starts. */
 export const SUBAGENT_READ_BYTES = 4 * 1024 * 1024;
@@ -61,20 +62,26 @@ function addText(fold: Fold, role: "user" | "assistant", text: string, at: strin
   fold.entries.push({ kind, text: clip(trimmed, TEXT_MAX), at });
 }
 
+function addToolUse(fold: Fold, block: Raw, id: string, at: string | null): void {
+  const detail = toolStartDetail(block.input);
+  const entry = { kind: "tool" as const, id, name: String(block.name ?? ""), input: inputSummary(block.input), result: null, isError: false, at, ...(detail ? { detail } : {}) };
+  fold.tools.set(id, entry);
+  fold.entries.push(entry);
+}
+
+function addToolResult(fold: Fold, block: Raw, id: string): void {
+  const call = fold.tools.get(id);
+  if (!call) return;
+  call.result = clip(resultText(block.content), RESULT_MAX);
+  call.isError = block.is_error === true;
+  const detail = mergeToolDetail(call.detail, toolEndDetail({ output: block.content, isError: call.isError }));
+  if (detail) call.detail = detail;
+}
+
 function addBlock(fold: Fold, role: "user" | "assistant", block: Raw, at: string | null): void {
-  if (block.type === "text" && typeof block.text === "string") {
-    addText(fold, role, block.text, at);
-  } else if (block.type === "tool_use" && typeof block.id === "string") {
-    const entry = { kind: "tool" as const, id: block.id, name: String(block.name ?? ""), input: inputSummary(block.input), result: null, isError: false, at };
-    fold.tools.set(block.id, entry);
-    fold.entries.push(entry);
-  } else if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
-    const call = fold.tools.get(block.tool_use_id);
-    if (call) {
-      call.result = clip(resultText(block.content), RESULT_MAX);
-      call.isError = block.is_error === true;
-    }
-  }
+  if (block.type === "text" && typeof block.text === "string") addText(fold, role, block.text, at);
+  else if (block.type === "tool_use" && typeof block.id === "string") addToolUse(fold, block, block.id, at);
+  else if (block.type === "tool_result" && typeof block.tool_use_id === "string") addToolResult(fold, block, block.tool_use_id);
 }
 
 /** The role and timestamp of a user or assistant line, and the blocks of its message; null for any other line. */

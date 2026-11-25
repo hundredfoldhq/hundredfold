@@ -25,9 +25,20 @@ describe("parseSubagentTranscript", () => {
   it("folds a tool result into its call and keeps the prompt and the answer", () => {
     expect(parseSubagentTranscript([prompt, call, result, answer])).toEqual([
       { kind: "prompt", text: "Count the lines.", at: "2026-10-16T10:00:00.000Z" },
-      { kind: "tool", id: "tu1", name: "Bash", input: "wc -l notes.txt", result: "1 notes.txt", isError: false, at: "2026-10-16T10:00:01.000Z" },
+      {
+        kind: "tool", id: "tu1", name: "Bash", input: "wc -l notes.txt", result: "1 notes.txt", isError: false, at: "2026-10-16T10:00:01.000Z",
+        detail: { input: { command: "wc -l notes.txt", description: "count" }, output: "1 notes.txt" },
+      },
       { kind: "text", text: "One line.", at: "2026-10-16T10:00:03.000Z" },
     ]);
+  });
+
+  it("keeps a call's detail redacted, and marks a failed result", () => {
+    const secretCall = line({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu2", name: "Bash", input: { command: "run", password: "hunter2" } }] } });
+    const failed = line({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu2", content: [{ type: "text", text: "exit 1" }], is_error: true }] } });
+    const [tool] = parseSubagentTranscript([secretCall, failed]);
+    expect(JSON.stringify(tool)).not.toContain("hunter2");
+    expect(tool).toMatchObject({ detail: { input: { password: "[REDACTED]" }, output: "exit 1", isError: true } });
   });
 
   it("shows a call with no result yet as still running", () => {

@@ -31,6 +31,7 @@ export { reconcileCompletedTurnMessages } from './completed-turn-messages'
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import { withToolDetail } from '@/lib/tool-summary'
 import type { BackgroundActivity } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import {
@@ -902,6 +903,7 @@ export function useLiveSession(
           }
           const toolName = String(p.toolName || 'tool')
           const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
+          const toolDetail = messageMeta(p.toolDetail)
           setMessages((prev) => {
             if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
             const updated = [
@@ -913,12 +915,25 @@ export function useLiveSession(
                 timestamp: Date.now(),
                 toolCall: toolName,
                 ...(toolId ? { toolId } : {}),
-                ...(sidechain ? { meta: { sidechain: true } } : {}),
+                ...(sidechain || toolDetail ? { meta: { ...(sidechain ? { sidechain: true } : {}), ...(toolDetail ? { tool: toolDetail } : {}) } } : {}),
               },
             ]
             return updated
           })
+        } else if (deltaType === 'tool_update') {
+          // The input of a call already on screen, assembled after it was announced.
+          const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
+          const toolDetail = messageMeta(p.toolDetail)
+          if (!toolId || !toolDetail) return
+          setMessages((prev) => {
+            const index = prev.findIndex((m) => m.role === 'assistant' && m.toolCall && m.toolId === toolId && !m.content.startsWith('Used '))
+            if (index < 0) return prev
+            const updated = [...prev]
+            updated[index] = withToolDetail(prev[index], toolDetail)
+            return updated
+          })
         } else if (deltaType === 'tool_result') {
+          const toolDetail = messageMeta(p.toolDetail)
           setMessages((prev) => {
             const updated = [...prev]
             const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
@@ -950,7 +965,7 @@ export function useLiveSession(
             }
             if (targetIndex >= 0) {
               const target = updated[targetIndex]
-              updated[targetIndex] = {
+              const settled = {
                 ...target,
                 content: `Used ${target.toolCall}`,
                 ...(activityReceiptId || agentId
@@ -963,6 +978,7 @@ export function useLiveSession(
                     }
                   : {}),
               }
+              updated[targetIndex] = toolDetail ? withToolDetail(settled, toolDetail) : settled
             }
             return updated
           })

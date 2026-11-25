@@ -65,12 +65,13 @@ describe("runLineForEvent", () => {
     expect(lines[1]!.part.text).toBe("SSE1");
   });
 
-  it("ignores another session's parts, streaming (unfinished) text, reasoning and a running tool", () => {
+  it("ignores another session's parts, streaming (unfinished) text and reasoning; a running tool is reported", () => {
     const part = (fields: Record<string, unknown>) => ({ type: "message.part.updated", properties: { sessionID: "ses_a", part: { sessionID: "ses_a", ...fields } } });
     expect(runLineForEvent(part({ type: "text", text: "hi", time: { end: 2 } }), "ses_b")).toBeUndefined();
     expect(runLineForEvent(part({ type: "text", text: "hi", time: { start: 1 } }), "ses_a")).toBeUndefined();
     expect(runLineForEvent(part({ type: "reasoning", text: "hmm", time: { end: 2 } }), "ses_a")).toBeUndefined();
-    expect(runLineForEvent(part({ type: "tool", state: { status: "running" } }), "ses_a")).toBeUndefined();
+    expect(runLineForEvent(part({ type: "tool", state: { status: "pending" } }), "ses_a")).toBeUndefined();
+    expect(runLineForEvent(part({ type: "tool", state: { status: "running" } }), "ses_a")).toContain('"tool_use"');
     expect(runLineForEvent(part({ type: "tool", state: { status: "error", error: "x" } }), "ses_a")).toContain('"tool_use"');
   });
 

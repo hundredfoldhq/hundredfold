@@ -30,6 +30,7 @@ import { isCompactCommand, isNativeClaudeCommand, neutralizeForPaste } from "../
 import { buildPromptWithPlatformContext } from "./platform-context.js";
 import { findSessionTranscript } from "./claude-transcript-path.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
+import { toolEndDetail, toolStartDetail } from "../shared/tool-detail.js";
 import { costOfUsage } from "../shared/model-pricing.js";
 import { claudeResetsAtSeconds, type ClaudeResetSource } from "../shared/engine-reset-times.js";
 import { writeMcpConfigFile } from "../mcp/resolver.js";
@@ -579,7 +580,8 @@ export function endsToolCall(event: unknown): boolean {
  */
 export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
   if (h.hook_event_name === "PreToolUse") return claudePreToolUseToDeltas(h);
-  if (h.hook_event_name !== "PostToolUse") return [];
+  if (!endsToolCall(h.hook_event_name)) return [];
+  const failed = h.hook_event_name === "PostToolUseFailure";
   const toolName = typeof h.tool_name === "string" ? h.tool_name : undefined;
   const response = h.tool_response;
   const responseRecord = response && typeof response === "object" && !Array.isArray(response)
@@ -592,7 +594,7 @@ export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
   const receiptSource = responseText && typeof responseText === "object"
     ? (responseText as Record<string, unknown>).text
     : response;
-  const isError = h.is_error === true || responseRecord?.isError === true || responseRecord?.is_error === true;
+  const isError = failed || h.is_error === true || responseRecord?.isError === true || responseRecord?.is_error === true;
   const activityReceiptId = extractActivityReceiptId(receiptSource, { isError });
   const toolId = typeof h.tool_use_id === "string" && h.tool_use_id ? h.tool_use_id : undefined;
   // A background Agent/Task launch answers with its sub-agent's id; persisting it on the
@@ -603,6 +605,8 @@ export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
   const agentId = (toolName === "Agent" || toolName === "Task") && typeof h.agent_id !== "string"
     ? launchedSubagentId(responseRecord)
     : undefined;
+  // A failure answers with an `error` string rather than a response.
+  const toolDetail = toolEndDetail({ input: h.tool_input, output: failed ? h.error : response, isError });
   return [{
     type: "tool_result",
     content: String(h.tool_name ?? ""),
@@ -610,6 +614,7 @@ export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
     ...(toolId ? { toolId } : {}),
     ...(activityReceiptId ? { activityReceiptId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...(toolDetail ? { toolDetail } : {}),
   }];
 }
 
@@ -619,11 +624,13 @@ function claudePreToolUseToDeltas(h: Record<string, unknown>): StreamDelta[] {
   const toolId = typeof h.tool_use_id === "string" && h.tool_use_id ? h.tool_use_id : undefined;
   if (!toolId) return [];
   const toolName = typeof h.tool_name === "string" && h.tool_name ? h.tool_name : "tool";
+  const toolDetail = toolStartDetail(h.tool_input);
   return [{
     type: "tool_use",
     content: toolName,
     toolName,
     toolId,
+    ...(toolDetail ? { toolDetail } : {}),
     ...(typeof h.agent_id === "string" ? { sidechain: true } : {}),
   }];
 }
@@ -637,8 +644,9 @@ function claudePreToolUseToDeltas(h: Record<string, unknown>): StreamDelta[] {
  *  - content_block_start tool_use → `tool_use` marker (in-order with text)
  *  - content_block_delta text_delta → incremental `text` (word-by-word)
  * tool_result is NOT in the assistant SSE stream (tools run between messages); the
- * PostToolUse hook supplies that completion marker. input_json_delta / thinking
- * deltas are intentionally not surfaced to the chat pane.
+ * PostToolUse hook supplies that completion marker, and the PreToolUse hook the
+ * call's assembled input. input_json_delta / thinking deltas are intentionally
+ * not surfaced to the chat pane.
  */
 export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
   switch (e.type) {
@@ -2751,7 +2759,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
         }
         // A replayed PreToolUse predates this turn: its call, if it was ours,
         // was reported by the turn that made it.
-        const toolHook = h.hook_event_name === "PostToolUse" || (h.hook_event_name === "PreToolUse" && !replaying);
+        const toolHook = endsToolCall(h.hook_event_name) || (h.hook_event_name === "PreToolUse" && !replaying);
         if (toolHook && !foreign && !held) {
           for (const delta of claudeHookToDeltas(h as Record<string, unknown>)) this.forwardDelta(entry, delta);
         }
@@ -3142,7 +3150,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
   private forwardDelta(entry: ActiveTurn, d: StreamDelta): void {
     if (d.type === "tool_use" && d.toolId) {
       const reported = entry.reportedToolIds ?? (entry.reportedToolIds = new Set());
-      if (reported.has(d.toolId)) return;
+      if (reported.has(d.toolId)) {
+        // The proxy announced this call before its input was assembled; the hook, fired
+        // as the tool starts, has it. Pass the input on as an update to the call's card.
+        if (d.toolDetail) entry.onStream?.({ type: "tool_update", content: d.content, toolName: d.toolName, toolId: d.toolId, toolDetail: d.toolDetail, ...(d.sidechain ? { sidechain: true } : {}) });
+        return;
+      }
       reported.add(d.toolId);
     }
     entry.onStream?.(d);

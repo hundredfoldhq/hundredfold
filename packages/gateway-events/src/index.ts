@@ -31,7 +31,7 @@ export interface GatewayEventMap {
   }
   "session:delta": {
     sessionId: string
-    type: "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error" | "context" | "block"
+    type: "text" | "text_snapshot" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
     content: string
     toolName?: string
     toolId?: string
@@ -39,6 +39,8 @@ export interface GatewayEventMap {
     /** The background sub-agent an `Agent`/`Task` result launched, for its card to open. */
     agentId?: string
     input?: string
+    /** What the call's card shows: `{ input?, output?, isError?, inputTruncated?, outputChars? }`, redacted and bounded. */
+    toolDetail?: JsonObject
     /** A tool call made inside a sub-agent rather than by the main agent. */
     sidechain?: boolean
     block?: JsonValue

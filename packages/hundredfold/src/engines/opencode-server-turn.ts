@@ -178,10 +178,11 @@ const PART_LINES: Record<string, (part: Record<string, unknown>) => string | und
   "step-finish": () => "step_finish",
   // `run` prints a text part once, when it is complete.
   text: (part) => (record(part.time)?.end !== undefined && typeof part.text === "string" && part.text ? "text" : undefined),
-  // `run` prints a tool call once it has a result, as does this.
+  // `run` prints a tool call once it has a result. This also reports it once it runs, so the
+  // chat shows the call, with its input, while it works; the turn announces it only once.
   tool: (part) => {
     const status = str(record(part.state)?.status);
-    return status === "completed" || status === "error" ? "tool_use" : undefined;
+    return status === "running" || status === "completed" || status === "error" ? "tool_use" : undefined;
   },
 };
 

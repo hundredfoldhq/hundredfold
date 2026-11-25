@@ -10,6 +10,7 @@ const deltaTypes = new Set<GatewayEventMap["session:delta"]["type"]>([
   "text",
   "text_snapshot",
   "tool_use",
+  "tool_update",
   "tool_result",
   "status",
   "error",
@@ -130,6 +131,7 @@ function hasOptionalDeltaToolFields(value: Record<string, unknown>): boolean {
     && isOptionalString(value.activityReceiptId)
     && isOptionalString(value.agentId)
     && isOptionalString(value.input)
+    && isOptionalJsonObject(value.toolDetail)
     && isOptionalBoolean(value.sidechain)
     && isOptionalNumber(value.streamBlock)
     && isOptionalNumber(value.offset)

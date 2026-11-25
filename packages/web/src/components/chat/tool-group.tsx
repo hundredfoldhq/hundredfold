@@ -3,6 +3,8 @@ import { ChevronDown, FileText, Globe, Search, Terminal, Wrench, type IconCompon
 import type { Message } from '@/lib/conversations'
 import type { SubagentRef } from '@/lib/subagent-transcript'
 import { statusMark } from './chat-blocks'
+import { ToolCallCard } from './tool-call-card'
+import { identifyTool, summarizeTool, toolDetailOf } from '@/lib/tool-summary'
 import { commsArrivalDelayMs } from './message-arrival'
 import { usePersistentExpansion } from './transcript-expansion'
 import { cn } from '@/lib/utils'
@@ -78,8 +80,30 @@ function visibleToolEntries(msgs: Message[], activeIndex: number, showAll: boole
 }
 
 const CHIP_BASE = 'inline-flex min-h-9 max-w-full items-center gap-1.5 px-2.5 py-1 text-left'
+const CHIP_BUTTON = 'cursor-pointer rounded-md border-none bg-transparent font-[inherit] transition-colors duration-150 hover:bg-[var(--fill-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]'
 
-function ToolChipContent({ msg, index, status }: { msg: Message; index: number; status: 'done' | 'running' | 'queued' }) {
+type ChipStatus = 'done' | 'running' | 'queued' | 'error'
+
+function chipStatus(msg: Message, isActive: boolean, failed: boolean): ChipStatus {
+  if (isToolDone(msg)) return failed ? 'error' : 'done'
+  return isActive ? 'running' : 'queued'
+}
+
+/** The call's name as its chip titles it: an MCP call is its server and tool. */
+function chipTitle(toolCall: string | undefined, index: number): string {
+  if (!toolCall) return `Tool ${index + 1}`
+  const { kind, server, name } = identifyTool(toolCall)
+  return kind === 'mcp' ? `${server} › ${name}` : toolCall
+}
+
+function ToolChipContent({ msg, index, status, summary, expanded }: {
+  msg: Message
+  index: number
+  status: ChipStatus
+  summary: string
+  /** Present when the call has detail to open: whether it is open. */
+  expanded?: boolean
+}) {
   const ToolGlyph = toolGlyphForName(msg.toolCall || '')
   return (
     <>
@@ -87,11 +111,125 @@ function ToolChipContent({ msg, index, status }: { msg: Message; index: number; 
         {statusMark(status)}
       </span>
       <ToolGlyph size={13} aria-hidden="true" className="shrink-0 text-[var(--text-tertiary)]" />
-      <span className="min-w-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
-        {msg.toolCall || `Tool ${index + 1}`}
+      <span className="min-w-0 shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
+        {chipTitle(msg.toolCall, index)}
       </span>
+      {summary && (
+        <span
+          data-testid="tool-summary"
+          className="min-w-0 truncate font-[family-name:var(--font-mono)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]"
+        >
+          {summary}
+        </span>
+      )}
+      {expanded !== undefined && (
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          className={`ml-0.5 shrink-0 text-[var(--text-quaternary)] transition-transform duration-150 ease-[var(--ease-smooth)] ${expanded ? 'rotate-180' : 'rotate-0'}`}
+        />
+      )}
     </>
   )
+}
+
+/** A background Agent/Task call's chip: opening the sub-agent's transcript, and beside it the call's detail. */
+function SubagentChipRow({ msg, index, status, summary, agentId, onOpen, className, style, enter, toggle }: {
+  msg: Message
+  index: number
+  status: ChipStatus
+  summary: string
+  agentId: string
+  onOpen: OpenSubagentCard
+  className: string
+  style: CSSProperties | undefined
+  enter: ChipEnter | undefined
+  toggle: ChipToggle | null
+}) {
+  return (
+    <div data-tool-enter={enter} style={style} className={className}>
+      <button
+        type="button"
+        data-pane-focus-preserving
+        className={cn(CHIP_BASE, CHIP_BUTTON, 'min-w-0')}
+        aria-label={`Open the ${msg.toolCall || 'Agent'} sub-agent transcript`}
+        onClick={(event) => onOpen({ id: agentId, description: null, agentType: null }, event.currentTarget)}
+      >
+        <ToolChipContent msg={msg} index={index} status={status} summary={summary} />
+      </button>
+      {toggle && (
+        <button type="button" data-pane-focus-preserving className={cn(CHIP_BUTTON, 'grid size-8 shrink-0 place-items-center p-0')} {...toggle.props}>
+          <ChevronDown size={12} aria-hidden="true" className={`text-[var(--text-quaternary)] transition-transform duration-150 ${toggle.open ? 'rotate-180' : 'rotate-0'}`} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface ChipToggle {
+  open: boolean
+  props: { 'aria-expanded': boolean; 'aria-label': string; onClick: () => void }
+}
+
+/** What a chip shows and how it opens: its detail, status and one-line summary, and the toggle for the detail. */
+function useChipModel(entry: ToolEntry, activeIndex: number) {
+  const { msg, index } = entry
+  const detail = toolDetailOf(msg)
+  const [open, setOpen] = usePersistentExpansion(`tool-card:${toolChipKey(entry)}`, false)
+  const toggle: ChipToggle | null = detail
+    ? {
+        open,
+        props: {
+          'aria-expanded': open,
+          'aria-label': `${open ? 'Hide' : 'Show'} the ${msg.toolCall || 'tool'} call's input and result`,
+          onClick: () => setOpen(!open),
+        },
+      }
+    : null
+  return {
+    detail,
+    toggle,
+    status: chipStatus(msg, index === activeIndex, detail?.isError === true),
+    summary: summarizeTool(msg.toolCall || '', detail?.input),
+  }
+}
+
+/** The chip itself: a button that opens the call's detail, a sub-agent card, or plain text for a call with none. */
+function ToolChipRow({ entry, status, summary, toggle, arrival, enter, onOpenSubagent }: {
+  entry: ToolEntry
+  status: ChipStatus
+  summary: string
+  toggle: ChipToggle | null
+  arrival: number | undefined
+  enter: ChipEnter | undefined
+  onOpenSubagent?: OpenSubagentCard
+}) {
+  const { msg, index } = entry
+  const agentId = subagentIdOf(msg)
+  const style = enter ? arriveDelay(arrival) : undefined
+  const content = (expanded?: boolean) => (
+    <ToolChipContent msg={msg} index={index} status={status} summary={summary} expanded={expanded} />
+  )
+  // Only a background sub-agent launch carries an agent id: its card opens the same
+  // read-only transcript the waiting-on popup does, which is gone once it finishes.
+  // The card keeps no description or agent type, so the view opens without the row's labels.
+  if (agentId && onOpenSubagent) {
+    return (
+      <SubagentChipRow
+        msg={msg} index={index} status={status} summary={summary} agentId={agentId} onOpen={onOpenSubagent}
+        className={cn('inline-flex min-h-9 max-w-full items-center', enter && 'tool-arrive')}
+        style={style} enter={enter} toggle={toggle}
+      />
+    )
+  }
+  if (toggle) {
+    return (
+      <button type="button" data-tool-enter={enter} data-pane-focus-preserving style={style} className={cn(CHIP_BASE, CHIP_BUTTON, enter && 'tool-arrive')} {...toggle.props}>
+        {content(toggle.open)}
+      </button>
+    )
+  }
+  return <div data-tool-enter={enter} style={style} className={cn(CHIP_BASE, enter && 'tool-arrive')}>{content()}</div>
 }
 
 function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
@@ -101,32 +239,11 @@ function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
   enter: ChipEnter | undefined
   onOpenSubagent?: OpenSubagentCard
 }) {
-  const { msg, index } = entry
-  const status = isToolDone(msg) ? 'done' : index === activeIndex ? 'running' : 'queued'
-  const agentId = subagentIdOf(msg)
-  const className = cn(CHIP_BASE, enter && 'tool-arrive')
-  const style = enter ? arriveDelay(arrival) : undefined
-  // Only a background sub-agent launch carries an agent id: its card opens the same
-  // read-only transcript the waiting-on popup does, which is gone once it finishes.
-  // The card keeps no description or agent type, so the view opens without the row's labels.
-  if (agentId && onOpenSubagent) {
-    return (
-      <button
-        type="button"
-        data-tool-enter={enter}
-        data-pane-focus-preserving
-        style={style}
-        className={cn(className, 'cursor-pointer rounded-md border-none bg-transparent font-[inherit] transition-colors duration-150 hover:bg-[var(--fill-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]')}
-        aria-label={`Open the ${msg.toolCall || 'Agent'} sub-agent transcript`}
-        onClick={(event) => onOpenSubagent({ id: agentId, description: null, agentType: null }, event.currentTarget)}
-      >
-        <ToolChipContent msg={msg} index={index} status={status} />
-      </button>
-    )
-  }
+  const { detail, toggle, status, summary } = useChipModel(entry, activeIndex)
   return (
-    <div data-tool-enter={enter} style={style} className={className}>
-      <ToolChipContent msg={msg} index={index} status={status} />
+    <div className="flex min-w-0 max-w-full flex-col items-start">
+      <ToolChipRow entry={entry} status={status} summary={summary} toggle={toggle} arrival={arrival} enter={enter} onOpenSubagent={onOpenSubagent} />
+      {detail && toggle?.open && <ToolCallCard toolCall={entry.msg.toolCall || ''} detail={detail} running={status === 'running'} />}
     </div>
   )
 }

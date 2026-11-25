@@ -109,3 +109,44 @@ describe("OpencodeTurn — an `error` line", () => {
     expect(error.endsWith("…")).toBe(true);
   });
 });
+
+describe("OpencodeTurn — a tool call's detail", () => {
+  const toolLine = (state: Record<string, unknown>, extra: Record<string, unknown> = {}) => JSON.stringify({
+    type: "tool_use",
+    sessionID: SES,
+    part: { id: "prt_1", callID: "call_1", messageID: "msg_1", type: "tool", tool: "bash", state, ...extra },
+  });
+
+  function read(...lines: string[]) {
+    const turn = new OpencodeTurn("");
+    const deltas: Array<Record<string, unknown>> = [];
+    for (const line of lines) turn.readLine(line, (d) => deltas.push(d as unknown as Record<string, unknown>));
+    return deltas;
+  }
+
+  it("carries the input and the output of a call reported once, at its end", () => {
+    const deltas = read(toolLine({ status: "completed", input: { command: "ls", description: "list" }, output: "a\nb" }));
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
+    expect(deltas[0]!.toolDetail).toEqual({ input: { command: "ls", description: "list" } });
+    expect(deltas[1]!.toolDetail).toEqual({ input: { command: "ls", description: "list" }, output: "a\nb" });
+  });
+
+  it("announces a call once when it is reported running and again at its end", () => {
+    const deltas = read(
+      toolLine({ status: "running", input: { command: "sleep 5" } }),
+      toolLine({ status: "completed", input: { command: "sleep 5" }, output: "" }),
+    );
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
+    expect(deltas[0]!.toolDetail).toEqual({ input: { command: "sleep 5" } });
+  });
+
+  it("marks a failed call and keeps its error text as the output", () => {
+    const deltas = read(toolLine({ status: "error", input: { filePath: "/nope" }, error: "File not found" }, { tool: "read" }));
+    expect(deltas[1]!.toolDetail).toEqual({ input: { filePath: "/nope" }, output: "File not found", isError: true });
+  });
+
+  it("does not let a secret in the input through", () => {
+    const deltas = read(toolLine({ status: "completed", input: { command: "echo", password: "hunter2" }, output: "ok" }));
+    expect(JSON.stringify(deltas)).not.toContain("hunter2");
+  });
+});

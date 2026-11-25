@@ -24,6 +24,7 @@ export function subagentMessages(agentId: string, entries: readonly SubagentEntr
       timestamp,
       toolCall: entry.name,
       toolId: entry.id,
+      ...(entry.detail ? { meta: { tool: entry.detail } } : {}),
     }
   })
 }
