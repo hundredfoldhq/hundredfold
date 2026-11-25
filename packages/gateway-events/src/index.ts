@@ -31,7 +31,7 @@ export interface GatewayEventMap {
   }
   "session:delta": {
     sessionId: string
-    type: "text" | "text_snapshot" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
+    type: "text" | "text_snapshot" | "thinking" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
     content: string
     toolName?: string
     toolId?: string
@@ -39,12 +39,13 @@ export interface GatewayEventMap {
     /** The background sub-agent an `Agent`/`Task` result launched, for its card to open. */
     agentId?: string
     input?: string
-    /** What the call's card shows: `{ input?, output?, isError?, inputTruncated?, outputChars? }`, redacted and bounded. */
+    /** What the call's card shows: `{ input?, output?, isError?, inputTruncated?, outputChars?, full? }`, redacted and bounded.
+     *  `full: true` says the call's whole input and output are kept and can be loaded. */
     toolDetail?: JsonObject
     /** A tool call made inside a sub-agent rather than by the main agent. */
     sidechain?: boolean
     block?: JsonValue
-    /** The text block a text delta belongs to, or a main tool call or block ends.
+    /** The text block a text or `thinking` delta belongs to, or a main tool call or block ends.
      *  Ids rise, so a later block has a larger id. */
     streamBlock?: number
     /** How much of the block's text came before this text delta (0 for a snapshot). */

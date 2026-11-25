@@ -24,13 +24,14 @@ import { sessionScopeDepartment } from "../sessions/session-cwd.js";
  * the operator's home directory is one of them. `localBin` is the Claude Code a local
  * session runs: it also registers PostToolUseFailure when that build knows the event.
  */
-export function writeClaudeSessionSettings(hundredfoldSessionId: string, profile: ClaudeProfile | undefined, localBin?: string): string {
+export function writeClaudeSessionSettings(hundredfoldSessionId: string, profile: ClaudeProfile | undefined, localBin?: string, showThinkingSummaries = false): string {
   const department = sessionScopeDepartment(getSession(hundredfoldSessionId));
   return writeSessionSettings(CLAUDE_SETTINGS_DIR, hundredfoldSessionId, {
     sessionId: hundredfoldSessionId,
     relayScript: HOOK_RELAY_SCRIPT,
     statusLineDir: CLAUDE_LIMITS_DIR,
     carry: operatorSettingsCarry(profile ?? null),
+    ...(showThinkingSummaries ? { showThinkingSummaries: true } : {}),
     ...(localBin !== undefined && localClaudeKnowsToolFailureHook(localBin) ? { toolFailureHook: true } : {}),
     ...(department ? { claudeMdExcludes: ancestorMemoryExcludes([departmentStageDir(department), resolvedStageDir(department)]) } : {}),
   });

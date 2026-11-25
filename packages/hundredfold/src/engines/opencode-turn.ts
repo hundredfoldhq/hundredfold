@@ -2,7 +2,7 @@ import type { EngineResult, StreamDelta } from "../shared/types.js";
 import { isBillingFailureMessage } from "../shared/engine-failure.js";
 import { isRateLimitMessage } from "../shared/rateLimit.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
-import { toolEndDetail, toolStartDetail } from "../shared/tool-detail.js";
+import { toolEndParts, toolStartParts } from "../shared/tool-detail.js";
 import {
   asRecord,
   contextTokensFromStep,
@@ -80,6 +80,9 @@ export class OpencodeTurn {
       case "tool_use":
         this.readToolUse(part, onStream);
         break;
+      case "reasoning":
+        this.readReasoning(part, onStream);
+        break;
       case "step_finish":
         this.readStepFinish(part);
         break;
@@ -102,18 +105,24 @@ export class OpencodeTurn {
     if (onStream) onStream({ type: "text", content: text });
   }
 
+  /** The model's reasoning, for the chat to show. It is neither an answer nor proof of progress: it
+   *  changes nothing about how the turn ends. */
+  private readReasoning(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {
+    const text = typeof part.text === "string" ? part.text : "";
+    if (text.trim() && onStream) onStream({ type: "thinking", content: text });
+  }
+
   private readToolUse(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {
     this.producedOutput = true;
     if (!onStream) return;
     const identity = toolIdentity(part);
     const state = asRecord(part.state) ?? {};
     if (this.firstSighting(identity.toolId ?? trimmedString(part.id))) {
-      const toolDetail = toolStartDetail(state.input);
       onStream({
         type: "tool_use",
         content: describeToolCall(identity.toolName, asRecord(state.input)),
         ...identity,
-        ...(toolDetail ? { toolDetail } : {}),
+        ...toolStartParts(state.input),
       });
     }
     // `pending` and `running` have no output yet, so only the two terminal states
@@ -134,13 +143,13 @@ export class OpencodeTurn {
   private toolResult(identity: { toolName?: string; toolId?: string }, state: Record<string, unknown>, failed: boolean): StreamDelta {
     const output = typeof state.output === "string" ? state.output : "";
     const activityReceiptId = extractActivityReceiptId(output, { isError: failed });
-    const toolDetail = toolEndDetail({ input: state.input, output: failed ? trimmedString(state.error) ?? output : output, isError: failed });
+    const toolParts = toolEndParts({ input: state.input, output: failed ? trimmedString(state.error) ?? output : output, isError: failed });
     return {
       type: "tool_result",
       content: output.slice(0, 500),
       ...identity,
       ...(activityReceiptId ? { activityReceiptId } : {}),
-      ...(toolDetail ? { toolDetail } : {}),
+      ...toolParts,
     };
   }
 

@@ -16,6 +16,11 @@ export interface SessionSettingsOpts {
    * an older one stops at a Settings Warning dialog on an unknown hook event.
    */
   toolFailureHook?: boolean;
+  /**
+   * Ask Claude Code for readable thinking: with its default it requests `display: "omitted"` and every
+   * `thinking_delta` the stream carries is empty. A local session's stream is read by the gateway's proxy.
+   */
+  showThinkingSummaries?: boolean;
 }
 
 interface HookCommand { type: "command"; command: string; }
@@ -55,6 +60,7 @@ export interface ClaudeSettings {
   attribution?: unknown;
   skipDangerousModePermissionPrompt?: boolean;
   claudeMdExcludes?: string[];
+  showThinkingSummaries?: boolean;
 }
 
 function shellQuote(value: string): string {
@@ -108,6 +114,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
       ? { skipDangerousModePermissionPrompt: opts.carry.skipDangerousModePermissionPrompt }
       : {}),
     ...(opts.claudeMdExcludes?.length ? { claudeMdExcludes: opts.claudeMdExcludes } : {}),
+    ...(opts.showThinkingSummaries ? { showThinkingSummaries: true } : {}),
   };
 }
 

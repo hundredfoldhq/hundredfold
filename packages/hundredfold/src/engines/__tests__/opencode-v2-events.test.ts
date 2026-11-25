@@ -28,7 +28,12 @@ describe("V2RunLines.lineFor", () => {
   it("reports a tool once, with its name, call id, input and output, when it succeeds", () => {
     const lines = new V2RunLines(SES);
     expect(lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "shell" }))).toBeUndefined();
-    expect(lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "echo hi" }, executed: false }))).toBeUndefined();
+    // The call starts: it is reported running, with its input and name, before it has a result.
+    expect(parsed(lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "echo hi" }, executed: false })))).toEqual({
+      type: "tool_use",
+      sessionID: SES,
+      part: { id: CALL, callID: CALL, messageID: MSG, type: "tool", tool: "shell", state: { status: "running", input: { command: "echo hi" } } },
+    });
     const line = parsed(lines.lineFor(ev("session.tool.success", {
       id: CALL,
       content: [{ type: "text", text: "hi\n" }, { type: "image", data: "x" }, { type: "text", text: "second" }],
@@ -48,6 +53,35 @@ describe("V2RunLines.lineFor", () => {
     });
   });
 
+  it("reports a call running once it is called, then again with its result, for the turn to announce once", () => {
+    const lines = new V2RunLines(SES);
+    const turn = new OpencodeTurn("");
+    const deltas: StreamDelta[] = [];
+    const feed = (line: string | undefined) => { if (line) turn.readLine(line, (d) => deltas.push(d)); };
+    feed(lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "bash" })));
+    feed(lines.lineFor(ev("session.tool.input.delta", { id: CALL, delta: "{" })));
+    expect(deltas).toEqual([]);
+    feed(lines.lineFor(ev("session.tool.called", { id: CALL, input: { command: "sleep 3", description: "wait" } })));
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use"]);
+    expect(deltas[0]).toMatchObject({ toolName: "bash", toolId: CALL, toolDetail: { input: { command: "sleep 3", description: "wait" } } });
+    feed(lines.lineFor(ev("session.tool.success", { id: CALL, content: [{ type: "text", text: "done" }] })));
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
+    expect(deltas[1]).toMatchObject({ toolId: CALL, toolDetail: { input: { command: "sleep 3", description: "wait" }, output: "done" } });
+  });
+
+  it("reports a call that fails after it ran as a result of the call already announced", () => {
+    const lines = new V2RunLines(SES);
+    const turn = new OpencodeTurn("");
+    const deltas: StreamDelta[] = [];
+    for (const e of [
+      ev("session.tool.input.started", { id: CALL, name: "bash" }),
+      ev("session.tool.called", { id: CALL, input: { command: "x" } }),
+      ev("session.tool.failed", { id: CALL, error: { message: "exit 2" } }),
+    ]) { const line = lines.lineFor(e); if (line) turn.readLine(line, (d) => deltas.push(d)); }
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
+    expect(deltas[1]!.toolDetail).toMatchObject({ isError: true, output: "exit 2" });
+  });
+
   it("reports a failed tool as an error with the error message as its output", () => {
     const lines = new V2RunLines(SES);
     lines.lineFor(ev("session.tool.input.started", { id: CALL, name: "bash" }));
@@ -62,6 +96,28 @@ describe("V2RunLines.lineFor", () => {
     const line = parsed(lines.lineFor(ev("session.tool.failed", { id: CALL })));
     expect(line.part.state).toEqual({ status: "error", input: {}, output: "the tool failed" });
     expect(line.part).not.toHaveProperty("tool");
+  });
+
+  it("turns a reasoning block into a reasoning line when it ends, from its text or from what streamed", () => {
+    const lines = new V2RunLines(SES);
+    expect(lines.lineFor(ev("session.reasoning.started", { ordinal: 0 }))).toBeUndefined();
+    expect(lines.lineFor(ev("session.reasoning.delta", { ordinal: 0, delta: "Let me " }))).toBeUndefined();
+    expect(lines.lineFor(ev("session.reasoning.delta", { ordinal: 0, delta: "think." }))).toBeUndefined();
+    const streamed = parsed(lines.lineFor(ev("session.reasoning.ended", { ordinal: 0 })));
+    expect(streamed).toMatchObject({ type: "reasoning", sessionID: SES, part: { messageID: MSG, type: "reasoning", text: "Let me think." } });
+    const carried = parsed(lines.lineFor(ev("session.reasoning.ended", { ordinal: 1, text: "Whole text." })));
+    expect(carried.part.text).toBe("Whole text.");
+    expect(carried.part.id).not.toBe(streamed.part.id);
+    expect(lines.lineFor(ev("session.reasoning.ended", { ordinal: 2, text: "  " }))).toBeUndefined();
+  });
+
+  it("makes a reasoning line a thinking delta and nothing that decides the turn", () => {
+    const lines = new V2RunLines(SES);
+    const turn = new OpencodeTurn("");
+    const deltas: StreamDelta[] = [];
+    turn.readLine(lines.lineFor(ev("session.reasoning.ended", { ordinal: 0, text: "hmm" }))!, (d) => deltas.push(d));
+    expect(deltas).toEqual([{ type: "thinking", content: "hmm" }]);
+    expect(turn.result({ code: 0, terminationReason: null, stderr: "" }).result).toBe("");
   });
 
   it("says nothing for a tool result without a call id, or for events it does not read", () => {
@@ -316,6 +372,21 @@ describe("v2ReplyIsDone", () => {
   it("is not done while the reply has not completed", () => {
     expect(v2ReplyIsDone({ ...STORED_TEXT, time: { created: 1, streamed: 2 } })).toBe(false);
     expect(v2ReplyIsDone({ id: "msg_open" })).toBe(false);
+  });
+});
+
+describe("a stored reply with reasoning", () => {
+  it("reports its reasoning beside its text and finished tools", () => {
+    const reply: V2Message = {
+      id: MSG,
+      type: "assistant",
+      time: { created: 1, completed: 5 },
+      content: [
+        { type: "reasoning", text: "Plan the answer." },
+        { type: "text", text: "Here it is." },
+      ],
+    };
+    expect(runLinesFromStoredReply(SES, reply).map((l) => parsed(l).type)).toEqual(["reasoning", "text"]);
   });
 });
 

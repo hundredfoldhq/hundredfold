@@ -362,6 +362,7 @@ import { handleSprintsApi } from "./sprints-api.js";
 import { handleReparentApi } from "./work-item-reparent-api.js";
 import { handleSessionsListApi } from "./sessions-list-api.js";
 import { handleSessionWaitsApi } from "./session-waits-api.js";
+import { handleToolDetailsApi } from "./tool-details-api.js";
 import { handleSubagentTranscriptApi } from "./subagent-transcript-api.js";
 import { resolveScopedCaller } from "./department-scope/caller.js";
 import { namesClaudeProfile, resolvePrimaryEngine } from "../sessions/primary-profile.js";
@@ -373,8 +374,10 @@ import { handleBoardWalkApi } from "./board-walk-api.js";
 import { handleBoardHooksApi } from "./board-hooks-api.js";
 import { opencodeDiscoveryEnv } from "../engines/opencode-launch.js";
 
-/** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
-const HOOK_BODY_MAX_BYTES = 64 * 1024;
+/** Max bytes accepted on /api/internal/hook. A tool hook carries the call's whole input and result (the
+ *  chat card keeps up to 1M characters of it), which JSON-escaped and UTF-8 encoded can reach a few MB;
+ *  a body over this loses the hook, and with it the call's completion. The relay posts over loopback. */
+const HOOK_BODY_MAX_BYTES = 8 * 1024 * 1024;
 /** Max bytes accepted by public auth helpers. Codes/tokens are tiny. */
 const AUTH_BODY_MAX_BYTES = 16 * 1024;
 /** Operator Todo PATCH cap, measured as raw UTF-8 request bytes including JSON overhead. */
@@ -1881,6 +1884,9 @@ export async function handleApiRequest(
       callerDepartment: () => resolveScopedCaller(resolveScopedWriteCallerIdentity(req, context))?.department ?? null,
     })) return;
 
+    // GET /api/sessions/:id/tool-details/:toolId: a cut tool call's whole input and output, in its own module.
+    if (handleToolDetailsApi(res, { method, pathname, url })) return;
+
     // GET /api/sessions/:id/subagents/:agentId/transcript: a background sub-agent's conversation, in its own module.
     if (handleSubagentTranscriptApi(res, { method, pathname, url }, {
       claudeSessionId: (parent) => getEngineSessionRef(parent, "claude").id,
@@ -1907,11 +1913,13 @@ export async function handleApiRequest(
       if (!session) return notFound(res);
       const includeMessages = url.searchParams.get("messages") !== "0";
       const lastN = parseMessageLimit(url.searchParams.get("last"), 0);
+      // `thinking=0`: a reader that is an agent leaves the model's thinking out; the chat view keeps it.
+      const withoutThinking = url.searchParams.get("thinking") === "0";
       const page = includeMessages && lastN > 0
-        ? getMessagePage(params.id, { limit: lastN })
+        ? getMessagePage(params.id, { limit: lastN, withoutThinking })
         : null;
       const storedMessages = includeMessages
-        ? page ? page.messages : getMessages(params.id)
+        ? page ? page.messages : getMessages(params.id).filter((message) => !withoutThinking || message.role !== "thinking")
         : [];
       // While a turn runs, the text block it is streaming comes from the turn's writer
       // and is read in the same tick as the rows: the stored row of that block trails

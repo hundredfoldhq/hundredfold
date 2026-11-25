@@ -140,6 +140,33 @@ describe("OpencodeTurn — a tool call's detail", () => {
     expect(deltas[0]!.toolDetail).toEqual({ input: { command: "sleep 5" } });
   });
 
+  it("keeps the whole input and output of a call whose card was cut, apart from the stream", () => {
+    const command = `${"echo hello && ".repeat(200)}true`;
+    const output = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join("\n");
+    const deltas = read(toolLine({ status: "running", input: { command } }), toolLine({ status: "completed", input: { command }, output }));
+    expect(deltas.map((d) => d.type)).toEqual(["tool_use", "tool_result"]);
+    expect(deltas[0]).toMatchObject({ toolDetail: { inputTruncated: true, full: true }, toolFull: { input: { command } } });
+    expect(deltas[1]).toMatchObject({ toolDetail: { full: true, outputChars: output.length }, toolFull: { input: { command }, output } });
+    expect(JSON.stringify(deltas.map((d) => d.toolDetail))).not.toContain("line 2999");
+  });
+
+  it("has no full detail for a call that fit its card", () => {
+    const deltas = read(toolLine({ status: "completed", input: { command: "ls" }, output: "a" }));
+    expect(deltas.every((d) => d.toolFull === undefined)).toBe(true);
+    expect(JSON.stringify(deltas)).not.toContain('"full"');
+  });
+
+  it("makes a reasoning line a thinking delta that is neither an answer nor progress", () => {
+    const turn = new OpencodeTurn("");
+    const deltas: Array<Record<string, unknown>> = [];
+    turn.readLine(JSON.stringify({ type: "reasoning", sessionID: SES, part: { id: "prt_r", type: "reasoning", text: "Think first.", time: { end: 2 } } }), (d) => deltas.push(d as never));
+    turn.readLine(JSON.stringify({ type: "reasoning", sessionID: SES, part: { type: "reasoning", text: "   " } }), (d) => deltas.push(d as never));
+    expect(deltas).toEqual([{ type: "thinking", content: "Think first." }]);
+    const result = turn.result({ code: 0, terminationReason: null, stderr: "" });
+    expect(result.result).toBe("");
+    expect(result.numTurns).toBeUndefined();
+  });
+
   it("marks a failed call and keeps its error text as the output", () => {
     const deltas = read(toolLine({ status: "error", input: { filePath: "/nope" }, error: "File not found" }, { tool: "read" }));
     expect(deltas[1]!.toolDetail).toEqual({ input: { filePath: "/nope" }, output: "File not found", isError: true });

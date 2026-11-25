@@ -127,6 +127,10 @@ export interface HundredfoldConfig {
        *  unanswered wedges the session. Set false to require a human in the
        *  CLI/xterm view; the turn then fails on the stall backstop instead. */
       autoApproveSafetyPrompts?: boolean;
+      /** Ask Claude Code for readable thinking (`showThinkingSummaries`), which the chat shows as thinking rows.
+       *  Default true. Claude Code otherwise asks the API to omit the thinking text, so a local session streams
+       *  none. A remote session has no gateway stream to read it from and never asks. Set false to turn it off. */
+      thinkingSummaries?: boolean;
       /** Targets to try instead, in order of preference, when this one cannot serve a
        *  turn: `{engine, profile?, model?}` mappings, or the legacy strings (an engine
        *  name, or `claude:<name>` for an account under `accounts` below), which stand for

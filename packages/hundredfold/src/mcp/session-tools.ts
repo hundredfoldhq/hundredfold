@@ -319,7 +319,7 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
       requireCallerIdentity(ctx);
       const sessionId = requireString(args, "sessionId");
       const last = readLast(args.last);
-      const { status, body } = await gatewayRequest(ctx, "GET", `${sessionPath(sessionId)}?last=${last}`);
+      const { status, body } = await gatewayRequest(ctx, "GET", `${sessionPath(sessionId)}?last=${last}&thinking=0`);
       if (status >= 400) throw gatewayFailure(`reading session "${sessionId}"`, status, body);
       const s = (body ?? {}) as SessionRecord;
       // A notification's `content` is the web UI's short banner; the agent reads the body it carries.

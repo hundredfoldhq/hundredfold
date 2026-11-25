@@ -1,5 +1,5 @@
 import type { JsonObject, JsonValue } from "./types.js";
-import { redactJson, redactText } from "./redact.js";
+import { redactJson, redactLargeText, redactText } from "./redact.js";
 
 /**
  * What the chat card of a tool call shows beyond its name: the input it was called
@@ -17,7 +17,29 @@ export type ToolDetail = JsonObject & {
   inputTruncated?: boolean;
   /** How long the output was before it was cut; absent when it all fit. */
   outputChars?: number;
+  /** The gateway kept the call's whole input and output (see `ToolFull`): the card can offer to load them. */
+  full?: true;
 };
+
+/**
+ * A call's whole input and output, redacted but not cut to a card's size, kept by the
+ * gateway when the card's detail was cut. It travels beside `ToolDetail` on a stream
+ * delta, goes to the tool-details store and never reaches a client in a stream event.
+ * Past the caps below the head is kept and the original length recorded.
+ */
+export interface ToolFull {
+  input?: JsonObject;
+  /** The input's serialised length before it was cut to `TOOL_FULL_INPUT_MAX`; absent when it all fit. */
+  inputChars?: number;
+  output?: string;
+  /** The output's length before it was cut to `TOOL_FULL_OUTPUT_MAX`; absent when it all fit. */
+  outputChars?: number;
+  isError?: boolean;
+}
+
+/** What the gateway keeps of a call's input, serialised, and of its output, in characters. */
+export const TOOL_FULL_INPUT_MAX = 256 * 1024;
+export const TOOL_FULL_OUTPUT_MAX = 1_000_000;
 
 /** Longest string kept inside a call's input (a command, a file body, an edit's old text). */
 export const TOOL_INPUT_STRING_MAX = 1_200;
@@ -27,6 +49,7 @@ export const TOOL_OUTPUT_MAX = 3_000;
 /** What is handed to the redactor: enough to hold anything a cut can reach, so one huge result costs bounded work. */
 const REDACT_INPUT_MAX = 200_000;
 const TOOL_INPUT_DEPTH_MAX = 4;
+const TOOL_FULL_DEPTH_MAX = 12;
 /** Successive limits tried until the input fits its budget: arrays shrink first, then strings. */
 const STRING_LIMITS = [TOOL_INPUT_STRING_MAX, 600, 300, 120];
 const ARRAY_LIMITS = [20, 8, 4, 3, 2, 1];
@@ -45,15 +68,20 @@ interface Budget {
   stringMax: number;
   arrayMax: number;
   redacted: Map<string, string>;
+  /** Redacts one string: its head for a card, the whole of it for the kept copy. */
+  redact: (text: string) => string;
+  /** A string longer than this was only partly redacted, and so is cut. */
+  redactMax: number;
+  depthMax: number;
 }
 
 function boundString(value: string, budget: Budget): string {
   let safe = budget.redacted.get(value);
   if (safe === undefined) {
-    safe = redactBounded(value);
+    safe = budget.redact(value);
     budget.redacted.set(value, safe);
   }
-  if (value.length > REDACT_INPUT_MAX) budget.cut = true;
+  if (value.length > budget.redactMax) budget.cut = true;
   const { text, cut } = clip(safe, budget.stringMax);
   if (cut) budget.cut = true;
   return text;
@@ -77,7 +105,7 @@ function boundValue(value: unknown, depth: number, budget: Budget): JsonValue {
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
   if (value === undefined) return null;
   if (typeof value !== "object") return String(value);
-  if (depth >= TOOL_INPUT_DEPTH_MAX) {
+  if (depth >= budget.depthMax) {
     budget.cut = true;
     return "…";
   }
@@ -85,20 +113,30 @@ function boundValue(value: unknown, depth: number, budget: Budget): JsonValue {
 }
 
 /** Leading top-level fields, kept whole while they fit; a field too big for what is left is skipped, not the end of the input. */
-function leadingFields(bounded: JsonObject): JsonObject {
+function leadingFields(bounded: JsonObject, max: number = TOOL_INPUT_TOTAL_MAX): JsonObject {
   const kept: JsonObject = {};
   let used = 2;
   for (const [key, value] of Object.entries(bounded)) {
     const cost = key.length + JSON.stringify(value).length + 4;
-    if (used + cost > TOOL_INPUT_TOTAL_MAX) continue;
+    if (used + cost > max) continue;
     kept[key] = value;
     used += cost;
   }
   return kept;
 }
 
-function boundWith(redacted: unknown, stringMax: number, arrayMax: number, cache: Map<string, string>): { bounded: JsonObject; cut: boolean } {
-  const budget: Budget = { cut: false, stringMax, arrayMax, redacted: cache };
+interface Redaction {
+  redact: (text: string) => string;
+  redactMax: number;
+  depthMax: number;
+  cache: Map<string, string>;
+}
+
+const cardRedaction = (): Redaction => ({ redact: redactBounded, redactMax: REDACT_INPUT_MAX, depthMax: TOOL_INPUT_DEPTH_MAX, cache: new Map() });
+const fullRedaction = (): Redaction => ({ redact: redactLargeText, redactMax: Infinity, depthMax: TOOL_FULL_DEPTH_MAX, cache: new Map() });
+
+function boundWith(redacted: unknown, stringMax: number, arrayMax: number, how: Redaction): { bounded: JsonObject; cut: boolean } {
+  const budget: Budget = { cut: false, stringMax, arrayMax, redacted: how.cache, redact: how.redact, redactMax: how.redactMax, depthMax: how.depthMax };
   return { bounded: boundValue(redacted, 0, budget) as JsonObject, cut: budget.cut };
 }
 
@@ -111,17 +149,44 @@ function boundWith(redacted: unknown, stringMax: number, arrayMax: number, cache
 export function boundToolInput(input: unknown): { input: JsonObject; truncated: boolean } | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length === 0) return undefined;
   const redacted = redactJson(input);
-  const cache = new Map<string, string>();
-  let last = boundWith(redacted, STRING_LIMITS[0], ARRAY_LIMITS[0], cache);
+  const how = cardRedaction();
+  let last = boundWith(redacted, STRING_LIMITS[0], ARRAY_LIMITS[0], how);
   for (const stringMax of STRING_LIMITS) {
     for (const arrayMax of ARRAY_LIMITS) {
-      last = boundWith(redacted, stringMax, arrayMax, cache);
+      last = boundWith(redacted, stringMax, arrayMax, how);
       if (JSON.stringify(last.bounded).length <= TOOL_INPUT_TOTAL_MAX) {
         return { input: last.bounded, truncated: last.cut || stringMax !== STRING_LIMITS[0] || arrayMax !== ARRAY_LIMITS[0] };
       }
     }
   }
   return { input: leadingFields(last.bounded), truncated: true };
+}
+
+/** Successive limits tried until the kept input fits: arrays and strings shrink together, never past a card's own. */
+const FULL_STRING_LIMITS = [TOOL_FULL_INPUT_MAX, 128 * 1024, 64 * 1024, 32 * 1024, 16 * 1024, 8 * 1024, 4 * 1024, TOOL_INPUT_STRING_MAX];
+const FULL_ARRAY_LIMITS = [5_000, 500, 100, 20, 8];
+
+/**
+ * A tool call's whole input, redacted, for the store: nothing is cut unless the serialised
+ * input passes `TOOL_FULL_INPUT_MAX`, and then its strings (and lists) shrink until it fits and
+ * `chars` says how long it was.
+ */
+export function boundToolInputFull(input: unknown): { input: JsonObject; chars?: number } | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length === 0) return undefined;
+  const redacted = redactJson(input);
+  const how = fullRedaction();
+  let last = boundWith(redacted, FULL_STRING_LIMITS[0], FULL_ARRAY_LIMITS[0], how);
+  let serialised = JSON.stringify(last.bounded).length;
+  if (!last.cut && serialised <= TOOL_FULL_INPUT_MAX) return { input: last.bounded };
+  const original = JSON.stringify(redacted).length;
+  for (const stringMax of FULL_STRING_LIMITS) {
+    for (const arrayMax of FULL_ARRAY_LIMITS) {
+      last = boundWith(redacted, stringMax, arrayMax, how);
+      serialised = JSON.stringify(last.bounded).length;
+      if (serialised <= TOOL_FULL_INPUT_MAX) return { input: last.bounded, chars: original };
+    }
+  }
+  return { input: leadingFields(last.bounded, TOOL_FULL_INPUT_MAX), chars: original };
 }
 
 function textBlocks(blocks: unknown[]): string {
@@ -188,6 +253,14 @@ export function boundToolOutput(output: unknown): { output: string; chars?: numb
   return { output: text, ...(cut || raw.length > REDACT_INPUT_MAX ? { chars } : {}) };
 }
 
+/** A tool result, redacted whole and cut only past `TOOL_FULL_OUTPUT_MAX`; `chars` is its length before that cut. */
+export function boundToolOutputFull(output: unknown): { output: string; chars?: number } | undefined {
+  const raw = toolOutputText(output);
+  if (!raw) return undefined;
+  const kept = raw.length > TOOL_FULL_OUTPUT_MAX ? raw.slice(0, TOOL_FULL_OUTPUT_MAX) : raw;
+  return { output: redactLargeText(kept), ...(raw.length > TOOL_FULL_OUTPUT_MAX ? { chars: raw.length } : {}) };
+}
+
 /** The detail of one call's start: its input, when the engine has it yet. */
 export function toolStartDetail(input: unknown): ToolDetail | undefined {
   const bounded = boundToolInput(input);
@@ -211,4 +284,32 @@ export function mergeToolDetail(earlier: ToolDetail | undefined, later: ToolDeta
   if (!earlier) return later;
   if (!later) return earlier;
   return { ...earlier, ...later };
+}
+
+/** What a stream delta carries for a call: the card's detail, and the whole of it when the card's was cut. */
+export interface ToolParts {
+  toolDetail?: ToolDetail;
+  toolFull?: ToolFull;
+}
+
+/** The parts of one call's start. */
+export function toolStartParts(input: unknown): ToolParts {
+  const toolDetail = toolStartDetail(input);
+  if (!toolDetail?.inputTruncated) return toolDetail ? { toolDetail } : {};
+  const full = boundToolInputFull(input);
+  return { toolDetail: { ...toolDetail, full: true }, ...(full ? { toolFull: { input: full.input, ...(full.chars !== undefined ? { inputChars: full.chars } : {}) } } : {}) };
+}
+
+/** The parts of one call's end. The whole of the input and output are kept together, so a card that loads them has both. */
+export function toolEndParts(parts: { input?: unknown; output?: unknown; isError?: boolean }): ToolParts {
+  const toolDetail = toolEndDetail(parts);
+  if (!toolDetail || (!toolDetail.inputTruncated && toolDetail.outputChars === undefined)) return toolDetail ? { toolDetail } : {};
+  const input = boundToolInputFull(parts.input);
+  const output = boundToolOutputFull(parts.output);
+  const toolFull: ToolFull = {
+    ...(input ? { input: input.input, ...(input.chars !== undefined ? { inputChars: input.chars } : {}) } : {}),
+    ...(output ? { output: output.output, ...(output.chars !== undefined ? { outputChars: output.chars } : {}) } : {}),
+    ...(parts.isError ? { isError: true } : {}),
+  };
+  return { toolDetail: { ...toolDetail, full: true }, toolFull };
 }

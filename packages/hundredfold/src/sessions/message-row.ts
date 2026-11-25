@@ -54,6 +54,8 @@ export interface MessagePage {
 }
 
 export interface MessagePageOptions {
+  /** Leave out the model's thinking rows: a reader that is an agent, not a chat view. */
+  withoutThinking?: boolean;
   /** Fetch messages strictly older than this message id. Omit for the newest tail. */
   before?: string;
   /** Number of messages to return. Clamped to a bounded positive page size. */

@@ -128,13 +128,14 @@ function handleStreamDelta(args: EngineAttemptArgs, delta: StreamDelta): void {
   // Persisted first: the writer stamps where a text delta sits in its block, which
   // lets a view opened mid-block join the read's text to the deltas without a seam.
   // If persisting fails the delta still goes out, unstamped.
-  let positioned = outgoing;
+  let positioned: StreamDelta | null = outgoing;
   try {
-    positioned = args.partialStream.persist(outgoing) ?? outgoing;
+    positioned = args.partialStream.persist(outgoing);
   } catch (err) {
     logger.warn(`Failed to persist partial block for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  args.surface.delta(positioned);
+  // A delta the writer drops (thinking past its cap) goes nowhere, so the live view and the stored row agree.
+  if (positioned) args.surface.delta(positioned);
 }
 
 /**

@@ -9,6 +9,7 @@ type WireRecord = Record<string, unknown>
 const deltaTypes = new Set<GatewayEventMap["session:delta"]["type"]>([
   "text",
   "text_snapshot",
+  "thinking",
   "tool_use",
   "tool_update",
   "tool_result",

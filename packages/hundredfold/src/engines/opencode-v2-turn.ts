@@ -75,6 +75,7 @@ function reportKey(line: string): string | undefined {
   const part = parsed.part;
   if (parsed.type === "tool_use") return `tool:${str(part?.callID)}:${str(record(part?.state)?.status)}`;
   if (parsed.type === "text") return `text:${str(part?.id)}:${str(part?.text)}`;
+  if (parsed.type === "reasoning") return `reasoning:${str(part?.id)}:${str(part?.text)}`;
   return undefined;
 }
 

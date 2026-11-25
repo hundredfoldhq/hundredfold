@@ -30,7 +30,7 @@ import { isCompactCommand, isNativeClaudeCommand, neutralizeForPaste } from "../
 import { buildPromptWithPlatformContext } from "./platform-context.js";
 import { findSessionTranscript } from "./claude-transcript-path.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
-import { toolEndDetail, toolStartDetail } from "../shared/tool-detail.js";
+import { toolEndParts, toolStartParts } from "../shared/tool-detail.js";
 import { costOfUsage } from "../shared/model-pricing.js";
 import { claudeResetsAtSeconds, type ClaudeResetSource } from "../shared/engine-reset-times.js";
 import { writeMcpConfigFile } from "../mcp/resolver.js";
@@ -606,7 +606,7 @@ export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
     ? launchedSubagentId(responseRecord)
     : undefined;
   // A failure answers with an `error` string rather than a response.
-  const toolDetail = toolEndDetail({ input: h.tool_input, output: failed ? h.error : response, isError });
+  const toolParts = toolEndParts({ input: h.tool_input, output: failed ? h.error : response, isError });
   return [{
     type: "tool_result",
     content: String(h.tool_name ?? ""),
@@ -614,7 +614,7 @@ export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
     ...(toolId ? { toolId } : {}),
     ...(activityReceiptId ? { activityReceiptId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...(toolDetail ? { toolDetail } : {}),
+    ...toolParts,
   }];
 }
 
@@ -624,13 +624,13 @@ function claudePreToolUseToDeltas(h: Record<string, unknown>): StreamDelta[] {
   const toolId = typeof h.tool_use_id === "string" && h.tool_use_id ? h.tool_use_id : undefined;
   if (!toolId) return [];
   const toolName = typeof h.tool_name === "string" && h.tool_name ? h.tool_name : "tool";
-  const toolDetail = toolStartDetail(h.tool_input);
+  const toolParts = toolStartParts(h.tool_input);
   return [{
     type: "tool_use",
     content: toolName,
     toolName,
     toolId,
-    ...(toolDetail ? { toolDetail } : {}),
+    ...toolParts,
     ...(typeof h.agent_id === "string" ? { sidechain: true } : {}),
   }];
 }
@@ -645,8 +645,10 @@ function claudePreToolUseToDeltas(h: Record<string, unknown>): StreamDelta[] {
  *  - content_block_delta text_delta → incremental `text` (word-by-word)
  * tool_result is NOT in the assistant SSE stream (tools run between messages); the
  * PostToolUse hook supplies that completion marker, and the PreToolUse hook the
- * call's assembled input. input_json_delta / thinking deltas are intentionally
- * not surfaced to the chat pane.
+ * call's assembled input.
+ *  - content_block_delta thinking_delta → `thinking` (the model's reasoning, when the
+ *    stream carries it as text; a `signature_delta` or a redacted block has none).
+ * input_json_delta deltas are intentionally not surfaced to the chat pane.
  */
 export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
   switch (e.type) {
@@ -667,6 +669,9 @@ export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
       const d = (e as any).delta;
       if (d?.type === "text_delta" && typeof d.text === "string" && d.text.length > 0) {
         return [{ type: "text", content: d.text }];
+      }
+      if (d?.type === "thinking_delta" && typeof d.thinking === "string" && d.thinking.length > 0) {
+        return [{ type: "thinking", content: d.thinking }];
       }
       return [];
     }
@@ -744,6 +749,9 @@ export class CompactionStreamGate {
       // text arrives and the gate would never drop anything. Forward it and
       // keep deciding.
       if (d.type === "context") { out.push(d); continue; }
+      // Thinking comes before the reply and says nothing about it: it waits with the text it precedes,
+      // so a message the gate drops (a compaction summary) drops its thinking too.
+      if (d.type === "thinking") { this.held.push(d); continue; }
       // Any other non-text delta (a tool call) can never be a compaction summary.
       if (d.type !== "text") { this.verdict = "pass"; out.push(...this.flush(), d); continue; }
       this.opening += String(d.content ?? "");
@@ -1837,6 +1845,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
    *  spawn rather than at the next restart. */
   private readRemoteConfig: () => RemoteExecutionConfig | undefined;
   private readGatewayPort: () => number;
+  /** `engines.claude.thinkingSummaries`, read live: whether a local session asks Claude Code for readable thinking, which the chat shows. */
+  private readThinkingSummaries: () => boolean;
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -1845,11 +1855,13 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
       autoApproveSafetyPrompts?: boolean;
       remote?: () => RemoteExecutionConfig | undefined;
       gatewayPort?: () => number;
+      thinkingSummaries?: () => boolean;
     } = {},
   ) {
     this.autoApproveSafetyPrompts = opts.autoApproveSafetyPrompts ?? true;
     this.readRemoteConfig = opts.remote ?? (() => undefined);
     this.readGatewayPort = opts.gatewayPort ?? (() => 0);
+    this.readThinkingSummaries = opts.thinkingSummaries ?? (() => true);
     this.streams = new PtyStreamManager("PTY", (id) => this.lifecycle.getWarm(id) !== undefined);
     // Purge per-PTY bookkeeping whenever the session's PTY is released (kill,
     // LRU eviction, sweep reap, cold respawn) so these maps don't grow forever
@@ -2317,7 +2329,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
 
     let handle: PtyHandle | undefined;
     try {
-      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
+      const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts), this.readThinkingSummaries() && !isRemoteTarget(opts));
       if (opts.resolvedMcp && !isRemoteTarget(opts)) {
         opts.mcpConfigPath = writeMcpConfigFile(opts.resolvedMcp, hundredfoldSessionId);
       }
@@ -2639,7 +2651,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
     // view showed "Settings file not found". The settings file carries HOOKS only; the
     // system prompt + main-agent sentinel go via the --append-system-prompt CLI flag at
     // spawn() (the settings-file appendSystemPrompt KEY is ignored by claude ≥2.1.x).
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts), this.readThinkingSummaries() && !isRemoteTarget(opts));
     // A cold-respawn release cleans the per-session MCP file. Materialize the
     // already-resolved config again at the boundary where Claude will read it.
     // A remote session gets its MCP config staged on the other host instead
@@ -3153,7 +3165,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
       if (reported.has(d.toolId)) {
         // The proxy announced this call before its input was assembled; the hook, fired
         // as the tool starts, has it. Pass the input on as an update to the call's card.
-        if (d.toolDetail) entry.onStream?.({ type: "tool_update", content: d.content, toolName: d.toolName, toolId: d.toolId, toolDetail: d.toolDetail, ...(d.sidechain ? { sidechain: true } : {}) });
+        if (d.toolDetail) entry.onStream?.({ type: "tool_update", content: d.content, toolName: d.toolName, toolId: d.toolId, toolDetail: d.toolDetail, ...(d.toolFull ? { toolFull: d.toolFull } : {}), ...(d.sidechain ? { sidechain: true } : {}) });
         return;
       }
       reported.add(d.toolId);
@@ -3503,7 +3515,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, BoundaryInt
     // cleanup path (`cleanupSessionSettings`) is keyed on it, and leaving a
     // dangling entry there would be a second, subtler divergence. The REMOTE
     // path is what actually reaches `--settings`.
-    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts));
+    const settingsPath = writeClaudeSessionSettings(hundredfoldSessionId, opts.claudeProfile, localClaudeBin(opts), this.readThinkingSummaries() && !isRemoteTarget(opts));
     const baseArgs = (settings: string): string[] => {
       const args: string[] = [
         "--chrome",
