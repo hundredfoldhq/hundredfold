@@ -144,6 +144,9 @@ function argumentsSummary(input: Record<string, unknown>): string {
 export interface DiffLine {
   sign: '+' | '-' | ' ' | '…'
   text: string
+  /** The line's number in the file, when the diff came with hunk headers: the old file's for a
+   *  removed line, the new file's for an added or unchanged one. */
+  line?: number
 }
 
 /** A field's text as written: a replacement that is only whitespace is still a replacement. */
@@ -204,33 +207,60 @@ function replacement(edit: Input): DiffLine[] {
   return lineDiff(split(before), split(after))
 }
 
-/** A unified patch's body lines (opencode's `patch`, `apply_patch`), headers and hunk marks dropped. */
+const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
+
+/**
+ * A unified patch's body lines (claude's edit result, opencode's `patch`, `apply_patch`, an edit's
+ * `diff`), headers dropped, numbered from the hunk headers when they carry line numbers.
+ */
 function patchLines(patch: string): DiffLine[] {
   const out: DiffLine[] = []
   // A file's `---`/`+++` header comes before its first hunk; inside one, `---` is a removed line.
   let inHunk = false
+  const cursor: { old?: number; new?: number } = {}
   for (const line of patch.split('\n')) {
-    if (/^(\*\*\* |diff |index )/.test(line)) {
+    if (/^(\*\*\* |diff |index |Index: |={10,})/.test(line)) {
       inHunk = false
-      continue
-    }
-    if (line.startsWith('@@')) {
+    } else if (line.startsWith('@@')) {
       if (out.length > 0) out.push({ sign: '…', text: '' })
+      const header = HUNK_HEADER.exec(line)
+      cursor.old = header ? Number(header[1]) : undefined
+      cursor.new = header ? Number(header[2]) : undefined
       inHunk = true
-      continue
+    } else if (inHunk || !/^(---|\+\+\+)( |$)/.test(line)) {
+      const body = bodyLine(line, cursor)
+      if (body) out.push(body)
     }
-    if (!inHunk && /^(---|\+\+\+)( |$)/.test(line)) continue
-    const sign = line[0]
-    if (sign === '+' || sign === '-' || sign === ' ') out.push({ sign, text: line.slice(1) })
   }
   return out
+}
+
+/** One body line of a hunk, numbered from (and advancing) the hunk's old and new line cursors. */
+function bodyLine(line: string, cursor: { old?: number; new?: number }): DiffLine | undefined {
+  const sign = line[0]
+  if (sign !== '+' && sign !== '-' && sign !== ' ') return undefined
+  const number = sign === '-' ? cursor.old : cursor.new
+  if (sign !== '+' && cursor.old !== undefined) cursor.old++
+  if (sign !== '-' && cursor.new !== undefined) cursor.new++
+  return { sign, text: line.slice(1), ...(number !== undefined ? { line: number } : {}) }
+}
+
+/** Whether a result is a unified patch with numbered hunks: an edit's answer that shows the change in place. */
+export function isNumberedPatch(text: string | undefined): text is string {
+  return text !== undefined && /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m.test(text.slice(0, 2000))
 }
 
 /**
  * What an edit changed, as a line diff: the lines it kept as context, the ones it removed
  * and the ones it added. A MultiEdit's edits are separate hunks, with a gap between them.
+ * When the edit's result is the change as numbered hunks (with the file's own lines around
+ * it), that is drawn instead, numbered as the file is.
  */
-export function editDiff(input: Input | undefined): DiffLine[] | undefined {
+export function editDiff(input: Input | undefined, output?: string): DiffLine[] | undefined {
+  if (isNumberedPatch(output)) {
+    const lines = patchLines(output)
+    if (lines.some((line) => line.sign === '+' || line.sign === '-')) return lines
+  }
   if (!input) return undefined
   const patch = rawText(input, 'patchText', 'patch', 'diff')
   if (patch) {

@@ -57,6 +57,34 @@ describe('summarizeTool', () => {
   })
 })
 
+describe('editDiff with a numbered patch result', () => {
+  const patch = '@@ -10,4 +10,4 @@\n const a = 1\n-const b = 2\n+const b = 3\n const c = 4\n const d = 5\n@@ -40,2 +40,3 @@\n x\n+y\n z'
+  it('draws the result hunks numbered as the file is, not the bare replacement', () => {
+    expect(editDiff({ old_string: 'const b = 2', new_string: 'const b = 3' }, patch)).toEqual([
+      { sign: ' ', text: 'const a = 1', line: 10 },
+      { sign: '-', text: 'const b = 2', line: 11 },
+      { sign: '+', text: 'const b = 3', line: 11 },
+      { sign: ' ', text: 'const c = 4', line: 12 },
+      { sign: ' ', text: 'const d = 5', line: 13 },
+      { sign: '…', text: '' },
+      { sign: ' ', text: 'x', line: 40 },
+      { sign: '+', text: 'y', line: 41 },
+      { sign: ' ', text: 'z', line: 42 },
+    ])
+  })
+  it('skips an opencode diff header before the hunks', () => {
+    const diff = 'Index: /w/a.ts\n===================================================================\n--- /w/a.ts\n+++ /w/a.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n'
+    expect(editDiff({ filePath: '/w/a.ts', oldString: 'old', newString: 'new' }, diff)).toEqual([
+      { sign: '-', text: 'old', line: 1 },
+      { sign: '+', text: 'new', line: 1 },
+    ])
+  })
+  it('falls back to the replacement when the result is not a numbered patch', () => {
+    expect(editDiff({ old_string: 'x', new_string: 'y' }, 'Edit applied successfully.')).toEqual([{ sign: '-', text: 'x' }, { sign: '+', text: 'y' }])
+    expect(editDiff({ old_string: 'x', new_string: 'y' }, '@@ -1,1 +1,1 @@\n same')).toEqual([{ sign: '-', text: 'x' }, { sign: '+', text: 'y' }])
+  })
+})
+
 describe('editDiff and writtenLines', () => {
   it('keeps a side that is only whitespace', () => {
     expect(editDiff({ old_string: '  ', new_string: 'x' })).toEqual([
@@ -85,8 +113,8 @@ describe('editDiff and writtenLines', () => {
   it('reads a unified patch, dropping its headers but not a removed line that starts with dashes', () => {
     const patch = ['--- a/x.sql', '+++ b/x.sql', '@@ -1,2 +1,2 @@', ' keep', '--- old comment', '+-- new comment', '@@ -9 +9 @@', '-z', '+Z'].join('\n')
     expect(editDiff({ patchText: patch })).toEqual([
-      { sign: ' ', text: 'keep' }, { sign: '-', text: '-- old comment' }, { sign: '+', text: '-- new comment' },
-      { sign: '…', text: '' }, { sign: '-', text: 'z' }, { sign: '+', text: 'Z' },
+      { sign: ' ', text: 'keep', line: 1 }, { sign: '-', text: '-- old comment', line: 2 }, { sign: '+', text: '-- new comment', line: 2 },
+      { sign: '…', text: '' }, { sign: '-', text: 'z', line: 9 }, { sign: '+', text: 'Z', line: 9 },
     ])
   })
 

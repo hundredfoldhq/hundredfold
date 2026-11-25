@@ -64,6 +64,25 @@ describe('a tool call with detail', () => {
     expect(screen.queryByText('No output')).toBeNull()
   })
 
+  it("draws an edit whose result is numbered hunks from that result, numbered as the file is, and does not repeat it", () => {
+    const patch = '@@ -20,3 +20,3 @@\n before\n-const a = 1\n+const a = 2\n after'
+    renderChat([toolRow('t1', 'Edit', { input: { file_path: '/src/a.ts', old_string: 'const a = 1', new_string: 'const a = 2' }, output: patch }), answer])
+    openGroup()
+    fireEvent.click(screen.getByRole('button', { name: /show the edit call/i }))
+    const diff = screen.getByTestId('tool-input-diff')
+    const numbers = [...diff.querySelectorAll('[data-testid="tool-diff-line-number"]')].map((cell) => cell.textContent)
+    expect(numbers).toEqual(['20', '21', '21', '22'])
+    expect(diff.querySelector('[data-diff=" "] > span:last-child')?.textContent).toBe('before')
+    expect(screen.queryByTestId('tool-output')).toBeNull()
+  })
+
+  it('leaves an edit unnumbered when its result is not a patch', () => {
+    renderChat([toolRow('t1', 'Edit', { input: { file_path: '/src/a.ts', old_string: 'x', new_string: 'y' } }), answer])
+    openGroup()
+    fireEvent.click(screen.getByRole('button', { name: /show the edit call/i }))
+    expect(screen.queryAllByTestId('tool-diff-line-number')).toHaveLength(0)
+  })
+
   it("does not repeat an edit tool's success message under its diff", () => {
     renderChat([toolRow('t1', 'edit', { input: { filePath: '/a', oldString: 'x', newString: 'y' }, output: 'Edit applied successfully.' }), answer])
     openGroup()

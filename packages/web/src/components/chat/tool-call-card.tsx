@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import {
   diffStats,
   editDiff,
+  isNumberedPatch,
   hasOwnLineNumbers,
   identifyTool,
   inputFields,
@@ -176,6 +177,8 @@ const DIFF_ROW: Record<DiffLine['sign'], string> = {
 /** An edit's change, line by line: every row spans the card, tinted by what happened to it. */
 function DiffView({ lines, testId }: { lines: readonly DiffLine[]; testId: string }) {
   const fold = useFold(lines.length, DIFF_PREVIEW_LINES)
+  const widest = lines.reduce((max, line) => Math.max(max, line.line ?? 0), 0)
+  const gutter = widest > 0 ? `${String(widest).length + 1}ch` : undefined
   return (
     <div data-testid={testId} className="min-w-0">
       <div className={cn('py-1.5', fold.open && 'max-h-[70vh] overflow-y-auto', fold.folded && 'tool-lines-folded relative')}>
@@ -185,6 +188,16 @@ function DiffView({ lines, testId }: { lines: readonly DiffLine[]; testId: strin
               ? <span key={index} data-diff="gap" aria-label="Unchanged lines" className={cn('flex select-none px-3 text-[var(--text-quaternary)]', DIFF_ROW['…'])}>⋯</span>
               : (
                 <span key={index} data-diff={line.sign} className={cn('flex min-w-0', DIFF_ROW[line.sign])}>
+                  {gutter && (
+                    <span
+                      aria-hidden="true"
+                      data-testid="tool-diff-line-number"
+                      className="tool-diff-number shrink-0 select-none pl-3 text-right"
+                      style={{ width: `calc(${gutter} + 0.75rem)` }}
+                    >
+                      {line.line ?? ''}
+                    </span>
+                  )}
                   <span aria-hidden="true" className="tool-diff-sign w-7 shrink-0 select-none text-center">{line.sign === ' ' ? '' : line.sign}</span>
                   <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-3">
                     <span className="sr-only">{line.sign === '+' ? 'added: ' : line.sign === '-' ? 'removed: ' : ''}</span>
@@ -267,8 +280,8 @@ function bashPanel(input: Input): ReactNode {
   )
 }
 
-function editPanel(input: Input): ReactNode {
-  const diff = editDiff(input)
+function editPanel(input: Input, output?: string): ReactNode {
+  const diff = editDiff(input, output)
   if (!diff) return null
   const path = str(input, 'file_path', 'filePath', 'path', 'notebook_path') ?? 'Change'
   return (
@@ -305,7 +318,7 @@ function todoPanel(input: Input): ReactNode {
   return <Panel title="Todos" meta={plural(input.todos.length, 'item')} testId="tool-input"><TodoList todos={input.todos} /></Panel>
 }
 
-const INPUT_PANELS: Partial<Record<ToolKind, (input: Input) => ReactNode>> = {
+const INPUT_PANELS: Partial<Record<ToolKind, (input: Input, output?: string) => ReactNode>> = {
   bash: bashPanel,
   edit: editPanel,
   write: writePanel,
@@ -317,9 +330,9 @@ const INPUT_PANELS: Partial<Record<ToolKind, (input: Input) => ReactNode>> = {
 const NO_INPUT_PANEL: ReadonlySet<ToolKind> = new Set(['read', 'search', 'web'])
 
 /** What a call was asked to do, drawn the way that kind of call reads best. */
-function inputPanel(toolCall: string, input: Input): ReactNode {
+function inputPanel(toolCall: string, input: Input, output?: string): ReactNode {
   const { kind } = identifyTool(toolCall)
-  const tailored = INPUT_PANELS[kind]?.(input)
+  const tailored = INPUT_PANELS[kind]?.(input, output)
   if (tailored) return tailored
   if (NO_INPUT_PANEL.has(kind)) return null
   return (
@@ -384,7 +397,8 @@ function EmptyPanel({ head, running }: { head: Head; running: boolean }) {
 function resultIsEcho(kind: ToolKind, output: string | undefined): boolean {
   if (kind === 'todo') return true
   if (kind !== 'edit' && kind !== 'write') return false
-  return output === undefined || isEditEcho(output)
+  // An edit that answers with its change as numbered hunks has that drawn as its diff above.
+  return output === undefined || isEditEcho(output) || (kind === 'edit' && isNumberedPatch(output))
 }
 
 function ResultPanel({ toolCall, kind, head, output, input }: { toolCall: string; kind: ToolKind; head: Head; output: string; input?: Input }) {
@@ -494,7 +508,7 @@ export function ToolCallCard({ toolCall, toolId, detail: stored, running }: {
   const detail: ToolDetailView = full.detail
     ? { ...stored, ...full.detail, inputTruncated: undefined, outputChars: full.detail.outputChars, full: undefined }
     : stored
-  const input = detail.input ? inputPanel(toolCall, detail.input) : null
+  const input = detail.input ? inputPanel(toolCall, detail.input, detail.isError ? undefined : detail.output) : null
   return (
     <div
       data-testid="tool-call-card"

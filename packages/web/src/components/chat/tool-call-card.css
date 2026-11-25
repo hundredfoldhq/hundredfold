@@ -32,6 +32,17 @@
   color: var(--system-red);
   background-color: color-mix(in srgb, var(--system-red) 9%, transparent);
 }
+.tool-call-card .tool-diff-number {
+  color: var(--text-quaternary);
+}
+.tool-call-card .tool-diff-add > .tool-diff-number {
+  color: color-mix(in srgb, var(--system-green) 70%, var(--text-tertiary));
+  background-color: color-mix(in srgb, var(--system-green) 10%, transparent);
+}
+.tool-call-card .tool-diff-del > .tool-diff-number {
+  color: color-mix(in srgb, var(--system-red) 70%, var(--text-tertiary));
+  background-color: color-mix(in srgb, var(--system-red) 9%, transparent);
+}
 .tool-call-card .tool-diff-gap {
   background-color: var(--fill-quaternary);
   line-height: 1.4;
