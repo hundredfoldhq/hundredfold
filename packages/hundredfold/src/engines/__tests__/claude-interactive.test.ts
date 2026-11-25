@@ -27,7 +27,7 @@ describe("claudeHookToDeltas", () => {
       tool_name: "Bash",
       tool_use_id: "call-1",
       tool_input: { command: "printf ok" },
-    })).toEqual([{ type: "tool_use", content: "Bash", toolName: "Bash", toolId: "call-1" }]);
+    })).toEqual([{ type: "tool_use", content: "Bash", toolName: "Bash", toolId: "call-1", toolDetail: { input: { command: "printf ok" } } }]);
   });
 
   it("marks a sub-agent's PreToolUse (it carries agent_id) as a sidechain call", () => {
@@ -69,6 +69,7 @@ describe("claudeHookToDeltas", () => {
       toolName: "mcp__hundredfold__update_work_item",
       toolId: "call-1",
       activityReceiptId: "todo:wi_release",
+      toolDetail: { output: '{"activityReceiptId":"todo:wi_release"}' },
     }]);
   });
 
@@ -84,6 +85,7 @@ describe("claudeHookToDeltas", () => {
       toolName: "Agent",
       toolId: "call-agent",
       agentId: "agent-9",
+      toolDetail: { output: '{"status":"async_launched","agentId":"agent-9"}' },
     }]);
   });
 
@@ -92,7 +94,7 @@ describe("claudeHookToDeltas", () => {
       hook_event_name: "PostToolUse",
       tool_name: "Task",
       tool_response: { content: [{ type: "text", text: "done" }] },
-    })).toEqual([{ type: "tool_result", content: "Task", toolName: "Task" }]);
+    })).toEqual([{ type: "tool_result", content: "Task", toolName: "Task", toolDetail: { output: "done" } }]);
   });
 
   it("carries no sub-agent id for an Agent launch made inside a sub-agent", () => {
@@ -109,6 +111,7 @@ describe("claudeHookToDeltas", () => {
       content: "Agent",
       toolName: "Agent",
       toolId: "call-nested",
+      toolDetail: { output: '{"status":"async_launched","agentId":"agent-9"}' },
     }]);
   });
 });

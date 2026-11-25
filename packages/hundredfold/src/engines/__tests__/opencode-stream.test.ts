@@ -289,8 +289,11 @@ describe("OpencodeEngine — reading opencode's event stream", () => {
     await new OpencodeEngine().run(runOpts({ onStream: (d) => deltas.push(d) }));
 
     expect(deltas).toEqual([
-      { type: "tool_use", content: "read: /proj/main.py", toolName: "read", toolId: "call_0e1cf7fa" },
-      { type: "tool_result", content: "print('hi')", toolName: "read", toolId: "call_0e1cf7fa" },
+      { type: "tool_use", content: "read: /proj/main.py", toolName: "read", toolId: "call_0e1cf7fa", toolDetail: { input: { filePath: "/proj/main.py" } } },
+      {
+        type: "tool_result", content: "print('hi')", toolName: "read", toolId: "call_0e1cf7fa",
+        toolDetail: { input: { filePath: "/proj/main.py" }, output: "print('hi')" },
+      },
       { type: "text", content: "It prints `hi`." },
     ]);
   });
