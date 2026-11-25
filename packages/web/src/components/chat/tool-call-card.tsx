@@ -136,7 +136,8 @@ function CodeLines({ lines, start, numbered, testId, prose }: {
 }) {
   const fold = useFold(lines.length, PREVIEW_LINES)
   const first = start ?? 1
-  const gutter = `${String(first + lines.length - 1).length + 1}ch`
+  // The padding sits inside the width, so the width holds every digit of the last number and the padding.
+  const gutter = `calc(${String(first + lines.length - 1).length}ch + 0.75rem)`
   return (
     <div data-testid={testId} className="min-w-0">
       <div className={cn('tool-lines relative py-2', fold.open && 'max-h-[60vh] overflow-y-auto', fold.folded && 'tool-lines-folded')}>
@@ -151,7 +152,8 @@ function CodeLines({ lines, start, numbered, testId, prose }: {
               {numbered && (
                 <span
                   aria-hidden="true"
-                  className="shrink-0 select-none pr-3 text-right text-[var(--text-quaternary)]"
+                  data-testid="tool-line-number"
+                  className="shrink-0 select-none whitespace-nowrap pr-3 text-right text-[var(--text-quaternary)]"
                   style={{ width: gutter }}
                 >
                   {first + index}
@@ -192,7 +194,7 @@ function DiffView({ lines, testId }: { lines: readonly DiffLine[]; testId: strin
                     <span
                       aria-hidden="true"
                       data-testid="tool-diff-line-number"
-                      className="tool-diff-number shrink-0 select-none pl-3 text-right"
+                      className="tool-diff-number shrink-0 select-none whitespace-nowrap pl-3 text-right"
                       style={{ width: `calc(${gutter} + 0.75rem)` }}
                     >
                       {line.line ?? ''}

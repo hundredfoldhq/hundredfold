@@ -219,18 +219,12 @@ export function groupMessages(messages: Message[]): MessageItem[] {
     }
     if (messages[i].role === 'assistant' && messages[i].toolCall) {
       const toolMsgs: Message[] = []
-      // Reasoning that sits between two calls of one run. It must not cut the run in two, so it is
-      // shown right after the group, in order, and a block still being written stays at the end.
-      const reasoning: MessageItem[] = []
       const start = i
       while (i < messages.length) {
-        if (messages[i].role === 'thinking') {
-          let next = i
-          while (next < messages.length && messages[next].role === 'thinking') next++
-          if (next >= messages.length || !isGroupableToolCall(messages[next])) break
-          for (; i < next; i++) {
-            if (!isBlankThinkingRow(messages[i])) reasoning.push({ kind: 'message', msg: messages[i], index: i })
-          }
+        // Reasoning between two calls ends the run, as interim prose does, so it reads where it came:
+        // after the calls before it and before the ones after. A blank block shows nothing and cuts nothing.
+        if (isBlankThinkingRow(messages[i])) {
+          i++
           continue
         }
         if (!isGroupableToolCall(messages[i])) break
@@ -241,7 +235,6 @@ export function groupMessages(messages: Message[]): MessageItem[] {
         i++
       }
       if (toolMsgs.length > 0) items.push({ kind: 'tool-group', msgs: toolMsgs, startIndex: start })
-      items.push(...reasoning)
     } else {
       // T3 burst grouping: 2+ consecutive callbacks landing within the burst
       // window compose into ONE grouped entry — the pile gets quieter as it

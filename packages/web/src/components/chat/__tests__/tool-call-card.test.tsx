@@ -76,6 +76,17 @@ describe('a tool call with detail', () => {
     expect(screen.queryByTestId('tool-output')).toBeNull()
   })
 
+  it('numbers a read line by line, with a gutter that keeps a two-digit number on one line', () => {
+    const body = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
+    renderChat([toolRow('t1', 'Read', { input: { file_path: '/src/a.ts' }, output: body }), answer])
+    openGroup()
+    fireEvent.click(screen.getByRole('button', { name: /show the read call/i }))
+    const cells = screen.getAllByTestId('tool-line-number')
+    expect(cells.map((cell) => cell.textContent)).toEqual(Array.from({ length: 12 }, (_, i) => String(i + 1)))
+    expect(cells[0].className).toContain('whitespace-nowrap')
+    expect(cells[0].style.width).toBe('calc(2ch + 0.75rem)')
+  })
+
   it('leaves an edit unnumbered when its result is not a patch', () => {
     renderChat([toolRow('t1', 'Edit', { input: { file_path: '/src/a.ts', old_string: 'x', new_string: 'y' } }), answer])
     openGroup()

@@ -65,7 +65,7 @@ describe('thinking is never the answer', () => {
 })
 
 describe('thinking and tool groups', () => {
-  it('keeps a run of tool calls whole across reasoning between them, shown after the group in order', () => {
+  it('shows reasoning between tool calls where it came, ending the run as interim prose does', () => {
     const messages = [
       user('u'),
       tool('t1', 'Read', 1_000),
@@ -77,7 +77,12 @@ describe('thinking and tool groups', () => {
     ]
     const items = groupMessages(messages)
     expect(items.map((item) => item.kind === 'tool-group' ? `group:${item.msgs.map((m) => m.id).join('+')}` : item.kind === 'message' ? item.msg.id : item.kind))
-      .toEqual(['u', 'group:t1+t2+t3', 'k1', 'k2', 'k3'])
+      .toEqual(['u', 'group:t1', 'k1', 'group:t2', 'k2', 'group:t3', 'k3'])
+  })
+
+  it('keeps a run whole across a reasoning block that holds nothing to read', () => {
+    const items = groupMessages([user('u'), tool('t1', 'Read', 1_000), think('k1', ' ', 2_000), tool('t2', 'Grep', 3_000)])
+    expect(items.map((item) => item.kind === 'tool-group' ? `group:${item.msgs.map((m) => m.id).join('+')}` : item.kind)).toEqual(['message', 'group:t1+t2'])
   })
 
   it('does not take reasoning that nothing follows into the group, and puts it where the model wrote it', () => {
