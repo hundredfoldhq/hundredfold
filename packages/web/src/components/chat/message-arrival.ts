@@ -96,7 +96,8 @@ function hasOwnBlockArrival(message: Message): boolean {
  */
 function animatedRows(batch: [string, Message][], rendered: Set<string>): Set<string> {
   if (prefersReducedMotion()) return new Set()
-  const visible = batch.filter(([id, message]) => rendered.has(id) && !hasOwnBlockArrival(message))
+  // Reasoning plays no entrance, and must not spend a slot a tool chip beside it would have used.
+  const visible = batch.filter(([id, message]) => rendered.has(id) && !hasOwnBlockArrival(message) && message.role !== 'thinking')
   return new Set(visible.slice(-LIVE_ARRIVAL_BATCH_MAX).map(([id]) => id))
 }
 

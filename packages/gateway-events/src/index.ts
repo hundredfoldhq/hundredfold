@@ -31,7 +31,7 @@ export interface GatewayEventMap {
   }
   "session:delta": {
     sessionId: string
-    type: "text" | "text_snapshot" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
+    type: "text" | "text_snapshot" | "thinking" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
     content: string
     toolName?: string
     toolId?: string
@@ -45,7 +45,8 @@ export interface GatewayEventMap {
     sidechain?: boolean
     block?: JsonValue
     /** The text block a text delta belongs to, or a main tool call or block ends.
-     *  Ids rise, so a later block has a larger id. */
+     *  Ids rise, so a later block has a larger id. On a thinking delta it names the thinking
+     *  block: chunks with the same id append to one block, a new id starts a new one. */
     streamBlock?: number
     /** How much of the block's text came before this text delta (0 for a snapshot). */
     offset?: number

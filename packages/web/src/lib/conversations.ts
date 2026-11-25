@@ -33,7 +33,9 @@ export function isVideoMedia(media: MediaAttachment): boolean {
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'notification'
+  /** `thinking` is the model's reasoning: shown as a quiet disclosure row, never an answer,
+   *  never read aloud, copied, searched or previewed. */
+  role: 'user' | 'assistant' | 'notification' | 'thinking'
   content: string
   timestamp: number
   media?: MediaAttachment[]

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   clearMobileWorkingSetMoved,
+  lastMessagePreview,
   mobileWorkingSetIds,
   reduceMobileWorkingSetActivity,
   type MobileWorkingSetActivity,
@@ -139,5 +140,15 @@ describe('mobile working-set activity', () => {
       payload: { sessionId: 'b', message: '🗜️ Context compacted.' },
     })
     expect(notified.b?.preview).toContain('Context compacted')
+  })
+
+  it('previews what was said, never the reasoning behind it', () => {
+    const rows = [
+      { role: 'assistant', content: 'The deploy finished.' },
+      { role: 'thinking', content: 'Now to word the summary.' },
+      { role: 'thinking', content: 'Keep it short.' },
+    ]
+    expect(lastMessagePreview({ messages: rows })).toBe('The deploy finished.')
+    expect(lastMessagePreview({ messages: [{ role: 'thinking', content: 'Only thoughts.' }] })).toBe('')
   })
 })
