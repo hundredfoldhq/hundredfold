@@ -29,6 +29,13 @@ describe("decodeGatewayEvent", () => {
     expect(decodeGatewayEvent({ event: "session:compacted", payload: { postTokens: 31_000 } })).toBeNull()
   })
 
+  it("accepts a thinking delta naming its block, and rejects a block id that is neither text nor a number", () => {
+    const payload = { sessionId: "s-1", type: "thinking", content: "Looking at the", blockId: "think-1" }
+    expect(decodeGatewayEvent({ event: "session:delta", payload })).toEqual({ event: "session:delta", payload })
+    expect(decodeGatewayEvent({ event: "session:delta", payload: { ...payload, blockId: 3 } })).not.toBeNull()
+    expect(decodeGatewayEvent({ event: "session:delta", payload: { ...payload, blockId: { id: 1 } } })).toBeNull()
+  })
+
   it("accepts a queue frame naming every withdrawn message, and rejects a malformed list", () => {
     const payload = { sessionId: "s-1", sessionKey: "k", depth: 0, withdrawnMessageIds: ["m-1", "m-2"] }
     expect(decodeGatewayEvent({ event: "queue:updated", payload })).toEqual({ event: "queue:updated", payload })

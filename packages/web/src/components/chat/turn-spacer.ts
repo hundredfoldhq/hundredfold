@@ -7,6 +7,9 @@ import type { Message } from '@/lib/conversations'
  * pure text-node replacement — zero movement by construction.
  */
 export function turnSpacerClass(prevRole: Message['role'], role: Message['role']): string {
+  // Reasoning is the assistant thinking aloud: it neither starts nor ends a turn at a speaker switch.
+  if (prevRole === 'thinking') prevRole = 'assistant'
+  if (role === 'thinking') role = 'assistant'
   // The switch AFTER a user message gets extra headroom (24px): the accent
   // bubble's fill weight optically eats a plain 16px gap before the reply.
   if (prevRole === 'user' && role !== 'user') return 'h-[var(--space-6)]'

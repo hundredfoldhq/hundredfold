@@ -31,7 +31,7 @@ export interface GatewayEventMap {
   }
   "session:delta": {
     sessionId: string
-    type: "text" | "text_snapshot" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
+    type: "text" | "text_snapshot" | "thinking" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block"
     content: string
     toolName?: string
     toolId?: string
@@ -49,6 +49,9 @@ export interface GatewayEventMap {
     streamBlock?: number
     /** How much of the block's text came before this text delta (0 for a snapshot). */
     offset?: number
+    /** With `type: "thinking"`: the thinking block this chunk belongs to. Chunks with the same
+     *  id append to one block; a new id starts a new one. */
+    blockId?: string | number
   }
   "session:notification": { sessionId: string; message: string; meta?: JsonObject; messageId?: string }
   "session:attachment": { sessionId: string; id: string; content: string; media: MessageMediaWire[]; timestamp: number }

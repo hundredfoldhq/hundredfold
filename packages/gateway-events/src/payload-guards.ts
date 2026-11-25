@@ -9,6 +9,7 @@ type WireRecord = Record<string, unknown>
 const deltaTypes = new Set<GatewayEventMap["session:delta"]["type"]>([
   "text",
   "text_snapshot",
+  "thinking",
   "tool_use",
   "tool_update",
   "tool_result",
@@ -135,6 +136,7 @@ function hasOptionalDeltaToolFields(value: Record<string, unknown>): boolean {
     && isOptionalBoolean(value.sidechain)
     && isOptionalNumber(value.streamBlock)
     && isOptionalNumber(value.offset)
+    && (value.blockId === undefined || isString(value.blockId) || isNumber(value.blockId))
 }
 
 function isSessionAttachment(value: unknown): boolean {

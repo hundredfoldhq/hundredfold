@@ -779,6 +779,27 @@ h1, h2, h3, h4, h5, h6 {
   .tool-arrive { animation: none; }
 }
 
+/* The label of the thinking block being written: a soft highlight drifting across the text in
+   its own colour, so the row reads as live without a spinner or a second glyph. */
+.thinking-shimmer {
+  background: linear-gradient(90deg, currentColor 35%, var(--text-primary) 50%, currentColor 65%) 0 0 / 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: hundredfold-thinking-shimmer 2.2s linear infinite;
+}
+@keyframes hundredfold-thinking-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-shimmer {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    animation: none;
+  }
+}
+
 /* ============================================
    Utility Animation Classes
    ============================================ */
