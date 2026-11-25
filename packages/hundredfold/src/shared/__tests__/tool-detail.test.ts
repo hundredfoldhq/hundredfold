@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundToolInput,
+  patchHunks,
   boundToolInputFull,
   boundToolOutput,
   boundToolOutputFull,
@@ -114,6 +115,49 @@ describe("toolOutputText", () => {
 
   it("leaves an edit's old and new file bodies out: the card draws the change from the input", () => {
     expect(toolOutputText({ filePath: "/a", originalFile: "old", structuredPatch: [] })).toBe("");
+  });
+
+  it("keeps an edit's change as numbered hunks, from the patch its result carries", () => {
+    const response = {
+      filePath: "/a.ts",
+      oldString: "gamma",
+      newString: "GAMMA",
+      originalFile: "alpha\nbeta\ngamma\ndelta\n",
+      structuredPatch: [
+        { oldStart: 1, oldLines: 4, newStart: 1, newLines: 4, lines: [" alpha", " beta", "-gamma", "+GAMMA", " delta"] },
+        { oldStart: 40, oldLines: 1, newStart: 40, newLines: 2, lines: [" x", "+y"] },
+      ],
+    };
+    expect(toolOutputText(response)).toBe("@@ -1,4 +1,4 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n@@ -40,1 +40,2 @@\n x\n+y");
+  });
+
+  it("leaves a write's patch out: its card draws the file it wrote from the input", () => {
+    const response = {
+      type: "update",
+      filePath: "/a.ts",
+      content: "new body",
+      originalFile: "old body",
+      structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old body", "+new body"] }],
+    };
+    expect(toolOutputText(response)).toBe("");
+  });
+
+  it("skips a malformed hunk and keeps the rest", () => {
+    const response = { originalFile: "", structuredPatch: [{ lines: ["-a"] }, { oldStart: 3, newStart: 3, lines: ["+b", 7] }] };
+    expect(toolOutputText(response)).toBe("@@ -3,0 +3,0 @@\n+b");
+  });
+});
+
+describe("patchHunks", () => {
+  it("keeps a unified diff from its first hunk, without the file headers that name its path", () => {
+    const patch = "Index: /work/f.txt\n===================================================================\n--- /work/f.txt\n+++ /work/f.txt\n@@ -1,3 +1,3 @@\n alpha\n-gamma\n+GAMMA\n";
+    expect(patchHunks(patch)).toBe("@@ -1,3 +1,3 @@\n alpha\n-gamma\n+GAMMA");
+  });
+
+  it("has nothing for text with no hunk, or no text", () => {
+    expect(patchHunks("--- a\n+++ b\n")).toBeUndefined();
+    expect(patchHunks(undefined)).toBeUndefined();
+    expect(patchHunks({ diff: "@@ -1 +1 @@" })).toBeUndefined();
   });
 });
 

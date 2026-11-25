@@ -79,6 +79,8 @@ interface ToolReport {
   input: unknown;
   status: "running" | "completed" | "error";
   output?: string;
+  /** The change an edit made, as a unified diff, in the place a 1.x edit reports it. */
+  diff?: string;
 }
 
 type ToolResult = ToolReport & { status: "completed" | "error"; output: string };
@@ -93,7 +95,12 @@ function toolLine(sessionId: string, tool: ToolReport): string {
       messageID: tool.messageId,
       type: "tool",
       ...(tool.name ? { tool: tool.name } : {}),
-      state: { status: tool.status, input: record(tool.input) ?? {}, ...(tool.output !== undefined ? { output: tool.output } : {}) },
+      state: {
+        status: tool.status,
+        input: record(tool.input) ?? {},
+        ...(tool.output !== undefined ? { output: tool.output } : {}),
+        ...(tool.diff ? { metadata: { diff: tool.diff } } : {}),
+      },
     },
   });
 }
@@ -194,6 +201,7 @@ export class V2RunLines {
       input: this.toolInputs.get(callId),
       status: ok ? "completed" : "error",
       output: ok ? contentText(data.content) : str(error?.message) ?? "the tool failed",
+      ...(ok ? filePatch(data.metadata) : {}),
     });
   }
 }
@@ -248,7 +256,15 @@ function storedToolResult(messageId: string, block: Record<string, unknown>): To
   const callId = str(block.id);
   if (!callId || (status !== "completed" && status !== "error")) return undefined;
   const output = status === "completed" ? contentText(state.content) : str(record(state.error)?.message) ?? "the tool failed";
-  return { callId, messageId, name: str(block.name), input: state.input, status, output };
+  return { callId, messageId, name: str(block.name), input: state.input, status, output, ...(status === "completed" ? filePatch(state.metadata) : {}) };
+}
+
+/** A 2.x edit's change: the patch of the one file it touched. A change across several files is left out. */
+function filePatch(metadata: unknown): { diff?: string } {
+  const files = record(metadata)?.files;
+  if (!Array.isArray(files) || files.length !== 1) return {};
+  const patch = str(record(files[0])?.patch);
+  return patch ? { diff: patch } : {};
 }
 
 /** Whether a stored reply ends its turn: completed, and finished for a reason

@@ -300,6 +300,58 @@ const STORED_ABORTED: V2Message = {
   error: { type: "aborted", message: "Step interrupted" },
 };
 
+const EDIT_PATCH = "Index: f.txt\n===================================================================\n--- f.txt\n+++ f.txt\n@@ -1,5 +1,5 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n epsilon\n";
+const EDIT_INPUT = { path: "f.txt", oldString: "gamma", newString: "GAMMA" };
+const EDIT_METADATA = { files: [{ file: "f.txt", patch: EDIT_PATCH, status: "modified", additions: 1, deletions: 1 }], truncated: false };
+
+describe("an edit's change", () => {
+  function editDeltas(...events: V2Event[]): StreamDelta[] {
+    const lines = new V2RunLines(SES);
+    const turn = new OpencodeTurn("");
+    const deltas: StreamDelta[] = [];
+    for (const event of events) {
+      const line = lines.lineFor(event);
+      if (line) turn.readLine(line, (d) => deltas.push(d));
+    }
+    return deltas;
+  }
+
+  it("reaches the card as numbered hunks, from the one file's patch the result carries", () => {
+    const deltas = editDeltas(
+      ev("session.tool.input.started", { id: CALL, name: "edit" }),
+      ev("session.tool.called", { id: CALL, input: EDIT_INPUT }),
+      ev("session.tool.success", { id: CALL, content: [{ type: "text", text: "Edited f.txt (1 replacement)" }], metadata: EDIT_METADATA }),
+    );
+    expect(deltas[1]).toMatchObject({ toolDetail: { input: EDIT_INPUT, output: "@@ -1,5 +1,5 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n epsilon" } });
+  });
+
+  it("keeps the result's own text for a change across several files", () => {
+    const metadata = { files: [EDIT_METADATA.files[0], { ...EDIT_METADATA.files[0], file: "g.txt" }] };
+    const deltas = editDeltas(
+      ev("session.tool.input.started", { id: CALL, name: "apply_patch" }),
+      ev("session.tool.called", { id: CALL, input: {} }),
+      ev("session.tool.success", { id: CALL, content: [{ type: "text", text: "Patched 2 files" }], metadata }),
+    );
+    expect(deltas[1]).toMatchObject({ toolDetail: { output: "Patched 2 files" } });
+  });
+
+  it("is replayed from a stored reply the same way", () => {
+    const stored: V2Message = {
+      id: "msg_test_edit",
+      time: { created: 1_700_000_000_000, completed: 1_700_000_000_030 },
+      type: "assistant",
+      content: [{
+        type: "tool",
+        id: "call_test_edit",
+        name: "edit",
+        state: { status: "completed", input: EDIT_INPUT, content: [{ type: "text", text: "Edited f.txt (1 replacement)" }], metadata: EDIT_METADATA },
+      }],
+    };
+    const [line] = runLinesFromStoredReply(SES, stored).map((l) => JSON.parse(l));
+    expect(line.part.state).toEqual({ status: "completed", input: EDIT_INPUT, output: "Edited f.txt (1 replacement)", metadata: { diff: EDIT_PATCH } });
+  });
+});
+
 describe("runLinesFromStoredReply", () => {
   it("replays a stored text reply as its text and its step finish", () => {
     const lines = runLinesFromStoredReply(SES, STORED_TEXT).map((l) => JSON.parse(l));

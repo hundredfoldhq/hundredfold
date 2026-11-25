@@ -2,7 +2,7 @@ import type { EngineResult, StreamDelta } from "../shared/types.js";
 import { isBillingFailureMessage } from "../shared/engine-failure.js";
 import { isRateLimitMessage } from "../shared/rateLimit.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
-import { toolEndParts, toolStartParts } from "../shared/tool-detail.js";
+import { patchHunks, toolEndParts, toolStartParts } from "../shared/tool-detail.js";
 import {
   asRecord,
   contextTokensFromStep,
@@ -151,7 +151,8 @@ export class OpencodeTurn {
   private toolResult(identity: { toolName?: string; toolId?: string }, state: Record<string, unknown>, failed: boolean): StreamDelta {
     const output = typeof state.output === "string" ? state.output : "";
     const activityReceiptId = extractActivityReceiptId(output, { isError: failed });
-    const toolParts = toolEndParts({ input: state.input, output: failed ? trimmedString(state.error) ?? output : output, isError: failed });
+    const detailOutput = failed ? trimmedString(state.error) ?? output : editPatch(state, output) ?? output;
+    const toolParts = toolEndParts({ input: state.input, output: detailOutput, isError: failed });
     return {
       type: "tool_result",
       content: output.slice(0, 500),
@@ -295,4 +296,15 @@ export class OpencodeTurn {
         ? outcome.noAnswer ?? "opencode exited successfully without a final assistant response"
         : `opencode exited with code ${outcome.code}: ${outcome.stderr.slice(0, 500)}`);
   }
+}
+
+/**
+ * An edit's change as numbered hunks, from the diff its metadata carries, when its output is no
+ * more than a one-line acknowledgement ("Edit applied successfully."). Output with more to say,
+ * such as diagnostics, is kept as it is.
+ */
+function editPatch(state: Record<string, unknown>, output: string): string | undefined {
+  if (output.trim().includes("\n")) return undefined;
+  const metadata = state.metadata && typeof state.metadata === "object" ? (state.metadata as Record<string, unknown>) : undefined;
+  return patchHunks(metadata?.diff);
 }

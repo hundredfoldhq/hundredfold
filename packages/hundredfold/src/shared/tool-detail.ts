@@ -222,10 +222,37 @@ function structuredText(record: Record<string, unknown>): string | undefined {
   return Array.isArray(record.filenames) ? record.filenames.filter((name) => typeof name === "string").join("\n") : undefined;
 }
 
+/** One hunk of a structured patch as unified diff text: its `@@` header, then its lines. */
+function hunkText(hunk: unknown): string[] {
+  const h = hunk && typeof hunk === "object" ? (hunk as Record<string, unknown>) : undefined;
+  if (!h || typeof h.oldStart !== "number" || typeof h.newStart !== "number" || !Array.isArray(h.lines)) return [];
+  const count = (value: unknown) => (typeof value === "number" ? value : 0);
+  const lines = h.lines.filter((line): line is string => typeof line === "string");
+  return [`@@ -${h.oldStart},${count(h.oldLines)} +${h.newStart},${count(h.newLines)} @@`, ...lines];
+}
+
+/** A structured patch's hunks as unified diff text, numbered as the file is; empty when it has none. */
+function structuredPatchText(patch: unknown): string {
+  return Array.isArray(patch) ? patch.flatMap(hunkText).join("\n") : "";
+}
+
+/**
+ * A unified diff from its first hunk: the `Index:` and `---`/`+++` lines above it name the
+ * file's path, which the card already shows. Undefined when the text holds no hunk.
+ */
+export function patchHunks(patch: unknown): string | undefined {
+  if (typeof patch !== "string") return undefined;
+  const start = patch.search(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m);
+  return start === -1 ? undefined : patch.slice(start).replace(/\n+$/, "");
+}
+
 function objectText(record: Record<string, unknown>): string {
   if (Array.isArray(record.content)) return textBlocks(record.content);
-  // An Edit or Write answers with the file's old and new bodies: the card draws the change from the input.
-  if ("structuredPatch" in record || "originalFile" in record) return "";
+  // An Edit answers with the file's old and new bodies and the change as hunks: the hunks are kept,
+  // numbered as the file is. A Write carries its body as `content` too, which its card draws from the input.
+  if ("structuredPatch" in record || "originalFile" in record) {
+    return typeof record.content === "string" ? "" : structuredPatchText(record.structuredPatch);
+  }
   const text = structuredText(record);
   if (text !== undefined) return text;
   try {

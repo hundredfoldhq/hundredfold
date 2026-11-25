@@ -172,6 +172,25 @@ describe("OpencodeTurn — a tool call's detail", () => {
     expect(deltas[1]!.toolDetail).toEqual({ input: { filePath: "/nope" }, output: "File not found", isError: true });
   });
 
+  it("shows an edit's change as numbered hunks, from the diff its metadata carries", () => {
+    const diff = "Index: /work/f.txt\n===================================================================\n--- /work/f.txt\n+++ /work/f.txt\n@@ -1,5 +1,5 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n epsilon\n";
+    const input = { filePath: "/work/f.txt", oldString: "gamma", newString: "GAMMA" };
+    const deltas = read(toolLine({ status: "completed", input, output: "Edit applied successfully.", metadata: { diagnostics: {}, diff } }, { tool: "edit" }));
+    expect(deltas[1]!.toolDetail).toEqual({ input, output: "@@ -1,5 +1,5 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n epsilon" });
+    expect(deltas[1]!.content).toBe("Edit applied successfully.");
+  });
+
+  it("keeps an edit's own output when it says more than that the edit applied", () => {
+    const output = "Edit applied successfully.\n\nLSP errors detected in this file, please fix:\nERROR [3:1] oops";
+    const deltas = read(toolLine({ status: "completed", input: { filePath: "/work/f.ts" }, output, metadata: { diff: "@@ -1 +1 @@\n-a\n+b\n" } }, { tool: "edit" }));
+    expect(deltas[1]!.toolDetail).toMatchObject({ output });
+  });
+
+  it("keeps a failed edit's error, not its diff", () => {
+    const deltas = read(toolLine({ status: "error", input: { filePath: "/work/f.ts" }, error: "oldString not found", metadata: { diff: "@@ -1 +1 @@\n-a\n+b\n" } }, { tool: "edit" }));
+    expect(deltas[1]!.toolDetail).toMatchObject({ output: "oldString not found", isError: true });
+  });
+
   it("does not let a secret in the input through", () => {
     const deltas = read(toolLine({ status: "completed", input: { command: "echo", password: "hunter2" }, output: "ok" }));
     expect(JSON.stringify(deltas)).not.toContain("hunter2");
