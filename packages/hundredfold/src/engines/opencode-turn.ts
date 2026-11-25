@@ -65,14 +65,8 @@ export class OpencodeTurn {
     const event = parseEventLine(line);
     if (!event) return;
 
-    // Every event carries it, including the `error` one — so a turn that failed
-    // before producing anything still reports the session it failed in, and the
-    // next turn resumes rather than silently starting a new conversation.
-    const sessionId = trimmedString(event.sessionID);
-    if (sessionId) this.sessionId = sessionId;
-
     const part = asRecord(event.part) ?? {};
-    this.firstMessageId ??= trimmedString(part.messageID) || undefined;
+    this.noteEvent(event, part);
     switch (event.type) {
       case "text":
         this.readText(part, onStream);
@@ -87,10 +81,24 @@ export class OpencodeTurn {
         this.readStepFinish(part);
         break;
       case "error":
-        this.turnError = opencodeErrorText(event);
-        this.endedInError = true;
+        this.readError(event);
         break;
     }
+  }
+
+  /** What every event says about the turn, whatever its type. */
+  private noteEvent(event: Record<string, unknown>, part: Record<string, unknown>): void {
+    // Every event carries it, including the `error` one — so a turn that failed
+    // before producing anything still reports the session it failed in, and the
+    // next turn resumes rather than silently starting a new conversation.
+    const sessionId = trimmedString(event.sessionID);
+    if (sessionId) this.sessionId = sessionId;
+    this.firstMessageId ??= trimmedString(part.messageID) || undefined;
+  }
+
+  private readError(event: Record<string, unknown>): void {
+    this.turnError = opencodeErrorText(event);
+    this.endedInError = true;
   }
 
   private readText(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {

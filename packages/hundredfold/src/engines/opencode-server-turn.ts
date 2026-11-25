@@ -247,12 +247,15 @@ function replyEnded(reply: Record<string, unknown> | undefined): boolean {
 /** What makes a `run` line a repeat: a tool part at the same status, or a
  *  text or reasoning part with the same text. Other lines are never repeats. */
 function reportKey(line: { type: string; part?: Record<string, unknown> }): string | undefined {
-  const part = line.part;
-  if (line.type === "tool_use") return `tool:${str(part?.callID) ?? str(part?.id)}:${str(record(part?.state)?.status)}`;
-  if (line.type === "text") return `text:${str(part?.id)}:${str(part?.text)}`;
-  if (line.type === "reasoning") return `reasoning:${str(part?.id)}:${str(part?.text)}`;
-  return undefined;
+  return REPEAT_KEYS[line.type]?.(line.part ?? {});
 }
+
+/** The identity of a line the stream may report again, by line type. */
+const REPEAT_KEYS: Record<string, (part: Record<string, unknown>) => string> = {
+  tool_use: (part) => `tool:${str(part.callID) ?? str(part.id)}:${str(record(part.state)?.status)}`,
+  text: (part) => `text:${str(part.id)}:${str(part.text)}`,
+  reasoning: (part) => `reasoning:${str(part.id)}:${str(part.text)}`,
+};
 
 /** A line that answers the turn: its text, or its error. */
 function isAnswerLine(line: string): boolean {
