@@ -4,7 +4,7 @@ import type { Message } from '@/lib/conversations'
  * Thinking rows: the model's reasoning, kept in the transcript as `role: 'thinking'`
  * beside its prose and tool rows, in stream order.
  *
- * The gateway streams a block as chunks that share a `blockId`; a new id is a new block.
+ * The gateway streams a block as chunks that share a `streamBlock`; a new id is a new block.
  * The id is stamped on the live row's `meta`, so the row itself says which block it is
  * growing, wherever the view lives (a cached snapshot, a re-read that swapped the row for
  * its stored copy). Nothing outside the transcript has to remember it.

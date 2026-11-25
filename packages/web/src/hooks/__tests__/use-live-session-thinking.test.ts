@@ -35,8 +35,8 @@ beforeEach(() => {
   __clearLiveSessionSnapshotCacheForTests()
 })
 
-const think = (emit: (e: string, p: unknown) => void, blockId: string | number, content: string, extra: object = {}) =>
-  act(() => { emit("session:delta", { sessionId: "s1", type: "thinking", blockId, content, ...extra }) })
+const think = (emit: (e: string, p: unknown) => void, blockId: number, content: string, extra: object = {}) =>
+  act(() => { emit("session:delta", { sessionId: "s1", type: "thinking", streamBlock: blockId, content, ...extra }) })
 
 const shape = (messages: Message[]) => messages.map((m) => `${m.role}:${m.toolCall ?? m.content}`)
 
@@ -52,27 +52,28 @@ async function midTurn() {
 describe("live thinking deltas", () => {
   it("appends the chunks of one block to one row and opens a new row for a new block", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "Let me ")
-    think(emit, "b1", "look at the file.")
+    think(emit, 1, "Let me ")
+    think(emit, 1, "look at the file.")
     expect(shape(result.current.messages)).toEqual(["thinking:Let me look at the file."])
 
-    think(emit, "b2", "Now the tests.")
+    think(emit, 2, "Now the tests.")
     expect(shape(result.current.messages)).toEqual(["thinking:Let me look at the file.", "thinking:Now the tests."])
   })
 
-  it("keeps a block with a numeric id apart from the one before it", async () => {
+  it("keeps a thinking block's id apart from the text blocks around it", async () => {
     const { emit, result } = await midTurn()
-    think(emit, 1, "one")
-    think(emit, 2, "two")
-    think(emit, 2, " and more")
-    expect(shape(result.current.messages)).toEqual(["thinking:one", "thinking:two and more"])
+    act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "Before.", streamBlock: 1, offset: 0 }) })
+    think(emit, 2, "Reasoning.")
+    act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "After.", streamBlock: 3, offset: 0 }) })
+    expect(shape(result.current.messages)).toEqual(["assistant:Before.", "thinking:Reasoning."])
+    expect(result.current.streamingText).toBe("After.")
   })
 
   it("puts the text already streamed into its own row ahead of the reasoning that follows it", async () => {
     const { emit, result } = await midTurn()
     act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "I will check." }) })
     expect(result.current.streamingText).toBe("I will check.")
-    think(emit, "b1", "Hmm, which file?")
+    think(emit, 1, "Hmm, which file?")
     expect(result.current.streamingText).toBe("")
     expect(shape(result.current.messages)).toEqual(["assistant:I will check.", "thinking:Hmm, which file?"])
 
@@ -84,22 +85,22 @@ describe("live thinking deltas", () => {
 
   it("keeps reasoning between tool calls in stream order, and a block after a call is a new row", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "first")
+    think(emit, 1, "first")
     act(() => { emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "Read", toolId: "t1" }) })
-    think(emit, "b1", " again")
+    think(emit, 1, " again")
     expect(shape(result.current.messages)).toEqual(["thinking:first", "assistant:Read", "thinking: again"])
   })
 
   it("ignores an empty chunk and a sub-agent's reasoning", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "")
-    think(emit, "b2", "not mine", { sidechain: true })
+    think(emit, 1, "")
+    think(emit, 2, "not mine", { sidechain: true })
     expect(result.current.messages).toEqual([])
   })
 
   it("does not show a reasoning chunk as the answer, and keeps the row once the turn completes", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "Considering the request.")
+    think(emit, 1, "Considering the request.")
     act(() => { emit("session:completed", { sessionId: "s1", result: "Done." }) })
     expect(shape(result.current.messages)).toEqual(["thinking:Considering the request.", "assistant:Done."])
     expect(result.current.messages[0].partial).toBeUndefined()
@@ -143,7 +144,7 @@ describe("thinking rows read back from the gateway", () => {
 
   it("takes a re-read mid-turn without a second row: the stored copy keeps the live row's id, and the stream goes on into it", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "Let me think")
+    think(emit, 1, "Let me think")
     const liveId = result.current.messages[0].id
 
     // The gateway stored a little more than this view has seen (" about it"): its copy is ahead.
@@ -159,15 +160,15 @@ describe("thinking rows read back from the gateway", () => {
     expect(result.current.messages.find((m) => m.role === "thinking")?.id).toBe(liveId)
 
     // The stream then repeats the tail the read already had, and brings what is new.
-    think(emit, "b1", " about")
-    think(emit, "b1", " it, then")
-    think(emit, "b1", " act.")
+    think(emit, 1, " about")
+    think(emit, 1, " it, then")
+    think(emit, 1, " act.")
     expect(shape(result.current.messages.filter((m) => m.role === "thinking"))).toEqual(["thinking:Let me think about it, then act."])
   })
 
   it("keeps the view's longer text when the stored copy lags the stream", async () => {
     const { emit, result } = await midTurn()
-    think(emit, "b1", "Let me think about it")
+    think(emit, 1, "Let me think about it")
     getSession.mockResolvedValue({
       status: "running",
       messages: [
@@ -176,7 +177,7 @@ describe("thinking rows read back from the gateway", () => {
       ],
     })
     await act(async () => { await result.current.reload("s1") })
-    think(emit, "b1", " carefully")
+    think(emit, 1, " carefully")
     expect(shape(result.current.messages.filter((m) => m.role === "thinking"))).toEqual(["thinking:Let me think about it carefully"])
   })
 
@@ -186,7 +187,7 @@ describe("thinking rows read back from the gateway", () => {
     const hook = renderHook(() => useLiveSession("s1", { subscribe: first.subscribe }))
     await settle()
     act(() => { first.emit("session:started", { sessionId: "s1" }) })
-    think(first.emit, "b1", "Weighing the options")
+    think(first.emit, 1, "Weighing the options")
     hook.unmount()
 
     getSession.mockResolvedValue({
@@ -201,7 +202,7 @@ describe("thinking rows read back from the gateway", () => {
     await settle()
     expect(shape(back.result.current.messages.filter((m) => m.role === "thinking"))).toEqual(["thinking:Weighing the options"])
 
-    think(second.emit, "b1", " carefully")
+    think(second.emit, 1, " carefully")
     expect(shape(back.result.current.messages.filter((m) => m.role === "thinking"))).toEqual(["thinking:Weighing the options carefully"])
   })
 })

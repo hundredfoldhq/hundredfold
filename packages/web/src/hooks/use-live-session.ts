@@ -876,7 +876,7 @@ export function useLiveSession(
           const chunk = String(p.content || '')
           if (p.sidechain === true || !chunk) return
           clearStatusMessage()
-          const blockId = p.blockId === undefined || p.blockId === null ? '' : String(p.blockId)
+          const blockId = typeof p.streamBlock === 'number' ? String(p.streamBlock) : ''
           if (thinkingBlockRef.current !== blockId) {
             // A block this view has not seen: a read sent before it holds no row for it.
             thinkingBlockRef.current = blockId
@@ -891,7 +891,8 @@ export function useLiveSession(
           } else if (streamingTextRef.current) {
             const flushed = streamingTextRef.current
             streamedCopyIdRef.current = null
-            endStreamBlock(p)
+            // The id on a thinking frame names the reasoning block, not the text block it ends.
+            endStreamBlock({})
             streamingTextRef.current = ''
             setStreamingText('')
             setMessages((prev) => {

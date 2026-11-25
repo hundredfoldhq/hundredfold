@@ -45,13 +45,11 @@ export interface GatewayEventMap {
     sidechain?: boolean
     block?: JsonValue
     /** The text block a text delta belongs to, or a main tool call or block ends.
-     *  Ids rise, so a later block has a larger id. */
+     *  Ids rise, so a later block has a larger id. On a thinking delta it names the thinking
+     *  block: chunks with the same id append to one block, a new id starts a new one. */
     streamBlock?: number
     /** How much of the block's text came before this text delta (0 for a snapshot). */
     offset?: number
-    /** With `type: "thinking"`: the thinking block this chunk belongs to. Chunks with the same
-     *  id append to one block; a new id starts a new one. */
-    blockId?: string | number
   }
   "session:notification": { sessionId: string; message: string; meta?: JsonObject; messageId?: string }
   "session:attachment": { sessionId: string; id: string; content: string; media: MessageMediaWire[]; timestamp: number }
