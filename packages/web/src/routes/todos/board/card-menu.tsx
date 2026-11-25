@@ -14,7 +14,7 @@ import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, SprintCardItems, type CardSprints } 
 import { StatusCircle } from "../state-glyph"
 import { cardDispatchRow } from "./dispatch-row"
 import { preloadSubBoardDialog } from "./sub-board-dialog-lazy"
-import { moveRows } from "./move-menu"
+import { moveOptionsOf, moveRows, type MoveOptions } from "./move-menu"
 
 /* Right-click a board card for the actions the board has, without dragging it
  * or opening it: Open, Dispatch (the Todo page's own button, for a Todo that can
@@ -25,7 +25,9 @@ import { moveRows } from "./move-menu"
  * The moves are the "Move to…" menu's own rows (moveRows, off the same
  * legalTargets() map the drag, the pickers and the Needs-you menu read), and a
  * choice goes through the board's own move, so a gated move shows with its
- * reason and cannot be chosen, and a refusal says why in the board's callout.
+ * reason and cannot be chosen, a Done over open sub-tasks says it also closes
+ * them and sends the cascade (as the task page's status picker does), and a
+ * refusal says why in the board's callout.
  * The menu is the one the tab right-click menus use (ui/context-menu).
  *
  * ONE menu for the whole board, opened at the pointer, rather than a context
@@ -54,7 +56,7 @@ export interface BoardCardMenuOptions {
   onViewAsBoard?: (id: string) => void
   /** Sub-Todos at any level, from the board's roll-up (0 until it lands): the row is only offered for a Todo that has some. */
   subTodosOf?: (id: string) => number
-  onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
+  onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire, options?: MoveOptions) => void
   onKeep?: (vars: { id: string; kept: boolean }) => void
   /** Dispatch the Todo, as the Todo page's button does. Absent = no Dispatch row. `pending` lists the Todos being dispatched. */
   dispatch?: { run: (id: string, opts?: { refocus?: boolean; scope?: () => ParentNode | null }) => void; pending: ReadonlySet<string> }
@@ -167,7 +169,7 @@ function BoardCardMenu({ target, options, onClose }: { target: MenuTarget; optio
                 className={`${MENU_ITEM_CLASS} items-start py-2`}
                 disabled={row.disabled}
                 data-testid={`board-card-move-${row.status}`}
-                onSelect={() => onMove(item, row.status)}
+                onSelect={() => onMove(item, row.status, moveOptionsOf(row))}
               >
                 <StatusCircle status={row.status} size={18} />
                 <span className="flex flex-col items-start">
