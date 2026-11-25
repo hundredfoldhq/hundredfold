@@ -57,12 +57,12 @@ describe('a tool call with detail', () => {
   })
 
   it('titles an MCP call by its server and tool and lists its arguments', () => {
-    renderChat([toolRow('t1', 'mcp__hundredfold__get_work_item', { input: { id: 'MAR-1' }, output: '{"ok":true}' }), answer])
+    renderChat([toolRow('t1', 'mcp__hundredfold__get_work_item', { input: { id: 'TASK-1' }, output: '{"ok":true}' }), answer])
     openGroup()
     expect(screen.getByText('hundredfold › get_work_item')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /show the mcp__hundredfold__get_work_item call/i }))
     expect(within(screen.getByTestId('tool-input-fields')).getByText('id')).toBeTruthy()
-    expect(screen.getByTestId('tool-input-id').textContent).toBe('MAR-1')
+    expect(screen.getByTestId('tool-input-id').textContent).toBe('TASK-1')
   })
 
   it('marks a failed call and labels its text as the error', () => {
