@@ -49,7 +49,7 @@ describe('summarizeTool', () => {
   })
 
   it('shows an MCP or unknown call by its arguments', () => {
-    expect(summarizeTool('mcp__s__t', { id: 'MAR-1', note: 'hi\nthere' })).toBe('id: MAR-1, note: hi')
+    expect(summarizeTool('mcp__s__t', { id: 'TASK-1', note: 'hi\nthere' })).toBe('id: TASK-1, note: hi')
   })
 
   it('is empty with no input', () => {
