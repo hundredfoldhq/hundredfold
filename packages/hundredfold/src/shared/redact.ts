@@ -18,6 +18,27 @@ export function redactJson<T>(value: T): T {
   return value;
 }
 
+/**
+ * `NAME=value` where the name holds a secret word, of any length. The name is matched on its own
+ * and tested in code (`[A-Z0-9_]*KEYWORD[A-Z0-9_]*` backtracks quadratically on one long word),
+ * and only a secret's value is consumed: a plain pair in front of a secret one (`a=1&token=x`)
+ * must not swallow it.
+ */
+function redactAssignments(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(/\b([A-Z0-9_]+)(\s*=\s*)/gi)) {
+    const valueStart = m.index + m[0].length;
+    if (valueStart < last || !ENV_SECRET_NAME.test(m[1])) continue;
+    let valueEnd = valueStart;
+    while (valueEnd < text.length && !/\s/.test(text[valueEnd])) valueEnd += 1;
+    if (valueEnd === valueStart) continue;
+    out += `${text.slice(last, valueStart)}[REDACTED]`;
+    last = valueEnd;
+  }
+  return out + text.slice(last);
+}
+
 export function redactText(input: string): string {
   let s = String(input ?? "");
   s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]");
@@ -30,11 +51,7 @@ export function redactText(input: string): string {
   s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
   s = s.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED]");
   s = s.replace(/\b(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+/gi, "$1[REDACTED]");
-  // The name is any run of name characters, whatever its length; the keyword is tested on it in the
-  // callback. A pattern with the keyword inside the run (`[A-Z0-9_]*KEYWORD[A-Z0-9_]*`) backtracks
-  // quadratically on one long word.
-  s = s.replace(/\b([A-Z0-9_]+)(\s*=\s*)[^\s]+/gi, (whole, name: string, eq: string) =>
-    ENV_SECRET_NAME.test(name) ? `${name}${eq}[REDACTED]` : whole);
+  s = redactAssignments(s);
   s = s.replace(/\b((?:sk|pk|rk|xox[baprs]|gh[pousr]|glpat|hf|api)[-_][A-Za-z0-9._-]{8,})\b/g, "[REDACTED]");
   s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, "$1$2:[REDACTED]@");
   s = s.replace(/("(?:token|secret|password|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2");

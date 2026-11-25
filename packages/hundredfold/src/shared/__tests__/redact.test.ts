@@ -114,6 +114,15 @@ describe("redactLargeText", () => {
     expect(redactText("Authorization: Bearer abc123def456")).toBe("Authorization: Bearer [REDACTED]");
   });
 
+  it("redacts a secret that follows another name=value pair", () => {
+    expect(redactText("a=1&token=abc123secret")).toBe("a=1&token=[REDACTED]");
+    expect(redactText("x=y&password=hunter2hunter2")).toBe("x=y&password=[REDACTED]");
+    expect(redactText("id=5;secret=abc123")).toBe("id=5;secret=[REDACTED]");
+    expect(redactText("name=a,token=zzz999")).toBe("name=a,token=[REDACTED]");
+    expect(redactText("FOO=BAR_TOKEN=abc123")).toBe("FOO=BAR_TOKEN=[REDACTED]");
+    expect(redactText("A_TOKEN=one B_SECRET = two plain=three")).toBe("A_TOKEN=[REDACTED] B_SECRET = [REDACTED] plain=three");
+  });
+
   it("finds a secret that sits on a cut in text with no spaces or line breaks", () => {
     // 32,768 is the chunk size: put a different secret shape across it at every nearby offset.
     for (const secret of ['"password":"hunter2hunter2"', ",API_TOKEN=ghp_abcdefghijklmnop12345,"]) {
