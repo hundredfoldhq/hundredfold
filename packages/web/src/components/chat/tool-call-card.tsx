@@ -106,44 +106,49 @@ function InputView({ toolCall, input }: { toolCall: string; input: Record<string
   )
 }
 
+
+function ResultView({ toolCall, detail, running }: { toolCall: string; detail: ToolDetailView; running: boolean }) {
+  const { kind } = identifyTool(toolCall)
+  if (detail.output) {
+    return (
+      <Section label={detail.isError ? 'Error' : 'Result'}>
+        <Text value={detail.output} testId="tool-output" />
+        {detail.outputChars !== undefined && (
+          <span data-testid="tool-output-cut" className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)]">
+            Shortened: showing the first {detail.output.length - 1} of {detail.outputChars} characters
+          </span>
+        )}
+      </Section>
+    )
+  }
+  // An edit or a write answers with nothing worth showing: its diff above is the result.
+  if (!running && !detail.isError && (kind === 'edit' || kind === 'write')) return null
+  return (
+    <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+      {running ? 'Running…' : detail.isError ? 'Failed' : 'No output'}
+    </span>
+  )
+}
+
 /**
  * What a tool call did: the input it was called with and what came back. Drawn under
  * the call's chip once the reader opens it. The gateway bounds both (a file's body or
  * a long log is cut), and this says so rather than passing a cut text off as the whole.
  */
 export function ToolCallCard({ toolCall, detail, running }: { toolCall: string; detail: ToolDetailView; running: boolean }) {
-  const { kind, server, name } = identifyTool(toolCall)
   const cutInput = detail.inputTruncated === true
   return (
     <div
       data-testid="tool-call-card"
       className="mt-1 ml-6 flex min-w-0 max-w-[min(620px,calc(100vw_-_var(--space-10)))] flex-col gap-2 pb-1"
     >
-      {kind === 'mcp' && (
-        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-          {server} <span aria-hidden="true">›</span> {name}
-        </span>
-      )}
       {detail.input && (
         <Section label="Input">
           <InputView toolCall={toolCall} input={detail.input} />
           {cutInput && <span data-testid="tool-input-cut" className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)]">Long input shortened</span>}
         </Section>
       )}
-      {detail.output ? (
-        <Section label={detail.isError ? 'Error' : 'Result'}>
-          <Text value={detail.output} testId="tool-output" />
-          {detail.outputChars !== undefined && (
-            <span data-testid="tool-output-cut" className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)]">
-              Shortened: showing the first {detail.output.length - 1} of {detail.outputChars} characters
-            </span>
-          )}
-        </Section>
-      ) : (
-        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-          {running ? 'Running…' : detail.isError ? 'Failed' : 'No output'}
-        </span>
-      )}
+      <ResultView toolCall={toolCall} detail={detail} running={running} />
     </div>
   )
 }

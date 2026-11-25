@@ -53,6 +53,7 @@ describe('a tool call with detail', () => {
     const diff = screen.getByTestId('tool-input-diff')
     expect(diff.querySelector('[data-diff="-"]')?.textContent).toBe('-const a = 1')
     expect(diff.querySelector('[data-diff="+"]')?.textContent).toBe('+const a = 2')
+    expect(screen.queryByText('No output')).toBeNull()
   })
 
   it('titles an MCP call by its server and tool and lists its arguments', () => {
