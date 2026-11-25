@@ -180,6 +180,20 @@ describe("OpencodeTurn — a tool call's detail", () => {
     expect(deltas[1]!.content).toBe("Edit applied successfully.");
   });
 
+  it("shows a 2.x run's edit as numbered hunks, from the one file's patch it reports", () => {
+    const patch = "Index: g.txt\n===================================================================\n--- g.txt\n+++ g.txt\n@@ -1,4 +1,4 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta\n";
+    const input = { path: "/work/g.txt", oldString: "gamma", newString: "GAMMA" };
+    const metadata = {
+      metadata: { files: [{ file: "g.txt", patch, status: "modified", additions: 1, deletions: 1 }], truncated: false },
+      content: [{ type: "text", text: "Edited g.txt (1 replacement)" }],
+    };
+    const deltas = read(toolLine({ status: "completed", input, output: "Edited g.txt (1 replacement)", metadata }, { tool: "edit" }));
+    expect(deltas[1]!.toolDetail).toEqual({ input, output: "@@ -1,4 +1,4 @@\n alpha\n beta\n-gamma\n+GAMMA\n delta" });
+    const two = { metadata: { files: [{ file: "g.txt", patch }, { file: "h.txt", patch }] } };
+    const several = read(toolLine({ status: "completed", input, output: "Edited 2 files", metadata: two }, { tool: "apply_patch" }));
+    expect(several[1]!.toolDetail).toMatchObject({ output: "Edited 2 files" });
+  });
+
   it("keeps an edit's own output when it says more than that the edit applied", () => {
     const output = "Edit applied successfully.\n\nLSP errors detected in this file, please fix:\nERROR [3:1] oops";
     const deltas = read(toolLine({ status: "completed", input: { filePath: "/work/f.ts" }, output, metadata: { diff: "@@ -1 +1 @@\n-a\n+b\n" } }, { tool: "edit" }));

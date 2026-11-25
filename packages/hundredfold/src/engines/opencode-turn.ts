@@ -301,10 +301,19 @@ export class OpencodeTurn {
 /**
  * An edit's change as numbered hunks, from the diff its metadata carries, when its output is no
  * more than a one-line acknowledgement ("Edit applied successfully."). Output with more to say,
- * such as diagnostics, is kept as it is.
+ * such as diagnostics, is kept as it is. 1.x reports the diff as `metadata.diff`; a 2.x run
+ * reports each file's patch under `metadata.metadata.files`, and only a single file's is used.
  */
 function editPatch(state: Record<string, unknown>, output: string): string | undefined {
   if (output.trim().includes("\n")) return undefined;
-  const metadata = state.metadata && typeof state.metadata === "object" ? (state.metadata as Record<string, unknown>) : undefined;
-  return patchHunks(metadata?.diff);
+  const metadata = objectOf(state.metadata);
+  return patchHunks(metadata?.diff) ?? patchHunks(singleFilePatch(objectOf(metadata?.metadata)?.files));
+}
+
+function singleFilePatch(files: unknown): unknown {
+  return Array.isArray(files) && files.length === 1 ? objectOf(files[0])?.patch : undefined;
+}
+
+function objectOf(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
