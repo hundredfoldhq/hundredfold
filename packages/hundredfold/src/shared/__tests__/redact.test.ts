@@ -103,4 +103,33 @@ describe("redactLargeText", () => {
     expect(redactText("MY_SERVICE_ACCESS_TOKEN_VALUE = hunter2")).toContain("[REDACTED]");
     expect(redactText("db.client-secret: hunter2")).toContain("[REDACTED]");
   });
+
+  it("redacts a secret whatever the length of its name", () => {
+    const pad = "A".repeat(100);
+    expect(redactText(`${pad}_TOKEN=supersecretvalue1`)).toBe(`${pad}_TOKEN=[REDACTED]`);
+    expect(redactText(`TOKEN_${pad}=supersecretvalue1`)).toBe(`TOKEN_${pad}=[REDACTED]`);
+    expect(redactText(`${pad.toLowerCase()}_token: supersecretvalue1`)).toBe(`${pad.toLowerCase()}_token: [REDACTED]`);
+    expect(redactText(`spring.${"datasource.".repeat(10)}password: supersecretvalue1`)).toContain("password: [REDACTED]");
+    expect(redactText(`${pad}=harmless`)).toBe(`${pad}=harmless`);
+    expect(redactText("Authorization: Bearer abc123def456")).toBe("Authorization: Bearer [REDACTED]");
+  });
+
+  it("finds a secret that sits on a cut in text with no spaces or line breaks", () => {
+    // 32,768 is the chunk size: put a different secret shape across it at every nearby offset.
+    for (const secret of ['"password":"hunter2hunter2"', ",API_TOKEN=ghp_abcdefghijklmnop12345,"]) {
+      for (let offset = 32_768 - secret.length - 2; offset <= 32_768 + 2; offset++) {
+        const text = `${"a".repeat(offset)}${secret}${"b".repeat(40_000)}`;
+        const out = redactLargeText(text);
+        expect(out, `offset ${offset}`).not.toMatch(/hunter2|ghp_abcdef/);
+      }
+    }
+  });
+
+  it("redacts every entry of a long compact JSON text", () => {
+    const text = JSON.stringify(Array.from({ length: 3_000 }, (_, i) => ({ id: i, password: `hunter${i}xyz`, note: "ok" })));
+    expect(text.length).toBeGreaterThan(100_000);
+    const out = redactLargeText(text);
+    expect(out).not.toMatch(/hunter\d/);
+    expect(out.match(/\[REDACTED\]/g)).toHaveLength(3_000);
+  });
 });

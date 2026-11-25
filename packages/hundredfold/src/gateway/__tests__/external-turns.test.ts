@@ -436,6 +436,27 @@ describe("syncExternalTurn", () => {
     expect(events).toEqual([{ event: "session:external-turn", payload: { sessionId: id } }]);
   });
 
+  it("does not insert a persisted turn again because a thinking row sits inside it", () => {
+    const id = makeSession();
+    reg.insertMessage(id, "user", "think about it");
+    reg.insertMessage(id, "thinking", "weighing the options");
+    reg.insertMessage(id, "assistant", "Done.");
+    const future = (ms: number) => new Date(Date.now() + ms).toISOString();
+    // The tail repeats the persisted turn and adds one new prompt: only the new one is inserted.
+    const file = writeTranscript([
+      { type: "user", text: "think about it", ts: future(1_000) },
+      { type: "assistant", text: "Done.", ts: future(2_000) },
+      { type: "user", text: "and now this", ts: future(3_000) },
+    ]);
+    ext.syncExternalTurn(id, emit, { hook_event_name: "Stop", transcript_path: file, last_assistant_message: "Done." });
+    expect(reg.getMessages(id).map((m) => [m.role, m.content])).toEqual([
+      ["user", "think about it"],
+      ["thinking", "weighing the options"],
+      ["assistant", "Done."],
+      ["user", "and now this"],
+    ]);
+  });
+
   it("keeps the board reminder the gateway appended out of a reconciled user row", async () => {
     const { withBoardReminder, DEFAULT_BOARD_REMINDER } = await import("../../sessions/turn/board-reminder.js");
     const id = makeSession();

@@ -1,5 +1,7 @@
 const SECRET_KEY_RE = /(token|secret|password|passwd|pwd|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)/i;
 
+const ENV_SECRET_NAME = /TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY|_KEY/i;
+
 export function isSecretKey(key: string): boolean {
   return SECRET_KEY_RE.test(key);
 }
@@ -28,20 +30,26 @@ export function redactText(input: string): string {
   s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
   s = s.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED]");
   s = s.replace(/\b(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+/gi, "$1[REDACTED]");
-  // Names are bounded (`{0,64}` each side): an unbounded run of name characters backtracks quadratically.
-  s = s.replace(/\b([A-Z0-9_]{0,64}(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY|_KEY)[A-Z0-9_]{0,64}\s*=\s*)[^\s]+/gi, "$1[REDACTED]");
+  // The name is any run of name characters, whatever its length; the keyword is tested on it in the
+  // callback. A pattern with the keyword inside the run (`[A-Z0-9_]*KEYWORD[A-Z0-9_]*`) backtracks
+  // quadratically on one long word.
+  s = s.replace(/\b([A-Z0-9_]+)(\s*=\s*)[^\s]+/gi, (whole, name: string, eq: string) =>
+    ENV_SECRET_NAME.test(name) ? `${name}${eq}[REDACTED]` : whole);
   s = s.replace(/\b((?:sk|pk|rk|xox[baprs]|gh[pousr]|glpat|hf|api)[-_][A-Za-z0-9._-]{8,})\b/g, "[REDACTED]");
   s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, "$1$2:[REDACTED]@");
   s = s.replace(/("(?:token|secret|password|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2");
   // `[ \t]*`, not `\s*`: a run of blank lines must not be matched from every one of its starts.
-  s = s.replace(/^([ \t]*(?!authorization\b)[\w.-]{0,64}(?:token|secret|password|passwd|pwd|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)[\w.-]{0,64}[ \t]*:[ \t]*)[^\n#]+/gim, "$1[REDACTED]");
+  s = s.replace(/^([ \t]*)([\w.-]+)([ \t]*:[ \t]*)[^\n#]+/gim, (whole, indent: string, name: string, colon: string) =>
+    !/^authorization\b/i.test(name) && SECRET_KEY_RE.test(name) ? `${indent}${name}${colon}[REDACTED]` : whole);
   return s;
 }
 
 /** Text longer than this is redacted a chunk at a time (see `redactLargeText`). */
 const REDACT_CHUNK = 32_768;
-/** How far back from a chunk's end a cut looks for a newline, then a space, before cutting mid-word. */
+/** How far back from a chunk's end a cut looks for a newline, a space, then a delimiter, before cutting mid-word. */
 const REDACT_CUT_WINDOW = 8_192;
+/** Text kept either side of each cut and redacted again, so a secret that straddles a cut is still seen whole. */
+const REDACT_SEAM = 2_048;
 const PRIVATE_KEY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 const PRIVATE_KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/;
 
@@ -65,28 +73,41 @@ function cutAt(text: string, from: number): number {
   const limit = Math.min(from + REDACT_CHUNK, text.length);
   if (limit === text.length) return limit;
   const window = text.slice(Math.max(from, limit - REDACT_CUT_WINDOW), limit);
+  const start = limit - window.length;
   const newline = window.lastIndexOf("\n");
-  if (newline >= 0) return limit - window.length + newline + 1;
+  if (newline >= 0) return start + newline + 1;
   const space = Math.max(window.lastIndexOf(" "), window.lastIndexOf("\t"));
-  return space >= 0 ? limit - window.length + space + 1 : limit;
+  if (space >= 0) return start + space + 1;
+  // Compact JSON, minified output and base64 have neither: cut after the last delimiter that cannot sit inside a value.
+  const delimiter = Math.max(window.lastIndexOf(","), window.lastIndexOf("}"), window.lastIndexOf("]"), window.lastIndexOf("&"), window.lastIndexOf(";"));
+  return delimiter >= 0 ? start + delimiter + 1 : limit;
 }
 
 /**
- * `redactText` over a text of any length. `redactText` is linear on real text but can backtrack
- * badly on one huge run of unbroken characters, so a long text is cut at line breaks (or
- * spaces) into chunks it handles in bounded time, after its private-key blocks, the one
- * secret that spans lines, are taken out whole. A secret only straddles a cut where
- * 8 KB of text in a row has neither a line break nor a space.
+ * `redactText` over a text of any length. `redactText` can backtrack badly on one huge run of
+ * unbroken characters, so a long text is cut into chunks it handles in bounded time, after its
+ * private-key blocks, the one secret that spans lines, are taken out whole. Cuts fall at a line
+ * break, a space or a delimiter where the text has one; the text either side of every cut is then
+ * redacted once more as a whole, so a secret on a cut is still found.
  */
 export function redactLargeText(input: string): string {
   const text = String(input ?? "");
   if (text.length <= REDACT_CHUNK) return redactText(text);
   const withoutKeys = text.includes("PRIVATE KEY-----") ? redactPrivateKeys(text) : text;
-  const parts: string[] = [];
+  const pieces: string[] = [];
+  let carry = "";
   for (let from = 0; from < withoutKeys.length;) {
     const to = cutAt(withoutKeys, from);
-    parts.push(redactText(withoutKeys.slice(from, to)));
+    const chunk = redactText(withoutKeys.slice(from, to));
+    const current = redactText(carry + chunk.slice(0, REDACT_SEAM)) + chunk.slice(REDACT_SEAM);
     from = to;
+    if (from >= withoutKeys.length) {
+      pieces.push(current);
+      break;
+    }
+    const keep = Math.max(0, current.length - REDACT_SEAM);
+    pieces.push(current.slice(0, keep));
+    carry = current.slice(keep);
   }
-  return parts.join("");
+  return pieces.join("");
 }
