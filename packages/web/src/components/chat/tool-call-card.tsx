@@ -465,6 +465,9 @@ function cutNotice(detail: ToolDetailView): { text: string; testId: string; acti
       action: `Load full ${what} · ${plural(chars, 'character')}`,
     }
   }
+  if (detail.inputChars !== undefined) {
+    return { text: `Input kept to its first part: ${plural(detail.inputChars, 'character')} in all`, testId: 'tool-input-cut', action: 'Load full input' }
+  }
   if (detail.inputTruncated) return { text: 'Long input shortened', testId: 'tool-input-cut', action: 'Load full input' }
   return null
 }
@@ -506,7 +509,7 @@ export function ToolCallCard({ toolCall, toolId, detail: stored, running }: {
 }) {
   const full = useFullDetail(toolId)
   const detail: ToolDetailView = full.detail
-    ? { ...stored, ...full.detail, inputTruncated: undefined, outputChars: full.detail.outputChars, full: undefined }
+    ? { ...stored, ...full.detail, inputTruncated: undefined, outputChars: full.detail.outputChars, inputChars: full.detail.inputChars, full: undefined }
     : stored
   const input = detail.input ? inputPanel(toolCall, detail.input, detail.isError ? undefined : detail.output) : null
   return (

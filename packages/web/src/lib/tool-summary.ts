@@ -13,6 +13,8 @@ export interface ToolDetailView {
   inputTruncated?: boolean
   /** The output's length before the gateway cut it. */
   outputChars?: number
+  /** The input's length before the gateway's store cut it (a full input past the store's cap). */
+  inputChars?: number
   /** The gateway kept the whole input and output, to fetch on demand. */
   full?: boolean
 }
@@ -32,6 +34,7 @@ function cleanDetail(raw: Record<string, unknown>): ToolDetailView {
     isError: raw.isError === true ? true : undefined,
     inputTruncated: raw.inputTruncated === true ? true : undefined,
     outputChars: typeof raw.outputChars === 'number' ? raw.outputChars : undefined,
+    inputChars: typeof raw.inputChars === 'number' ? raw.inputChars : undefined,
     full: raw.full === true ? true : undefined,
   }
 }

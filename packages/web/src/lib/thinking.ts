@@ -170,7 +170,10 @@ function anchorOf(messages: Message[], index: number): Message | null {
 
 function sameRow(a: Message | null, b: Message | null): boolean {
   if (!a || !b) return a === b
-  return a.id === b.id || (a.role === b.role && a.toolCall === b.toolCall && a.content === b.content)
+  if (a.id === b.id) return true
+  // A tool call is one row however far it got: the live "Using X" and a stored "Used X" are the same call.
+  if (a.toolId && b.toolId) return a.toolId === b.toolId
+  return a.role === b.role && a.toolCall === b.toolCall && a.content === b.content
 }
 
 /**

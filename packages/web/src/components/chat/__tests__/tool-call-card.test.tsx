@@ -179,6 +179,26 @@ describe('a tool call with detail', () => {
     getToolDetail.mockRestore()
   })
 
+  it('says so when even the kept input was a head of a longer one, with nothing more to load', async () => {
+    const getToolDetail = vi.spyOn(api, 'getToolDetail').mockResolvedValue({ input: { content: 'head…' }, inputChars: 400_000 })
+    render(
+      <MemoryRouter>
+        <FileLinkSessionContext.Provider value="s-1">
+          <ChatMessages
+            messages={[{ ...toolRow('t1', 'mcp__docs__upload', { input: { content: 'he…' }, inputTruncated: true, full: true }), toolId: 'call-1' }, answer]}
+            loading={false}
+          />
+        </FileLinkSessionContext.Provider>
+      </MemoryRouter>,
+    )
+    openGroup()
+    fireEvent.click(screen.getByRole('button', { name: /show the .* call/i }))
+    fireEvent.click(screen.getByRole('button', { name: /load full input/i }))
+    await waitFor(() => expect(screen.getByTestId('tool-input-cut').textContent).toContain('400,000 characters in all'))
+    expect(screen.queryByRole('button', { name: /load full/i })).toBeNull()
+    getToolDetail.mockRestore()
+  })
+
   it('keeps an Agent card opening its transcript, with the call detail on a toggle beside it', () => {
     const onOpenSubagent = vi.fn()
     renderChat([toolRow('t1', 'Agent', { input: { description: 'scan the repo', prompt: 'look' } }, 'Used Agent', { agentId: 'agent-7' }), answer], onOpenSubagent)

@@ -49,6 +49,22 @@ describe('carryLiveThinking', () => {
     expect(merged.at(-1)?.role).toBe('thinking')
   })
 
+  it('finds its stored copy after a tool call that finished between the stream and the read', () => {
+    const running: Message = { id: 'live-t', role: 'assistant', content: 'Using Read', timestamp: 3, toolCall: 'Read', toolId: 'call-1' }
+    const done: Message = { id: 't1', role: 'assistant', content: 'Used Read', timestamp: 3, toolCall: 'Read', toolId: 'call-1' }
+    const current = stream([user, running], 'b2', 'Plan')
+    const merged = carryLiveThinking(current, [user, done, stored('k2', 'Plan the work')])
+    expect(texts(merged)).toEqual(['Plan the work'])
+  })
+
+  it('does not take a copy that follows a different call of the same tool', () => {
+    const first: Message = { id: 't1', role: 'assistant', content: 'Used Read', timestamp: 3, toolCall: 'Read', toolId: 'call-1' }
+    const second: Message = { id: 't2', role: 'assistant', content: 'Used Read', timestamp: 4, toolCall: 'Read', toolId: 'call-2' }
+    const current = stream([user, first, stored('k1', 'Plan'), second], 'b3', 'Plan')
+    const merged = carryLiveThinking(current, [user, first, stored('k1', 'Plan'), second])
+    expect(texts(merged)).toEqual(['Plan', 'Plan'])
+  })
+
   it('still finds its stored copy after the same row, with newer rows beyond it', () => {
     const current = stream([user, tool('t1')], 'b2', 'Plan')
     const merged = carryLiveThinking(current, [user, tool('t1'), stored('k2', 'Plan the work'), tool('t2')])
