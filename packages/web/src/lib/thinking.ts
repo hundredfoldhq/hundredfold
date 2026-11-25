@@ -114,7 +114,7 @@ function takeSkipped(skip: string, chunk: string): { add: string; remaining: str
  * the two texts: the stored row may lag the stream by a few chunks, or run ahead of a view that
  * missed some. When it runs ahead, the stream is about to repeat that tail, so the tail is
  * recorded to be skipped. A read that holds no copy of the block at all (it was answered before
- * the gateway stored it) leaves the view's row where it was.
+ * the gateway stored it) leaves the view's row where it was, as the newest of the turn.
  */
 export function carryLiveThinking(current: Message[], merged: Message[]): Message[] {
   const liveIndex = growingRowIndex(current)
@@ -123,16 +123,32 @@ export function carryLiveThinking(current: Message[], merged: Message[]): Messag
   const block = blockOf(live)
   if (!block) return merged
 
-  // The read's row matched the view's by text and took its id: only the stamp is missing.
+  // The read's row matched the view's by text and took its id, or is the stored copy of it.
   const sameId = merged.findIndex((row) => row.id === live.id)
-  if (sameId >= 0) return replaceRow(merged, sameId, (row) => withMeta(row, { [BLOCK_KEY]: block }))
+  const storedIndex = sameId >= 0 ? sameId : storedCopyIndex(current, liveIndex, merged)
+  if (storedIndex < 0) return [...merged, live]
+  return replaceRow(merged, storedIndex, (row) => {
+    const { content, skip } = growth(live, row.content)
+    return withMeta({ ...row, id: live.id, timestamp: live.timestamp, content }, { [BLOCK_KEY]: block, [SKIP_KEY]: skip || undefined })
+  })
+}
 
-  const stored = storedCopyOf(live, merged)
-  if (!stored) return [...merged, live]
-  return replaceRow(merged, stored.index, (row) => withMeta(
-    { ...row, id: live.id, timestamp: live.timestamp, content: stored.ahead ? row.content : live.content },
-    { [BLOCK_KEY]: block, [SKIP_KEY]: stored.ahead || undefined },
-  ))
+function skipOf(row: Message): string {
+  const skip = row.meta?.[SKIP_KEY]
+  return typeof skip === 'string' ? skip : ''
+}
+
+/**
+ * The text the row holds once a stored copy is taken in, and the tail the stream has still to
+ * repeat. The stream has delivered the row's text less the skip it already owes; whatever the
+ * stored copy holds past that is the new skip. A copy that lags the row changes nothing.
+ */
+function growth(live: Message, stored: string): { content: string; skip: string } {
+  if (stored.length >= live.content.length && stored.startsWith(live.content)) {
+    const streamed = live.content.length - skipOf(live).length
+    return { content: stored, skip: stored.slice(streamed) }
+  }
+  return { content: live.content, skip: skipOf(live) }
 }
 
 function replaceRow(messages: Message[], index: number, change: (row: Message) => Message): Message[] {
@@ -141,17 +157,36 @@ function replaceRow(messages: Message[], index: number, change: (row: Message) =
   return next
 }
 
-/** The newest thinking row of the turn in a read that is the stored copy of the live row: the same text, or a longer or shorter run of it. */
-function storedCopyOf(live: Message, merged: Message[]): { index: number; ahead: string } | null {
-  const liveText = live.content.trim()
-  for (let index = merged.length - 1; index >= turnStartOf(merged); index--) {
-    if (merged[index].role !== 'thinking') continue
-    const storedText = merged[index].content.trim()
-    if (!storedText) continue
-    if (storedText.length > liveText.length && storedText.startsWith(liveText)) {
-      return { index, ahead: storedText.slice(liveText.length) }
-    }
-    if (liveText.startsWith(storedText)) return { index, ahead: '' }
+/** The row before this one in its turn, leaving out sub-agent tool calls (they arrive out of band). */
+function anchorOf(messages: Message[], index: number): Message | null {
+  const start = turnStartOf(messages)
+  for (let at = index - 1; at >= start; at--) {
+    const row = messages[at]
+    if (row.toolCall && row.meta?.sidechain === true) continue
+    return row
   }
   return null
+}
+
+function sameRow(a: Message | null, b: Message | null): boolean {
+  if (!a || !b) return a === b
+  return a.id === b.id || (a.role === b.role && a.toolCall === b.toolCall && a.content === b.content)
+}
+
+/**
+ * The row of a read that is the stored copy of the live row: a thinking row holding the same text,
+ * or a longer or shorter run of it, that sits where the live row does. An earlier block of the
+ * turn can start with the same words ("Let me", "Okay."), so the text alone never decides it:
+ * the copy must follow the same row the live one follows.
+ */
+function storedCopyIndex(current: Message[], liveIndex: number, merged: Message[]): number {
+  const anchor = anchorOf(current, liveIndex)
+  for (let index = merged.length - 1; index >= turnStartOf(merged); index--) {
+    const row = merged[index]
+    if (row.role !== 'thinking' || !row.content.trim()) continue
+    const live = current[liveIndex].content
+    const related = row.content.startsWith(live) || live.startsWith(row.content)
+    if (related && sameRow(anchorOf(merged, index), anchor)) return index
+  }
+  return -1
 }

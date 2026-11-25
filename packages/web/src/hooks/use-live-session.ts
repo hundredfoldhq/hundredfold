@@ -891,8 +891,11 @@ export function useLiveSession(
           } else if (streamingTextRef.current) {
             const flushed = streamingTextRef.current
             streamedCopyIdRef.current = null
-            // The id on a thinking frame names the reasoning block, not the text block it ends.
-            endStreamBlock({})
+            // The id on a thinking frame names the reasoning block, not the text block it ends:
+            // end the block that was streaming, so a read still reporting it as live is not
+            // taken for text this view has yet to show.
+            const streaming = streamPosRef.current
+            endStreamBlock(streaming ? { streamBlock: streaming.block } : {})
             streamingTextRef.current = ''
             setStreamingText('')
             setMessages((prev) => {

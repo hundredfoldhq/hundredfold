@@ -107,6 +107,24 @@ describe("live thinking deltas", () => {
   })
 })
 
+describe("text that reasoning ends", () => {
+  it("is not shown a second time by a read that still reports its block as the live one", async () => {
+    const { emit, result } = await midTurn()
+    act(() => { emit("session:delta", { sessionId: "s1", type: "text", content: "I will check.", streamBlock: 4, offset: 0 }) })
+    think(emit, 5, "Which file?")
+    expect(result.current.streamingText).toBe("")
+
+    getSession.mockResolvedValue({
+      status: "running",
+      messages: [{ id: "u1", role: "user", content: "go", timestamp: 1 }],
+      liveStream: { block: 4, text: "I will check.", messageId: null },
+    })
+    await act(async () => { await result.current.reload("s1") })
+    expect(result.current.streamingText).toBe("")
+    expect(shape(result.current.messages)).toEqual(["assistant:I will check.", "thinking:Which file?"])
+  })
+})
+
 describe("thinking rows read back from the gateway", () => {
   it("loads stored thinking rows as they are, in order beside the prose and tool rows", async () => {
     getSession.mockResolvedValue({
