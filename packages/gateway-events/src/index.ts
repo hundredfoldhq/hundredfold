@@ -39,12 +39,13 @@ export interface GatewayEventMap {
     /** The background sub-agent an `Agent`/`Task` result launched, for its card to open. */
     agentId?: string
     input?: string
-    /** What the call's card shows: `{ input?, output?, isError?, inputTruncated?, outputChars? }`, redacted and bounded. */
+    /** What the call's card shows: `{ input?, output?, isError?, inputTruncated?, outputChars?, full? }`, redacted and bounded.
+     *  `full: true` says the call's whole input and output are kept and can be loaded. */
     toolDetail?: JsonObject
     /** A tool call made inside a sub-agent rather than by the main agent. */
     sidechain?: boolean
     block?: JsonValue
-    /** The text block a text delta belongs to, or a main tool call or block ends.
+    /** The text block a text or `thinking` delta belongs to, or a main tool call or block ends.
      *  Ids rise, so a later block has a larger id. On a thinking delta it names the thinking
      *  block: chunks with the same id append to one block, a new id starts a new one. */
     streamBlock?: number

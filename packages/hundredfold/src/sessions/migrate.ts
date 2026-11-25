@@ -143,6 +143,22 @@ CREATE TABLE IF NOT EXISTS chat_pins (
 )
 `;
 
+/** The whole input and output of the tool calls whose chat card was cut, one row per call, read
+ *  back by `GET /api/sessions/:id/tool-details/:toolId`. A row goes with its session. */
+export const CREATE_TOOL_DETAILS_TABLE = `
+CREATE TABLE IF NOT EXISTS tool_details (
+  session_id TEXT NOT NULL,
+  tool_id TEXT NOT NULL,
+  input TEXT,
+  input_chars INTEGER,
+  output TEXT,
+  output_chars INTEGER,
+  is_error INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, tool_id)
+)
+`;
+
 function callbackDeliveriesTableSql(tableName = 'callback_deliveries'): string {
   return `
 CREATE TABLE ${tableName} (

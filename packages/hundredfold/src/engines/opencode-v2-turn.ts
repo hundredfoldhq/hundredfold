@@ -72,11 +72,15 @@ function answerKind(line: string): "text" | "error" | undefined {
  *  same text. A store re-read never reports either twice. */
 function reportKey(line: string): string | undefined {
   const parsed = JSON.parse(line) as { type: string; part?: Record<string, unknown> };
-  const part = parsed.part;
-  if (parsed.type === "tool_use") return `tool:${str(part?.callID)}:${str(record(part?.state)?.status)}`;
-  if (parsed.type === "text") return `text:${str(part?.id)}:${str(part?.text)}`;
-  return undefined;
+  return REPEAT_KEYS[parsed.type]?.(parsed.part ?? {});
 }
+
+/** The identity of a line a store re-read may report again, by line type. */
+const REPEAT_KEYS: Record<string, (part: Record<string, unknown>) => string> = {
+  tool_use: (part) => `tool:${str(part.callID)}:${str(record(part.state)?.status)}`,
+  text: (part) => `text:${str(part.id)}:${str(part.text)}`,
+  reasoning: (part) => `reasoning:${str(part.id)}:${str(part.text)}`,
+};
 
 /** The replies (assistant items) answering `prompt`, oldest first, from a
  *  history listed newest first: what follows the prompt up to the next input

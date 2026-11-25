@@ -106,6 +106,8 @@ export const SESSION_CASES: Record<string, CaseBuilder> = {
   "GET /api/sessions/:id/transcript": onSession("GET", "/transcript", 200),
   "GET /api/sessions/:id/waits": onSession("GET", "/waits", 200),
   "GET /api/sessions/:id/subagents/:agentId/transcript": onSession("GET", "/subagents/a0123456789abcdef/transcript", 200),
+  // Nothing is stored for this call, so a caller who may read the session still gets a plain 404 for it.
+  "GET /api/sessions/:id/tool-details/:toolId": onSession("GET", "/tool-details/toolu_0123456789", "open"),
   "GET /api/sessions/:id/context": context,
   "GET /api/sessions/:id/context-usage": onSession("GET", "/context-usage", 200),
   "POST /api/sessions/:id/stop": stop,

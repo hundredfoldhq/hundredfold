@@ -134,7 +134,7 @@ function turnAnswersParent(childSession: Session): boolean {
   const parentId = childSession.parentSessionId;
   if (!parentId) return false;
   const rows = initDb()
-    .prepare("SELECT role, meta FROM messages WHERE session_id = ? ORDER BY timestamp DESC, COALESCE(seq, 0) DESC, rowid DESC LIMIT ?")
+    .prepare("SELECT role, meta FROM messages WHERE session_id = ? AND role != 'thinking' ORDER BY timestamp DESC, COALESCE(seq, 0) DESC, rowid DESC LIMIT ?")
     .all(childSession.id, PROMPT_SCAN_ROWS) as Array<{ role: string; meta: unknown }>;
   let inPrompts = false;
   for (const row of rows) {

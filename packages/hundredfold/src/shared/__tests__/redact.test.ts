@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactText, redactJson } from "../redact.js";
+import { redactText, redactJson, redactLargeText } from "../redact.js";
 
 describe("Hermes-style redaction", () => {
   it("redacts auth headers, env assignments, private keys, token prefixes, and userinfo URLs", () => {
@@ -60,5 +60,85 @@ describe("Hermes-style redaction", () => {
     const started = Date.now();
     redactText(`${"\n".repeat(100_000)}x`);
     expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe("redactLargeText", () => {
+  it("is redactText on a text that fits one chunk", () => {
+    const text = "OPENAI_API_KEY=sk-proj-1234567890abcdef\nplain";
+    expect(redactLargeText(text)).toBe(redactText(text));
+  });
+
+  it("redacts a secret at the start of a chunk after a long run of text", () => {
+    const body = "word ".repeat(30_000);
+    const out = redactLargeText(`${body}\nAuthorization: Bearer abcdef0123456789xyz\n${body}\nOPENAI_API_KEY=zzzz-value\n`);
+    expect(out).not.toContain("abcdef0123456789xyz");
+    expect(out).not.toContain("zzzz-value");
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+  });
+
+  it("redacts a private key that spans chunks, and everything after one that never ends", () => {
+    const key = `-----BEGIN RSA PRIVATE KEY-----\n${"MIIEowIBAAKCAQEA\n".repeat(8_000)}-----END RSA PRIVATE KEY-----`;
+    const out = redactLargeText(`head\n${key}\ntail`);
+    expect(out).toBe("head\n[REDACTED PRIVATE KEY]\ntail");
+    const cut = redactLargeText(`${"x\n".repeat(20_000)}-----BEGIN PRIVATE KEY-----\n${"MIIEowIBAAKCAQEA\n".repeat(8_000)}`);
+    expect(cut.endsWith("[REDACTED PRIVATE KEY]")).toBe(true);
+    expect(cut).not.toContain("MIIEowIBAAKCAQEA");
+  });
+
+  it("keeps a text's length and order when nothing is secret", () => {
+    const text = Array.from({ length: 60_000 }, (_, i) => `line ${i}`).join("\n");
+    expect(redactLargeText(text)).toBe(text);
+  });
+
+  it("does not stall on a megabyte that backtracks badly", () => {
+    const started = Date.now();
+    for (const unit of ["A_TOKEN", "\n", "-", "a", "-----BEGIN PRIVATE KEY-----\n", "   auth"]) {
+      redactLargeText(unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000));
+    }
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("still redacts a long variable name, a key name and a `token:` line", () => {
+    expect(redactText("MY_SERVICE_ACCESS_TOKEN_VALUE = hunter2")).toContain("[REDACTED]");
+    expect(redactText("db.client-secret: hunter2")).toContain("[REDACTED]");
+  });
+
+  it("redacts a secret whatever the length of its name", () => {
+    const pad = "A".repeat(100);
+    expect(redactText(`${pad}_TOKEN=supersecretvalue1`)).toBe(`${pad}_TOKEN=[REDACTED]`);
+    expect(redactText(`TOKEN_${pad}=supersecretvalue1`)).toBe(`TOKEN_${pad}=[REDACTED]`);
+    expect(redactText(`${pad.toLowerCase()}_token: supersecretvalue1`)).toBe(`${pad.toLowerCase()}_token: [REDACTED]`);
+    expect(redactText(`spring.${"datasource.".repeat(10)}password: supersecretvalue1`)).toContain("password: [REDACTED]");
+    expect(redactText(`${pad}=harmless`)).toBe(`${pad}=harmless`);
+    expect(redactText("Authorization: Bearer abc123def456")).toBe("Authorization: Bearer [REDACTED]");
+  });
+
+  it("redacts a secret that follows another name=value pair", () => {
+    expect(redactText("a=1&token=abc123secret")).toBe("a=1&token=[REDACTED]");
+    expect(redactText("x=y&password=hunter2hunter2")).toBe("x=y&password=[REDACTED]");
+    expect(redactText("id=5;secret=abc123")).toBe("id=5;secret=[REDACTED]");
+    expect(redactText("name=a,token=zzz999")).toBe("name=a,token=[REDACTED]");
+    expect(redactText("FOO=BAR_TOKEN=abc123")).toBe("FOO=BAR_TOKEN=[REDACTED]");
+    expect(redactText("A_TOKEN=one B_SECRET = two plain=three")).toBe("A_TOKEN=[REDACTED] B_SECRET = [REDACTED] plain=three");
+  });
+
+  it("finds a secret that sits on a cut in text with no spaces or line breaks", () => {
+    // 32,768 is the chunk size: put a different secret shape across it at every nearby offset.
+    for (const secret of ['"password":"hunter2hunter2"', ",API_TOKEN=ghp_abcdefghijklmnop12345,"]) {
+      for (let offset = 32_768 - secret.length - 2; offset <= 32_768 + 2; offset++) {
+        const text = `${"a".repeat(offset)}${secret}${"b".repeat(40_000)}`;
+        const out = redactLargeText(text);
+        expect(out, `offset ${offset}`).not.toMatch(/hunter2|ghp_abcdef/);
+      }
+    }
+  });
+
+  it("redacts every entry of a long compact JSON text", () => {
+    const text = JSON.stringify(Array.from({ length: 3_000 }, (_, i) => ({ id: i, password: `hunter${i}xyz`, note: "ok" })));
+    expect(text.length).toBeGreaterThan(100_000);
+    const out = redactLargeText(text);
+    expect(out).not.toMatch(/hunter\d/);
+    expect(out.match(/\[REDACTED\]/g)).toHaveLength(3_000);
   });
 });

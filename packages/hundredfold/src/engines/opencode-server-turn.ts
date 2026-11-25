@@ -178,6 +178,8 @@ const PART_LINES: Record<string, (part: Record<string, unknown>) => string | und
   "step-finish": () => "step_finish",
   // `run` prints a text part once, when it is complete.
   text: (part) => (record(part.time)?.end !== undefined && typeof part.text === "string" && part.text ? "text" : undefined),
+  // The model's reasoning, once it is complete (`run` prints it only under `--thinking`).
+  reasoning: (part) => (record(part.time)?.end !== undefined && typeof part.text === "string" && part.text.trim() ? "reasoning" : undefined),
   // `run` prints a tool call once it has a result. This also reports it once it runs, so the
   // chat shows the call, with its input, while it works; the turn announces it only once.
   tool: (part) => {
@@ -243,13 +245,17 @@ function replyEnded(reply: Record<string, unknown> | undefined): boolean {
 }
 
 /** What makes a `run` line a repeat: a tool part at the same status, or a
- *  text part with the same text. Other lines are never repeats. */
+ *  text or reasoning part with the same text. Other lines are never repeats. */
 function reportKey(line: { type: string; part?: Record<string, unknown> }): string | undefined {
-  const part = line.part;
-  if (line.type === "tool_use") return `tool:${str(part?.callID) ?? str(part?.id)}:${str(record(part?.state)?.status)}`;
-  if (line.type === "text") return `text:${str(part?.id)}:${str(part?.text)}`;
-  return undefined;
+  return REPEAT_KEYS[line.type]?.(line.part ?? {});
 }
+
+/** The identity of a line the stream may report again, by line type. */
+const REPEAT_KEYS: Record<string, (part: Record<string, unknown>) => string> = {
+  tool_use: (part) => `tool:${str(part.callID) ?? str(part.id)}:${str(record(part.state)?.status)}`,
+  text: (part) => `text:${str(part.id)}:${str(part.text)}`,
+  reasoning: (part) => `reasoning:${str(part.id)}:${str(part.text)}`,
+};
 
 /** A line that answers the turn: its text, or its error. */
 function isAnswerLine(line: string): boolean {

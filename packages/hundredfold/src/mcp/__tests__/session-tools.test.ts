@@ -275,7 +275,7 @@ describe("session tools — unit (stub gateway)", () => {
       messages: Array<{ content: string }>;
       hint: string;
     };
-    expect(calls[0].url).toBe(`http://127.0.0.1:7777/api/sessions/s?last=${READ_LAST_DEFAULT}`);
+    expect(calls[0].url).toBe(`http://127.0.0.1:7777/api/sessions/s?last=${READ_LAST_DEFAULT}&thinking=0`);
     expect(Buffer.from(out.messages[0].content).equals(Buffer.from(long))).toBe(true);
     expect(out.messages[0].content).not.toContain("…[truncated");
     expect(out.hint).toMatch(/idle/i);
@@ -284,9 +284,9 @@ describe("session tools — unit (stub gateway)", () => {
   it("read_session forwards last=200 and last=0 without clamping", async () => {
     const { calls, ctx } = stub(() => ({ status: 200, body: { id: "s", status: "idle", messages: [] } }), "reader");
     await tool("read_session").handler({ sessionId: "s", last: 200 }, ctx);
-    expect(calls[0].url).toBe("http://127.0.0.1:7777/api/sessions/s?last=200");
+    expect(calls[0].url).toBe("http://127.0.0.1:7777/api/sessions/s?last=200&thinking=0");
     await tool("read_session").handler({ sessionId: "s", last: 0 }, ctx);
-    expect(calls[1].url).toBe("http://127.0.0.1:7777/api/sessions/s?last=0");
+    expect(calls[1].url).toBe("http://127.0.0.1:7777/api/sessions/s?last=0&thinking=0");
   });
 
   it.each([-1, 1.5])("read_session rejects invalid last=%s as a non-negative integer before the gateway call", async (last) => {

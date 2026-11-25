@@ -175,3 +175,42 @@ describe("CompactionStreamGate", () => {
     });
   });
 });
+
+describe("thinking through the gate and the stream", () => {
+  const thinking = (content: string): StreamDelta[] => [{ type: "thinking", content }];
+
+  it("turns a thinking_delta into a `thinking` delta, and leaves a signature or an empty one out", () => {
+    const event = (delta: Record<string, unknown>) => sseEventToDeltas({ type: "content_block_delta", index: 0, delta } as never);
+    expect(event({ type: "thinking_delta", thinking: "Let me see" })).toEqual([{ type: "thinking", content: "Let me see" }]);
+    expect(event({ type: "thinking_delta", thinking: "" })).toEqual([]);
+    expect(event({ type: "signature_delta", signature: "EuYBCkYIAh" })).toEqual([]);
+    expect(sseEventToDeltas({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } as never)).toEqual([]);
+  });
+
+  it("releases thinking ahead of the reply it belongs to, in order, once the reply is known not to be a summary", () => {
+    const gate = new CompactionStreamGate();
+    const out = [
+      ...gate.accept(thinking("Hmm. ")),
+      ...gate.accept(thinking("Right.")),
+      ...gate.accept(text("Here")),
+      ...gate.accept(text(" is the answer.")),
+      ...gate.end(),
+    ];
+    expect(out.map((d) => d.type)).toEqual(["thinking", "thinking", "text", "text"]);
+    expect(joined(out)).toBe("Hmm. Right.Here is the answer.");
+  });
+
+  it("drops the thinking of a compaction summary along with it", () => {
+    const gate = new CompactionStreamGate();
+    const out = [...gate.accept(thinking("planning the summary")), ...gate.accept(text("<analysis>\nstuff")), ...gate.accept(text("</analysis>")), ...gate.end()];
+    expect(out).toEqual([]);
+  });
+
+  it("passes thinking straight through once the reply is known, and before a tool call", () => {
+    const gate = new CompactionStreamGate();
+    expect(gate.accept([...text("A real reply starts here"), ...thinking("more thought")]).map((d) => d.type)).toEqual(["text", "thinking"]);
+    const toolFirst = new CompactionStreamGate();
+    const out = [...toolFirst.accept(thinking("which tool?")), ...toolFirst.accept([{ type: "tool_use", content: "Bash", toolName: "Bash", toolId: "t" }])];
+    expect(out.map((d) => d.type)).toEqual(["thinking", "tool_use"]);
+  });
+});

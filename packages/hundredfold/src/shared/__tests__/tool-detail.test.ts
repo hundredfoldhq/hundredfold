@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   boundToolInput,
+  boundToolInputFull,
   boundToolOutput,
+  boundToolOutputFull,
+  toolEndParts,
+  toolStartParts,
+  TOOL_FULL_INPUT_MAX,
+  TOOL_FULL_OUTPUT_MAX,
   mergeToolDetail,
   toolEndDetail,
   toolOutputText,
@@ -160,5 +166,71 @@ describe("tool detail", () => {
     expect(mergeToolDetail(toolStartDetail({ command: "ls" }), { output: "a" })).toEqual({ input: { command: "ls" }, output: "a" });
     expect(mergeToolDetail(undefined, { output: "a" })).toEqual({ output: "a" });
     expect(mergeToolDetail({ input: { command: "ls" } }, undefined)).toEqual({ input: { command: "ls" } });
+  });
+});
+
+describe("the whole of a call, kept when its card was cut", () => {
+  it("keeps an input whole where the card cut it, and redacts all of it", () => {
+    const command = `${"echo hello && ".repeat(400)}export GH_TOKEN=ghp_abcdefghij123456`;
+    const full = boundToolInputFull({ command, description: "run" })!;
+    expect(full.chars).toBeUndefined();
+    expect((full.input.command as string).startsWith("echo hello && ")).toBe(true);
+    expect((full.input.command as string).length).toBeGreaterThan(TOOL_INPUT_STRING_MAX * 4);
+    expect(JSON.stringify(full)).not.toContain("ghp_abcdefghij123456");
+    expect(full.input.description).toBe("run");
+  });
+
+  it("redacts a secret past the 200,000 characters a card's redaction reads", () => {
+    const output = `${"line of output\n".repeat(20_000)}API_TOKEN=late-secret-value\n`;
+    expect(output.length).toBeGreaterThan(200_000);
+    const full = boundToolOutputFull(output)!;
+    expect(full.output).not.toContain("late-secret-value");
+    expect(full.output).toContain("API_TOKEN=[REDACTED]");
+    expect(full.chars).toBeUndefined();
+  });
+
+  it("caps an output at a million characters and says how long it was", () => {
+    const full = boundToolOutputFull("y".repeat(1_500_000))!;
+    expect(full.output.length).toBe(TOOL_FULL_OUTPUT_MAX);
+    expect(full.chars).toBe(1_500_000);
+    expect(boundToolOutputFull("")).toBeUndefined();
+  });
+
+  it("caps an input at 256 KB serialised, keeping the head of its strings, and says how long it was", () => {
+    const body = "z".repeat(600_000);
+    const full = boundToolInputFull({ file_path: "/a", content: body })!;
+    expect(JSON.stringify(full.input).length).toBeLessThanOrEqual(TOOL_FULL_INPUT_MAX);
+    expect(full.input.file_path).toBe("/a");
+    expect((full.input.content as string).startsWith("zzzz")).toBe(true);
+    expect(full.chars).toBeGreaterThan(600_000);
+  });
+
+  it("keeps a MultiEdit's every edit where the card kept the first few", () => {
+    const edits = Array.from({ length: 30 }, (_, i) => ({ old_string: `old ${i} ${"a".repeat(800)}`, new_string: `new ${i}` }));
+    const full = boundToolInputFull({ file_path: "/x", edits })!;
+    expect((full.input.edits as unknown[]).length).toBe(30);
+    expect(full.chars).toBeUndefined();
+  });
+
+  it("marks the card `full` and carries the whole text only when something was cut", () => {
+    const short = toolEndParts({ input: { command: "ls" }, output: "a\nb" });
+    expect(short.toolDetail).toEqual({ input: { command: "ls" }, output: "a\nb" });
+    expect(short.toolFull).toBeUndefined();
+    expect(toolStartParts({ command: "ls" })).toEqual({ toolDetail: { input: { command: "ls" } } });
+
+    const longOutput = toolEndParts({ input: { command: "seq 1 5000" }, output: "1234567890\n".repeat(2_000), isError: true });
+    expect(longOutput.toolDetail).toMatchObject({ full: true, isError: true, outputChars: 22_000 });
+    expect(longOutput.toolFull).toMatchObject({ input: { command: "seq 1 5000" }, isError: true });
+    expect(longOutput.toolFull?.output?.length).toBe(22_000);
+    expect(longOutput.toolFull?.outputChars).toBeUndefined();
+
+    const longInput = toolStartParts({ content: "q".repeat(5_000) });
+    expect(longInput.toolDetail).toMatchObject({ full: true, inputTruncated: true });
+    expect((longInput.toolFull?.input?.content as string).length).toBe(5_000);
+  });
+
+  it("does not mark the sub-agent card paths: `toolStartDetail` and `toolEndDetail` stay as they were", () => {
+    expect(toolStartDetail({ content: "q".repeat(5_000) })).not.toHaveProperty("full");
+    expect(toolEndDetail({ output: "q".repeat(5_000) })).not.toHaveProperty("full");
   });
 });
