@@ -111,7 +111,7 @@ function ToolChipContent({ msg, index, status, summary, expanded }: {
         {statusMark(status)}
       </span>
       <ToolGlyph size={13} aria-hidden="true" className="shrink-0 text-[var(--text-tertiary)]" />
-      <span className="min-w-0 shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
+      <span className="min-w-0 max-w-[50%] shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
         {chipTitle(msg.toolCall, index)}
       </span>
       {summary && (
@@ -243,7 +243,7 @@ function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
   return (
     <div className="flex min-w-0 max-w-full flex-col items-start">
       <ToolChipRow entry={entry} status={status} summary={summary} toggle={toggle} arrival={arrival} enter={enter} onOpenSubagent={onOpenSubagent} />
-      {detail && toggle?.open && <ToolCallCard toolCall={entry.msg.toolCall || ''} detail={detail} running={status === 'running'} />}
+      {detail && toggle?.open && <ToolCallCard toolCall={entry.msg.toolCall || ''} detail={detail} running={status !== 'done' && status !== 'error'} />}
     </div>
   )
 }

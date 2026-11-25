@@ -24,26 +24,44 @@ export const TOOL_INPUT_STRING_MAX = 1_200;
 /** What the whole input may serialise to, once every string is cut. */
 export const TOOL_INPUT_TOTAL_MAX = 4_000;
 export const TOOL_OUTPUT_MAX = 3_000;
-const TOOL_INPUT_ARRAY_MAX = 20;
+/** What is handed to the redactor: enough to hold anything a cut can reach, so one huge result costs bounded work. */
+const REDACT_INPUT_MAX = 200_000;
 const TOOL_INPUT_DEPTH_MAX = 4;
+/** Successive limits tried until the input fits its budget: arrays shrink first, then strings. */
+const STRING_LIMITS = [TOOL_INPUT_STRING_MAX, 600, 300, 120];
+const ARRAY_LIMITS = [20, 8, 4, 3, 2, 1];
 
 function clip(text: string, max: number): { text: string; cut: boolean } {
   return text.length > max ? { text: `${text.slice(0, max)}…`, cut: true } : { text, cut: false };
 }
 
+/** Redact before cutting, so a secret straddling the cut is still caught. */
+function redactBounded(text: string): string {
+  return redactText(text.length > REDACT_INPUT_MAX ? text.slice(0, REDACT_INPUT_MAX) : text);
+}
+
 interface Budget {
   cut: boolean;
+  stringMax: number;
+  arrayMax: number;
+  redacted: Map<string, string>;
 }
 
 function boundString(value: string, budget: Budget): string {
-  const { text, cut } = clip(redactText(value), TOOL_INPUT_STRING_MAX);
+  let safe = budget.redacted.get(value);
+  if (safe === undefined) {
+    safe = redactBounded(value);
+    budget.redacted.set(value, safe);
+  }
+  if (value.length > REDACT_INPUT_MAX) budget.cut = true;
+  const { text, cut } = clip(safe, budget.stringMax);
   if (cut) budget.cut = true;
   return text;
 }
 
 function boundList(value: unknown[], depth: number, budget: Budget): JsonValue[] {
-  if (value.length > TOOL_INPUT_ARRAY_MAX) budget.cut = true;
-  return value.slice(0, TOOL_INPUT_ARRAY_MAX).map((item) => boundValue(item, depth + 1, budget));
+  if (value.length > budget.arrayMax) budget.cut = true;
+  return value.slice(0, budget.arrayMax).map((item) => boundValue(item, depth + 1, budget));
 }
 
 function boundFields(value: Record<string, unknown>, depth: number, budget: Budget): JsonObject {
@@ -66,26 +84,44 @@ function boundValue(value: unknown, depth: number, budget: Budget): JsonValue {
   return Array.isArray(value) ? boundList(value, depth, budget) : boundFields(value as Record<string, unknown>, depth, budget);
 }
 
-/**
- * A tool call's input, safe to show: secret-looking keys and token shapes
- * redacted, every string cut, and the whole kept under a budget.
- */
-export function boundToolInput(input: unknown): { input: JsonObject; truncated: boolean } | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length === 0) return undefined;
-  const budget: Budget = { cut: false };
-  const bounded = boundValue(redactJson(input), 0, budget) as JsonObject;
-  const size = JSON.stringify(bounded).length;
-  if (size <= TOOL_INPUT_TOTAL_MAX) return { input: bounded, truncated: budget.cut };
-  // Many mid-sized fields: keep leading fields whole until the budget is spent.
+/** Leading top-level fields, kept whole while they fit; a field too big for what is left is skipped, not the end of the input. */
+function leadingFields(bounded: JsonObject): JsonObject {
   const kept: JsonObject = {};
   let used = 2;
   for (const [key, value] of Object.entries(bounded)) {
     const cost = key.length + JSON.stringify(value).length + 4;
-    if (used + cost > TOOL_INPUT_TOTAL_MAX) break;
+    if (used + cost > TOOL_INPUT_TOTAL_MAX) continue;
     kept[key] = value;
     used += cost;
   }
-  return { input: kept, truncated: true };
+  return kept;
+}
+
+function boundWith(redacted: unknown, stringMax: number, arrayMax: number, cache: Map<string, string>): { bounded: JsonObject; cut: boolean } {
+  const budget: Budget = { cut: false, stringMax, arrayMax, redacted: cache };
+  return { bounded: boundValue(redacted, 0, budget) as JsonObject, cut: budget.cut };
+}
+
+/**
+ * A tool call's input, safe to show: secret-looking keys and token shapes
+ * redacted, every string cut, and the whole kept under a budget. An input over
+ * the budget shrinks inside its biggest fields (fewer list items, shorter
+ * strings) so a MultiEdit still shows its leading edits.
+ */
+export function boundToolInput(input: unknown): { input: JsonObject; truncated: boolean } | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length === 0) return undefined;
+  const redacted = redactJson(input);
+  const cache = new Map<string, string>();
+  let last = boundWith(redacted, STRING_LIMITS[0], ARRAY_LIMITS[0], cache);
+  for (const stringMax of STRING_LIMITS) {
+    for (const arrayMax of ARRAY_LIMITS) {
+      last = boundWith(redacted, stringMax, arrayMax, cache);
+      if (JSON.stringify(last.bounded).length <= TOOL_INPUT_TOTAL_MAX) {
+        return { input: last.bounded, truncated: last.cut || stringMax !== STRING_LIMITS[0] || arrayMax !== ARRAY_LIMITS[0] };
+      }
+    }
+  }
+  return { input: leadingFields(last.bounded), truncated: true };
 }
 
 function textBlocks(blocks: unknown[]): string {
@@ -97,13 +133,17 @@ function textBlocks(blocks: unknown[]): string {
     .join("\n");
 }
 
-/** The stream a person reads of a structured result: stdout (with stderr after it), or the first text field. */
+/** A shell's answer: stdout, then stderr; empty when the command printed nothing. */
+function shellText(record: Record<string, unknown>): string {
+  return [record.stdout, record.stderr].filter((part): part is string => typeof part === "string" && part !== "").join("\n");
+}
+
+/** The stream a person reads of a structured result: a shell's output, or the first text field. */
 function streamText(record: Record<string, unknown>): string | undefined {
-  for (const key of ["stdout", "output", "text", "result", "content"]) {
+  if ("stdout" in record || "stderr" in record) return shellText(record);
+  for (const key of ["output", "text", "result", "content"]) {
     const value = record[key];
-    if (typeof value !== "string" || !value) continue;
-    const stderr = key === "stdout" && typeof record.stderr === "string" && record.stderr ? `\n${record.stderr}` : "";
-    return `${value}${stderr}`;
+    if (typeof value === "string" && value) return value;
   }
   return undefined;
 }
@@ -142,9 +182,10 @@ export function toolOutputText(output: unknown): string {
 export function boundToolOutput(output: unknown): { output: string; chars?: number } | undefined {
   const raw = toolOutputText(output);
   if (!raw) return undefined;
-  const redacted = redactText(raw);
+  const redacted = redactBounded(raw);
   const { text, cut } = clip(redacted, TOOL_OUTPUT_MAX);
-  return { output: text, ...(cut ? { chars: redacted.length } : {}) };
+  const chars = raw.length > REDACT_INPUT_MAX ? raw.length : redacted.length;
+  return { output: text, ...(cut || raw.length > REDACT_INPUT_MAX ? { chars } : {}) };
 }
 
 /** The detail of one call's start: its input, when the engine has it yet. */

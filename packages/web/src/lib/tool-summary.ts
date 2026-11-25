@@ -138,9 +138,14 @@ export interface DiffLine {
   text: string
 }
 
+/** A field's text as written: a replacement that is only whitespace is still a replacement. */
+function rawText(input: Input, ...keys: string[]): string | undefined {
+  return keys.map((key) => input[key]).find((value): value is string => typeof value === 'string')
+}
+
 function replacement(edit: Input): DiffLine[] {
-  const before = text(edit, 'old_string', 'oldString')
-  const after = text(edit, 'new_string', 'newString')
+  const before = rawText(edit, 'old_string', 'oldString')
+  const after = rawText(edit, 'new_string', 'newString')
   if (before === undefined && after === undefined) return []
   return [
     ...(before ?? '').split('\n').map((line) => ({ sign: '-' as const, text: line })),

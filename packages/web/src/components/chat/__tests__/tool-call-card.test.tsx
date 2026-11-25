@@ -84,6 +84,19 @@ describe('a tool call with detail', () => {
     expect(screen.getByText('Running…')).toBeTruthy()
   })
 
+  it('says Running, not No output, for an unfinished call that is not the newest one', () => {
+    renderChat([
+      { id: 'u', role: 'user', content: 'go', timestamp: 50 },
+      toolRow('t1', 'Bash', { input: { command: 'sleep 30; echo A' } }, 'Using Bash'),
+      toolRow('t2', 'Bash', { input: { command: 'sleep 30; echo B' } }, 'Using Bash'),
+    ], undefined, true)
+    fireEvent.click(screen.getByRole('button', { name: /2 tools running/i }))
+    expect(screen.getAllByLabelText('Running')).toHaveLength(1)
+    fireEvent.click(screen.getAllByRole('button', { name: /show the bash call/i })[0])
+    expect(screen.getByText('Running…')).toBeTruthy()
+    expect(screen.queryByText('No output')).toBeNull()
+  })
+
   it('says when the gateway cut the input or the result, and offers the rest of a long result', () => {
     const output = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')
     renderChat([toolRow('t1', 'Bash', { input: { command: 'cat big' }, inputTruncated: true, output, outputChars: 90_000 }), answer])

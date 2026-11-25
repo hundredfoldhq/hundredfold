@@ -19,11 +19,20 @@ export function redactJson<T>(value: T): T {
 export function redactText(input: string): string {
   let s = String(input ?? "");
   s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]");
+  // A body cut before its END line (a long file read) is still a key.
+  s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/, "[REDACTED PRIVATE KEY]");
+  s = s.replace(/\b(x-api-key\s*:\s*)[^\s'"]+/gi, "$1[REDACTED]");
+  s = s.replace(/(--(?:password|passwd|pwd|token|secret|api-key)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, "$1[REDACTED]");
+  // curl's `-u user:pass`; a bare `-u name` (git, sort) carries no password.
+  s = s.replace(/(\s(?:-u|--user)\s+)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s"':]+:[^\s"']+)/g, "$1[REDACTED]");
+  s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
+  s = s.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED]");
   s = s.replace(/\b(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+/gi, "$1[REDACTED]");
-  s = s.replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*)[^\s]+/gi, "$1[REDACTED]");
+  s = s.replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY|_KEY)[A-Z0-9_]*\s*=\s*)[^\s]+/gi, "$1[REDACTED]");
   s = s.replace(/\b((?:sk|pk|rk|xox[baprs]|gh[pousr]|glpat|hf|api)[-_][A-Za-z0-9._-]{8,})\b/g, "[REDACTED]");
   s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, "$1$2:[REDACTED]@");
   s = s.replace(/("(?:token|secret|password|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2");
-  s = s.replace(/^(\s*(?!authorization\b)[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)[\w.-]*\s*:\s*)[^\n#]+/gim, "$1[REDACTED]");
+  // `[ \t]*`, not `\s*`: a run of blank lines must not be matched from every one of its starts.
+  s = s.replace(/^([ \t]*(?!authorization\b)[\w.-]*(?:token|secret|password|passwd|pwd|api[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|auth)[\w.-]*[ \t]*:[ \t]*)[^\n#]+/gim, "$1[REDACTED]");
   return s;
 }

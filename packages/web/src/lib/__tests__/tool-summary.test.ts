@@ -58,6 +58,12 @@ describe('summarizeTool', () => {
 })
 
 describe('editDiff and writtenLines', () => {
+  it('keeps a side that is only whitespace', () => {
+    expect(editDiff({ old_string: '  ', new_string: 'x' })).toEqual([
+      { sign: '-', text: '  ' }, { sign: '+', text: 'x' },
+    ])
+  })
+
   it('shows an edit as its old lines removed and its new ones added, for either spelling', () => {
     expect(editDiff({ old_string: 'a\nb', new_string: 'c' })).toEqual([
       { sign: '-', text: 'a' }, { sign: '-', text: 'b' }, { sign: '+', text: 'c' },
