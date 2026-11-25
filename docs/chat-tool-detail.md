@@ -23,3 +23,13 @@ The card's `meta.tool` stays bounded. When the gateway also holds the whole reda
 - Everything is redacted before it is stored, the whole text and not only the first part.
 - Tool hooks (`POST /api/internal/hook`) accept bodies up to 8 MB, so a large result reaches the gateway; the limit applies to that route only.
 - Sub-agent cards are not covered.
+
+## Edit diffs
+
+An edit's stored result is its change as unified `@@` hunks, with the file's own lines around it, so the card numbers the diff as the file is:
+
+- **Claude:** the hunks of the Edit result's `structuredPatch`. A Write keeps no result; its card shows the body it wrote.
+- **opencode 1:** the edit's `metadata.diff`, from its first hunk (the `Index:` and `---`/`+++` lines are dropped).
+- **opencode 2:** the patch of the one file the edit changed (`metadata.files`, or `metadata.metadata.files` in a `run` line). A change across several files keeps the tool's own text.
+
+An opencode edit whose output says more than that it applied (diagnostics, for example) keeps that output. An edit with no hunks is drawn from its input, unnumbered.
