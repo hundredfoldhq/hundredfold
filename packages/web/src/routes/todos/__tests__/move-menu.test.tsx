@@ -61,22 +61,32 @@ describe("the card's Move to… menu", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
     await open()
     tap(screen.getByRole("menuitemradio", { name: "In review" }))
-    await waitFor(() => expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "TSK-7" }), "in_review"))
+    await waitFor(() => expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "TSK-7" }), "in_review", undefined))
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
   })
 
-  it("shows a close that would also close open sub-tasks with its reason, and cannot be chosen", async () => {
+  it("offers a close over open sub-tasks naming how many it also closes, and asks for the cascade when chosen", async () => {
     const onMove = vi.fn()
     render(<MoveToMenu item={item("executing")} openChildren={2} onMove={onMove} />)
     await open()
 
     const done = screen.getByRole("menuitemradio", { name: /Done/ })
-    expect(done.getAttribute("aria-disabled")).toBe("true")
-    expect(done.textContent).toContain("Has 2 open sub-tasks. Close from the task page")
+    expect(done.getAttribute("aria-disabled")).toBeNull()
+    expect(done.textContent).toContain("also closes 2 open sub-tasks")
     tap(done)
+    await waitFor(() => expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "TSK-7" }), "done", { cascade: true }))
+    // Cancelled is gated outright over open sub-tasks: no cascade for it.
+    expect(screen.queryByRole("menu")).toBeNull()
+  })
+
+  it("keeps Cancelled gated over open sub-tasks", async () => {
+    const onMove = vi.fn()
+    render(<MoveToMenu item={item("executing")} openChildren={2} onMove={onMove} />)
+    await open()
+    const cancelled = screen.getByRole("menuitemradio", { name: /Cancelled/ })
+    expect(cancelled.getAttribute("aria-disabled")).toBe("true")
+    tap(cancelled)
     expect(onMove).not.toHaveBeenCalled()
-    // Cancelled is gated outright over open sub-tasks.
-    expect(screen.getByRole("menuitemradio", { name: /Cancelled/ }).getAttribute("aria-disabled")).toBe("true")
   })
 
   it("keeps a tap on the menu from reaching the card around it", async () => {

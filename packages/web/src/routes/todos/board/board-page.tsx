@@ -52,6 +52,7 @@ import { useBoardMemberView } from "./use-board-member-view"
 import { MovedOffBoard } from "./moved-off-board"
 import { useBoardSprints } from "../sprints/use-board-sprints"
 import { focusCardSoon, useBoardCardMenu } from "./card-menu"
+import type { MoveOptions } from "./move-menu"
 import { useCardSubBoard } from "./use-card-sub-board"
 import { LazySubBoardDialog } from "./sub-board-dialog-lazy"
 import { GroupSkeleton } from "./group-skeleton"
@@ -278,7 +279,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
   )
 
   const commitTransition = useCallback(
-    (item: WorkItemCompactWire, to: WorkItemStatusWire, dropIndex: number, { announceMove = false } = {}) => {
+    (item: WorkItemCompactWire, to: WorkItemStatusWire, dropIndex: number, { announceMove = false, cascade = false } = {}) => {
       // A card entering Done or Cancelled is the newest closed: it lands on top and takes no manual rank.
       const closing = isClosedStatus(to)
       const index = closing ? 0 : dropIndex
@@ -300,7 +301,7 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
           return next
         })
       transition.mutate(
-        { id: item.id, status: to },
+        { id: item.id, status: to, ...(cascade ? { cascade } : {}) },
         {
           onSuccess: (result) => {
             // A tick later: setting the callout inside this callback took the card off the board for a frame.
@@ -399,9 +400,9 @@ export function TodoBoard({ embedded = false }: { embedded?: boolean }) {
   const commitTransitionRef = useRef(commitTransition)
   commitTransitionRef.current = commitTransition
   const moveCard = useCallback(
-    (item: WorkItemCompactWire, to: WorkItemStatusWire) => {
+    (item: WorkItemCompactWire, to: WorkItemStatusWire, options?: MoveOptions) => {
       // Said once the gateway has agreed: a refused move says only why.
-      commitTransitionRef.current(item, to, 0, { announceMove: true })
+      commitTransitionRef.current(item, to, 0, { announceMove: true, cascade: options?.cascade === true })
     },
     [],
   )

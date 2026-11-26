@@ -245,13 +245,14 @@ export function useBoardTrees(ids: string[]) {
 
 // ── Mutations (drag commits) ────────────────────────────────────────────────
 
-/** Cross-column drop = a status transition on the operator PUT lane. The UI
+/** Cross-column drop (or a card menu's move, which may be a cascade close) = a status transition on the operator PUT lane. The UI
  *  pre-checked legality; a runtime refusal surfaces the gateway's words. */
 export function useBoardTransition() {
   const qc = useQueryClient()
   return useMutation(todoStatusMutationOptions(
     qc,
-    ({ id, status }) => api.setWorkItemStatus(id, status),
+    ({ id, status, cascade }) =>
+      cascade ? api.setWorkItemStatus(id, status, undefined, { cascade }) : api.setWorkItemStatus(id, status),
   ))
 }
 

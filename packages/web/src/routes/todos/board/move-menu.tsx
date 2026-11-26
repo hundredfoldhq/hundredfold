@@ -23,15 +23,22 @@ const COLUMN_ORDER = [...OPEN_COLUMN_ORDER, ...CLOSED_STATUSES]
 /* "Move to…" on a card, the phone's way to change a card's column (the desktop
  * drags). The menu lists the current column, marked, and every column the card
  * can legally go to: the same legalTargets() map the drag, the pickers and the
- * Needs-you menu read. A gated move shows with its reason and cannot be chosen,
- * and a Done that would also close open sub-tasks is one of those, as it is for
- * a drag: closing a tree is decided on the task page. */
+ * Needs-you menu read. A gated move shows with its reason and cannot be chosen.
+ * A Done over open sub-tasks is live, as it is in the task page's status picker:
+ * the row says what else it closes ("also closes N open sub-tasks") and choosing
+ * it sends the cascade close. A drag is the one place that stays out of it: there
+ * is no row to say so (canDropOn). */
+
+/** What a move asks of the commit beyond the status: a close that takes the open sub-tasks with it. */
+export interface MoveOptions {
+  cascade?: boolean
+}
 
 export interface MoveToMenuProps {
   item: WorkItemCompactWire
   /** Sub-tasks not yet done or cancelled (the close gate's pre-check). */
   openChildren: number
-  onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire) => void
+  onMove: (item: WorkItemCompactWire, to: WorkItemStatusWire, options?: MoveOptions) => void
   /** Offers "View as board" for a Todo that has sub-Todos, the phone's way to the card's context-menu row. Absent = no row. */
   onViewAsBoard?: (id: string) => void
 }
@@ -39,20 +46,18 @@ export interface MoveToMenuProps {
 /** The menu's rows: the current column, then each column the card can go to. The card's context menu reads
  *  the same rows, so a move is offered, gated and explained identically wherever it is made. */
 export function moveRows(item: WorkItemCompactWire, openChildren: number) {
-  const targets = legalTargets(item.status, { openChildren })
+  // The board's count is the card's open sub-Todos at every level, which is what a cascade close closes.
+  const targets = legalTargets(item.status, { openChildren, openDescendants: openChildren })
   return COLUMN_ORDER.flatMap((status) => {
-    if (status === item.status) return [{ status, disabled: false, reason: undefined }]
+    if (status === item.status) return [{ status, disabled: false, reason: undefined, cascade: false }]
     const target = targets.find((t) => t.status === status)
     if (!target) return []
-    // A close that would also close open sub-tasks is decided on the task page, so the row says that
-    // rather than what the move would have done.
-    if (target.cascade && !target.gated) {
-      const noun = openChildren === 1 ? "sub-task" : "sub-tasks"
-      return [{ status, disabled: true, reason: `Has ${openChildren} open ${noun}. Close from the task page` }]
-    }
-    return [{ status, disabled: target.gated, reason: target.gated ? target.reason : undefined }]
+    return [{ status, disabled: target.gated, reason: target.reason, cascade: target.cascade === true }]
   })
 }
+
+/** The commit options a row carries: the cascade close sends `cascade`, every other move sends nothing extra. */
+export const moveOptionsOf = (row: { cascade: boolean }): MoveOptions | undefined => (row.cascade ? { cascade: true } : undefined)
 
 function ViewAsBoardItem({ id, onViewAsBoard }: { id: string; onViewAsBoard: (id: string) => void }) {
   // The pop-up is a chunk of its own: fetch it while the menu is open, so the tap that chooses the row finds it loaded.
@@ -94,7 +99,11 @@ export function MoveToMenu({ item, openChildren, onMove, onViewAsBoard }: MoveTo
           <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[.04em] text-[var(--text-tertiary)]">
             Move to
           </DropdownMenuLabel>
-          <DropdownMenuRadioGroup value={item.status} aria-label="Move to" onValueChange={(to) => to !== item.status && onMove(item, to as WorkItemStatusWire)}>
+          <DropdownMenuRadioGroup value={item.status} aria-label="Move to" onValueChange={(to) => {
+            if (to === item.status) return
+            const row = rows.find((candidate) => candidate.status === to)
+            onMove(item, to as WorkItemStatusWire, row ? moveOptionsOf(row) : undefined)
+          }}>
             {rows.map((row) => (
               <DropdownMenuRadioItem
                 key={row.status}

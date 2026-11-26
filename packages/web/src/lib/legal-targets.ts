@@ -121,8 +121,9 @@ export function unreachableRule(from: WorkItemStatusWire): string | undefined {
 
 /** Drag convenience: a column is a live drop target only when the edge is
  *  legal AND ungated (a gated column dims like an illegal one — §5). A cascade
- *  target dims with them: dropping a card says nothing about closing the
- *  sub-tasks under it, and a drag is not where that gets decided. */
+ *  target dims with them: a drop has no row to say it also closes the sub-tasks
+ *  under the card, so that close is made from a menu (the card's Move to… and
+ *  right-click menus, the status pickers), where it is named before it is chosen. */
 export function canDropOn(
   from: WorkItemStatusWire,
   to: WorkItemStatusWire,

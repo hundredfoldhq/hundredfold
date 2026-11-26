@@ -252,7 +252,7 @@ describe("right-clicking a card on the board", () => {
     expect(screen.getByTestId("board-column-executing").contains(screen.getByTestId("board-card-TSK-3"))).toBe(true)
   })
 
-  it("shows a close that would also close open sub-tasks with its reason, and cannot be chosen", async () => {
+  const withOpenSubTask = () =>
     getWorkItemTrees.mockResolvedValue({
       trees: {
         "TSK-3": {
@@ -262,19 +262,59 @@ describe("right-clicking a card on the board", () => {
         },
       },
     })
+  const openMenuOnTreeCard = async () => {
     renderBoard()
     const card = await screen.findByTestId("board-card-TSK-3")
     await waitFor(() => expect(screen.getByTestId("board-rollup-TSK-3")).toBeTruthy())
     rightClick(card)
     await menuOf()
+  }
+
+  it("offers a close over open sub-tasks, naming how many it also closes, and closes them with it", async () => {
+    withOpenSubTask()
+    setWorkItemStatus.mockResolvedValue({ workItem: { ...compact("TSK-3", "done"), version: 4 }, escalated: false })
+    await openMenuOnTreeCard()
 
     const done = screen.getByRole("menuitem", { name: /Move to Done/ })
-    expect(done.getAttribute("aria-disabled")).toBe("true")
-    expect(done.textContent).toContain("Has 1 open sub-task. Close from the task page")
+    expect(done.getAttribute("aria-disabled")).toBeNull()
+    expect(done.textContent).toContain("also closes 1 open sub-task")
     fireEvent.click(done)
+
+    await waitFor(() => expect(setWorkItemStatus).toHaveBeenCalledWith("TSK-3", "done", undefined, { cascade: true }))
+    await waitFor(() => expect(screen.getByTestId("board-callout").textContent).toBe("TSK-3 moved to Done"))
+  })
+
+  it("changes nothing when the menu is dismissed instead of choosing the close", async () => {
+    withOpenSubTask()
+    await openMenuOnTreeCard()
+    expect(screen.getByRole("menuitem", { name: /Move to Done/ }).textContent).toContain("also closes 1 open sub-task")
+
+    fireEvent.keyDown(screen.getByTestId("board-card-menu"), { key: "Escape" })
+
+    await waitFor(() => expect(screen.queryByTestId("board-card-menu")).toBeNull())
     expect(setWorkItemStatus).not.toHaveBeenCalled()
-    // Cancelled is gated outright over open sub-tasks.
-    expect(screen.getByRole("menuitem", { name: /Move to Cancelled/ }).getAttribute("aria-disabled")).toBe("true")
+    expect(screen.getByTestId("board-column-executing").contains(screen.getByTestId("board-card-TSK-3"))).toBe(true)
+  })
+
+  it("puts the card back and says why when the gateway refuses the cascade close", async () => {
+    withOpenSubTask()
+    setWorkItemStatus.mockRejectedValue(new ApiError(409, "Todo changed since you opened it"))
+    await openMenuOnTreeCard()
+
+    fireEvent.click(screen.getByRole("menuitem", { name: /Move to Done/ }))
+
+    await waitFor(() => expect(screen.getByTestId("board-callout").textContent).toMatch(/Todo changed since you opened it/))
+    expect(screen.getByTestId("board-column-executing").contains(screen.getByTestId("board-card-TSK-3"))).toBe(true)
+  })
+
+  it("keeps Cancelled gated over open sub-tasks, there is no cascade for it", async () => {
+    withOpenSubTask()
+    await openMenuOnTreeCard()
+    const cancelled = screen.getByRole("menuitem", { name: /Move to Cancelled/ })
+    expect(cancelled.getAttribute("aria-disabled")).toBe("true")
+    expect(cancelled.textContent).toContain("1 sub-task still open")
+    fireEvent.click(cancelled)
+    expect(setWorkItemStatus).not.toHaveBeenCalled()
   })
 
   it("leaves a card in Review without a way back to To do, as the drag does", async () => {
