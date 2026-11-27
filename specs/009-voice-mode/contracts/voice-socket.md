@@ -8,7 +8,7 @@ shared by the gateway, the web client and (by mirror) the native client.
 The socket needs a session, so a client on a new chat creates one first: `POST /api/sessions` with `{ "speech": true }` and no `prompt`
 (operator only; every other caller keeps the `400`). The row is created idle, with no message and no turn, and then
 `GET /ws/voice/:sessionId` attaches as below. The first final transcript is delivered as the session's first message through the ordinary
-delivery path and names the session as a typed first message does. When the attachment ends (bye, close, detach, resume window, takeover by
+delivery path and names the session as a typed first message does. When the attachment ends (bye, close, detach, resume window, `?end=suspended`, takeover by
 nothing) and the session still has no message, the gateway deletes it and emits `session:deleted`. A takeover by the same principal does not.
 
 ## Upgrade
@@ -27,6 +27,15 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 | session missing, deleted, or a terminal | 404 |
 | a different principal holds the session's attachment | accepted then closed `4409` with reason `in_use` |
 | `limits.maxConcurrentAttachments` reached | accepted then closed `4429` with reason `limit`, unless an attachment is suspended (its client dropped): the longest-suspended is ended to make room |
+| `?end=suspended` on an accepted upgrade | never attaches and takes no slot: closed `1000` with reason `bye` at once, nothing sent. If the same principal's attachment on the session is suspended with no socket attached, it ends first, as a `bye` ends it (what it held is dropped, an empty spoken start is discarded). An attachment with a socket, live or still being picked up before its `hello`, and another principal's, are left alone |
+
+### Ending a paused conversation
+
+A client may close with `4000` (reason `paused`) when the user pauses voice mode: not an ending code, so the attachment is suspended
+for the resume window and holds the replies that finish meanwhile, and a later socket picks it up with `resume` as after a device suspension.
+A client that then ends voice mode from the pause has no socket to say `bye` on. It opens `GET /ws/voice/:sessionId?end=suspended` instead,
+which ends the conversation only if nobody has picked it up: another tab or device of the same principal that started voice mode on the chat
+meanwhile carries on. Same auth, origin and session checks as any upgrade. Additive: no protocol version bump.
 
 ## Audio
 
@@ -71,7 +80,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 `1000` normal (`bye`, and reason `unavailable` after an `error` with code `speech_unavailable`: a provider is down, so the attachment is refused at `hello`), `1001` shutdown, `4401` access lost, `4404` session gone, `4409`
 in use by another principal, `4429` attachment limit, `4400` protocol error.
 
-A close the gateway sees as `1000`, `1001`, `1005` (no status), `1009` (oversize frame) or any `44xx` above ends the attachment. Any other close without a `bye` (a dropped connection, `1006`) suspends it for the resume window.
+A close the gateway sees as `1000`, `1001`, `1005` (no status), `1009` (oversize frame) or any `44xx` above ends the attachment. Any other close without a `bye` (a dropped connection, `1006`, or a user pause, `4000`) suspends it for the resume window.
 
 ## Invariants (tested)
 

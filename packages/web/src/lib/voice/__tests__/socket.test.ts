@@ -236,3 +236,43 @@ describe("VoiceSocket keepalive watchdog", () => {
     expect(second.handlers.onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("VoiceSocket.endSuspended", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it("opens the voice path with `end=suspended`, sends nothing, and lets the gateway close it", () => {
+    const connection = new FakeConnection()
+    const paths: string[] = []
+    VoiceSocket.endSuspended("s/1", { open: (path) => { paths.push(path); return connection } })
+    expect(paths).toEqual(["/ws/voice/s%2F1?end=suspended"])
+    connection.open()
+    expect(connection.sent).toEqual([])
+    connection.drop(1000, "bye")
+  })
+
+  it("closes it itself if the gateway never does", () => {
+    vi.useFakeTimers()
+    const connection = new FakeConnection()
+    const close = vi.spyOn(connection, "close")
+    VoiceSocket.endSuspended("s", { open: () => connection })
+    connection.open()
+    vi.advanceTimersByTime(4_999)
+    expect(close).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(close).toHaveBeenCalledWith(1000, "bye")
+  })
+
+  it("a connection the gateway closed is not closed again later", () => {
+    vi.useFakeTimers()
+    const connection = new FakeConnection()
+    VoiceSocket.endSuspended("s", { open: () => connection })
+    connection.drop(1000, "bye")
+    const close = vi.spyOn(connection, "close")
+    vi.advanceTimersByTime(10_000)
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it("a transport that cannot open a socket is not an error", () => {
+    expect(() => VoiceSocket.endSuspended("s", { open: () => { throw new Error("offline") } })).not.toThrow()
+  })
+})

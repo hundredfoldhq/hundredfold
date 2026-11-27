@@ -231,6 +231,26 @@ describe("the /ws/voice/:id upgrade", () => {
     expect(r.runtime.hub.size()).toBe(1);
   });
 
+  it("`?end=suspended` ends a conversation its client paused, and leaves a live one alone", async () => {
+    const r = await start();
+    const session = newSession();
+    const ws = keep(await open(r.url(session.id)));
+    const got = collect(ws);
+    ws.send(hello());
+    await waitFor(() => got.text.some((f) => f.type === "ready"));
+    // Live: the goodbye is closed at once and the conversation carries on.
+    const early = keep(await open(`${r.url(session.id)}?end=suspended`));
+    expect((await collect(early).closed).code).toBe(1000);
+    expect(r.runtime.hub.get(session.id)?.suspended).toBe(false);
+    // Paused (a close code that is not an ending one): kept, until the goodbye ends it.
+    ws.close(4000, "paused");
+    await got.closed;
+    await waitFor(() => r.runtime.hub.get(session.id)?.suspended === true);
+    const end = keep(await open(`${r.url(session.id)}?end=suspended`));
+    expect((await collect(end).closed).code).toBe(1000);
+    await waitFor(() => r.runtime.hub.size() === 0);
+  });
+
   it("deleting the session while attached ends voice mode with a reason and 4404", async () => {
     const r = await start();
     const session = newSession();

@@ -44,6 +44,8 @@ const KEEPALIVE_TIMEOUT_INTERVALS = 2.5
 const WATCHDOG_CHECKS_PER_INTERVAL = 2
 /** Below this the advertised interval is not trusted: a tiny value would end voice on ordinary jitter. */
 const MIN_KEEPALIVE_MS = 1000
+/** How long a goodbye for a paused conversation may stay open if the gateway does not close it first. */
+const END_SUSPENDED_WAIT_MS = 5_000
 /** A close code for a connection the client gave up on; the browser never reports this one itself. */
 const KEEPALIVE_LOST_CODE = 1006
 
@@ -92,6 +94,24 @@ export class VoiceSocket {
     // A failed connection is followed by `close`; the close path reports it.
     raw.onerror = () => undefined
     return voice
+  }
+
+  /**
+   * Ends the conversation this client left suspended when it paused, as a `bye` would, without attaching: the gateway
+   * closes the connection at once, and leaves the conversation alone if another tab or device is using it. Nothing
+   * is sent and nothing is heard back.
+   */
+  static endSuspended(sessionId: string, options: Pick<VoiceSocketOptions, "open"> = {}): void {
+    const path = `/ws/voice/${encodeURIComponent(sessionId)}?end=suspended`
+    let raw: GatewaySocketConnection
+    try {
+      raw = options.open ? options.open(path) : gatewayTransport().openSocket(path)
+    } catch {
+      return // the gateway lets the conversation go when its suspend window runs out
+    }
+    const timer = setTimeout(() => { try { raw.close(1000, "bye") } catch { /* already closed */ } }, END_SUSPENDED_WAIT_MS)
+    raw.onclose = () => clearTimeout(timer)
+    raw.onerror = () => undefined
   }
 
   get isOpen(): boolean {

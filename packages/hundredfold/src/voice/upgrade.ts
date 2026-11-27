@@ -19,7 +19,7 @@ import { adoptLegacyHeaders } from "../shared/wire-names.js";
 import { isTerminalSession } from "../terminals/session.js";
 import type { VoiceHub } from "./hub.js";
 import type { VoicePrincipal, VoiceSocket } from "./hub-types.js";
-import { voiceSessionId } from "./paths.js";
+import { voiceEndsSuspended, voiceSessionId } from "./paths.js";
 
 export { voiceSessionId };
 
@@ -115,7 +115,8 @@ function acceptSocket(req: IncomingMessage, socket: Duplex, head: Buffer, deps: 
   deps.wss.handleUpgrade(req, socket, head, (ws) => {
     trackHeartbeat(ws);
     accept.onSocket?.(ws);
-    const attachment = deps.hub.attach(ws as unknown as VoiceSocket, { sessionId: accept.sessionId, principal: accept.principal });
+    const endSuspended = voiceEndsSuspended(req.url || "");
+    const attachment = deps.hub.attach(ws as unknown as VoiceSocket, { sessionId: accept.sessionId, principal: accept.principal, endSuspended });
     if (!attachment) return;
     ws.on("message", (data: RawData, isBinary: boolean) => {
       if (!attachment.owns(ws as unknown as VoiceSocket)) return;

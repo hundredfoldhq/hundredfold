@@ -50,6 +50,8 @@ export interface VoiceCaptureHandle {
 /** Everything the session touches in the outside world, so tests can script it. */
 export interface BrowserVoiceDeps {
   openSocket(sessionId: string, handlers: VoiceSocketHandlers, mode: VoiceMode): VoiceSocketLike
+  /** Ends the conversation the gateway kept for a pause, unless another tab or device is using it now. */
+  endSuspended?(sessionId: string): void
   createContext(): VoiceAudioContext
   requestMicrophone(): Promise<MediaStream>
   startCapture(ctx: VoiceAudioContext, stream: MediaStream, onFrame: (pcm: Int16Array) => void): Promise<VoiceCaptureHandle>
@@ -100,6 +102,7 @@ export const USER_PAUSE_CLOSE = 4000
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
+    endSuspended: (sessionId) => VoiceSocket.endSuspended(sessionId),
     createContext: () => new AudioContext({ latencyHint: "interactive" }) as unknown as VoiceAudioContext,
     requestMicrophone: () => requestMicrophone(),
     startCapture: (ctx, stream, onFrame) => startCapture(ctx as unknown as AudioContext, stream, onFrame),
@@ -245,9 +248,9 @@ export class BrowserVoiceSession implements VoiceController {
     dropHandoff(this)
     this.socket?.send({ type: "bye" })
     this.socket?.close(1000, "bye")
-    // From a pause there is no socket to say goodbye on, and none is opened for it: another tab or device may have taken
-    // the kept attachment over meanwhile, and connecting again would take it back and end voice mode there. The gateway
-    // lets an attachment nobody returns to go when its suspend window runs out.
+    // A pause left the gateway holding the conversation, with no socket to say goodbye on: end it, unless another tab
+    // or device has picked it up meanwhile. A resume still connecting may not reach the gateway before its close does.
+    if ((this.pausedAt !== null || this.resumingFrom !== null) && this.session !== null) this.deps.endSuspended?.(this.session)
     this.teardown()
     this.apply({ type: "stopped" })
   }
