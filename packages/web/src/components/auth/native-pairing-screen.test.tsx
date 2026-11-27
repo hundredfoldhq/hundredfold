@@ -1,9 +1,11 @@
+import "@/test/preload-dialogs"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { NativeGatewayProfilesSnapshot } from "@/lib/native-gateway-profiles"
-import { NativePairingScreen } from "./native-pairing-screen"
+import { NativePairingDialog, NativePairingScreen } from "./native-pairing-screen"
 
 const pairAndInstall = vi.fn()
+const pairProfile = vi.fn()
 const select = vi.fn()
 const remove = vi.fn()
 const retry = vi.fn()
@@ -11,6 +13,7 @@ let snapshot: NativeGatewayProfilesSnapshot | undefined
 
 vi.mock("@/lib/native-gateway-bootstrap", () => ({
   pairAndInstallNativeGateway: (...args: unknown[]) => pairAndInstall(...args),
+  pairNativeGatewayProfile: (...args: unknown[]) => pairProfile(...args),
   nativeGatewayProfiles: () => (snapshot
     ? { subscribe: () => () => {}, snapshot: () => snapshot, select, remove, retry }
     : undefined),
@@ -22,7 +25,7 @@ const beta = { id: "beta", origin: "http://127.0.0.1:7800", name: "Beta", device
 describe("NativePairingScreen", () => {
   beforeEach(() => {
     snapshot = undefined
-    for (const spy of [pairAndInstall, select, remove, retry]) spy.mockReset()
+    for (const spy of [pairAndInstall, pairProfile, select, remove, retry]) spy.mockReset()
   })
 
   it("pairs an explicit gateway origin and code", async () => {
@@ -33,6 +36,22 @@ describe("NativePairingScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pair gateway" }))
     await waitFor(() => expect(onPaired).toHaveBeenCalledWith("http://127.0.0.1:7779"))
     expect(pairAndInstall).toHaveBeenCalledWith("http://127.0.0.1:7779", "ABCD-EFGH")
+  })
+
+  it("shows the shell's own reason when pairing rejects with a { code, message } object", async () => {
+    pairAndInstall.mockRejectedValue({ code: "pair-rejected", message: "The pairing code is invalid or expired" })
+    render(<NativePairingScreen />)
+    fireEvent.change(screen.getByLabelText("Pair code"), { target: { value: "ABCD-EFGH" } })
+    fireEvent.click(screen.getByRole("button", { name: "Pair gateway" }))
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("The pairing code is invalid or expired"))
+  })
+
+  it("keeps the generic message only for a rejection that carries none", async () => {
+    pairAndInstall.mockRejectedValue(undefined)
+    render(<NativePairingScreen />)
+    fireEvent.change(screen.getByLabelText("Pair code"), { target: { value: "ABCD-EFGH" } })
+    fireEvent.click(screen.getByRole("button", { name: "Pair gateway" }))
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("The gateway did not answer"))
   })
 
   it("offers the other paired gateways when the remembered one stopped answering", async () => {
@@ -97,5 +116,57 @@ describe("NativePairingScreen", () => {
     render(<NativePairingScreen />)
     expect(screen.getByText("Connecting to Alpha...")).toBeTruthy()
     expect(screen.queryByLabelText("Pair code")).toBeNull()
+  })
+})
+
+describe("NativePairingScreen on a phone", () => {
+  beforeEach(() => {
+    snapshot = undefined
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15")
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it("starts with an empty origin and asks for an HTTPS address, not this device's loopback", () => {
+    render(<NativePairingScreen />)
+    const origin = screen.getByLabelText("Gateway origin") as HTMLInputElement
+    expect(origin.value).toBe("")
+    expect(origin.placeholder).toMatch(/^https:\/\//)
+    expect(document.body.textContent).not.toMatch(/127\.0\.0\.1|Mac\b/)
+    expect(document.body.textContent).toContain("HTTPS address")
+  })
+
+  it("does not pair until an origin is typed", () => {
+    render(<NativePairingScreen />)
+    fireEvent.change(screen.getByLabelText("Pair code"), { target: { value: "ABCD-EFGH" } })
+    expect((screen.getByRole("button", { name: "Pair gateway" }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe("NativePairingDialog", () => {
+  beforeEach(() => { pairProfile.mockReset() })
+  afterEach(() => vi.restoreAllMocks())
+
+  async function openDialog() {
+    render(<NativePairingDialog open onOpenChange={() => {}} />)
+    fireEvent.change(await screen.findByLabelText("Pair code"), { target: { value: "ABCD-EFGH" } })
+    fireEvent.click(screen.getByRole("button", { name: "Pair gateway" }))
+  }
+
+  it("shows the shell's own reason when pairing rejects with a { code, message } object", async () => {
+    pairProfile.mockRejectedValue({ code: "insecure-origin", message: "HTTP gateways are allowed only on literal loopback addresses" })
+    await openDialog()
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("HTTP gateways are allowed only on literal loopback addresses"))
+  })
+
+  it("falls back to Pairing failed when the rejection carries no message", async () => {
+    pairProfile.mockRejectedValue({ code: "x" })
+    await openDialog()
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Pairing failed"))
+  })
+
+  it("starts empty on a phone", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/130 Mobile")
+    render(<NativePairingDialog open onOpenChange={() => {}} />)
+    expect(((await screen.findByLabelText("Gateway origin")) as HTMLInputElement).value).toBe("")
   })
 })

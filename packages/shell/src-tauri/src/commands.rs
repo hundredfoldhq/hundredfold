@@ -102,6 +102,9 @@ impl NativeError {
             "The gateway did not return a valid pairing receipt",
         )
     }
+    fn pair_rejected() -> Self {
+        Self::new("pair-rejected", "The pairing code is invalid or expired")
+    }
     fn redirect_denied() -> Self {
         Self::new("redirect-denied", "Gateway redirects are not followed")
     }
@@ -248,7 +251,7 @@ pub async fn pair(
         return Err(NativeError::redirect_denied());
     }
     if !response.status().is_success() {
-        return Err(NativeError::pair_failed());
+        return Err(pair_status_error(response.status()));
     }
     let headers = response.headers().clone();
     let body = read_response_bounded(response, MAX_RESPONSE_BYTES).await?;
@@ -294,6 +297,15 @@ fn parse_pair_parts(
         },
         pair.device,
     ))
+}
+
+/// A refused pairing code is the one failure the person can fix, so it gets its own code.
+fn pair_status_error(status: reqwest::StatusCode) -> NativeError {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        NativeError::pair_rejected()
+    } else {
+        NativeError::pair_failed()
+    }
 }
 
 fn decode_request(input: &RequestInput) -> Result<(Method, Vec<u8>), NativeError> {
@@ -477,6 +489,18 @@ mod tests {
         assert!(credential.cookie_header.contains("secret"));
         assert_eq!(receipt.id, "device-1");
         assert!(!serde_json::to_string(&receipt).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn a_refused_pairing_code_is_told_apart_from_a_broken_reply() {
+        assert_eq!(
+            pair_status_error(reqwest::StatusCode::UNAUTHORIZED).code,
+            "pair-rejected"
+        );
+        assert_eq!(
+            pair_status_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR).code,
+            "pair-failed"
+        );
     }
 
     #[test]
