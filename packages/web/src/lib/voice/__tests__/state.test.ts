@@ -122,6 +122,26 @@ describe("endings", () => {
     expect(s.error).toBe("Voice mode moved to another tab.")
   })
 
+  it("treats an assistant hang-up as a clean end, not an error, however the close or stop after it arrives", () => {
+    const afterDetach = (follow: VoiceAction[]) => run([frame({ type: "detached", reason: "ended" }), ...follow], on())
+    expect(afterDetach([]).error).toBeNull()
+    expect(afterDetach([{ type: "closed", code: 1000, reason: "", requested: false }]).error).toBeNull()
+    // The mobile shell reports its own stop for the close that follows: "socket_closed", not an error.
+    const native: VoiceAction = { type: "native-state", state: "stopped", reason: "socket_closed", code: 1000 }
+    const s = afterDetach([{ type: "closed", code: 1000, reason: "", requested: false }, native])
+    expect(s.status).toBe("off")
+    expect(s.error).toBeNull()
+    expect(afterDetach([native]).error).toBeNull()
+  })
+
+  it("a lost connection after a normal start is still an error, and a new run forgets an earlier hang-up", () => {
+    const hungUp = run([frame({ type: "detached", reason: "ended" })], on())
+    expect(hungUp.hungUp).toBe(true)
+    const again = run([{ type: "connecting", mode: "hands-free" }, frame(READY)], hungUp)
+    expect(again.hungUp).toBe(false)
+    expect(run([{ type: "native-state", state: "stopped", reason: "socket_closed", code: 1006 }], on()).error).toBe("Voice connection lost.")
+  })
+
   it("does not call a requested close an error", () => {
     expect(run([{ type: "closed", code: 1000, reason: "bye", requested: true }], on()).error).toBeNull()
   })

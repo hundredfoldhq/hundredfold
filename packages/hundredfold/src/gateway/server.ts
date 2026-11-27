@@ -935,6 +935,7 @@ export async function startGateway(
     getConfig: () => currentConfig,
     emit,
     voiceRunning: () => voice !== null,
+    endVoiceCall: (sessionId) => voice?.hub.endCall(sessionId) ?? "no-call",
     connectors: connectorMap,
     reloadConnectorInstances,
     hookRegistry,

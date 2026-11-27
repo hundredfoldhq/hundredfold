@@ -27,6 +27,11 @@ const OPEN = 1;
 const ENDING_CODES = new Set<number>([1000, 1001, 1005, 1009, VOICE_CLOSE.protocolError, VOICE_CLOSE.accessLost, VOICE_CLOSE.sessionGone, VOICE_CLOSE.inUse, VOICE_CLOSE.limit]);
 /** A reason the provider gave for being unavailable, kept short and free of addresses before it reaches a client. */
 const REASON_MAX = 200;
+/**
+ * How long a requested hang-up waits for the client to report the goodbye played. A client that never reports
+ * (an older build, a lost frame) must not leave the call open for good.
+ */
+export const END_GRACE_MS = 20_000;
 
 export interface AttachmentInit {
   id: string;
@@ -61,6 +66,13 @@ export class VoiceAttachment {
   private ended = false;
   private suspendedAt: number | null = null;
   private cancelKeepalive: CancelTimer | null = null;
+  /** The assistant asked to hang up: the call ends once the turn that asked has ended and its goodbye has played. */
+  private endRequested = false;
+  /** The turn that asked has ended. */
+  private endTurnDone = false;
+  /** Someone is speaking, so a pending hang-up waits to hear whether they are done. */
+  private endHeld = false;
+  private cancelEndGrace: CancelTimer | null = null;
   private readonly announced = new Set<string>();
 
   constructor(init: AttachmentInit) {
@@ -151,6 +163,50 @@ export class VoiceAttachment {
     this.finish();
   }
 
+  /**
+   * The assistant asked to end the call (the `end_voice_call` tool, called in the turn now running). The call is
+   * not cut here: the goodbye that follows the tool call is still to be spoken, so it ends when that turn has
+   * ended and everything it said has been played (or been cut by the user), with a bounded wait for the report.
+   * Someone speaking meanwhile keeps the call until it is known whether they said anything. Asking twice changes nothing.
+   */
+  endWhenSpoken(): void {
+    if (this.ended || this.endRequested) return;
+    this.endRequested = true;
+    this.endTurnDone = false;
+    this.endHeld = false;
+  }
+
+  /** The hang-up goes through once the asking turn is over, nobody is mid-utterance and the goodbye has been heard (or the grace ran out). */
+  private tryEnd(): void {
+    if (!this.endRequested || !this.endTurnDone || this.endHeld || this.ended) return;
+    if (this.suspended || !this.voice.speaking()) return this.detach("ended");
+    this.cancelEndGrace ??= this.deps.clock.setTimeout(() => this.detach("ended"), END_GRACE_MS);
+  }
+
+  /** The user began to speak with a hang-up pending: it waits until their words are known. */
+  private holdHangup(): void {
+    if (!this.endRequested) return;
+    this.endHeld = true;
+    this.cancelEndGrace?.();
+    this.cancelEndGrace = null;
+  }
+
+  /** What was heard had no words (noise, a cough, a failed recognition): the hang-up carries on. */
+  private releaseHangup(): void {
+    if (!this.endHeld) return;
+    this.endHeld = false;
+    this.tryEnd();
+  }
+
+  /** The user said something after the hang-up was asked for (over the goodbye, say): they are not done, so the call stays. */
+  private cancelHangup(): void {
+    this.endRequested = false;
+    this.endTurnDone = false;
+    this.endHeld = false;
+    this.cancelEndGrace?.();
+    this.cancelEndGrace = null;
+  }
+
   /** The suspend window ran out. */
   expire(): void {
     if (this.suspended) this.finish();
@@ -160,6 +216,8 @@ export class VoiceAttachment {
     if (this.ended) return;
     this.ended = true;
     this.stopKeepalive();
+    this.cancelEndGrace?.();
+    this.cancelEndGrace = null;
     this.capture?.close();
     this.voice.close();
     this.onEnd(this);
@@ -214,6 +272,10 @@ export class VoiceAttachment {
   private onTurnEnded(flush: boolean, result: string): void {
     this.voice.onTurnEnded(flush, result);
     this.announceBackground();
+    if (this.endRequested) {
+      this.endTurnDone = true;
+      this.tryEnd();
+    }
   }
 
   /** Tasks the session's engine is waiting on in the background, announced once each. */
@@ -275,7 +337,9 @@ export class VoiceAttachment {
       case "ptt_down": return this.capture?.pttDown();
       case "ptt_up": return this.capture?.pttUp();
       case "barge_in": return this.bargeIn.fromClient(frame.segmentId, frame.playedMs);
-      case "played": return this.voice.markPlayed(frame.segmentId);
+      case "played":
+        this.voice.markPlayed(frame.segmentId);
+        return this.tryEnd();
       case "resume": return this.onResume();
       case "bye":
         this.byeReceived = true;
@@ -358,6 +422,7 @@ export class VoiceAttachment {
   }
 
   private onUtteranceStart(id: string): void {
+    this.holdHangup();
     const spoke = this.voice.speaking();
     if (spoke && this.config.bargeIn.enabled && !this.bargeIn.active) this.send({ type: "stop_playback", reason: "speech" });
     this.bargeIn.utteranceStarted(id, spoke);
@@ -366,6 +431,7 @@ export class VoiceAttachment {
   private onUtteranceFailed(id: string): void {
     this.send({ type: "error", code: "stt_failed", message: "Speech recognition failed for that.", utteranceId: id });
     this.bargeIn.utteranceFailed(id);
+    this.releaseHangup();
   }
 
   /** Finals are handled one at a time, in the order they arrive. */
@@ -382,7 +448,11 @@ export class VoiceAttachment {
     const words = phantom === null ? utterance.text.trim() : "";
     if (phantom !== null) this.deps.log.info(`voice: dropped an utterance for ${this.sessionId}: ${phantom}`);
     this.send({ type: "transcript", utteranceId: utterance.id, text: words, final: true });
-    if (!words) return this.bargeIn.emptyFinal(utterance.id);
+    if (!words) {
+      this.bargeIn.emptyFinal(utterance.id);
+      return this.releaseHangup();
+    }
+    this.cancelHangup();
     const interrupted: BargeInState | null = this.bargeIn.takeForWords();
     await this.dispatcher.dispatch({ utterance, words, interrupted });
   }

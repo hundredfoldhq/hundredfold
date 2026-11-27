@@ -406,6 +406,8 @@ export interface ApiContext {
   emit: GatewayEmit;
   /** Whether voice mode was set up at boot (the voice runtime exists); absent where voice is not wired. */
   voiceRunning?: () => boolean;
+  /** Hang up a session's voice call after its goodbye (`end_voice_call`); absent where voice is not wired. */
+  endVoiceCall?: (sessionId: string) => "ending" | "no-call";
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   /** Re-read config.yaml into memory immediately (same as the file-watcher does,
@@ -1337,7 +1339,10 @@ export async function handleApiRequest(
       return;
     }
 
-    if (await handleVoiceApi(req, res, { method, pathname, url }, { getConfig: context.getConfig, emit: context.emit, ...(context.voiceRunning ? { voiceRunning: context.voiceRunning } : {}) })) return;
+    if (await handleVoiceApi(req, res, { method, pathname, url }, {
+      getConfig: context.getConfig, emit: context.emit, resolveCaller: () => resolveScopedWriteCallerIdentity(req, context),
+      ...(context.voiceRunning ? { voiceRunning: context.voiceRunning } : {}), ...(context.endVoiceCall ? { endCall: context.endVoiceCall } : {}),
+    })) return;
 
     if (method === "GET" && pathname === "/api/callback-deliveries/dead-letter") {
       if (!requireCallbackRecoveryAuthority(req, res, context)) return;

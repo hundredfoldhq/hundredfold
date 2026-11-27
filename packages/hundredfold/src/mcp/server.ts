@@ -16,6 +16,7 @@ import { buildCronTools } from "./cron-tools.js";
 import { buildFileTools } from "./file-tools.js";
 import { buildConnectorTools } from "./connector-tools.js";
 import { buildHeartbeatTools } from "./heartbeat-tools.js";
+import { buildVoiceTools } from "./voice-tools.js";
 import { HUNDREDFOLD_SESSION_CAPABILITY_ENV, HUNDREDFOLD_SESSION_ID_ENV } from "./identity.js"; import { departmentBelt } from "./department-profile.js";
 import { toolsFor } from "./toolsets.js";
 import { loadConfig } from "../shared/config.js";
@@ -101,7 +102,7 @@ export { gatewayGet, gatewayRequest, HundredfoldMcpToolError, type HundredfoldMc
  * Build the full tool set, one group per company surface: org, sessions,
  * company-reference search, scoped knowledge, Notes, cost reads,
  * cron reads, the delegation transaction, Todos/work-items, managed
- * files, connectors, and session-armed heartbeats.
+ * files, connectors, session-armed heartbeats, and hanging up a voice call.
  * Growth discipline: the belt budget lives in the GRS-017 design §7 and the
  * GRS-020 design §4 (net context diet positive — measured in
  * mcp/__tests__/context-diet.test.ts and knowledge-diet.test.ts); at this
@@ -124,6 +125,7 @@ export function buildTools(opts?: { notesEnabled?: boolean; knowledge?: Knowledg
     ...buildFileTools(),
     ...buildConnectorTools(),
     ...buildHeartbeatTools(),
+    ...buildVoiceTools(),
   ];
 }
 

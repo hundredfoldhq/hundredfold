@@ -82,6 +82,17 @@ export class VoiceHub {
     if (sessionId) this.attachments.get(sessionId)?.onSessionEvent(event, record!);
   }
 
+  /**
+   * The assistant hangs up the call on a session (the `end_voice_call` tool). `no-call` when no client is in a
+   * spoken conversation with it; otherwise the call ends once the goodbye has been said, not at once.
+   */
+  endCall(sessionId: string): "ending" | "no-call" {
+    const attachment = this.attachments.get(sessionId);
+    if (!attachment) return "no-call";
+    attachment.endWhenSpoken();
+    return "ending";
+  }
+
   /** Voice turned off while attached: every attachment ends with a reason. */
   checkConfig(): void {
     if (this.deps.config()) return;
