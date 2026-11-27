@@ -35,6 +35,10 @@ final class VoiceController {
     private let cuePlayer = AVAudioPlayerNode()
     /// Serial queue guarding all mutable state below.
     private let state = DispatchQueue(label: "run.hundredfold.voice.state")
+    /// Player stop/play and buffer scheduling run here, never under `state` and never on the capture
+    /// tap's thread: `AVAudioPlayerNode.stop()` waits on the engine, which can be waiting on that tap
+    /// (a barge-in flush from the tap thread deadlocked and trapped in libdispatch).
+    private let audioOps = DispatchQueue(label: "run.hundredfold.voice.audio")
     /// Serialises `start` and `stop` end to end. Rust calls both from its own threads: a
     /// `start` arriving while a `stop` is still inside `teardown` would otherwise pass the
     /// `running` check (already false) and build a new engine that the old teardown then
@@ -315,9 +319,9 @@ final class VoiceController {
         }
         for buffer in buffers {
             let count = Int64(buffer.frameLength)
-            state.sync {
-                guard generation == token else { return }
-                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            audioOps.async { [weak self] in
+                guard let self, self.state.sync(execute: { self.generation == token }) else { return }
+                self.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                     self?.state.async {
                         guard let self, self.generation == token else { return }
                         self.playedFrames += count
@@ -338,10 +342,13 @@ final class VoiceController {
 
     private func flushLocked() {
         generation += 1
-        player.stop()
-        player.play()
         ledger.reset()
         playedFrames = 0
+        // Queued behind any schedule that was accepted before this flush, ahead of any accepted after it.
+        audioOps.async { [player] in
+            player.stop()
+            player.play()
+        }
     }
 
     /// Loops `pcm` (PCM16LE mono at 24 kHz) as the sound cue, replacing any cue; empty data stops it.
