@@ -234,7 +234,7 @@ export class ReplyVoice {
   /** A text delta, or a snapshot that reconciles the reply so far. */
   onText(content: string, snapshot: boolean): void {
     if (this.suppress) {
-      if (content) this.trace.debug("reply_text_suppressed", { chars: content.length, snapshot });
+      if (content) this.trace.debug("reply_text_suppressed", () => ({ chars: content.length, snapshot }));
       return;
     }
     if (!content) return;
@@ -243,7 +243,7 @@ export class ReplyVoice {
     if (snapshot && !fresh) this.traceIgnoredSnapshot(reply, content);
     if (!fresh) return;
     reply.text += fresh;
-    this.trace.debug("reply_text", { reply: reply.id, chars: fresh.length, total_chars: reply.text.length, snapshot, spoken_live: !this.suspended });
+    this.trace.debug("reply_text", () => ({ reply: reply.id, chars: fresh.length, total_chars: reply.text.length, snapshot, spoken_live: !this.suspended }));
     if (!this.suspended) this.pipeline.feed(fresh);
   }
 

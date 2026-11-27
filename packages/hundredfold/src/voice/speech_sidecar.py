@@ -778,12 +778,15 @@ class Server:
             if close:
                 close()
             # One line per request, in the key=value form the gateway log uses: model time against what went out.
-            sys.stderr.write(
-                f"[voice-sidecar] event=tts_{outcome} id={request[:8]} chars={len(str(header.get('text', '')))} voice={voice} "
-                f"chunks={count} bytes={total} rates={','.join(str(r) for r in sorted(rates))} "
-                f"first_chunk_ms={first_ms} total_ms={int((time.monotonic() - started) * 1000)}\n"
-            )
-            sys.stderr.flush()
+            try:
+                sys.stderr.write(
+                    f"[voice-sidecar] event=tts_{outcome} id={request[:8]} chars={len(str(header.get('text', '')))} voice={voice} "
+                    f"chunks={count} bytes={total} rates={','.join(str(r) for r in sorted(rates))} "
+                    f"first_chunk_ms={first_ms} total_ms={int((time.monotonic() - started) * 1000)}\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass  # a closed stderr must not fail a synthesis that already finished
 
     def _cancel(self, header: dict[str, Any], _body: bytes) -> None:
         target = str(header.get("id"))

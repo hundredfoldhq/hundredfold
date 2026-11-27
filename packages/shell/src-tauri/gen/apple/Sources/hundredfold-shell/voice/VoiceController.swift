@@ -464,7 +464,7 @@ final class VoiceController {
                     onset = (segment, playedMs)
                     let discarded = flushLocked()
                     interruptGuard.interrupted(now: nowMs())
-                    onsetNote = "event=barge_in_detected segment_id=\(segment) played_ms=\(playedMs) rms=\(VoiceLog.f(level)) threshold=\(VoiceLog.f(detector.threshold)) held_ms=\(heldBefore + 20) min_speech_ms=\(detector.minSpeechMs) window_max_rms=\(VoiceLog.f(diag.maxLevel)) window_ms=\(now - diag.windowStartMs) discarded_ms=\(discarded * 1000 / Int64(Self.outputRate)) generation=\(generation)"
+                    onsetNote = "event=barge_in_detected segment=\(segment) played_ms=\(playedMs) rms=\(VoiceLog.f(level)) threshold=\(VoiceLog.f(detector.threshold)) held_ms=\(heldBefore + 20) min_speech_ms=\(detector.minSpeechMs) window_max_rms=\(VoiceLog.f(diag.maxLevel)) window_ms=\(now - diag.windowStartMs) discarded_ms=\(discarded * 1000 / Int64(Self.outputRate)) generation=\(generation)"
                 } else if heldBefore > 0 && detector.heldMs == 0 {
                     VoiceLog.debug("event=onset_run_ended rms=\(VoiceLog.f(level)) threshold=\(VoiceLog.f(detector.threshold)) held_ms=\(heldBefore) min_speech_ms=\(detector.minSpeechMs)")
                 }
@@ -474,14 +474,14 @@ final class VoiceController {
             if onset == nil { finished = ledger.completed(head: head) }
             for id in finished {
                 let since = diag.firstQueuedMs.removeValue(forKey: id).map { now - $0 } ?? -1
-                playedNotes.append("event=segment_played segment_id=\(id) since_first_audio_ms=\(since)")
+                playedNotes.append("event=segment_played segment=\(id) since_first_audio_ms=\(since)")
             }
             // After a flush the ledger is empty, so this also ends the window of a barge-in.
             if diag.wasPlaying && !ledger.isPlaying(head: head) {
                 let starved = onset == nil ? ledger.openSegmentId : nil
                 let ended = onset != nil ? "barge_in" : (diag.windowFlushes != diag.flushes ? "flushed" : (starved != nil ? "starved" : "drained"))
                 let mean = diag.listenFrames > 0 ? diag.sumLevel / Float(diag.listenFrames) : 0
-                windowNote = "event=playback_idle ended=\(ended) window_ms=\(now - diag.windowStartMs) listen_frames=\(diag.listenFrames) over_threshold_frames=\(diag.overFrames) longest_over_ms=\(diag.longestRunMs) max_rms=\(VoiceLog.f(diag.maxLevel)) mean_rms=\(VoiceLog.f(mean)) threshold=\(VoiceLog.f(detector.threshold)) min_speech_ms=\(detector.minSpeechMs) open_segment_id=\(starved ?? -1)"
+                windowNote = "event=playback_idle ended=\(ended) window_ms=\(now - diag.windowStartMs) listen_frames=\(diag.listenFrames) over_threshold_frames=\(diag.overFrames) longest_over_ms=\(diag.longestRunMs) max_rms=\(VoiceLog.f(diag.maxLevel)) mean_rms=\(VoiceLog.f(mean)) threshold=\(VoiceLog.f(detector.threshold)) min_speech_ms=\(detector.minSpeechMs) open_segment=\(starved ?? -1)"
                 diag.wasPlaying = false
                 diag.runMs = 0
             }
@@ -534,17 +534,17 @@ final class VoiceController {
             return generation
         }
         guard let token = accepted else {
-            let line = "event=play_rejected segment_id=\(segmentId) bytes=\(pcm.count) reason=\(rejection ?? "unknown")"
+            let line = "event=play_rejected segment=\(segmentId) bytes=\(pcm.count) reason=\(rejection ?? "unknown")"
             if rejection == "interrupt_guard" || rejection == "not_running" { VoiceLog.info(line) } else { VoiceLog.debug(line) }
             return
         }
         if pcm.count % 2 != 0 {
-            VoiceLog.warn("event=play_odd_length segment_id=\(segmentId) bytes=\(pcm.count)")
+            VoiceLog.warn("event=play_odd_length segment=\(segmentId) bytes=\(pcm.count)")
         }
         if firstOfSegment {
-            VoiceLog.info("event=segment_first_audio_queued segment_id=\(segmentId) bytes=\(pcm.count) frames=\(pcm.count / 2) queued_ms=\(queuedMs) generation=\(token)")
+            VoiceLog.info("event=segment_first_audio_queued segment=\(segmentId) bytes=\(pcm.count) frames=\(pcm.count / 2) queued_ms=\(queuedMs) generation=\(token)")
         } else {
-            VoiceLog.debug("event=down_audio segment_id=\(segmentId) bytes=\(pcm.count) frames=\(pcm.count / 2) queued_ms=\(queuedMs) generation=\(token)")
+            VoiceLog.debug("event=down_audio segment=\(segmentId) bytes=\(pcm.count) frames=\(pcm.count / 2) queued_ms=\(queuedMs) generation=\(token)")
         }
         // Build the buffers first, then schedule each one only if no flush has happened
         // since the audio was accepted: an onset flush on the capture thread can land
@@ -557,7 +557,7 @@ final class VoiceController {
                 let count = min(Self.playbackChunkFrames, samples.count - offset)
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(count)),
                       let channel = buffer.floatChannelData?[0] else {
-                    VoiceLog.warn("event=play_buffer_alloc_failed segment_id=\(segmentId) built_chunks=\(buffers.count) frames=\(count)")
+                    VoiceLog.warn("event=play_buffer_alloc_failed segment=\(segmentId) built_chunks=\(buffers.count) frames=\(count)")
                     return
                 }
                 for i in 0..<count {
@@ -575,7 +575,7 @@ final class VoiceController {
             let reportsFirstChunk = isNewSegment && index == 0
             audioOps.async { [weak self] in
                 guard let self, self.state.sync(execute: { self.generation == token }) else {
-                    VoiceLog.debug("event=schedule_skipped_stale segment_id=\(segmentId) generation=\(token)")
+                    VoiceLog.debug("event=schedule_skipped_stale segment=\(segmentId) generation=\(token)")
                     return
                 }
                 self.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -583,7 +583,7 @@ final class VoiceController {
                         guard let self, self.generation == token else { return }
                         self.playedFrames += count
                         if reportsFirstChunk {
-                            VoiceLog.info("event=segment_first_chunk_played segment_id=\(segmentId) since_queued_ms=\(self.nowMs() - queuedAtMs) chunk_ms=\(count * 1000 / Int64(Self.outputRate))")
+                            VoiceLog.info("event=segment_first_chunk_played segment=\(segmentId) since_queued_ms=\(self.nowMs() - queuedAtMs) chunk_ms=\(count * 1000 / Int64(Self.outputRate))")
                         }
                     }
                 }
@@ -596,7 +596,7 @@ final class VoiceController {
             ledger.end(segmentId: segmentId)
             return ledger.pendingFrames(head: playedFrames) * 1000 / Int64(Self.outputRate)
         }
-        VoiceLog.info("event=segment_end_marker segment_id=\(segmentId) pending_ms=\(pendingMs)")
+        VoiceLog.info("event=segment_end_marker segment=\(segmentId) pending_ms=\(pendingMs)")
     }
 
     /// Stops playback at once and forgets everything queued.

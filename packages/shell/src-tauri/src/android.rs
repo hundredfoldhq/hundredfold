@@ -102,7 +102,7 @@ impl AndroidPlatform {
 
     fn play(&self, segment_id: u32, pcm: &[u8]) -> Result<(), NativeError> {
         let bridge = bridge().ok_or_else(|| {
-            diag_warn!("event=jni_call_failed method=play why=no_bridge segment_id={segment_id}");
+            diag_warn!("event=jni_call_failed method=play why=no_bridge segment={segment_id}");
             NativeError::unsupported()
         })?;
         let mut env = bridge

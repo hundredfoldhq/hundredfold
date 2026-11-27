@@ -139,17 +139,18 @@ security change, not part of this feature.
 ### Diagnostic logs
 
 The native voice path logs one line per event as `event=<name> key=value ...`, with the same
-key names on every side (`segment_id`, `seq`, `bytes`, `frames`, `ms`, `rms`, `threshold`,
+key names on every side (`segment`, `seq`, `bytes`, `frames`, `ms`, `rms`, `threshold`,
 `reason`, `code`), so a spoken reply that is cut off or garbled can be followed from the
 gateway frame to the speaker. Lines carry ids, counts, sizes and timings only: never reply
 or transcript text, credentials or URLs. Rust lines also carry `run=<n>` (the native session)
 and `t_ms` (milliseconds since it started); `voice_start` links `run` to the gateway `session_id`.
+Swift and Kotlin lines carry no session id: line them up with the Rust lines by time.
 
 Info is the default level and is enough to diagnose: lifecycle, every barge-in decision
 (`barge_in_detected` with `rms`, `threshold`, `held_ms`; `barge_in_sent`; `stop_playback_received`
 with `since_barge_in_ms`), and a summary per segment (`segment_received`, `segment_outcome`
-with `outcome=played|cut_onset|stopped_by_gateway|...`, `segment_audible`/`segment_first_chunk_played`
-for latency) and per playback window (`playback_idle`: the microphone level while speech played).
+with `outcome=played|cut_onset|stopped_by_gateway|...`, and `segment_first_chunk_played` (Swift) or
+`segment_audible` (Kotlin) for latency) and per playback window (`playback_idle`: the microphone level while speech played).
 Per-frame lines are debug.
 
 | Platform | Where | Debug lines |

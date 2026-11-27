@@ -339,7 +339,7 @@ impl Session {
         stats.dropped += 1;
         if stats.dropped == 1 {
             diag_info!(
-                "event=segment_dropped run={} segment_id={segment_id} what={what} reason={reason} t_ms={now_ms} guard_left_ms={} drop_through={}",
+                "event=segment_dropped run={} segment={segment_id} what={what} reason={reason} t_ms={now_ms} guard_left_ms={} drop_through={}",
                 self.run_id,
                 self.guard_until_ms.saturating_sub(now_ms),
                 opt(self.drop_through.map(u64::from)),
@@ -358,7 +358,7 @@ impl Session {
     ) {
         let Some(stats) = self.segments.remove(&segment_id) else {
             diag_info!(
-                "event=segment_outcome run={} segment_id={segment_id} outcome={outcome} frames=0 bytes=0 played_ms={} t_ms={now_ms} known=false",
+                "event=segment_outcome run={} segment={segment_id} outcome={outcome} frames=0 bytes=0 played_ms={} t_ms={now_ms} known=false",
                 self.run_id,
                 opt(played_ms),
             );
@@ -369,7 +369,7 @@ impl Session {
         }
         let since = stats.announced_ms.or(stats.first_frame_ms);
         diag_info!(
-            "event=segment_outcome run={} segment_id={segment_id} outcome={outcome} frames={} bytes={} audio_ms={} played_ms={} since_announce_ms={} t_ms={now_ms} known=true",
+            "event=segment_outcome run={} segment={segment_id} outcome={outcome} frames={} bytes={} audio_ms={} played_ms={} since_announce_ms={} t_ms={now_ms} known=true",
             self.run_id,
             stats.frames,
             stats.bytes,
@@ -426,7 +426,7 @@ impl Session {
         if self.segments.len() > 64 {
             if let Some(oldest) = self.segments.keys().min().copied() {
                 diag_warn!(
-                    "event=segment_stats_overflow run={} evicted_segment_id={oldest} t_ms={now_ms}",
+                    "event=segment_stats_overflow run={} evicted_segment={oldest} t_ms={now_ms}",
                     self.run_id
                 );
                 self.segments.remove(&oldest);
@@ -585,7 +585,7 @@ impl Session {
                 if self.dropped(frame.segment_id, now_ms, "audio") {
                     self.totals.down_dropped += 1;
                     diag_debug!(
-                        "event=down_frame_dropped run={} seq={} segment_id={} bytes={} t_ms={now_ms}",
+                        "event=down_frame_dropped run={} seq={} segment={} bytes={} t_ms={now_ms}",
                         self.run_id,
                         frame.seq,
                         frame.segment_id,
@@ -599,7 +599,7 @@ impl Session {
                 );
                 if frame.pcm.is_empty() {
                     diag_debug!(
-                        "event=down_frame_empty run={} seq={} segment_id={} t_ms={now_ms}",
+                        "event=down_frame_empty run={} seq={} segment={} t_ms={now_ms}",
                         self.run_id,
                         frame.seq,
                         frame.segment_id
@@ -617,7 +617,7 @@ impl Session {
                 if stats.first_frame_ms.is_none() {
                     stats.first_frame_ms = Some(now_ms);
                     diag_info!(
-                        "event=segment_first_frame run={} segment_id={} seq={} bytes={} since_announce_ms={} t_ms={now_ms}",
+                        "event=segment_first_frame run={} segment={} seq={} bytes={} since_announce_ms={} t_ms={now_ms}",
                         self.run_id,
                         frame.segment_id,
                         frame.seq,
@@ -630,7 +630,7 @@ impl Session {
                 stats.max_gap_ms = stats.max_gap_ms.max(gap_ms);
                 stats.last_frame_ms = now_ms;
                 diag_debug!(
-                    "event=down_frame run={} seq={} segment_id={} bytes={} frames={} gap_ms={gap_ms} t_ms={now_ms}",
+                    "event=down_frame run={} seq={} segment={} bytes={} frames={} gap_ms={gap_ms} t_ms={now_ms}",
                     self.run_id,
                     frame.seq,
                     frame.segment_id,
@@ -677,7 +677,7 @@ impl Session {
                     answered: false,
                 });
                 diag_info!(
-                    "event=barge_in_sent run={} segment_id={} played_ms={played_ms} drop_through={} guard_ms={INTERRUPT_GUARD_MS} open_segments={} t_ms={now_ms}",
+                    "event=barge_in_sent run={} segment={} played_ms={played_ms} drop_through={} guard_ms={INTERRUPT_GUARD_MS} open_segments={} t_ms={now_ms}",
                     self.run_id,
                     opt(segment_id.map(u64::from)),
                     opt(self.drop_through.map(u64::from)),
@@ -705,7 +705,7 @@ impl Session {
                         .is_some_and(|through| segment_id <= through)
                 {
                     diag_info!(
-                        "event=played_suppressed run={} segment_id={segment_id} drop_through={} t_ms={now_ms}",
+                        "event=played_suppressed run={} segment={segment_id} drop_through={} t_ms={now_ms}",
                         self.run_id,
                         opt(self.drop_through.map(u64::from))
                     );
@@ -714,7 +714,7 @@ impl Session {
                 }
                 self.finish_segment(segment_id, "played", None, now_ms);
                 diag_debug!(
-                    "event=played_sent run={} segment_id={segment_id} t_ms={now_ms}",
+                    "event=played_sent run={} segment={segment_id} t_ms={now_ms}",
                     self.run_id
                 );
                 vec![Action::SendText(
@@ -880,14 +880,14 @@ impl Session {
                 if let Some(barge_in) = self.barge_in.filter(|b| !b.answered) {
                     // The gateway went on speaking after this client stopped its own playback and told it so.
                     diag_warn!(
-                        "event=segment_start_after_unanswered_barge_in run={} segment_id={segment_id} since_barge_in_ms={} t_ms={now_ms}",
+                        "event=segment_start_after_unanswered_barge_in run={} segment={segment_id} since_barge_in_ms={} t_ms={now_ms}",
                         self.run_id,
                         now_ms.saturating_sub(barge_in.at_ms)
                     );
                     self.barge_in = None;
                 }
                 diag_debug!(
-                    "event=segment_start run={} segment_id={segment_id} highest_segment={} drop_through={} t_ms={now_ms}",
+                    "event=segment_start run={} segment={segment_id} highest_segment={} drop_through={} t_ms={now_ms}",
                     self.run_id,
                     opt(self.highest_segment.map(u64::from)),
                     opt(self.drop_through.map(u64::from)),
@@ -940,7 +940,7 @@ impl Session {
                 if self.phase == Phase::Running && !self.dropped(segment_id, now_ms, "end") {
                     match self.segments.get(&segment_id) {
                         Some(stats) => diag_info!(
-                            "event=segment_received run={} segment_id={segment_id} frames={} bytes={} audio_ms={} first_frame_ms={} span_ms={} max_frame_gap_ms={} t_ms={now_ms}",
+                            "event=segment_received run={} segment={segment_id} frames={} bytes={} audio_ms={} first_frame_ms={} span_ms={} max_frame_gap_ms={} t_ms={now_ms}",
                             self.run_id,
                             stats.frames,
                             stats.bytes,
@@ -953,7 +953,7 @@ impl Session {
                             stats.max_gap_ms,
                         ),
                         None => diag_info!(
-                            "event=segment_received run={} segment_id={segment_id} frames=0 bytes=0 audio_ms=0 t_ms={now_ms}",
+                            "event=segment_received run={} segment={segment_id} frames=0 bytes=0 audio_ms=0 t_ms={now_ms}",
                             self.run_id
                         ),
                     }

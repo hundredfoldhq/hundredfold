@@ -201,7 +201,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
     /** Queues PCM16LE mono at 24 kHz for a segment. */
     fun play(segmentId: Int, pcm: ByteArray) {
         if (!running) {
-            Log.i(TAG, "event=play_rejected segment_id=$segmentId bytes=${pcm.size} reason=not_running")
+            Log.i(TAG, "event=play_rejected segment=$segmentId bytes=${pcm.size} reason=not_running")
             return
         }
         var info: String? = null
@@ -214,7 +214,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
             val now = SystemClock.elapsedRealtime()
             if (!guard.accepts(segmentId, now)) {
                 if (rejectedLogged.add(segmentId)) {
-                    info = "event=play_rejected segment_id=$segmentId bytes=${pcm.size} reason=interrupt_guard"
+                    info = "event=play_rejected segment=$segmentId bytes=${pcm.size} reason=interrupt_guard"
                 }
                 return@synchronized
             }
@@ -226,16 +226,16 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
             queuedChunks += 1
             queuedBytes += pcm.size.toLong()
             if (first) {
-                info = "event=segment_first_audio_queued segment_id=$segmentId bytes=${pcm.size} frames=${pcm.size / 2} " +
+                info = "event=segment_first_audio_queued segment=$segmentId bytes=${pcm.size} frames=${pcm.size / 2} " +
                     "queued_ms=$pendingMs generation=$generation"
             } else if (debugLog) {
-                detail = "event=down_audio segment_id=$segmentId bytes=${pcm.size} frames=${pcm.size / 2} " +
+                detail = "event=down_audio segment=$segmentId bytes=${pcm.size} frames=${pcm.size / 2} " +
                     "queued_ms=$pendingMs queue_chunks=${queue.size} generation=$generation"
             }
         }
         info?.let { Log.i(TAG, it) }
         detail?.let { Log.d(TAG, it) }
-        if (oddLength) Log.w(TAG, "event=play_odd_length segment_id=$segmentId bytes=${pcm.size}")
+        if (oddLength) Log.w(TAG, "event=play_odd_length segment=$segmentId bytes=${pcm.size}")
     }
 
     fun segmentEnd(segmentId: Int) {
@@ -243,7 +243,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
             ledger.end(segmentId)
             track?.let { ledger.pendingFrames(head(it)) * 1000 / OUTPUT_RATE } ?: -1L
         }
-        Log.i(TAG, "event=segment_end_marker segment_id=$segmentId pending_ms=$pendingMs")
+        Log.i(TAG, "event=segment_end_marker segment=$segmentId pending_ms=$pendingMs")
     }
 
     /** Stops playback at once and forgets everything queued. */
@@ -433,7 +433,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                         val discarded = flushLocked()
                         guard.interrupted(SystemClock.elapsedRealtime())
                         fired = true
-                        onsetNote = "event=barge_in_detected segment_id=$onsetSegment played_ms=$onsetPlayedMs " +
+                        onsetNote = "event=barge_in_detected segment=$onsetSegment played_ms=$onsetPlayedMs " +
                             "rms=${fmt(level)} threshold=${fmt(detector.threshold)} held_ms=${held + FRAME_MS} " +
                             "min_speech_ms=${detector.minSpeechMs} window_max_rms=${fmt(listen.max)} " +
                             "window_ms=${frameAt - listen.startedAt} discarded_ms=${discarded * 1000 / OUTPUT_RATE} " +
@@ -450,7 +450,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                         ledger.currentSegment(head)?.let { id ->
                             if (audibleLogged.add(id)) {
                                 val queued = queuedAt[id]
-                                audibleNote = "event=segment_audible segment_id=$id " +
+                                audibleNote = "event=segment_audible segment=$id " +
                                     "since_queued_ms=${if (queued != null) frameAt - queued else -1} " +
                                     "pending_ms=${ledger.pendingFrames(head) * 1000 / OUTPUT_RATE}"
                             }
@@ -463,7 +463,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                 for (id in finished) {
                     val queued = queuedAt.remove(id)
                     audibleLogged.remove(id)
-                    playedNotes.add("event=segment_played segment_id=$id since_queued_ms=${if (queued != null) frameAt - queued else -1}")
+                    playedNotes.add("event=segment_played segment=$id since_queued_ms=${if (queued != null) frameAt - queued else -1}")
                 }
                 // After a flush the ledger is empty, so this also ends the window of a barge-in.
                 if (listen.active && !ledger.isPlaying(head)) {
@@ -478,7 +478,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                     windowNote = "event=playback_idle ended=$ended window_ms=${frameAt - listen.startedAt} " +
                         "listen_frames=${listen.frames} over_threshold_frames=${listen.over} " +
                         "longest_over_ms=${listen.longestMs} max_rms=${fmt(listen.max)} mean_rms=${fmt(mean)} " +
-                        "threshold=${fmt(detector.threshold)} min_speech_ms=${detector.minSpeechMs} open_segment_id=${open ?: -1}"
+                        "threshold=${fmt(detector.threshold)} min_speech_ms=${detector.minSpeechMs} open_segment=${open ?: -1}"
                     listen.active = false
                 }
             }
@@ -518,7 +518,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                 // write, and then at most one slice of stale audio plays.
                 val written = out.write(chunk.pcm, offset, minOf(chunk.pcm.size - offset, WRITE_SLICE_BYTES))
                 if (written < 0) {
-                    Log.w(TAG, "event=track_write_failed code=$written segment_id=${chunk.segmentId} offset=$offset bytes=${chunk.pcm.size}")
+                    Log.w(TAG, "event=track_write_failed code=$written segment=${chunk.segmentId} offset=$offset bytes=${chunk.pcm.size}")
                     break
                 }
                 offset += written
@@ -530,7 +530,7 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
                 Log.w(
                     TAG,
                     "event=track_underrun total=$underruns new=${underruns - reportedUnderruns} " +
-                        "segment_id=${chunk.segmentId} pending_ms=$pendingMs queue_chunks=${queue.size}",
+                        "segment=${chunk.segmentId} pending_ms=$pendingMs queue_chunks=${queue.size}",
                 )
                 reportedUnderruns = underruns
             }
@@ -541,16 +541,17 @@ class VoiceAudio(private val sink: Sink = NativeSink) {
 
     /** Logs where the microphone and speaker are routed whenever the system moves them (speaker, headset, Bluetooth). */
     private fun watchRouting(rec: AudioRecord, out: AudioTrack) {
-        val handler = Handler(Looper.getMainLooper())
-        val onChange = AudioRouting.OnRoutingChangedListener { router ->
-            val which = if (router === rec) "record" else "track"
-            Log.i(
-                TAG,
-                "event=route_change which=$which device=${deviceName(router.routedDevice)} " +
-                    "record_device=${deviceName(rec.routedDevice)} track_device=${deviceName(out.routedDevice)}",
-            )
-        }
+        // Diagnostics only: nothing here, the listener's creation included, may fail the audio start.
         runCatching {
+            val handler = Handler(Looper.getMainLooper())
+            val onChange = AudioRouting.OnRoutingChangedListener { router ->
+                val which = if (router === rec) "record" else "track"
+                Log.i(
+                    TAG,
+                    "event=route_change which=$which device=${deviceName(router.routedDevice)} " +
+                        "record_device=${deviceName(rec.routedDevice)} track_device=${deviceName(out.routedDevice)}",
+                )
+            }
             rec.addOnRoutingChangedListener(onChange, handler)
             out.addOnRoutingChangedListener(onChange, handler)
             routingListeners =

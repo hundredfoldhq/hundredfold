@@ -81,7 +81,7 @@ class VoiceBridge(private val activity: ComponentActivity) {
             // Powers of two only: frames arrive 50 times a second.
             noEngineDrops += 1
             if ((noEngineDrops and (noEngineDrops - 1)) == 0L) {
-                Log.w(TAG, "event=play_dropped reason=no_engine segment_id=$segmentId bytes=${pcm.size} count=$noEngineDrops")
+                Log.w(TAG, "event=play_dropped reason=no_engine segment=$segmentId bytes=${pcm.size} count=$noEngineDrops")
             }
             return
         }

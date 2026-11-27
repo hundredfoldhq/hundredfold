@@ -270,6 +270,10 @@ pub async fn voice_start<R: Runtime>(
             status: status.clone(),
         });
     }
+    // The capture counters are process-wide: a run's `stats` lines count from its own start.
+    CAPTURE_BLOCKS.store(0, Ordering::Relaxed);
+    CAPTURE_BYTES.store(0, Ordering::Relaxed);
+    CAPTURE_DROPPED.store(0, Ordering::Relaxed);
     diag_info!(
         "event=voice_start run={id} session_id={} mode={:?}",
         input.session_id,
@@ -490,13 +494,13 @@ async fn run_session(
                 Action::Play { segment_id, pcm } => {
                     play_commands += 1;
                     diag_debug!(
-                        "event=platform_play run={id} segment_id={segment_id} bytes={} count={play_commands}",
+                        "event=platform_play run={id} segment={segment_id} bytes={} count={play_commands}",
                         pcm.len()
                     );
                     platform.command(PlatformCommand::Play { segment_id, pcm })
                 }
                 Action::SegmentEnd(segment) => {
-                    diag_debug!("event=platform_segment_end run={id} segment_id={segment}");
+                    diag_debug!("event=platform_segment_end run={id} segment={segment}");
                     platform.command(PlatformCommand::SegmentEnd(segment))
                 }
                 Action::SetCue(request) => {

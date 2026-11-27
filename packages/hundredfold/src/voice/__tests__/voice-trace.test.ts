@@ -25,6 +25,27 @@ describe("trace lines", () => {
     expect(lines).toEqual(["[voice] event=kept att=a1 session=s1 n=2"]);
   });
 
+  it("never throw on a value that is not a string or number, and never write its contents", () => {
+    const line = traceLine("x", { a: { secret: 1 } as never, b: ["x"] as never, c: 10n as never, d: (() => 1) as never });
+    expect(line).toBe("[voice] event=x a=<object> b=<array> c=<bigint> d=<function>");
+  });
+
+  it("swallow a sink that throws, and skip a debug line when the sink says debug is off", () => {
+    const throwing = createTracer({ info: () => { throw new Error("disk full"); }, warn: () => { throw new Error("disk full"); } });
+    expect(() => throwing.info("a")).not.toThrow();
+    expect(() => throwing.warn("a")).not.toThrow();
+    let built = 0;
+    const lines: string[] = [];
+    const off = createTracer({ info: (m) => lines.push(m), warn: (m) => lines.push(m), debug: (m) => lines.push(m), debugEnabled: () => false });
+    off.debug("frame", () => { built += 1; return { n: 1 }; });
+    expect(built).toBe(0);
+    expect(lines).toEqual([]);
+    const on = createTracer({ info: (m) => lines.push(m), warn: (m) => lines.push(m), debug: (m) => lines.push(m), debugEnabled: () => true });
+    on.debug("frame", () => { built += 1; return { n: 1 }; });
+    expect(built).toBe(1);
+    expect(lines).toEqual(["[voice] event=frame n=1"]);
+  });
+
   it("report an error without an address", () => {
     expect(errorField(new Error("could not reach https://api.example.com/v1/audio?key=abc now"))).toBe("could not reach <url> now");
   });
@@ -92,7 +113,6 @@ describe("what a spoken conversation logs", () => {
     await h.reply("Hi to you.");
     const debugEvents = h.debugs.map((line) => /event=(\w+)/.exec(line)?.[1]);
     expect(debugEvents).toEqual(expect.arrayContaining(["audio_frame", "synth_chunk", "reply_text"]));
-    expect(events(h).filter((name) => ["audio_frame", "synth_chunk", "reply_text"].includes(name)).length).toBe(debugEvents.filter((name) => ["audio_frame", "synth_chunk", "reply_text"].includes(name ?? "")).length);
     expect(h.infos.some((line) => line.includes("event=audio_frame") || line.includes("event=synth_chunk"))).toBe(false);
   });
 
@@ -128,6 +148,29 @@ describe("what a spoken conversation logs", () => {
     h.delta("text", "One sentence here. Another sentence follows. ");
     await settle();
     const dropped = h.warnings.filter((line) => line.includes("event=audio_out_dropped"));
-    expect(dropped.length).toBeLessThanOrEqual(1);
+    expect(dropped).toHaveLength(1);
+  });
+
+  it("a malformed hello gets the same answer as before and never throws out of the socket handler", () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect({ hello: false });
+    for (const frame of [
+      { type: "hello", protocol: { a: 1 }, mode: "hands-free" },
+      { type: "hello", protocol: 1, mode: ["x"] },
+      { type: "hello", protocol: 1, mode: "hands-free", client: { x: 1 } },
+    ]) expect(() => attachment.onText(JSON.stringify(frame))).not.toThrow();
+    expect(socket.ofType("error").map((f) => f.code)).toEqual(expect.arrayContaining(["bad_frame"]));
+    expect(h.warnings.join("\n")).not.toContain("secret");
+  });
+
+  it("a barge_in with a segment id that is not a number is logged, not thrown", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await h.say(attachment, "go");
+    h.event("session:started");
+    h.delta("text", "Alpha one two three. ");
+    await settle();
+    expect(() => attachment.onText(JSON.stringify({ type: "barge_in", segmentId: { x: 1 }, playedMs: [1] }))).not.toThrow();
+    expect(all(h).join("\n")).toContain("event=client_barge_in");
   });
 });

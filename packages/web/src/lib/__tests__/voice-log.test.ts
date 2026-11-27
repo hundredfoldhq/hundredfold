@@ -31,7 +31,7 @@ afterEach(() => {
 describe("formatVoiceEvent", () => {
   it("writes event then key=value pairs, skipping undefined", () => {
     expect(formatVoiceEvent("segment_summary", { segment: 3, ok: true, gone: false, none: null, skipped: undefined })).toBe(
-      "event=segment_summary segment=3 ok=1 gone=0 none=null",
+      "event=segment_summary segment=3 ok=true gone=false none=null",
     )
   })
 

@@ -83,8 +83,9 @@ class VoiceService : Service() {
             engine.start()
             audio = engine
             VoiceBridge.attach(engine)
-            watchDevices()
-            Log.i(TAG, "event=service_audio_started ms=${SystemClock.elapsedRealtime() - beganAt} ${audioManagerState()}")
+            // Diagnostics only: nothing here may fail a session whose audio is already up.
+            runCatching { watchDevices() }
+            runCatching { Log.i(TAG, "event=service_audio_started ms=${SystemClock.elapsedRealtime() - beganAt} ${audioManagerState()}") }
         } catch (error: Throwable) {
             Log.w(TAG, "event=service_start_failed ms=${SystemClock.elapsedRealtime() - beganAt} error=${error.javaClass.simpleName}")
             Log.e(VoiceAudio.TAG, "voice service could not start audio", error)

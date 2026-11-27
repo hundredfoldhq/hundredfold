@@ -128,7 +128,7 @@ export class VoiceAttachment {
       return this.badFrame("Unreadable frame.");
     }
     this.framesIn += 1;
-    this.trace.debug("frame_in", { type: frame.type });
+    this.trace.debug("frame_in", () => ({ type: frame.type }));
     if (frame.type === "hello") return this.onHello(frame);
     if (!this.hello) {
       this.trace.warn("frame_before_hello", { type: frame.type });
@@ -160,7 +160,7 @@ export class VoiceAttachment {
   /** A socket closed. Whether voice mode ends or waits for the client to come back; a stale socket's close changes nothing. */
   onSocketClosed(socket: VoiceSocket, code: number): void {
     if (this.ended || this.socket !== socket) {
-      this.trace.debug("socket_closed_stale", { code, ended: this.ended });
+      this.trace.debug("socket_closed_stale", () => ({ code, ended: this.ended }));
       return;
     }
     this.socket = null;
@@ -250,7 +250,7 @@ export class VoiceAttachment {
   private onDelta(payload: Record<string, unknown>): void {
     if (payload.sidechain === true) return;
     const content = typeof payload.content === "string" ? payload.content : "";
-    this.trace.debug("session_delta", { type: String(payload.type), chars: content.length });
+    this.trace.debug("session_delta", () => ({ type: String(payload.type), chars: content.length }));
     switch (payload.type) {
       case "text": return this.voice.onText(content, false);
       case "text_snapshot": return this.voice.onText(content, true);
@@ -464,7 +464,7 @@ export class VoiceAttachment {
   private send(frame: VoiceServerFrame): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== OPEN) {
-      if (frame.type !== "keepalive") this.trace.debug("frame_dropped", { type: frame.type, socket: socket ? "not_open" : "none", suspended: this.suspended });
+      if (frame.type !== "keepalive") this.trace.debug("frame_dropped", () => ({ type: frame.type, socket: socket ? "not_open" : "none", suspended: this.suspended }));
       return;
     }
     this.traceOut(frame);
@@ -479,7 +479,7 @@ export class VoiceAttachment {
       case "detached": return this.trace.info("detached_sent", { reason: frame.reason });
       case "turn": return this.trace.info("turn_sent", { state: frame.state, tool: frame.tool });
       case "metrics": return this.trace.info("metrics_sent", { utterance: frame.utteranceId, stt_ms: frame.sttMs, ttfa_ms: frame.ttfaMs });
-      default: return this.trace.debug("frame_out", { type: frame.type });
+      default: return this.trace.debug("frame_out", () => ({ type: frame.type }));
     }
   }
 

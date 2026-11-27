@@ -189,7 +189,7 @@ export class UtteranceCapture {
 
   private onVad({ kind, atMs, speechMs }: VadEvent): void {
     if (this.closed || this.options.pushToTalk) return;
-    this.trace.debug("vad_event", { kind, at_ms: Math.round(atMs), speech_ms: speechMs === undefined ? undefined : Math.round(speechMs), written_ms: Math.round(this.written / BYTES_PER_MS) });
+    this.trace.debug("vad_event", () => ({ kind, at_ms: Math.round(atMs), speech_ms: speechMs === undefined ? undefined : Math.round(speechMs), written_ms: Math.round(this.written / BYTES_PER_MS) }));
     if (kind === "reset") return this.onReset(atMs);
     if (kind === "end") return this.onVadEnd(atMs, speechMs);
     // Speech resumed inside a hold: the same utterance goes on.
@@ -392,7 +392,7 @@ export class UtteranceCapture {
   /** One line per recognition event: a partial at debug, the final and an error at info and warn. */
   private traceStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string; message?: string; quality?: SttQuality }): void {
     const base = { utterance: open.id, audio_ms: Math.round(open.audioMs) };
-    if (event.type === "partial") return this.trace.debug("stt_partial", { utterance: open.id, chars: (event.text ?? "").length });
+    if (event.type === "partial") return this.trace.debug("stt_partial", () => ({ utterance: open.id, chars: (event.text ?? "").length }));
     if (event.type === "error") return this.trace.warn("stt_error", { ...base, error: errorField(event.message ?? "unknown") });
     const now = this.options.clock.now();
     this.trace.info("stt_final", { ...base, chars: (event.text ?? "").length, stt_ms: Math.max(0, now - (open.endedAt ?? now)), confidence: event.quality?.confidence, no_speech: event.quality?.noSpeechProb });

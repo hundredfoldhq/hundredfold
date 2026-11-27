@@ -6,7 +6,7 @@ import type { HundredfoldConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
 import { streamTtsSentences, ttsStatus, validateTtsText } from "../tts/tts-stream.js";
-import { errorField, traceLine } from "../voice/trace.js";
+import { errorField, traceDebug, traceLine } from "../voice/trace.js";
 import { readJsonBody } from "./http-helpers.js";
 import { json } from "./route-helpers.js";
 
@@ -53,10 +53,13 @@ async function streamFrames(
       (wav) => {
         const header = Buffer.allocUnsafe(4);
         header.writeUInt32BE(wav.length, 0);
-        const flushed = res.write(header) && res.write(wav);
+        // Both writes always happen: the length prefix and its frame are one unit, whatever the socket buffer says.
+        const headerFlushed = res.write(header);
+        const wavFlushed = res.write(wav);
+        const flushed = headerFlushed && wavFlushed;
         frames += 1;
         bytes += header.length + wav.length;
-        if (!flushed) logger.debug(traceLine("tts_backpressure", { req: requestId, frames, buffered: res.writableLength }));
+        if (!flushed) traceDebug("tts_backpressure", () => ({ req: requestId, frames, buffered: res.writableLength }));
       },
       () => cancelled || res.writableEnded,
       requestId,

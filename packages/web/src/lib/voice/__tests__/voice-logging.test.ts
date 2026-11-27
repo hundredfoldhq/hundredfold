@@ -99,7 +99,7 @@ describe("voice socket logging", () => {
     const connection = new FakeConnection()
     const socket = VoiceSocket.open("s1", { onFrame() {}, onAudio() {}, onClose() {} }, { mode: "hands-free", open: () => connection })
     expect(socket.send({ type: "played", segmentId: 4 })).toBe(false)
-    expect(getDebugLog()).toContain("event=frame_out_dropped type=played closed=0 ready_state=0")
+    expect(getDebugLog()).toContain("event=frame_out_dropped type=played closed=false ready_state=0")
   })
 })
 
@@ -135,6 +135,6 @@ describe("voice player logging", () => {
   it("warns when audio arrives for a segment that was never opened", () => {
     const player = new VoicePlayer(new FakeAudioContext(), {})
     player.enqueue(9, pcm(100))
-    expect(getDebugLog()).toContain("event=player_chunk_dropped segment=9 reason=no_segment samples=100 after_flush=0")
+    expect(getDebugLog()).toContain("event=player_chunk_dropped segment=9 reason=no_segment samples=100 after_flush=false")
   })
 })

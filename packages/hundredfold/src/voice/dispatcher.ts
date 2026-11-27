@@ -112,10 +112,10 @@ export class Dispatcher {
       if (!session || !engine) throw new Error("the session or its engine is gone");
       const input = this.policyInput(engine, round >= MAX_WAIT_ROUNDS);
       const decision = decideBargeIn(input);
-      this.trace.debug("dispatch_decision", {
+      this.trace.debug("dispatch_decision", () => ({
         round, kind: decision.kind, turn_running: input.turnRunning, long_work: input.longWork?.tool, soft: input.soft, steerable: input.steerable,
         wait_ms: decision.kind === "wait_then_decide" ? decision.waitMs : undefined,
-      });
+      }));
       if (decision.kind !== "wait_then_decide") {
         this.trace.info("dispatch_plan", { engine: session.engine, kind: decision.kind, turn_running: input.turnRunning, long_work: input.longWork?.tool, waited_rounds: round });
         return { decision, engine, engineName: session.engine, longWork: input.longWork };

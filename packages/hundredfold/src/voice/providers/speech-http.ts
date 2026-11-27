@@ -1,6 +1,6 @@
 /** Streams a `POST .../audio/speech` response as PCM16LE chunks, shared by the OpenAI and OpenAI-compatible providers. */
 import { logger } from "../../shared/logger.js";
-import { traceLine } from "../trace.js";
+import { traceDebug, traceLine } from "../trace.js";
 import { redact } from "./audio.js";
 
 export interface SpeechRequest {
@@ -84,7 +84,7 @@ export async function* pcmChunks(response: Response): AsyncGenerator<Buffer> {
       chunks += 1;
       bytes += part.length;
       if (part.length % 2 !== 0) oddReads += 1;
-      logger.debug(traceLine("speech_http_chunk", { n: chunks, bytes: part.length, total: bytes, since_start_ms: Date.now() - startedAt }));
+      traceDebug("speech_http_chunk", () => ({ n: chunks, bytes: part.length, total: bytes, since_start_ms: Date.now() - startedAt }));
       if (even > 0) yield data.subarray(0, even);
     }
     finished = true;

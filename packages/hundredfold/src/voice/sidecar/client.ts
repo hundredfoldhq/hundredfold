@@ -6,7 +6,7 @@
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { logger } from "../../shared/logger.js";
-import { traceLine } from "../trace.js";
+import { traceDebug, traceLine } from "../trace.js";
 import type { VadEventHandler } from "../provider.js";
 import { FrameDecoder, FramingError, encodeFrame, type SidecarFrame } from "./framing.js";
 
@@ -377,22 +377,27 @@ export class SpeechSidecarClient {
       this.tts.set(id, inbox);
       signal.addEventListener("abort", onAbort, { once: true });
       this.write({ op: "tts", id, ...request });
-      logger.debug(traceLine("sidecar_tts_request", { id: short, chars: request.text.length, voice: request.voice, speed: request.speed, lang: request.lang, ready_ms: Date.now() - requestedAt }));
+      traceDebug("sidecar_tts_request", () => ({ id: short, chars: request.text.length, voice: request.voice, speed: request.speed, lang: request.lang, ready_ms: Date.now() - requestedAt }));
       yield* inbox.drain();
     } finally {
       signal.removeEventListener("abort", onAbort);
-      const stats = inbox.stats();
-      const fields = {
-        id: short, chars: request.text.length, chunks: stats.chunks, bytes: stats.bytes, rates: stats.rates.join(","), odd_chunks: stats.oddChunks,
-        ttfb_ms: stats.firstAt === null ? undefined : stats.firstAt - requestedAt, total_ms: Date.now() - requestedAt, completed: inbox.ended && !aborted,
-      };
-      if (stats.rates.some((rate) => rate !== 24_000)) logger.warn(traceLine("sidecar_tts_rate_unexpected", { ...fields, expected: 24_000 }));
-      if (aborted) logger.info(traceLine("sidecar_tts_aborted", fields));
-      else if (stats.chunks === 0) logger.warn(traceLine("sidecar_tts_no_audio", fields));
-      else logger.debug(traceLine("sidecar_tts_done", fields));
       if (this.tts.delete(id) && !inbox.ended) this.cancel(id);
       release();
+      this.traceTtsEnd(inbox, { id: short, chars: request.text.length, requestedAt, aborted });
     }
+  }
+
+  /** One summary line per synthesis request, written after the request's cleanup so it can never get in its way. */
+  private traceTtsEnd(inbox: TtsInbox, request: { id: string; chars: number; requestedAt: number; aborted: boolean }): void {
+    const stats = inbox.stats();
+    const fields = {
+      id: request.id, chars: request.chars, chunks: stats.chunks, bytes: stats.bytes, rates: stats.rates.join(","), odd_chunks: stats.oddChunks,
+      ttfb_ms: stats.firstAt === null ? undefined : stats.firstAt - request.requestedAt, total_ms: Date.now() - request.requestedAt, completed: inbox.ended && !request.aborted,
+    };
+    if (stats.rates.some((rate) => rate !== 24_000)) logger.warn(traceLine("sidecar_tts_rate_unexpected", { ...fields, expected: 24_000 }));
+    if (request.aborted) logger.info(traceLine("sidecar_tts_aborted", fields));
+    else if (stats.chunks === 0) logger.warn(traceLine("sidecar_tts_no_audio", fields));
+    else traceDebug("sidecar_tts_done", () => fields);
   }
 
   /** Tell the sidecar to drop a `tts` id or an utterance. */
@@ -417,7 +422,7 @@ export class SpeechSidecarClient {
 
   private onTtsAudio(header: SidecarFrame["header"], body: Buffer): void {
     const waiter = this.tts.get(String(header.id));
-    if (!waiter) logger.debug(traceLine("sidecar_tts_audio_unclaimed", { id: String(header.id).slice(0, 8), bytes: body.length }));
+    if (!waiter) traceDebug("sidecar_tts_audio_unclaimed", () => ({ id: String(header.id).slice(0, 8), bytes: body.length }));
     waiter?.push({ pcm: body, sampleRate: Number(header.sampleRate) });
   }
 

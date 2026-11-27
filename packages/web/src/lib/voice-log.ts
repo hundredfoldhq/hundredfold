@@ -99,7 +99,7 @@ function formatValue(value: Exclude<VoiceLogValue, undefined>): string {
     if (!Number.isFinite(value)) return String(value)
     return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000)
   }
-  if (typeof value === "boolean") return value ? "1" : "0"
+  if (typeof value === "boolean") return value ? "true" : "false"
   const text = value.length > MAX_VALUE_CHARS ? `${value.slice(0, MAX_VALUE_CHARS)}...` : value
   return SAFE_VALUE.test(text) ? text : JSON.stringify(text)
 }

@@ -450,8 +450,8 @@ export class SpeechPipeline {
       if (!signal.aborted) job.error = error;
     } finally {
       job.done = true;
-      this.traceSynthesis(segment, job, signal.aborted);
       this.wake(job);
+      this.traceSynthesis(segment, job, signal.aborted);
     }
   }
 
@@ -479,7 +479,7 @@ export class SpeechPipeline {
     job.providerBytes += chunk.length;
     if (chunk.length % 2 !== 0) job.oddChunks += 1;
     job.firstChunkAt ??= Date.now();
-    this.trace.debug("synth_chunk", { segment: segment.id, n: job.providerChunks, bytes: chunk.length, since_start_ms: Date.now() - job.startedAt });
+    this.trace.debug("synth_chunk", () => ({ segment: segment.id, n: job.providerChunks, bytes: chunk.length, since_start_ms: Date.now() - job.startedAt }));
   }
 
   /** How synthesis of a segment ended: the figures that tell silence, truncation and a slow provider apart. */
@@ -554,7 +554,7 @@ export class SpeechPipeline {
       sink.audio(Buffer.concat([audioFrameHeader(seq, segment.id), piece]));
       segment.sentFrames = (segment.sentFrames ?? 0) + 1;
       segment.sentBytes = (segment.sentBytes ?? 0) + piece.length;
-      this.trace.debug("audio_frame", { segment: segment.id, seq: seq & 0xffff, bytes: piece.length, sent_ms: Math.round(segment.sentMs), since_start_ms: Date.now() - (segment.startedAt ?? Date.now()) });
+      this.trace.debug("audio_frame", () => ({ segment: segment.id, seq: seq & 0xffff, bytes: piece.length, sent_ms: Math.round(segment.sentMs), since_start_ms: Date.now() - (segment.startedAt ?? Date.now()) }));
       segment.sentMs += pcmDurationMs(piece.length, VOICE_OUTPUT_SAMPLE_RATE);
       if (!started) {
         this.options.onAudio?.(segment);
