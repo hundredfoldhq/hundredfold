@@ -272,7 +272,11 @@ Speaking while the assistant is working never stops the work. How the gateway le
 
 ## Sound cues
 
-So that silence while the assistant works does not feel like a hang, voice mode plays two soft sounds, one at a time:
+Voice mode makes three kinds of sound: a start cue, once, and two soft sounds while the assistant works.
+
+**Start cue:** three quick, high beeps (A6, 1760 Hz; each 60 ms with a 60 ms gap, about a third of a second in all) when voice mode is live and listening. In the browser that is when the gateway has said `ready` and the microphone is capturing, whichever comes second; in the mobile app, at the gateway's first `ready`. It plays once for each start (a second start after hanging up plays it again, a reconnect after the device suspended the session does not), and not at all when voice mode fails to start (microphone refused, no `ready`, a rejected `ready`). It is the same synthesised sound as the others, made on the device in the web app and the mobile app, and it follows the same two settings below: `cues.enabled: false` or `cues.volume: 0` silences it too. While it sounds, and for a quarter of a second after, the microphone is not sent to the gateway and the barge-in detector is not fed, so the beeps are never transcribed and never taken for you interrupting.
+
+So that silence while the assistant works does not feel like a hang, voice mode also plays two soft sounds, one at a time:
 
 - **Thinking:** one soft, low note (about G4) every 1.6 seconds, while the model is working and nothing is being spoken yet.
 - **Tool:** a pair of soft notes, the second a little higher (about F4 then A4), every 1.8 seconds, while a tool is running. It takes over from the thinking note at the first tool call and gives it back when the tool returns.
@@ -285,7 +289,7 @@ Both are made on the device (a plain sine note that swells and fades gently, wit
 
 **Settings:** Settings, Voice mode, has a switch and a volume slider; the same keys are `voice.cues.enabled` and `voice.cues.volume` in `config.yaml`. They are on at a low volume by default, apply the next time voice mode starts, and a config with no `cues` block, or one with stale keys, loads and uses the defaults.
 
-**Why a cue cannot trigger the microphone.** The phone or computer can hear its own speaker, so this is guarded in four ways:
+**Why a cue cannot trigger the microphone.** The phone or computer can hear its own speaker, so this is guarded in four ways (and the start cue adds a fifth, below):
 
 1. A cue never goes through the speech player. Barge-in only listens while speech is playing (browser, Android and iOS alike), and a cue is never playing then, so a cue is never taken for you interrupting.
 2. The gateway only hears a cue if it leaks into the microphone, and the cue is built not to look like speech to it: notes of 110 to 140 milliseconds with long gaps, at most -16 dBFS at volume 1 and about -26 dBFS at the default, well under the 250 ms hold that starts an utterance. The echo canceller of the browser, Android and iOS removes most of it before that.
@@ -293,6 +297,8 @@ Both are made on the device (a plain sine note that swells and fades gently, wit
 4. Its audio is on a player of its own, on the same audio session as the microphone, so the platform's echo canceller knows it is output.
 
 Measured against the real Silero detector on a gateway, with the cue played straight into the microphone uplink and no echo cancelling at all: each cue at volume 1 for 20 seconds (about 0.07 RMS, above the default onset level for the 110 to 140 ms of each note, never for 250 ms), and a cue at five times that level (about 0.35 RMS), started no utterance, no transcript and no `stop_playback`, while a spoken sentence at normal level did. If a loud room or an open speaker still sets it off on your setup, lower `cues.volume` or turn the cues off.
+
+5. (Start cue only.) The microphone is held back from the gateway while the beeps sound and for 250 ms after, so even a beep that leaks into the microphone has no way to reach speech recognition. A word spoken after that is heard as usual.
 
 ## The screen is locked
 

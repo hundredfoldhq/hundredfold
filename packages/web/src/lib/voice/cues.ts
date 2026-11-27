@@ -16,6 +16,9 @@ import type { PlayerAudioContext, PlayerBuffer, PlayerSource } from "./player"
  * from the gateway's own `turn`, `vad` and `background` frames (see `wantedCue`),
  * never guessed from the audio.
  *
+ * A third sound, the start cue, is not one of these loops: three short high beeps played once, the moment voice
+ * mode is live and listening (see `START_CUE`). It is the same synthesis, played on the same cue path.
+ *
  * Echo: a cue never goes through `VoicePlayer`, so it never arms the barge-in
  * detector (which only listens while speech is playing); it is silenced the
  * moment speech is audible or the user is heard; and it is quiet and made of
@@ -28,6 +31,15 @@ export const DEFAULT_CUE_SETTINGS: VoiceCueSettings = { enabled: true, volume: 0
 
 /** Loudest a note gets (volume 1), as a share of full scale: about -16 dBFS. Default volume gives about -26 dBFS. */
 export const CUE_PEAK = 0.16
+
+/** How long the start cue sounds: its last beep ends at 340 ms. */
+export const START_CUE_MS = 340
+
+/**
+ * How long after the start cue ends the microphone stays muted toward the gateway (and the barge-in detector
+ * stays unfed): the room can still be ringing, and the speaker's output can reach the microphone a little late.
+ */
+export const START_CUE_TAIL_MS = 250
 
 interface Blip {
   atMs: number
@@ -50,6 +62,17 @@ export const CUE_PATTERNS: Record<VoiceCue, CuePattern> = {
   tool: { loopMs: 1800, blips: [{ atMs: 300, durMs: 110, hz: 349 }, { atMs: 500, durMs: 110, hz: 440 }] },
 }
 
+/**
+ * Three quick, high beeps (A6, 1760 Hz) played once when voice mode has started and is listening: "voice is live".
+ * Each is 60 ms with a 60 ms gap, so the whole cue is about a third of a second, far from the 250 ms an utterance
+ * needs. The first comes a moment after the cue starts, so the audio output is up before the first beep.
+ * The same recipe is in `cues.rs`.
+ */
+export const START_CUE: CuePattern = {
+  loopMs: START_CUE_MS,
+  blips: [0, 1, 2].map((n) => ({ atMs: 40 + n * 120, durMs: 60, hz: 1760 })),
+}
+
 /** Share of a note's length spent rising; the rest is a slower, gentler fall, so a note swells and fades like a soft bell. */
 const ATTACK = 0.3
 
@@ -60,7 +83,15 @@ const ATTACK = 0.3
  * fall over the rest, so it starts and ends at zero and never clicks.
  */
 export function renderCueLoop(cue: VoiceCue, sampleRate: number): Float32Array {
-  const pattern = CUE_PATTERNS[cue]
+  return renderPattern(CUE_PATTERNS[cue], sampleRate)
+}
+
+/** The start cue: three beeps, once, as mono floats with a peak of at most 1. */
+export function renderStartCue(sampleRate: number): Float32Array {
+  return renderPattern(START_CUE, sampleRate)
+}
+
+function renderPattern(pattern: CuePattern, sampleRate: number): Float32Array {
   const out = new Float32Array(Math.round((pattern.loopMs * sampleRate) / 1000))
   for (const blip of pattern.blips) {
     const start = Math.round((blip.atMs * sampleRate) / 1000)
@@ -137,6 +168,8 @@ export interface CueAudioContext extends PlayerAudioContext {
 export interface VoiceCuePlayerLike {
   /** Plays this cue until told otherwise; null stops. The same cue again changes nothing. */
   set(cue: VoiceCue | null, volume: number): void
+  /** Plays the start cue (three beeps) once, beside whatever loop is running. Returns how long it sounds, in ms. */
+  playStart(volume: number): number
   dispose(): void
 }
 
@@ -153,6 +186,7 @@ interface Running {
 export class VoiceCuePlayer implements VoiceCuePlayerLike {
   private running: Running | null = null
   private readonly buffers = new Map<VoiceCue, PlayerBuffer>()
+  private readonly startCues = new Set<() => void>()
 
   constructor(private readonly ctx: CueAudioContext, private readonly sampleRate = 24_000) {}
 
@@ -165,8 +199,32 @@ export class VoiceCuePlayer implements VoiceCuePlayerLike {
     if (cue) this.begin(cue, volume)
   }
 
+  playStart(volume: number): number {
+    const samples = renderStartCue(this.sampleRate)
+    const buffer = this.ctx.createBuffer(1, samples.length, this.sampleRate)
+    buffer.getChannelData(0).set(samples)
+    const source = this.ctx.createBufferSource()
+    const gain = this.ctx.createGain()
+    source.buffer = buffer
+    source.loop = false
+    gain.gain.value = CUE_PEAK * volume
+    source.connect(gain)
+    gain.connect(this.ctx.destination)
+    source.onended = () => {
+      source.disconnect()
+      gain.disconnect()
+      this.startCues.delete(stop)
+    }
+    const stop = () => { try { source.stop() } catch { /* already stopped */ } }
+    this.startCues.add(stop)
+    source.start(this.ctx.currentTime)
+    return START_CUE_MS
+  }
+
   dispose(): void {
     this.fadeOut()
+    for (const stop of this.startCues) stop()
+    this.startCues.clear()
   }
 
   private bufferFor(cue: VoiceCue): PlayerBuffer {

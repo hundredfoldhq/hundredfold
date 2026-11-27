@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { CUE_PATTERNS, CUE_PEAK, DEFAULT_CUE_SETTINGS, parseCueSettings, renderCueLoop, VoiceCuePlayer, wantedCue, type CueInputs, type VoiceCue } from "../cues"
+import { CUE_PATTERNS, CUE_PEAK, DEFAULT_CUE_SETTINGS, parseCueSettings, renderCueLoop, renderStartCue, START_CUE, START_CUE_MS, VoiceCuePlayer, wantedCue, type CueInputs, type VoiceCue } from "../cues"
 import { FakeAudioContext } from "./fakes"
 
 const base: CueInputs = { settings: DEFAULT_CUE_SETTINGS, running: true, turn: "idle", hearing: false, speechAudible: false, toolBackgrounded: false }
@@ -190,5 +190,82 @@ describe("the cue player", () => {
     player.set(null, 0.3)
     player.set("thinking", 0.3)
     expect(ctx.sources[0].buffer).toBe(ctx.sources[1].buffer)
+  })
+})
+
+describe("the start cue: three quick high beeps", () => {
+  const runs = (a: Float32Array) => {
+    const out: Array<[number, number]> = []
+    let from = -1
+    for (let i = 0; i <= a.length; i++) {
+      const on = i < a.length && a[i] !== 0
+      if (on && from < 0) from = i
+      if (!on && from >= 0) { out.push([from, i]); from = -1 }
+    }
+    return out
+  }
+
+  it("is exactly three beeps, each short, with a clear gap between", () => {
+    const cue = renderStartCue(24_000)
+    expect(START_CUE.blips).toHaveLength(3)
+    const notes = runs(cue)
+    expect(notes).toHaveLength(3)
+    for (const [from, to] of notes) expect(((to - from) * 1000) / 24_000).toBeLessThanOrEqual(61)
+    for (let i = 1; i < notes.length; i++) expect(((notes[i][0] - notes[i - 1][1]) * 1000) / 24_000).toBeGreaterThanOrEqual(50)
+  })
+
+  it("is high-pitched: above both loop cues, and each note oscillates at about 1760 Hz", () => {
+    const cue = renderStartCue(24_000)
+    const highest = Math.max(...Object.values(CUE_PATTERNS).flatMap((p) => p.blips.map((b) => b.hz)))
+    for (const blip of START_CUE.blips) expect(blip.hz).toBeGreaterThan(highest * 3)
+    const [from, to] = runs(cue)[0]
+    let crossings = 0
+    for (let i = from + 1; i < to; i++) if (cue[i - 1] < 0 !== cue[i] < 0) crossings++
+    const hz = (crossings / 2) / ((to - from) / 24_000)
+    expect(hz).toBeGreaterThan(1500)
+    expect(hz).toBeLessThan(2000)
+  })
+
+  it("is over in a third of a second, and each beep fades in and out so nothing clicks", () => {
+    const cue = renderStartCue(24_000)
+    expect(cue.length).toBe(Math.round((START_CUE_MS * 24_000) / 1000))
+    expect(cue[0]).toBe(0)
+    expect(Math.abs(cue[cue.length - 1])).toBeLessThan(1e-5)
+    const peak = cue.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+    expect(peak).toBeGreaterThan(0.5)
+    expect(peak).toBeLessThanOrEqual(1)
+    for (const [from, to] of runs(cue)) expect(Math.abs(cue[from]) + Math.abs(cue[to - 1])).toBeLessThan(0.05)
+  })
+
+  it("renders the same samples as the native synthesiser (cues.rs holds the same table)", () => {
+    const table: Array<[number, number]> = [
+      [1100, 0.236211], [1250, 0.752128], [1500, -0.571293], [2300, 0.023956], [4000, -0.300306],
+      [4300, -0.99263], [4600, -0.75655], [7000, -0.150611], [7400, -0.637569], [7900, -0.032303],
+    ]
+    const cue = renderStartCue(24_000)
+    expect(cue.length).toBe(8160)
+    for (const [index, expected] of table) expect(Math.abs(cue[index] - expected)).toBeLessThan(1e-5)
+  })
+
+  it("is played once, not looped, at the scaled volume, beside a running loop", () => {
+    const ctx = new FakeAudioContext()
+    const player = new VoiceCuePlayer(ctx)
+    player.set("thinking", 0.3)
+    expect(player.playStart(0.5)).toBe(START_CUE_MS)
+    expect(ctx.sources).toHaveLength(2)
+    expect(ctx.sources[1]).toMatchObject({ loop: false, startedAt: 0 })
+    expect(ctx.gains[1].gain.value).toBeCloseTo(CUE_PEAK * 0.5)
+    expect(ctx.sources[0].stoppedAt).toBeNull()
+    ctx.sources[1].finish()
+    expect(ctx.sources[1].disconnected).toBe(true)
+    expect(ctx.gains[1].disconnected).toBe(true)
+  })
+
+  it("is cut off when the player is disposed", () => {
+    const ctx = new FakeAudioContext()
+    const player = new VoiceCuePlayer(ctx)
+    player.playStart(0.3)
+    player.dispose()
+    expect(ctx.sources[0].stoppedAt).not.toBeNull()
   })
 })
