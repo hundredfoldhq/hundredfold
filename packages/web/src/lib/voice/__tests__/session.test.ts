@@ -5,7 +5,7 @@ import { floatToInt16 } from "../pcm"
 import { MUTED_RETURN_WAIT_MS } from "../suspend"
 import { VoicePlayer } from "../player"
 import type { VoiceSessionStarter } from "../controller"
-import { BrowserVoiceSession, USER_PAUSE_CLOSE, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
+import { BrowserVoiceSession, PAUSE_HOLD_MS, USER_PAUSE_CLOSE, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
 import { GATEWAY_SOCKET_OPEN, type GatewaySocketConnection } from "@/lib/gateway-transport"
@@ -90,6 +90,8 @@ interface Rig {
   micGates: Gate<MediaStream>[]
   captureGates: Gate<void>[]
   wakeLock: { request: ReturnType<typeof vi.fn>; sentinels: Array<{ released: boolean; drop(): void }> }
+  /** What the silent keep-alive element was told, in order. */
+  keepAlive: string[]
 }
 
 interface Gate<T> { open(value: T extends void ? void : T): void; fail(error: unknown): void }
@@ -122,6 +124,7 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     }),
   }
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
+  const keepAlive: string[] = []
   const cues: string[] = []
   const cuePlayer: VoiceCuePlayerLike = {
     set: (cue, volume) => { const call = cue ? `${cue}@${volume}` : "stop"; if (cues.at(-1) !== call) cues.push(call) },
@@ -150,10 +153,11 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     mediaSession,
     wakeLock,
     createMediaMetadata: () => ({ title: "Voice mode is on" }),
+    createKeepAlive: () => ({ play: () => { keepAlive.push("play") }, pause: () => { keepAlive.push("pause") }, dispose: () => { keepAlive.push("dispose") } }),
     now: () => clock.now,
   }
   const session = new BrowserVoiceSession({ sessionId: options.sessionId ?? "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, micGates, captureGates, wakeLock }
+  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, micGates, captureGates, wakeLock, keepAlive }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -655,6 +659,174 @@ describe("pause and play from a headset button", () => {
     expect(r.sockets[1].types()).toContain("resume")
   })
 
+  it("the pause action still ends voice mode when the audio was suspended and nothing can be paused", async () => {
+    const r = await started()
+    r.contexts[0].setState("suspended")
+    expect(r.session.getSnapshot().status).toBe("suspended")
+    handler(r, "pause")()
+    expect(r.session.getSnapshot().status).toBe("off")
+    expect(r.tracks.every((t) => t.stopped)).toBe(true)
+  })
+
+  it("the pause action ends voice mode when it was suspended by the device and nothing can be paused", async () => {
+    const r = await started()
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    expect(r.session.getSnapshot().status).toBe("suspended")
+    handler(r, "pause")()
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("the pause action while already paused, or off, does nothing", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "pause")()
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    handler(r, "stop")()
+    expect(() => handler(r, "pause")?.()).not.toThrow()
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("play while connecting or suspended does not open another socket", async () => {
+    const connecting = rig()
+    await connecting.session.start()
+    connecting.session.resumePaused()
+    expect(connecting.sockets).toHaveLength(1)
+    const suspended = await started()
+    suspended.contexts[0].setState("suspended")
+    expect(suspended.session.getSnapshot().status).toBe("suspended")
+    suspended.session.resumePaused()
+    expect(suspended.sockets).toHaveLength(1)
+    expect(suspended.session.getSnapshot().status).toBe("suspended")
+  })
+
+  it("a pause lets go of the screen lock and the silent element, and play takes them back", async () => {
+    const r = await started()
+    await Promise.resolve()
+    expect(r.wakeLock.sentinels.filter((x) => !x.released)).toHaveLength(1)
+    expect(r.keepAlive).toEqual(["play"])
+    handler(r, "pause")()
+    await Promise.resolve()
+    expect(r.wakeLock.sentinels.every((x) => x.released)).toBe(true)
+    expect(r.keepAlive).toEqual(["play", "pause"])
+    handler(r, "play")()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(r.wakeLock.sentinels.filter((x) => !x.released)).toHaveLength(1)
+    expect(r.keepAlive).toEqual(["play", "pause", "play"])
+    handler(r, "stop")()
+    expect(r.keepAlive.at(-1)).toBe("dispose")
+  })
+
+  it("a pause that outlasts the gateway's window lets the microphone go, and play asks for one tap", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS - 1)
+    expect(r.tracks[0].stopped).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: true })
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(1)
+    const tapped = r.session.resumeFromTap()
+    expect(r.sockets).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(10)
+    await tapped
+    expect(r.tracks).toHaveLength(2)
+    r.sockets[1].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    // The timer is over with the pause: nothing fires later.
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS * 2)
+    expect(r.tracks[1].stopped).toBe(false)
+  })
+
+  it("resuming before the window ends cancels the hold", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    await vi.advanceTimersByTimeAsync(60_000)
+    handler(r, "play")()
+    r.sockets[1].serverFrame(READY)
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS * 2)
+    expect(r.tracks[0].stopped).toBe(false)
+    expect(r.session.getSnapshot().status).toBe("on")
+  })
+
+  it("stop from a pause tells the gateway: it reaches it once more just to say goodbye", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    expect(r.sockets).toHaveLength(1)
+    r.session.stop()
+    expect(r.sockets).toHaveLength(2)
+    expect(r.opened).toEqual(["s1", "s1"])
+    expect(r.sockets[1].frames).toHaveLength(0)
+    r.sockets[1].serverFrame(READY)
+    expect(r.sockets[1].types()).toEqual(["bye"])
+    expect(r.sockets[1].closed).toEqual({ code: 1000, reason: "bye" })
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("the goodbye connection is dropped if the gateway never answers, and a dispose while paused says it too", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    r.session.dispose()
+    expect(r.sockets).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(5_001)
+    expect(r.sockets[1].closed).toEqual({ code: 1000, reason: "bye" })
+    expect(r.sockets[1].types()).toEqual([])
+  })
+
+  it("stop when not paused sends no extra goodbye connection", async () => {
+    const r = await started()
+    r.session.stop()
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it("a run started again after a stop from a pause is a fresh one: a device suspension is shown", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    r.session.stop()
+    await r.session.start()
+    r.sockets.at(-1)!.serverFrame(READY)
+    r.contexts.at(-1)!.setState("suspended")
+    expect(r.session.getSnapshot().status).toBe("suspended")
+  })
+
+  it("push-to-talk: a pause lets go of a held button, and nothing is sent until play", async () => {
+    const r = await started({ mode: "push-to-talk" })
+    r.session.pttDown()
+    r.emitCapture(frameAt(0.3))
+    expect(r.sockets[0].audio).toHaveLength(1)
+    handler(r, "pause")()
+    handler(r, "play")()
+    r.sockets[1].serverFrame(READY)
+    r.emitCapture(frameAt(0.3))
+    expect(r.sockets[1].audio).toHaveLength(0) // not held any more
+    r.session.pttDown()
+    r.emitCapture(frameAt(0.3))
+    expect(r.sockets[1].audio).toHaveLength(1)
+  })
+
+  it("a device suspension during a pause is forgotten when it ends, so a later one still shows", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    r.tracks[0].muted = false
+    r.tracks[0].emit("unmute")
+    r.doc.set("visible")
+    await vi.advanceTimersByTimeAsync(5_000)
+    handler(r, "play")()
+    r.sockets[1].serverFrame(READY)
+    r.contexts[0].setState("suspended")
+    expect(r.session.getSnapshot().status).toBe("suspended")
+  })
+
   it("stop still ends voice mode from a pause, and releases everything", async () => {
     const r = await started()
     handler(r, "pause")()
@@ -663,7 +835,8 @@ describe("pause and play from a headset button", () => {
     expect(r.tracks[0].stopped).toBe(true)
     expect(r.mediaSession.metadata).toBeNull()
     handler(r, "play")?.()
-    expect(r.sockets).toHaveLength(1)
+    expect(r.sockets).toHaveLength(2) // only the goodbye connection; play opened nothing
+    expect(r.session.getSnapshot().status).toBe("off")
   })
 })
 

@@ -181,7 +181,7 @@ export function VoiceControl({ voice }: { voice: UseVoice }) {
         <Icon view={view} />
         {view === 'unavailable' && <Slash />}
       </button>
-      {held && <EndButton onEnd={() => voice.controller?.stop()} />}
+      {(held || voice.phase === 'user-paused') && <EndButton onEnd={() => voice.controller?.stop()} />}
       <style>{KEYFRAMES}</style>
     </div>
   )

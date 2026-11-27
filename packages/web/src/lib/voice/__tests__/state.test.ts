@@ -191,3 +191,20 @@ describe("notices", () => {
     expect(s.background).toEqual([])
   })
 })
+
+describe("a pause the user asked for", () => {
+  it("is only from running, drops what was being heard, and clears a pending tap request", () => {
+    expect(voicePhase(run([{ type: "user-paused" }], on()))).toBe("user-paused")
+    expect(run([{ type: "user-paused" }]).status).toBe("off")
+    const heard = run([frame({ type: "vad", speaking: true }), frame({ type: "transcript", utteranceId: "u", text: "half a sen", final: false }), { type: "needs-tap" }], on())
+    expect(heard.needsTap).toBe(true)
+    const paused = run([{ type: "user-paused" }], heard)
+    expect(paused).toMatchObject({ status: "user-paused", vadSpeaking: false, partial: "", needsTap: false })
+  })
+
+  it("is not turned into another pause by a suspension, and resumed brings it back", () => {
+    const connecting = run([{ type: "connecting", mode: "hands-free" }])
+    expect(run([{ type: "user-paused" }], connecting).status).toBe("connecting")
+    expect(run([{ type: "user-paused" }, { type: "resumed" }], on()).status).toBe("on")
+  })
+})

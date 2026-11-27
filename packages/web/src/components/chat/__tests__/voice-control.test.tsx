@@ -94,9 +94,11 @@ describe('VoiceControl', () => {
     render(<VoiceControl voice={voice} />)
     const button = document.querySelector('[data-voice-control]') as HTMLElement
     expect(button.getAttribute('data-state')).toBe('user-paused')
-    expect(document.querySelector('[data-voice-end]')).toBeNull()
     fireEvent.click(button)
     expect(voice.onTap).toHaveBeenCalledTimes(1)
+    // A paused control can be ended without resuming first.
+    fireEvent.click(document.querySelector('[data-voice-end]') as HTMLElement)
+    expect(voice.controller?.stop).toHaveBeenCalledTimes(1)
   })
 
   it('shows a paused state when a call or another app took the audio', () => {
