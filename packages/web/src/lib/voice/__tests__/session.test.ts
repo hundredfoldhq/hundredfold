@@ -5,7 +5,7 @@ import { floatToInt16 } from "../pcm"
 import { MUTED_RETURN_WAIT_MS } from "../suspend"
 import { VoicePlayer } from "../player"
 import type { VoiceSessionStarter } from "../controller"
-import { BrowserVoiceSession, PAUSE_HOLD_MS, USER_PAUSE_CLOSE, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
+import { BrowserVoiceSession, PAUSE_HOLD_MS, RESUME_CUT_GRACE_MS, USER_PAUSE_CLOSE, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
 import { GATEWAY_SOCKET_OPEN, type GatewaySocketConnection } from "@/lib/gateway-transport"
@@ -794,12 +794,30 @@ describe("pause and play from a headset button", () => {
     expect(ranOut.endedSuspended).toEqual(["s1"])
   })
 
-  it("a stop while play is still connecting ends the kept conversation too, since the new socket may not have reached it", async () => {
+  it("a stop that cuts off a resume still connecting ends the kept conversation once the cut has reached the gateway", async () => {
+    vi.useFakeTimers()
     const r = await started()
     handler(r, "pause")()
     handler(r, "play")()
+    r.sockets[1].isOpen = false // not open yet: no bye can go on it
     r.session.stop()
+    expect(r.endedSuspended).toEqual([])
+    await vi.advanceTimersByTimeAsync(RESUME_CUT_GRACE_MS - 1)
+    expect(r.endedSuspended).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
     expect(r.endedSuspended).toEqual(["s1"])
+  })
+
+  it("a stop while a resume's socket is open but not ready says bye on it, and sends no other goodbye", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "play")()
+    expect(r.session.getSnapshot().status).toBe("connecting")
+    r.session.stop()
+    expect(r.sockets[1].types()).toContain("bye")
+    await vi.advanceTimersByTimeAsync(RESUME_CUT_GRACE_MS * 2)
+    expect(r.endedSuspended).toEqual([])
   })
 
   it("a stop with no pause sends no goodbye beyond its own bye, and neither does a stop after a resume connected", async () => {

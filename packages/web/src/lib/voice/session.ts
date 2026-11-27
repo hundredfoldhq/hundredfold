@@ -99,6 +99,9 @@ export const PAUSE_HOLD_MS = 10 * 60_000
  */
 export const USER_PAUSE_CLOSE = 4000
 
+/** How long after cutting off a resume that was still connecting the goodbye for the kept conversation waits. */
+export const RESUME_CUT_GRACE_MS = 1_500
+
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
@@ -246,13 +249,25 @@ export class BrowserVoiceSession implements VoiceController {
     if (this.store.snapshot.status === "off" && !this.ctx) return
     this.closing = true
     dropHandoff(this)
-    this.socket?.send({ type: "bye" })
+    const saidBye = this.socket?.send({ type: "bye" }) === true
     this.socket?.close(1000, "bye")
-    // A pause left the gateway holding the conversation, with no socket to say goodbye on: end it, unless another tab
-    // or device has picked it up meanwhile. A resume still connecting may not reach the gateway before its close does.
-    if ((this.pausedAt !== null || this.resumingFrom !== null) && this.session !== null) this.deps.endSuspended?.(this.session)
+    this.endKeptConversation(saidBye)
     this.teardown()
     this.apply({ type: "stopped" })
+  }
+
+  /** A stop from a pause, or from a resume that had not connected yet: the conversation the gateway kept for it ends too. */
+  private endKeptConversation(saidBye: boolean): void {
+    const session = this.session
+    if (session === null) return
+    if (this.pausedAt !== null) {
+      // No socket to say goodbye on: end it, unless another tab or device has picked it up meanwhile.
+      this.deps.endSuspended?.(session)
+    } else if (this.resumingFrom !== null && !saidBye) {
+      // A resume cut off while still connecting: the gateway may already have handed it the conversation, and keeps it
+      // again once the cut reaches it. The goodbye follows after that, or it would find a socket attached and do nothing.
+      setTimeout(() => this.deps.endSuspended?.(session), RESUME_CUT_GRACE_MS)
+    }
   }
 
   dispose(): void {
