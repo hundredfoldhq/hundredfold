@@ -18,6 +18,8 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { HUNDREDFOLD_HOME } from "../shared/paths.js"
 import { logger } from "../shared/logger.js"
+import { errorField, traceLine } from "../voice/trace.js"
+import { wavFacts } from "./wav-facts.js"
 import type { Tts } from "./protocol.js"
 
 /** Model / venv layout under HUNDREDFOLD_HOME. */
@@ -137,6 +139,8 @@ export function createKokoroTts(opts?: {
 
       const chosen = opts?.sidecarPort || (await findFreePort(DEFAULT_PORT))
       const sidecar = resolveSidecarPath()
+      const spawnedAt = Date.now()
+      logger.info(traceLine("kokoro_sidecar_spawn", { port: chosen, voice }))
 
       const proc = spawn(
         pythonBin,
@@ -188,6 +192,7 @@ export function createKokoroTts(opts?: {
       const h = await httpGetHealth(chosen)
       ready = h?.ready ?? false
       logger.info(`[kokoro] sidecar listening on 127.0.0.1:${chosen} (voice=${voice})`)
+      logger.info(traceLine("kokoro_sidecar_ready", { port: chosen, startup_ms: Date.now() - spawnedAt, model_loaded: ready }))
     })()
 
     try {
@@ -218,14 +223,23 @@ export function createKokoroTts(opts?: {
   }
 
   async function synthOnce(text: string): Promise<Buffer> {
+    const startedAt = Date.now()
     await ensureSidecar()
+    const sidecarMs = Date.now() - startedAt
     if (!port) throw new Error("Kokoro sidecar not available")
-    const res = await fetch(`http://127.0.0.1:${port}/synth`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, voice }),
-      signal: AbortSignal.timeout(SYNTH_TIMEOUT_MS),
-    })
+    const requestedAt = Date.now()
+    let res: Response
+    try {
+      res = await fetch(`http://127.0.0.1:${port}/synth`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice }),
+        signal: AbortSignal.timeout(SYNTH_TIMEOUT_MS),
+      })
+    } catch (err) {
+      logger.warn(traceLine("kokoro_synth_failed", { chars: text.length, stage: "request", error: errorField(err), ms: Date.now() - startedAt }))
+      throw err
+    }
     if (!res.ok) {
       let detail = ""
       try {
@@ -233,10 +247,20 @@ export function createKokoroTts(opts?: {
       } catch {
         /* non-json error body */
       }
+      logger.warn(traceLine("kokoro_synth_failed", { chars: text.length, stage: "status", status: res.status, error: detail.slice(0, 120), ms: Date.now() - startedAt }))
       throw new Error(`Kokoro synth failed (${res.status})${detail ? `: ${detail}` : ""}`)
     }
     ready = true // a successful synth means the model is loaded
-    return Buffer.from(await res.arrayBuffer())
+    const body = Buffer.from(await res.arrayBuffer())
+    const facts = wavFacts(body)
+    const line = traceLine("kokoro_synth", {
+      chars: text.length, ms: Date.now() - startedAt, sidecar_wait_ms: sidecarMs, request_ms: Date.now() - requestedAt, ...facts,
+      // Speech runs at about 12 characters a second; much less audio than that is a clip that was cut short.
+      ms_per_char: facts.wav_ms !== undefined && text.length > 0 ? Math.round(facts.wav_ms / text.length) : undefined,
+    })
+    if (facts.wav_ok) logger.info(line)
+    else logger.warn(line)
+    return body
   }
 
   return {

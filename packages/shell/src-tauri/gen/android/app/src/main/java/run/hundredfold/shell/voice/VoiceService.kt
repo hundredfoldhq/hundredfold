@@ -9,8 +9,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioRecordingConfiguration
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -40,10 +43,13 @@ class VoiceService : Service() {
     private var focusRequest: AudioFocusRequest? = null
     private var interruptedAt = 0L
     private val handler = Handler(Looper.getMainLooper())
+    private var deviceCallback: AudioDeviceCallback? = null
+    private var recordingCallback: AudioManager.AudioRecordingCallback? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "event=service_command action=${intent?.action ?: "none"} start_id=$startId has_audio=${audio != null}")
         when (intent?.action) {
             ACTION_STOP -> {
                 // Rust ends the session and calls back into VoiceBridge.stop(). If
@@ -58,6 +64,7 @@ class VoiceService : Service() {
     }
 
     private fun begin() {
+        val beganAt = SystemClock.elapsedRealtime()
         ensureChannel()
         val notification = buildNotification()
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
@@ -76,7 +83,10 @@ class VoiceService : Service() {
             engine.start()
             audio = engine
             VoiceBridge.attach(engine)
+            watchDevices()
+            Log.i(TAG, "event=service_audio_started ms=${SystemClock.elapsedRealtime() - beganAt} ${audioManagerState()}")
         } catch (error: Throwable) {
+            Log.w(TAG, "event=service_start_failed ms=${SystemClock.elapsedRealtime() - beganAt} error=${error.javaClass.simpleName}")
             Log.e(VoiceAudio.TAG, "voice service could not start audio", error)
             VoiceBridge.startFailed(error)
             stopSelf()
@@ -86,12 +96,15 @@ class VoiceService : Service() {
     // The task was removed from recents: end the session cleanly (bye, close 1000)
     // instead of letting the process die with the socket open.
     override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "event=task_removed")
         VoiceNative.nativeStopRequested("task_removed")
         handler.postDelayed({ stopSelf() }, STOP_FALLBACK_MS)
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "event=service_destroy has_audio=${audio != null} interrupted=${interruptedAt != 0L}")
+        unwatchDevices()
         VoiceBridge.detach(audio)
         audio?.stop()
         audio = null
@@ -166,6 +179,7 @@ class VoiceService : Service() {
             setReferenceCounted(false)
             acquire()
         }
+        Log.i(TAG, "event=locks_acquired wake=${wakeLock?.isHeld == true} wifi=${wifiLock?.isHeld == true} wifi_mode=$mode")
     }
 
     private fun releaseLocks() {
@@ -187,6 +201,7 @@ class VoiceService : Service() {
                     .build(),
             )
             .setOnAudioFocusChangeListener { change ->
+                Log.i(TAG, "event=audio_focus_change change=${focusName(change)} interrupted=${interruptedAt != 0L}")
                 when (change) {
                     // Another app took the audio for good (music, a video): no GAIN will
                     // follow, so voice mode ends instead of sitting paused behind a
@@ -207,16 +222,77 @@ class VoiceService : Service() {
             }
             .build()
         focusRequest = request
-        manager.requestAudioFocus(request)
+        val result = manager.requestAudioFocus(request)
+        Log.i(TAG, "event=audio_focus_request granted=${result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED} result=$result")
     }
 
     private fun abandonFocus() {
         val request = focusRequest ?: return
+        Log.i(TAG, "event=audio_focus_abandon")
         (getSystemService(Context.AUDIO_SERVICE) as AudioManager).abandonAudioFocusRequest(request)
         focusRequest = null
     }
 
+    // ── diagnostics ──────────────────────────────────────────────────────────
+
+    private fun focusName(change: Int): String = when (change) {
+        AudioManager.AUDIOFOCUS_GAIN -> "gain"
+        AudioManager.AUDIOFOCUS_LOSS -> "loss"
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> "loss_transient"
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> "loss_transient_can_duck"
+        else -> "other_$change"
+    }
+
+    /** The system-wide audio routing state: which devices exist and where communication audio is going. */
+    @Suppress("DEPRECATION")
+    private fun audioManagerState(): String {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val inputs = manager.getDevices(AudioManager.GET_DEVICES_INPUTS).joinToString(",") { VoiceAudio.deviceName(it) }
+        val outputs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).joinToString(",") { VoiceAudio.deviceName(it) }
+        val communication = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VoiceAudio.deviceName(manager.communicationDevice)
+        } else {
+            "n/a"
+        }
+        return "audio_mode=${manager.mode} speakerphone=${manager.isSpeakerphoneOn} bluetooth_sco=${manager.isBluetoothScoOn} " +
+            "mic_muted=${manager.isMicrophoneMute} communication_device=$communication inputs=$inputs outputs=$outputs"
+    }
+
+    /** Logs devices coming and going and, on Android 10+, whether the system silences this app's microphone. */
+    private fun watchDevices() {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                Log.i(TAG, "event=audio_devices_added devices=${addedDevices.joinToString(",") { VoiceAudio.deviceName(it) }}")
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                Log.i(TAG, "event=audio_devices_removed devices=${removedDevices.joinToString(",") { VoiceAudio.deviceName(it) }}")
+            }
+        }
+        deviceCallback = devices
+        manager.registerAudioDeviceCallback(devices, handler)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val recording = object : AudioManager.AudioRecordingCallback() {
+                override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+                    Log.i(TAG, "event=recording_config_changed active=${configs.size} silenced=${configs.count { it.isClientSilenced }}")
+                }
+            }
+            recordingCallback = recording
+            manager.registerAudioRecordingCallback(recording, handler)
+        }
+    }
+
+    private fun unwatchDevices() {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        deviceCallback?.let { manager.unregisterAudioDeviceCallback(it) }
+        recordingCallback?.let { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) manager.unregisterAudioRecordingCallback(it) }
+        deviceCallback = null
+        recordingCallback = null
+    }
+
     companion object {
+        private const val TAG = VoiceAudio.TAG
         const val ACTION_START = "run.hundredfold.shell.voice.START"
         const val ACTION_STOP = "run.hundredfold.shell.voice.STOP"
         private const val CHANNEL_ID = "voice_mode_active"

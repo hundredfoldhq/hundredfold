@@ -36,6 +36,7 @@ import os
 import struct
 import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, BinaryIO, Callable, Iterable, Iterator
@@ -750,19 +751,39 @@ class Server:
     def _speak(self, models: Models, request: str, header: dict[str, Any]) -> None:
         voice = str(header.get("voice") or "af_heart")
         chunks: Iterable[tuple[bytes, int]] | None = None
+        started = time.monotonic()
+        count = 0
+        total = 0
+        first_ms = -1
+        rates: set[int] = set()
+        outcome = "done"
         try:
             chunks = models.tts.synthesize(str(header.get("text", "")), voice, float(header.get("speed", 1.0)), str(header.get("lang", "en")))
             for pcm, rate in chunks:
                 if request in self._cancelled or not self.send({"op": "tts.audio", "id": request, "sampleRate": rate}, pcm, key=request):
+                    outcome = "cancelled"
                     return
+                count += 1
+                total += len(pcm)
+                rates.add(rate)
+                if first_ms < 0:
+                    first_ms = int((time.monotonic() - started) * 1000)
             self.send({"op": "tts.done", "id": request}, key=request)
         except Exception as error:
+            outcome = "error"
             sys.stderr.write(traceback.format_exc())
             self._reply_error(request, f"tts failed: {error}")
         finally:
             close = getattr(chunks, "close", None)
             if close:
                 close()
+            # One line per request, in the key=value form the gateway log uses: model time against what went out.
+            sys.stderr.write(
+                f"[voice-sidecar] event=tts_{outcome} id={request[:8]} chars={len(str(header.get('text', '')))} voice={voice} "
+                f"chunks={count} bytes={total} rates={','.join(str(r) for r in sorted(rates))} "
+                f"first_chunk_ms={first_ms} total_ms={int((time.monotonic() - started) * 1000)}\n"
+            )
+            sys.stderr.flush()
 
     def _cancel(self, header: dict[str, Any], _body: bytes) -> None:
         target = str(header.get("id"))

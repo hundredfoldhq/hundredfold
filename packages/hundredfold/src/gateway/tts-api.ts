@@ -4,7 +4,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HundredfoldConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { randomUUID } from "node:crypto";
 import { streamTtsSentences, ttsStatus, validateTtsText } from "../tts/tts-stream.js";
+import { errorField, traceLine } from "../voice/trace.js";
 import { readJsonBody } from "./http-helpers.js";
 import { json } from "./route-helpers.js";
 
@@ -24,6 +26,8 @@ async function streamFrames(
   text: string,
   kokoroOpts: KokoroOptions,
 ): Promise<void> {
+  const requestId = randomUUID().slice(0, 8);
+  const startedAt = Date.now();
   res.writeHead(200, {
     "Content-Type": "application/octet-stream",
     "Cache-Control": "no-store",
@@ -32,8 +36,15 @@ async function streamFrames(
   // A client abort (pause / navigate) closes the request → stop synthesizing the
   // rest of the message instead of wasting Kokoro on audio nobody hears.
   let cancelled = false;
+  let frames = 0;
+  let bytes = 0;
   req.on("close", () => {
     cancelled = true;
+    // The request's own close fires once its body is read, so the socket state says whether the client really left.
+    logger.info(traceLine("tts_request_close", { req: requestId, frames, since_start_ms: Date.now() - startedAt, socket_destroyed: req.socket?.destroyed, response_ended: res.writableEnded }));
+  });
+  res.on("close", () => {
+    logger.info(traceLine("tts_response_close", { req: requestId, frames, bytes, since_start_ms: Date.now() - startedAt, completed: res.writableFinished }));
   });
   try {
     await streamTtsSentences(
@@ -42,15 +53,25 @@ async function streamFrames(
       (wav) => {
         const header = Buffer.allocUnsafe(4);
         header.writeUInt32BE(wav.length, 0);
-        res.write(header);
-        res.write(wav);
+        const flushed = res.write(header) && res.write(wav);
+        frames += 1;
+        bytes += header.length + wav.length;
+        if (!flushed) logger.debug(traceLine("tts_backpressure", { req: requestId, frames, buffered: res.writableLength }));
       },
       () => cancelled || res.writableEnded,
+      requestId,
     );
   } catch (err) {
     logger.warn(`TTS stream failed: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(traceLine("tts_stream_failed", { req: requestId, frames, error: errorField(err), since_start_ms: Date.now() - startedAt }));
   }
   if (!res.writableEnded) res.end();
+}
+
+/** Over-long text is cut at a sentence boundary; say so, since the rest of the message is never read aloud. */
+function warnIfCut(raw: unknown, kept: string): void {
+  if (typeof raw !== "string" || kept.length >= raw.trim().length) return;
+  logger.warn(traceLine("tts_text_truncated", { route: "/api/tts", received_chars: raw.trim().length, kept_chars: kept.length }));
 }
 
 /**
@@ -78,16 +99,20 @@ export async function handleTtsApi(
   }
   if (method !== "POST") return false;
   if (!ttsStatus(kokoroOpts).available) {
+    logger.warn(traceLine("tts_unavailable", { route: "/api/tts" }));
     json(res, { available: false }, 503);
     return true;
   }
   const parsed = await readJsonBody(req as TtsRequest, res);
   if (!parsed.ok) return true;
-  const valid = validateTtsText((parsed.body as { text?: unknown } | null)?.text);
+  const raw = (parsed.body as { text?: unknown } | null)?.text;
+  const valid = validateTtsText(raw);
   if (!valid.ok) {
+    logger.warn(traceLine("tts_rejected", { route: "/api/tts", error: valid.error }));
     json(res, { error: valid.error }, 400);
     return true;
   }
+  warnIfCut(raw, valid.text);
   await streamFrames(req, res, valid.text, kokoroOpts);
   return true;
 }

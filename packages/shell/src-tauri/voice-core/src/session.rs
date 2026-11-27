@@ -9,12 +9,13 @@
 //! captures, sends, plays, and stops playing on its own onset or on
 //! `stop_playback` (contracts/native-voice.md).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     audio::{parse_down_frame, FrameChunker},
     cues::{wanted, Cue, CueInputs, CueRequest, CueSettings, Turn},
-    protocol::{ClientFrame, GatewayFrame, Mode, Onset, PROTOCOL_VERSION},
+    diag_debug, diag_info, diag_warn,
+    protocol::{ClientFrame, GatewayFrame, Mode, Onset, OUTPUT_SAMPLE_RATE, PROTOCOL_VERSION},
 };
 
 /// After an interruption, audio and segment announcements that were already in
@@ -172,6 +173,55 @@ pub enum Action {
     StopPlatform,
 }
 
+/// Running counts for the diagnostic log; they never influence a decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    pub down_frames: u64,
+    pub down_bytes: u64,
+    /// Binary frames that did not parse.
+    pub down_invalid: u64,
+    /// Audio frames thrown away by the interruption rules.
+    pub down_dropped: u64,
+    /// Times `seq` skipped ahead, and how many frames that skipped in all.
+    pub seq_gaps: u64,
+    pub seq_missing: u64,
+    pub up_frames: u64,
+    /// Capture bytes discarded because the session was not sending (not ready, paused, push-to-talk up).
+    pub up_discarded_bytes: u64,
+    pub barge_ins: u64,
+    pub stop_playbacks: u64,
+}
+
+/// What arrived for one segment, for the per-segment summary lines.
+#[derive(Default)]
+struct SegStats {
+    announced_ms: Option<u64>,
+    first_frame_ms: Option<u64>,
+    last_frame_ms: u64,
+    max_gap_ms: u64,
+    frames: u32,
+    bytes: u64,
+    dropped: u32,
+}
+
+impl SegStats {
+    fn audio_ms(&self) -> u64 {
+        self.bytes / 2 * 1000 / u64::from(OUTPUT_SAMPLE_RATE)
+    }
+}
+
+/// The last barge-in this client sent and whether the gateway has answered it with `stop_playback`.
+#[derive(Clone, Copy)]
+struct BargeIn {
+    at_ms: u64,
+    answered: bool,
+}
+
+/// `-1` stands for "not known" in a log line.
+fn opt(value: Option<u64>) -> i64 {
+    value.map_or(-1, |value| i64::try_from(value).unwrap_or(i64::MAX))
+}
+
 pub struct Session {
     mode: Mode,
     phase: Phase,
@@ -182,6 +232,11 @@ pub struct Session {
     guard_until_ms: u64,
     chunker: FrameChunker,
     cues: CueState,
+    run_id: u64,
+    segments: HashMap<u32, SegStats>,
+    last_seq: Option<u16>,
+    barge_in: Option<BargeIn>,
+    totals: Totals,
 }
 
 /// What the cue decision depends on besides the phase, kept from the gateway's frames.
@@ -223,7 +278,21 @@ impl Session {
             guard_until_ms: 0,
             chunker: FrameChunker::default(),
             cues: CueState::new(),
+            run_id: 0,
+            segments: HashMap::new(),
+            last_seq: None,
+            barge_in: None,
+            totals: Totals::default(),
         }
+    }
+
+    /// Labels this session's diagnostic lines (`run=`) so they can be told apart from an earlier one's.
+    pub fn set_run_id(&mut self, run_id: u64) {
+        self.run_id = run_id;
+    }
+
+    pub fn totals(&self) -> Totals {
+        self.totals
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -257,20 +326,136 @@ impl Session {
 
     /// Whether audio for `segment_id` must be thrown away, extending the
     /// dropped range while the post-interruption guard window is open.
-    fn dropped(&mut self, segment_id: u32, now_ms: u64) -> bool {
-        match self.drop_through {
-            Some(through) if segment_id <= through => true,
+    fn dropped(&mut self, segment_id: u32, now_ms: u64, what: &'static str) -> bool {
+        let reason = match self.drop_through {
+            Some(through) if segment_id <= through => "interrupted_segment",
             Some(_) if now_ms < self.guard_until_ms => {
                 self.drop_through = Some(segment_id);
-                true
+                "guard_window"
             }
-            _ => false,
+            _ => return false,
+        };
+        let stats = self.segments.entry(segment_id).or_default();
+        stats.dropped += 1;
+        if stats.dropped == 1 {
+            diag_info!(
+                "event=segment_dropped run={} segment_id={segment_id} what={what} reason={reason} t_ms={now_ms} guard_left_ms={} drop_through={}",
+                self.run_id,
+                self.guard_until_ms.saturating_sub(now_ms),
+                opt(self.drop_through.map(u64::from)),
+            );
+        }
+        true
+    }
+
+    /// Logs the summary of one segment that will not be heard (or has been heard) in full, and forgets it.
+    fn finish_segment(
+        &mut self,
+        segment_id: u32,
+        outcome: &str,
+        played_ms: Option<u64>,
+        now_ms: u64,
+    ) {
+        let Some(stats) = self.segments.remove(&segment_id) else {
+            diag_info!(
+                "event=segment_outcome run={} segment_id={segment_id} outcome={outcome} frames=0 bytes=0 played_ms={} t_ms={now_ms} known=false",
+                self.run_id,
+                opt(played_ms),
+            );
+            return;
+        };
+        if stats.frames == 0 && stats.dropped > 0 {
+            return;
+        }
+        let since = stats.announced_ms.or(stats.first_frame_ms);
+        diag_info!(
+            "event=segment_outcome run={} segment_id={segment_id} outcome={outcome} frames={} bytes={} audio_ms={} played_ms={} since_announce_ms={} t_ms={now_ms} known=true",
+            self.run_id,
+            stats.frames,
+            stats.bytes,
+            stats.audio_ms(),
+            opt(played_ms),
+            opt(since.map(|at| now_ms.saturating_sub(at))),
+        );
+    }
+
+    /// Every segment still tracked was cut off: `cut` for the one that was playing, `discarded` for the rest.
+    fn finish_all(
+        &mut self,
+        current: Option<u32>,
+        cut: &str,
+        discarded: &str,
+        played_ms: Option<u64>,
+        now_ms: u64,
+    ) {
+        let mut ids: Vec<u32> = self.segments.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            if Some(id) == current {
+                self.finish_segment(id, cut, played_ms, now_ms);
+            } else {
+                self.finish_segment(id, discarded, None, now_ms);
+            }
         }
     }
 
-    fn stop(&mut self, reason: &'static str) -> Vec<Action> {
+    /// Notes a down-frame's sequence number; the gateway counts every frame it sends, so a jump means frames were lost
+    /// (or deliberately discarded by the gateway after it stopped playback).
+    fn note_seq(&mut self, seq: u16, now_ms: u64) {
+        if let Some(last) = self.last_seq {
+            let expected = last.wrapping_add(1);
+            if seq != expected {
+                let missing = seq.wrapping_sub(expected);
+                // A number behind the expected one is a repeat or a reordering, not a skip.
+                let reordered = missing > u16::MAX / 2;
+                self.totals.seq_gaps += 1;
+                if !reordered {
+                    self.totals.seq_missing += u64::from(missing);
+                }
+                diag_info!(
+                    "event=down_seq_gap run={} seq={seq} expected={expected} missing={missing} reordered={reordered} t_ms={now_ms}",
+                    self.run_id
+                );
+            }
+        }
+        self.last_seq = Some(seq);
+    }
+
+    /// Bounds the per-segment bookkeeping if segments are announced and never finish.
+    fn trim_segments(&mut self, now_ms: u64) {
+        if self.segments.len() > 64 {
+            if let Some(oldest) = self.segments.keys().min().copied() {
+                diag_warn!(
+                    "event=segment_stats_overflow run={} evicted_segment_id={oldest} t_ms={now_ms}",
+                    self.run_id
+                );
+                self.segments.remove(&oldest);
+            }
+        }
+    }
+
+    fn log_end(&self, before: Phase, how: &str, reason: &str, now_ms: u64) {
+        let totals = self.totals;
+        diag_info!(
+            "event=session_end run={} how={how} reason={reason} phase_before={before:?} t_ms={now_ms} down_frames={} down_bytes={} down_invalid={} down_dropped={} seq_gaps={} seq_missing={} up_frames={} up_discarded_bytes={} barge_ins={} stop_playbacks={}",
+            self.run_id,
+            totals.down_frames,
+            totals.down_bytes,
+            totals.down_invalid,
+            totals.down_dropped,
+            totals.seq_gaps,
+            totals.seq_missing,
+            totals.up_frames,
+            totals.up_discarded_bytes,
+            totals.barge_ins,
+            totals.stop_playbacks,
+        );
+    }
+
+    fn stop(&mut self, reason: &'static str, now_ms: u64) -> Vec<Action> {
         let was = self.phase;
         self.phase = Phase::Stopped;
+        self.log_end(was, "stop", reason, now_ms);
         let mut actions = Vec::new();
         if matches!(was, Phase::AwaitingReady | Phase::Running) {
             actions.push(Action::SendText(ClientFrame::Bye.to_json()));
@@ -316,6 +501,12 @@ impl Session {
         if wanted == self.cues.playing {
             return None;
         }
+        diag_debug!(
+            "event=cue_change run={} cue={:?} previous={:?}",
+            self.run_id,
+            wanted,
+            self.cues.playing
+        );
         self.cues.playing = wanted;
         let volume = self.cues.settings.volume;
         Some(wanted.map(|cue| CueRequest { cue, volume }))
@@ -328,6 +519,11 @@ impl Session {
                     return Vec::new();
                 }
                 self.phase = Phase::AwaitingReady;
+                diag_info!(
+                    "event=hello_sent run={} protocol={PROTOCOL_VERSION} mode={:?} t_ms={now_ms}",
+                    self.run_id,
+                    self.mode
+                );
                 vec![Action::SendText(
                     ClientFrame::Hello {
                         protocol: PROTOCOL_VERSION,
@@ -337,9 +533,17 @@ impl Session {
                     .to_json(),
                 )]
             }
-            Input::SocketClosed { code, .. } => {
+            Input::SocketClosed { code, reason } => {
                 let connected = self.phase != Phase::AwaitingSocket;
+                let before = self.phase;
                 self.phase = Phase::Stopped;
+                diag_warn!(
+                    "event=socket_closed run={} connected={connected} code={} reason={:?} t_ms={now_ms}",
+                    self.run_id,
+                    code.map_or(-1, i32::from),
+                    reason.chars().take(64).collect::<String>(),
+                );
+                self.log_end(before, "socket_closed", "socket_closed", now_ms);
                 vec![
                     Action::StopPlatform,
                     Action::State(StateEvent {
@@ -362,10 +566,31 @@ impl Session {
                 if self.phase != Phase::Running {
                     return Vec::new();
                 }
-                let Ok(frame) = parse_down_frame(&bytes) else {
-                    return Vec::new();
+                let frame = match parse_down_frame(&bytes) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        self.totals.down_invalid += 1;
+                        if self.totals.down_invalid.is_power_of_two() {
+                            diag_warn!(
+                                "event=down_frame_invalid run={} error={error:?} bytes={} count={} t_ms={now_ms}",
+                                self.run_id,
+                                bytes.len(),
+                                self.totals.down_invalid
+                            );
+                        }
+                        return Vec::new();
+                    }
                 };
-                if self.dropped(frame.segment_id, now_ms) {
+                self.note_seq(frame.seq, now_ms);
+                if self.dropped(frame.segment_id, now_ms, "audio") {
+                    self.totals.down_dropped += 1;
+                    diag_debug!(
+                        "event=down_frame_dropped run={} seq={} segment_id={} bytes={} t_ms={now_ms}",
+                        self.run_id,
+                        frame.seq,
+                        frame.segment_id,
+                        frame.pcm.len()
+                    );
                     return Vec::new();
                 }
                 self.highest_segment = Some(
@@ -373,8 +598,46 @@ impl Session {
                         .map_or(frame.segment_id, |h| h.max(frame.segment_id)),
                 );
                 if frame.pcm.is_empty() {
+                    diag_debug!(
+                        "event=down_frame_empty run={} seq={} segment_id={} t_ms={now_ms}",
+                        self.run_id,
+                        frame.seq,
+                        frame.segment_id
+                    );
                     return Vec::new();
                 }
+                self.totals.down_frames += 1;
+                self.totals.down_bytes += frame.pcm.len() as u64;
+                let stats = self.segments.entry(frame.segment_id).or_default();
+                let gap_ms = if stats.frames == 0 {
+                    0
+                } else {
+                    now_ms.saturating_sub(stats.last_frame_ms)
+                };
+                if stats.first_frame_ms.is_none() {
+                    stats.first_frame_ms = Some(now_ms);
+                    diag_info!(
+                        "event=segment_first_frame run={} segment_id={} seq={} bytes={} since_announce_ms={} t_ms={now_ms}",
+                        self.run_id,
+                        frame.segment_id,
+                        frame.seq,
+                        frame.pcm.len(),
+                        opt(stats.announced_ms.map(|at| now_ms.saturating_sub(at))),
+                    );
+                }
+                stats.frames += 1;
+                stats.bytes += frame.pcm.len() as u64;
+                stats.max_gap_ms = stats.max_gap_ms.max(gap_ms);
+                stats.last_frame_ms = now_ms;
+                diag_debug!(
+                    "event=down_frame run={} seq={} segment_id={} bytes={} frames={} gap_ms={gap_ms} t_ms={now_ms}",
+                    self.run_id,
+                    frame.seq,
+                    frame.segment_id,
+                    frame.pcm.len(),
+                    stats.frames
+                );
+                self.trim_segments(now_ms);
                 vec![Action::Play {
                     segment_id: frame.segment_id,
                     pcm: frame.pcm,
@@ -382,23 +645,51 @@ impl Session {
             }
             Input::Capture(bytes) => {
                 if !self.sending() {
+                    self.totals.up_discarded_bytes += bytes.len() as u64;
                     self.chunker.clear();
                     return Vec::new();
                 }
-                self.chunker
+                let frames: Vec<Action> = self
+                    .chunker
                     .push(&bytes)
                     .into_iter()
                     .map(Action::SendBinary)
-                    .collect()
+                    .collect();
+                self.totals.up_frames += frames.len() as u64;
+                frames
             }
             Input::Onset {
                 segment_id,
                 played_ms,
             } => {
                 if self.phase != Phase::Running {
+                    diag_debug!(
+                        "event=barge_in_ignored run={} phase={:?} t_ms={now_ms}",
+                        self.run_id,
+                        self.phase
+                    );
                     return Vec::new();
                 }
                 self.interrupt(now_ms);
+                self.totals.barge_ins += 1;
+                self.barge_in = Some(BargeIn {
+                    at_ms: now_ms,
+                    answered: false,
+                });
+                diag_info!(
+                    "event=barge_in_sent run={} segment_id={} played_ms={played_ms} drop_through={} guard_ms={INTERRUPT_GUARD_MS} open_segments={} t_ms={now_ms}",
+                    self.run_id,
+                    opt(segment_id.map(u64::from)),
+                    opt(self.drop_through.map(u64::from)),
+                    self.segments.len()
+                );
+                self.finish_all(
+                    segment_id,
+                    "cut_onset",
+                    "discarded_by_onset",
+                    Some(played_ms),
+                    now_ms,
+                );
                 vec![Action::SendText(
                     ClientFrame::BargeIn {
                         segment_id,
@@ -413,8 +704,19 @@ impl Session {
                         .drop_through
                         .is_some_and(|through| segment_id <= through)
                 {
+                    diag_info!(
+                        "event=played_suppressed run={} segment_id={segment_id} drop_through={} t_ms={now_ms}",
+                        self.run_id,
+                        opt(self.drop_through.map(u64::from))
+                    );
+                    self.segments.remove(&segment_id);
                     return Vec::new();
                 }
+                self.finish_segment(segment_id, "played", None, now_ms);
+                diag_debug!(
+                    "event=played_sent run={} segment_id={segment_id} t_ms={now_ms}",
+                    self.run_id
+                );
                 vec![Action::SendText(
                     ClientFrame::Played { segment_id }.to_json(),
                 )]
@@ -431,6 +733,7 @@ impl Session {
                 if !down {
                     self.chunker.clear();
                 }
+                diag_info!("event=ptt run={} down={down} t_ms={now_ms}", self.run_id);
                 vec![Action::SendText(
                     if down {
                         ClientFrame::PttDown
@@ -440,10 +743,21 @@ impl Session {
                     .to_json(),
                 )]
             }
-            Input::Stop { reason } => self.stop(reason::of_stop(&reason)),
+            Input::Stop { reason } => {
+                let mapped = reason::of_stop(&reason);
+                diag_info!(
+                    "event=stop_requested run={} requested={reason} reason={mapped} t_ms={now_ms}",
+                    self.run_id
+                );
+                self.stop(mapped, now_ms)
+            }
             Input::ReadyTimeout => {
                 if self.phase == Phase::AwaitingReady {
-                    self.stop(reason::ERROR)
+                    diag_warn!(
+                        "event=ready_timeout run={} t_ms={now_ms} timeout_ms={READY_TIMEOUT_MS}",
+                        self.run_id
+                    );
+                    self.stop(reason::ERROR, now_ms)
                 } else {
                     Vec::new()
                 }
@@ -454,6 +768,11 @@ impl Session {
                 }
                 self.paused = true;
                 self.chunker.clear();
+                diag_info!(
+                    "event=interruption_began run={} ptt_down={} t_ms={now_ms}",
+                    self.run_id,
+                    self.ptt_down
+                );
                 let mut actions = vec![Action::PausePlayback];
                 if self.ptt_down {
                     self.ptt_down = false;
@@ -470,6 +789,10 @@ impl Session {
                     return Vec::new();
                 }
                 self.paused = false;
+                diag_info!(
+                    "event=interruption_ended run={} suspended_ms={suspended_ms} t_ms={now_ms}",
+                    self.run_id
+                );
                 vec![
                     Action::ResumePlayback,
                     Action::SendText(ClientFrame::Resume { suspended_ms }.to_json()),
@@ -481,6 +804,11 @@ impl Session {
 
     fn gateway_text(&mut self, text: String, now_ms: u64) -> Vec<Action> {
         let Some(frame) = GatewayFrame::parse(&text) else {
+            diag_debug!(
+                "event=gateway_text_ignored run={} chars={} t_ms={now_ms}",
+                self.run_id,
+                text.chars().count()
+            );
             return Vec::new();
         };
         let mut actions = vec![Action::Forward(text)];
@@ -489,8 +817,21 @@ impl Session {
                 if self.phase != Phase::AwaitingReady && self.phase != Phase::Running {
                     return actions;
                 }
+                diag_info!(
+                    "event=ready run={} protocol={} expected_protocol={PROTOCOL_VERSION} input_ok={} output_ok={} threshold={} min_speech_ms={} cues_enabled={} cues_volume={} phase={:?} t_ms={now_ms}",
+                    self.run_id,
+                    ready.protocol,
+                    ready.input_ok,
+                    ready.output_ok,
+                    ready.onset.threshold,
+                    ready.onset.min_speech_ms,
+                    ready.cues.enabled,
+                    ready.cues.volume,
+                    self.phase
+                );
                 if ready.protocol != PROTOCOL_VERSION || !ready.input_ok || !ready.output_ok {
-                    actions.extend(self.stop(reason::ERROR));
+                    diag_warn!("event=ready_rejected run={} t_ms={now_ms}", self.run_id);
+                    actions.extend(self.stop(reason::ERROR, now_ms));
                     return actions;
                 }
                 self.phase = Phase::Running;
@@ -505,6 +846,26 @@ impl Session {
             }
             GatewayFrame::StopPlayback { new_reply } => {
                 if self.phase == Phase::Running {
+                    self.totals.stop_playbacks += 1;
+                    let since_barge_in = self.barge_in.map(|b| now_ms.saturating_sub(b.at_ms));
+                    if let Some(barge_in) = self.barge_in.as_mut() {
+                        barge_in.answered = true;
+                    }
+                    diag_info!(
+                        "event=stop_playback_received run={} new_reply={new_reply} since_barge_in_ms={} open_segments={} highest_segment={} drop_through_before={} t_ms={now_ms}",
+                        self.run_id,
+                        opt(since_barge_in),
+                        self.segments.len(),
+                        opt(self.highest_segment.map(u64::from)),
+                        opt(self.drop_through.map(u64::from)),
+                    );
+                    self.finish_all(
+                        None,
+                        "stopped_by_gateway",
+                        "stopped_by_gateway",
+                        None,
+                        now_ms,
+                    );
                     self.interrupt(now_ms);
                     self.cues.speech.clear();
                     if new_reply {
@@ -516,7 +877,23 @@ impl Session {
                 }
             }
             GatewayFrame::SegmentStart { segment_id } => {
-                if self.phase == Phase::Running && !self.dropped(segment_id, now_ms) {
+                if let Some(barge_in) = self.barge_in.filter(|b| !b.answered) {
+                    // The gateway went on speaking after this client stopped its own playback and told it so.
+                    diag_warn!(
+                        "event=segment_start_after_unanswered_barge_in run={} segment_id={segment_id} since_barge_in_ms={} t_ms={now_ms}",
+                        self.run_id,
+                        now_ms.saturating_sub(barge_in.at_ms)
+                    );
+                    self.barge_in = None;
+                }
+                diag_debug!(
+                    "event=segment_start run={} segment_id={segment_id} highest_segment={} drop_through={} t_ms={now_ms}",
+                    self.run_id,
+                    opt(self.highest_segment.map(u64::from)),
+                    opt(self.drop_through.map(u64::from)),
+                );
+                if self.phase == Phase::Running && !self.dropped(segment_id, now_ms, "start") {
+                    self.segments.entry(segment_id).or_default().announced_ms = Some(now_ms);
                     self.highest_segment = Some(
                         self.highest_segment
                             .map_or(segment_id, |h| h.max(segment_id)),
@@ -525,6 +902,10 @@ impl Session {
                 }
             }
             GatewayFrame::Turn(turn) => {
+                diag_info!(
+                    "event=turn run={} state={turn:?} t_ms={now_ms}",
+                    self.run_id
+                );
                 // A new turn state is new work: only the tool running when the task was announced counts as moved.
                 self.cues.turn = turn;
                 self.cues.tool_backgrounded = false;
@@ -535,20 +916,57 @@ impl Session {
                     self.cues.partial = false;
                 }
             }
-            GatewayFrame::Vad { speaking } => self.cues.vad_speaking = speaking,
-            GatewayFrame::Transcript { live } => self.cues.partial = live,
+            GatewayFrame::Vad { speaking } => {
+                diag_info!(
+                    "event=vad run={} speaking={speaking} playing_segments={} t_ms={now_ms}",
+                    self.run_id,
+                    self.cues.speech.len()
+                );
+                self.cues.vad_speaking = speaking
+            }
+            GatewayFrame::Transcript { live } => {
+                diag_debug!(
+                    "event=transcript run={} live={live} t_ms={now_ms}",
+                    self.run_id
+                );
+                self.cues.partial = live
+            }
             GatewayFrame::Background => {
                 if self.cues.turn == Turn::Working {
                     self.cues.tool_backgrounded = true;
                 }
             }
             GatewayFrame::SegmentEnd { segment_id } => {
-                if self.phase == Phase::Running && !self.dropped(segment_id, now_ms) {
+                if self.phase == Phase::Running && !self.dropped(segment_id, now_ms, "end") {
+                    match self.segments.get(&segment_id) {
+                        Some(stats) => diag_info!(
+                            "event=segment_received run={} segment_id={segment_id} frames={} bytes={} audio_ms={} first_frame_ms={} span_ms={} max_frame_gap_ms={} t_ms={now_ms}",
+                            self.run_id,
+                            stats.frames,
+                            stats.bytes,
+                            stats.audio_ms(),
+                            opt(stats
+                                .first_frame_ms
+                                .zip(stats.announced_ms)
+                                .map(|(first, announced)| first.saturating_sub(announced))),
+                            opt(stats.announced_ms.map(|at| now_ms.saturating_sub(at))),
+                            stats.max_gap_ms,
+                        ),
+                        None => diag_info!(
+                            "event=segment_received run={} segment_id={segment_id} frames=0 bytes=0 audio_ms=0 t_ms={now_ms}",
+                            self.run_id
+                        ),
+                    }
                     actions.push(Action::SegmentEnd(segment_id));
                 }
             }
             // The frame is forwarded above; the gateway closes the socket next.
-            GatewayFrame::Detached { .. } => {}
+            GatewayFrame::Detached { reason } => {
+                diag_warn!(
+                    "event=detached run={} reason={reason:?} t_ms={now_ms}",
+                    self.run_id
+                );
+            }
             GatewayFrame::Other => {}
         }
         actions
@@ -1477,5 +1895,37 @@ mod tests {
         let json = r#"{"type":"turn","state":"thinking"}"#;
         let actions = session.handle(Input::GatewayText(json.into()), 1);
         assert_eq!(actions[0], Action::Forward(json.into()));
+    }
+
+    fn down_seq(seq: u16, segment: u32, pcm: &[u8]) -> Vec<u8> {
+        let mut bytes = down(segment, pcm);
+        bytes[2..4].copy_from_slice(&seq.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn the_diagnostic_totals_count_frames_gaps_and_drops_without_changing_the_actions() {
+        let mut session = running(Mode::HandsFree);
+        session.handle(Input::GatewayBinary(down_seq(0, 1, &[1, 2, 3, 4])), 1);
+        // Two frames lost, then a frame that repeats an earlier number.
+        session.handle(Input::GatewayBinary(down_seq(3, 1, &[1, 2])), 2);
+        session.handle(Input::GatewayBinary(down_seq(3, 1, &[1, 2])), 3);
+        session.handle(Input::GatewayBinary(vec![9; 3]), 4);
+        let totals = session.totals();
+        assert_eq!(totals.down_frames, 3);
+        assert_eq!(totals.down_bytes, 8);
+        assert_eq!(totals.seq_gaps, 2);
+        assert_eq!(totals.seq_missing, 2);
+        assert_eq!(totals.down_invalid, 1);
+        session.handle(
+            Input::Onset {
+                segment_id: Some(1),
+                played_ms: 10,
+            },
+            5,
+        );
+        session.handle(Input::GatewayBinary(down_seq(4, 1, &[1, 2])), 6);
+        assert_eq!(session.totals().down_dropped, 1);
+        assert_eq!(session.totals().barge_ins, 1);
     }
 }

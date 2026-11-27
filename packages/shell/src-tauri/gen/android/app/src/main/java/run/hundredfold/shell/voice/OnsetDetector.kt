@@ -13,7 +13,9 @@ class OnsetDetector(
     var minSpeechMs: Int = 200,
     private val frameMs: Int = 20,
 ) {
-    private var heldMs = 0
+    /** How long the level has held at or above the threshold so far; read for diagnostics. */
+    var heldMs = 0
+        private set
 
     fun configure(threshold: Float, minSpeechMs: Int) {
         this.threshold = threshold

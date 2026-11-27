@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import type { BackgroundActivity } from '@/lib/api'
 import { api } from '@/lib/api'
 import { gatewayTransport } from '@/lib/gateway-transport'
+import { voiceLog } from '@/lib/voice-log'
 import { nativeBridge } from '@/platform/native-bridge'
 import { BACKGROUND_FIRST_READ_GRACE_MS, deriveBackgroundChip, FRESH_CHIP_MEMORY, type BackgroundChip, type ChipMemory } from '@/lib/voice/background-chip'
 import type { VoiceClientConfig } from '@/lib/voice/config'
@@ -23,8 +24,16 @@ export function browserVoiceProblem(): string | null {
 
 function createController(config: EnabledConfig, sessionId: string | VoiceSessionStarter): VoiceController | null {
   const native = nativeVoiceBridge(nativeBridge())
-  if (native) return new NativeVoiceSession(native, { sessionId, mode: config.mode, origin: gatewayTransport().profile.origin })
-  if (browserVoiceProblem()) return null
+  if (native) {
+    voiceLog.info('controller_created', { kind: 'native', mode: config.mode, new_chat: typeof sessionId !== 'string' })
+    return new NativeVoiceSession(native, { sessionId, mode: config.mode, origin: gatewayTransport().profile.origin })
+  }
+  const problem = browserVoiceProblem()
+  if (problem) {
+    voiceLog.warn('controller_unavailable', { reason: 'browser_unsupported', audio_context: typeof AudioContext !== 'undefined', audio_worklet: typeof AudioWorkletNode !== 'undefined', get_user_media: typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function' })
+    return null
+  }
+  voiceLog.info('controller_created', { kind: 'browser', mode: config.mode, barge_in: config.bargeIn, new_chat: typeof sessionId !== 'string' })
   return new BrowserVoiceSession({ sessionId, mode: config.mode, bargeIn: config.bargeIn })
 }
 
@@ -173,6 +182,7 @@ function handleTap(tap: TapContext): void {
   if (!config) return
   if (unavailable) return explainUnavailable(tap)
   const action = tapAction(phase, needsTap, config.mode)
+  voiceLog.info('voice_tap', { action, phase, needs_tap: needsTap, mode: config.mode })
   if (action === 'start') void controller?.start()
   else if (action === 'resume') void controller?.resumeFromTap()
   else if (action === 'stop') controller?.stop()

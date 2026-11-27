@@ -13,5 +13,6 @@
 
 pub mod audio;
 pub mod cues;
+pub mod diag;
 pub mod protocol;
 pub mod session;

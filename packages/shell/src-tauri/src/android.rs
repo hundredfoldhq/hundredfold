@@ -8,6 +8,7 @@
 //! Audio frames cross as byte arrays, never through JSON or the WebView.
 
 use hundredfold_voice_core::{
+    diag_info, diag_warn,
     protocol::{Mode, Onset},
     session::Input,
 };
@@ -43,6 +44,12 @@ fn bridge() -> Option<Arc<Bridge>> {
     BRIDGE.lock().ok()?.clone()
 }
 
+/// Logs why a call into the Kotlin bridge failed and gives the error the caller returns.
+fn bridge_failed(method: &str, why: &str) -> NativeError {
+    diag_warn!("event=jni_call_failed method={method} why={why}");
+    NativeError::transport()
+}
+
 pub fn platform() -> Option<Arc<dyn AudioPlatform>> {
     bridge().map(|_| Arc::new(AndroidPlatform) as Arc<dyn AudioPlatform>)
 }
@@ -53,17 +60,22 @@ impl AndroidPlatform {
     /// Calls a method on the Kotlin bridge. Rust worker threads attach to the
     /// JVM permanently, so the audio path pays for that once.
     fn call(&self, name: &str, signature: &str, args: &[JValue]) -> Result<(), NativeError> {
-        let bridge = bridge().ok_or_else(NativeError::unsupported)?;
+        let bridge = bridge().ok_or_else(|| {
+            diag_warn!("event=jni_call_failed method={name} why=no_bridge");
+            NativeError::unsupported()
+        })?;
         let mut env = bridge
             .vm
             .attach_current_thread_permanently()
-            .map_err(|_| NativeError::transport())?;
+            .map_err(|_| bridge_failed(name, "attach"))?;
         let result = env.call_method(&bridge.object, name, signature, args);
         if env.exception_check().unwrap_or(false) {
+            // Prints the Kotlin exception to logcat, then clears it.
+            let _ = env.exception_describe();
             let _ = env.exception_clear();
-            return Err(NativeError::transport());
+            return Err(bridge_failed(name, "exception"));
         }
-        result.map(|_| ()).map_err(|_| NativeError::transport())
+        result.map(|_| ()).map_err(|_| bridge_failed(name, "call"))
     }
 
     /// Hands the cue loop to Kotlin; an empty array stops it.
@@ -72,28 +84,34 @@ impl AndroidPlatform {
         let mut env = bridge
             .vm
             .attach_current_thread_permanently()
-            .map_err(|_| NativeError::transport())?;
+            .map_err(|_| bridge_failed("setCue", "attach"))?;
         let array = env
             .byte_array_from_slice(pcm)
-            .map_err(|_| NativeError::transport())?;
+            .map_err(|_| bridge_failed("setCue", "array"))?;
         let result = env.call_method(&bridge.object, "setCue", "([B)V", &[JValue::Object(&array)]);
         let _ = env.delete_local_ref(array);
         if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
             let _ = env.exception_clear();
-            return Err(NativeError::transport());
+            return Err(bridge_failed("setCue", "exception"));
         }
-        result.map(|_| ()).map_err(|_| NativeError::transport())
+        result
+            .map(|_| ())
+            .map_err(|_| bridge_failed("setCue", "call"))
     }
 
     fn play(&self, segment_id: u32, pcm: &[u8]) -> Result<(), NativeError> {
-        let bridge = bridge().ok_or_else(NativeError::unsupported)?;
+        let bridge = bridge().ok_or_else(|| {
+            diag_warn!("event=jni_call_failed method=play why=no_bridge segment_id={segment_id}");
+            NativeError::unsupported()
+        })?;
         let mut env = bridge
             .vm
             .attach_current_thread_permanently()
-            .map_err(|_| NativeError::transport())?;
+            .map_err(|_| bridge_failed("play", "attach"))?;
         let array = env
             .byte_array_from_slice(pcm)
-            .map_err(|_| NativeError::transport())?;
+            .map_err(|_| bridge_failed("play", "array"))?;
         let result = env.call_method(
             &bridge.object,
             "play",
@@ -102,10 +120,13 @@ impl AndroidPlatform {
         );
         let _ = env.delete_local_ref(array);
         if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
             let _ = env.exception_clear();
-            return Err(NativeError::transport());
+            return Err(bridge_failed("play", "exception"));
         }
-        result.map(|_| ()).map_err(|_| NativeError::transport())
+        result
+            .map(|_| ())
+            .map_err(|_| bridge_failed("play", "call"))
     }
 }
 
@@ -169,6 +190,7 @@ pub extern "system" fn Java_run_hundredfold_shell_voice_VoiceNative_nativeRegist
     if let (Ok(vm), Ok(object)) = (env.get_java_vm(), env.new_global_ref(&bridge)) {
         if let Ok(mut current) = BRIDGE.lock() {
             *current = Some(Arc::new(Bridge { vm, object }));
+            diag_info!("event=bridge_registered");
         }
     }
 }
@@ -182,6 +204,7 @@ pub extern "system" fn Java_run_hundredfold_shell_voice_VoiceNative_nativeCaptur
 ) {
     let length = usize::try_from(length).unwrap_or(0);
     if length == 0 || length > 16 * 1024 {
+        diag_warn!("event=capture_block_rejected bytes={length}");
         return;
     }
     let mut bytes = vec![0i8; length];

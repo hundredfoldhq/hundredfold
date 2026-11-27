@@ -12,6 +12,7 @@ import type { TtsProvider } from "./provider.js";
 import { VOICE_OUTPUT_SAMPLE_RATE, type VoiceServerFrame } from "../shared/gateway-events.js";
 import { audioFrameHeader, pcmDurationMs, Pcm16Resampler, Pcm16TimeStretcher, pcmPieces } from "./pcm.js";
 import { SpeakableSplitter, speakableSentence } from "./speakable-splitter.js";
+import { errorField, silentTracer, type Tracer } from "./trace.js";
 
 export interface SpeechSink {
   json(frame: VoiceServerFrame): void;
@@ -37,6 +38,12 @@ export interface Segment {
   replaces?: number;
   /** Where it fell in what the client was sent (so in what it plays), set when its audio starts: a replay jumps ahead of the queue, so ids do not say. */
   sentOrder?: number;
+  /** Diagnostics only: when it was queued, when its first frame and its end went out, and how many frames and bytes were sent. */
+  enqueuedAt?: number;
+  startedAt?: number;
+  endedAt?: number;
+  sentFrames?: number;
+  sentBytes?: number;
 }
 
 export interface PipelineOptions {
@@ -50,6 +57,8 @@ export interface PipelineOptions {
   onAudio?: (segment: Segment) => void;
   /** Synthesis of a sentence failed; the reply stays as text. The cause is for the log, never the client. */
   onSynthesisError?: (error: unknown) => void;
+  /** Diagnostic lines for the segment lifecycle; absent: nothing is logged. */
+  trace?: Tracer;
 }
 
 /** What a barge-in left behind. */
@@ -85,6 +94,13 @@ interface Job {
   done: boolean;
   error?: unknown;
   wake: (() => void) | null;
+  /** Diagnostics only: what the provider yielded and what went on to the wire. */
+  startedAt: number;
+  providerChunks: number;
+  providerBytes: number;
+  wireBytes: number;
+  firstChunkAt: number | null;
+  oddChunks: number;
 }
 
 const RETAINED_SEGMENTS = 200;
@@ -109,7 +125,11 @@ export class SpeechPipeline {
   /** The same for the other replies the last cut caught mid-speech, by reply. */
   private cutUnheardOthers: Array<{ key: number; segments: Segment[] }> = [];
 
-  constructor(private readonly options: PipelineOptions) {}
+  private readonly trace: Tracer;
+
+  constructor(private readonly options: PipelineOptions) {
+    this.trace = options.trace ?? silentTracer;
+  }
 
   /** A reply delta; sentences it completes are queued to be spoken. */
   feed(delta: string): void {
@@ -184,7 +204,13 @@ export class SpeechPipeline {
   /** The client reported a segment played in full. */
   markPlayed(segmentId: number): void {
     const segment = this.history.find((s) => s.id === segmentId);
+    const before = segment?.state;
     if (segment && segment.state === "sent") segment.state = "played";
+    this.trace.info("segment_played_report", {
+      segment: segmentId, state_before: before ?? "unknown", state_after: segment?.state ?? "unknown",
+      since_end_ms: segment?.endedAt === undefined ? undefined : Date.now() - segment.endedAt,
+      sent_ms: segment ? Math.round(segment.sentMs) : undefined,
+    });
     this.notifyIdle();
   }
 
@@ -194,6 +220,7 @@ export class SpeechPipeline {
    * and knows only what was reported played.
    */
   cut(segmentId: number | null, playedMs: number): CutResult {
+    const inFlight = this.history.filter((s) => s.state === "queued" || s.state === "synthesising" || s.state === "sent");
     this.generation += 1;
     this.abort.abort();
     this.abort = new AbortController();
@@ -207,6 +234,13 @@ export class SpeechPipeline {
     }
     this.cutUnheard = unheard;
     this.cutUnheardOthers = othersUnheard;
+    this.trace.info("pipeline_cut", {
+      generation: this.generation, segment: segmentId, played_ms: Math.round(playedMs),
+      in_flight: inFlight.length, queued: this.queue.length, sent: inFlight.filter((s) => s.state === "cut" && (s.sentMs > 0)).length,
+      heard_chars: result.heard.length, unheard_sentences: result.unheard.length,
+      sent_ms_of_playing: segmentId === null ? undefined : this.history.find((s) => s.id === segmentId)?.sentMs,
+      other_replies: result.others?.length ?? 0,
+    });
     this.queue = [];
     this.splitter.reset();
     this.notifyIdle();
@@ -215,6 +249,7 @@ export class SpeechPipeline {
 
   /** Sentences held since a cut are dropped: the new turn will bring its own reply. */
   discardQueued(): void {
+    if (this.queue.length > 0) this.trace.info("pipeline_discard_queued", { queued: this.queue.length });
     this.queue = [];
     this.cutUnheard = [];
     this.cutUnheardOthers = [];
@@ -245,6 +280,7 @@ export class SpeechPipeline {
       return segment;
     }));
     this.queue = [...segments, ...rest, ...this.queue];
+    this.trace.info("pipeline_resume", { replay_sentences: segments.length, other_reply_sentences: rest.length, queued_after: this.queue.length });
     this.kick();
   }
 
@@ -255,6 +291,7 @@ export class SpeechPipeline {
   }
 
   close(): void {
+    this.trace.info("pipeline_close", { queued: this.queue.length, unplayed: this.hasUnplayed() });
     this.closed = true;
     this.generation += 1;
     this.abort.abort();
@@ -335,6 +372,9 @@ export class SpeechPipeline {
     const segment = this.newSegment(text, holding);
     if (messageId) segment.messageId = messageId;
     this.queue.push(segment);
+    this.trace.info("segment_queued", {
+      segment: segment.id, chars: text.length, holding, reply: segment.replyKey, message: segment.messageId, queued: this.queue.length, held: this.held,
+    });
     this.kick();
     this.prefetch();
   }
@@ -346,7 +386,7 @@ export class SpeechPipeline {
   }
 
   private newSegment(text: string, holding = false, key: number | undefined = this.replyKey): Segment {
-    const segment: Segment = { id: this.nextId++, text, state: "queued", sentMs: 0 };
+    const segment: Segment = { id: this.nextId++, text, state: "queued", sentMs: 0, enqueuedAt: Date.now() };
     if (holding) segment.holding = true;
     else if (key !== undefined) segment.replyKey = key;
     this.history.push(segment);
@@ -385,7 +425,7 @@ export class SpeechPipeline {
   private ensureJob(segment: Segment): Job {
     const existing = this.jobs.get(segment.id);
     if (existing) return existing;
-    const job: Job = { chunks: [], done: false, wake: null };
+    const job: Job = { chunks: [], done: false, wake: null, startedAt: Date.now(), providerChunks: 0, providerBytes: 0, wireBytes: 0, firstChunkAt: null, oddChunks: 0 };
     this.jobs.set(segment.id, job);
     if (segment.state === "queued") segment.state = "synthesising";
     void this.synthesise(segment, job, this.abort.signal);
@@ -396,10 +436,12 @@ export class SpeechPipeline {
     const { tts, voice, language } = this.options;
     const resampler = new Pcm16Resampler(tts.sampleRate, VOICE_OUTPUT_SAMPLE_RATE);
     const { speed, stretcher } = this.pace();
+    this.traceSynthStart(segment, job, { rate: tts.sampleRate, speed, stretched: stretcher !== null, voice });
     try {
       const request = { ...(voice ? { voice } : {}), speed, language, signal };
       for await (const chunk of tts.synthesize(segment.text, request)) {
         if (signal.aborted) return;
+        this.noteProviderChunk(segment, job, chunk);
         const resampled = resampler.push(chunk);
         this.addAudio(job, stretcher ? stretcher.push(resampled) : resampled);
       }
@@ -408,6 +450,7 @@ export class SpeechPipeline {
       if (!signal.aborted) job.error = error;
     } finally {
       job.done = true;
+      this.traceSynthesis(segment, job, signal.aborted);
       this.wake(job);
     }
   }
@@ -423,8 +466,43 @@ export class SpeechPipeline {
     return { speed: 1, stretcher: new Pcm16TimeStretcher(wanted) };
   }
 
+  private traceSynthStart(segment: Segment, job: Job, how: { rate: number; speed: number; stretched: boolean; voice: string | null }): void {
+    this.trace.info("synth_start", {
+      segment: segment.id, chars: segment.text.length, provider_rate: how.rate, wire_rate: VOICE_OUTPUT_SAMPLE_RATE,
+      speed: how.speed, stretched: how.stretched, voice: how.voice ?? "default", queue_wait_ms: Date.now() - (segment.enqueuedAt ?? job.startedAt),
+    });
+  }
+
+  /** What the provider gave, before resampling: counted for the segment's summary, one line per chunk at debug. */
+  private noteProviderChunk(segment: Segment, job: Job, chunk: Buffer): void {
+    job.providerChunks += 1;
+    job.providerBytes += chunk.length;
+    if (chunk.length % 2 !== 0) job.oddChunks += 1;
+    job.firstChunkAt ??= Date.now();
+    this.trace.debug("synth_chunk", { segment: segment.id, n: job.providerChunks, bytes: chunk.length, since_start_ms: Date.now() - job.startedAt });
+  }
+
+  /** How synthesis of a segment ended: the figures that tell silence, truncation and a slow provider apart. */
+  private traceSynthesis(segment: Segment, job: Job, aborted: boolean): void {
+    const now = Date.now();
+    const audioMs = Math.round(pcmDurationMs(job.wireBytes, VOICE_OUTPUT_SAMPLE_RATE));
+    const fields = {
+      segment: segment.id, chars: segment.text.length, chunks: job.providerChunks, provider_bytes: job.providerBytes, wire_bytes: job.wireBytes,
+      audio_ms: audioMs, odd_chunks: job.oddChunks, ttfb_ms: job.firstChunkAt === null ? undefined : job.firstChunkAt - job.startedAt, total_ms: now - job.startedAt,
+      // Speech runs at roughly 12 characters a second: far less audio than the text needs is a truncated synthesis.
+      ms_per_char: segment.text.length > 0 ? Math.round(audioMs / segment.text.length) : undefined,
+    };
+    if (aborted) return this.trace.info("synth_aborted", fields);
+    if (job.error !== undefined) return this.trace.warn("synth_failed", { ...fields, error: errorField(job.error) });
+    if (job.wireBytes === 0) return this.trace.warn("synth_empty", fields);
+    this.trace.info("synth_end", fields);
+  }
+
   private addAudio(job: Job, pcm: Buffer): void {
-    if (pcm.length > 0) job.chunks.push(pcm);
+    if (pcm.length > 0) {
+      job.chunks.push(pcm);
+      job.wireBytes += pcm.length;
+    }
     this.wake(job);
   }
 
@@ -452,7 +530,10 @@ export class SpeechPipeline {
       if (job.done) break;
       await new Promise<void>((resolve) => { job.wake = resolve; });
     }
-    if (generation !== this.generation) return;
+    if (generation !== this.generation) {
+      this.trace.info("segment_send_abandoned", { segment: segment.id, sent_frames: segment.sentFrames ?? 0, sent_ms: Math.round(segment.sentMs), chunks_sent: index, chunks_made: job.chunks.length, synth_done: job.done });
+      return;
+    }
     this.finishSegment(segment, job, started);
   }
 
@@ -461,10 +542,19 @@ export class SpeechPipeline {
     if (!started) {
       segment.state = "sent";
       segment.sentOrder = ++this.sentCount;
+      segment.startedAt = Date.now();
+      this.trace.info("segment_start", {
+        segment: segment.id, order: segment.sentOrder, chars: segment.text.length, seq_first: this.seq & 0xffff,
+        since_queued_ms: segment.startedAt - (segment.enqueuedAt ?? segment.startedAt), holding: segment.holding === true, replaces: segment.replaces,
+      });
       sink.json({ type: "segment_start", segmentId: segment.id, messageId: segment.messageId ?? null, text: segment.text });
     }
     for (const piece of pcmPieces(pcm)) {
-      sink.audio(Buffer.concat([audioFrameHeader(this.seq++, segment.id), piece]));
+      const seq = this.seq++;
+      sink.audio(Buffer.concat([audioFrameHeader(seq, segment.id), piece]));
+      segment.sentFrames = (segment.sentFrames ?? 0) + 1;
+      segment.sentBytes = (segment.sentBytes ?? 0) + piece.length;
+      this.trace.debug("audio_frame", { segment: segment.id, seq: seq & 0xffff, bytes: piece.length, sent_ms: Math.round(segment.sentMs), since_start_ms: Date.now() - (segment.startedAt ?? Date.now()) });
       segment.sentMs += pcmDurationMs(piece.length, VOICE_OUTPUT_SAMPLE_RATE);
       if (!started) {
         this.options.onAudio?.(segment);
@@ -476,8 +566,16 @@ export class SpeechPipeline {
 
   private finishSegment(segment: Segment, job: Job, started: boolean): void {
     if (job.error !== undefined) this.options.onSynthesisError?.(job.error);
-    if (started) this.options.sink.json({ type: "segment_end", segmentId: segment.id });
-    else if (segment.state !== "cut") {
+    segment.endedAt = Date.now();
+    if (started) {
+      this.trace.info("segment_end", {
+        segment: segment.id, frames: segment.sentFrames ?? 0, bytes: segment.sentBytes ?? 0, audio_ms: Math.round(segment.sentMs),
+        send_ms: segment.endedAt - (segment.startedAt ?? segment.endedAt), synth_ms: segment.endedAt - job.startedAt,
+        seq_last: (this.seq - 1) & 0xffff, error: job.error === undefined ? undefined : errorField(job.error),
+      });
+      this.options.sink.json({ type: "segment_end", segmentId: segment.id });
+    } else if (segment.state !== "cut") {
+      this.trace.warn("segment_skipped_silent", { segment: segment.id, chars: segment.text.length, error: job.error === undefined ? undefined : errorField(job.error) });
       segment.state = "played";
       segment.sentOrder = ++this.sentCount;
     }

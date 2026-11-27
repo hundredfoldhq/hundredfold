@@ -5,7 +5,7 @@
 import { copyText, getPlatform, share } from "@/platform";
 import { PRODUCT_NAME } from "@/lib/brand"
 
-const MAX = 500;
+const MAX = 2000;
 
 interface Entry {
   t: number;

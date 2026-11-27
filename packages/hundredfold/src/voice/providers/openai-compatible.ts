@@ -223,6 +223,7 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
       return await postSpeech(request("pcm"));
     } catch (error) {
       if (!formatNotSupported(error)) throw error;
+      logger.info("[voice] event=speech_format_fallback from=pcm to=wav");
       return postSpeech(request("wav"));
     }
   }
@@ -242,7 +243,11 @@ export class OpenAiCompatibleTtsProvider implements TtsProvider {
     const parts = [head];
     for await (const part of chunks) parts.push(part);
     const wav = parseWav(Buffer.concat(parts));
-    if ("error" in wav) throw new Error(`the speech server's audio is unusable: ${wav.error}`);
+    if ("error" in wav) {
+      logger.warn(`[voice] event=speech_wav_unusable error=${JSON.stringify(wav.error)}`);
+      throw new Error(`the speech server's audio is unusable: ${wav.error}`);
+    }
+    logger.info(`[voice] event=speech_wav_unwrapped rate=${wav.sampleRate} pcm_bytes=${wav.pcm.length} target_rate=${TTS_RATE}`);
     yield resamplePcm16(wav.pcm, wav.sampleRate, TTS_RATE);
   }
 }
