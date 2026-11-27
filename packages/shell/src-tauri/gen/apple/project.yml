@@ -2,7 +2,7 @@ name: hundredfold-shell
 options:
   bundleIdPrefix: run.hundredfold.shell
   deploymentTarget:
-    iOS: 14.0
+    iOS: 15.0
 fileGroups: [../../src]
 configs:
   debug: debug
@@ -55,6 +55,8 @@ targets:
         CFBundleVersion: "0.1.0"
         NSMicrophoneUsageDescription: Hundredfold listens through the microphone while voice mode is on.
         UIBackgroundModes: [audio]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
     entitlements:
       path: hundredfold-shell_iOS/hundredfold-shell_iOS.entitlements
     scheme:
