@@ -128,29 +128,34 @@ pub fn run() {
         .setup(|app| {
             let navigation_handle = app.handle().clone();
             let popup_handle = app.handle().clone();
-            let window =
+            let builder =
                 WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
-                    .title("Hundredfold")
-                    .inner_size(1280.0, 860.0)
-                    .min_inner_size(390.0, 480.0)
-                    .initialization_script(bridge_script())
-                    .on_navigation(move |url| match navigation::decide(url) {
-                        navigation::NavigationDecision::Local => true,
-                        navigation::NavigationDecision::External => {
-                            let _ = navigation_handle
-                                .opener()
-                                .open_url(url.as_str(), None::<&str>);
-                            false
-                        }
-                        navigation::NavigationDecision::Deny => false,
-                    })
-                    .on_new_window(move |url, _| {
-                        if navigation::decide(&url) == navigation::NavigationDecision::External {
-                            let _ = popup_handle.opener().open_url(url.as_str(), None::<&str>);
-                        }
-                        NewWindowResponse::Deny
-                    })
-                    .build()?;
+                    .title("Hundredfold");
+            // Fixed sizes are desktop-only: on iOS the window frame is taken from them, so a
+            // 1280x860 request lays the page out far wider than the phone screen.
+            #[cfg(desktop)]
+            let builder = builder
+                .inner_size(1280.0, 860.0)
+                .min_inner_size(390.0, 480.0);
+            let window = builder
+                .initialization_script(bridge_script())
+                .on_navigation(move |url| match navigation::decide(url) {
+                    navigation::NavigationDecision::Local => true,
+                    navigation::NavigationDecision::External => {
+                        let _ = navigation_handle
+                            .opener()
+                            .open_url(url.as_str(), None::<&str>);
+                        false
+                    }
+                    navigation::NavigationDecision::Deny => false,
+                })
+                .on_new_window(move |url, _| {
+                    if navigation::decide(&url) == navigation::NavigationDecision::External {
+                        let _ = popup_handle.opener().open_url(url.as_str(), None::<&str>);
+                    }
+                    NewWindowResponse::Deny
+                })
+                .build()?;
             #[cfg(desktop)]
             {
                 menu::install(app.handle(), &window)?;
