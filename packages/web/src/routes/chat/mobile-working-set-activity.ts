@@ -206,9 +206,13 @@ export function reduceMobileWorkingSetActivity(
   return next ? { ...state, [sessionId]: next } : state
 }
 
-function lastMessagePreview(response: { messages?: unknown }): string {
+// Enough rows to step over a run of reasoning blocks to the message before it.
+const PREVIEW_LOOKBACK_ROWS = 8
+
+export function lastMessagePreview(response: { messages?: unknown }): string {
   const messages = Array.isArray(response.messages) ? response.messages : []
-  const last = messages.at(-1)
+  // Reasoning is never a preview: the card shows what was said, not what was thought.
+  const last = messages.findLast((row) => !row || typeof row !== 'object' || (row as Record<string, unknown>).role !== 'thinking')
   if (!last || typeof last !== 'object') return ''
   return cleanPreview(textContent((last as Record<string, unknown>).content))
 }
@@ -230,7 +234,7 @@ export function useMobileWorkingSetActivity({
   useEffect(() => {
     let live = true
     void Promise.all(sessionIds.map(async (sessionId) => {
-      const response = await api.getSessionMessages(sessionId, { limit: 1 })
+      const response = await api.getSessionMessages(sessionId, { limit: PREVIEW_LOOKBACK_ROWS })
       return [sessionId, lastMessagePreview(response)] as const
     })).then((entries) => {
       if (!live) return

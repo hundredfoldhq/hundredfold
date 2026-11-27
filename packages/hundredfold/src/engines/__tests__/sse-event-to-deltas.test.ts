@@ -40,10 +40,16 @@ describe("sseEventToDeltas (Item D — SSE → StreamDelta mapping)", () => {
       .toEqual([{ type: "text", content: "NG" }]);
   });
 
-  it("ignores empty text_delta, input_json_delta and thinking_delta", () => {
+  it("maps thinking_delta to a thinking delta, and ignores an empty one", () => {
+    expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } }))
+      .toEqual([{ type: "thinking", content: "hmm" }]);
+    expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "" } })).toEqual([]);
+    expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "signature_delta", signature: "abc" } })).toEqual([]);
+  });
+
+  it("ignores empty text_delta and input_json_delta", () => {
     expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "text_delta", text: "" } })).toEqual([]);
     expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } })).toEqual([]);
-    expect(sseEventToDeltas({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } })).toEqual([]);
   });
 
   it("ignores lifecycle-only events (ping, content_block_stop, message_delta, message_stop)", () => {

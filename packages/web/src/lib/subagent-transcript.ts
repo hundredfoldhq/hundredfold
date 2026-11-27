@@ -6,7 +6,7 @@ import { get } from '@/lib/api'
 export type SubagentEntry =
   | { kind: 'prompt'; text: string; at: string | null }
   | { kind: 'text'; text: string; at: string | null }
-  | { kind: 'tool'; id: string; name: string; input: string; result: string | null; isError: boolean; at: string | null }
+  | { kind: 'tool'; id: string; name: string; input: string; result: string | null; isError: boolean; at: string | null; detail?: Record<string, unknown> }
 
 export type SubagentTranscriptUnavailable = 'no-conversation' | 'not-found' | 'unreadable'
 

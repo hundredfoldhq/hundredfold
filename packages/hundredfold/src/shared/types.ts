@@ -1,10 +1,11 @@
-export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error" | "context" | "block";
+export type StreamDeltaType = "text" | "text_snapshot" | "thinking" | "tool_use" | "tool_update" | "tool_result" | "status" | "error" | "context" | "block";
 
 export type { CompanyChangedEvent } from "./gateway-events.js";
 
 export type { NoteDocument, NoteFolder, NoteStoreResult, NoteSummary } from "./note-types.js";
 
 import type { SessionFallbackMode, StoredFallbackTarget } from "./session-fallback-config.js";
+import type { ToolDetail, ToolFull } from "./tool-detail.js";
 
 /** Generous but bounded body size for durable communication-card metadata. */
 export const STRUCTURED_MESSAGE_BODY_MAX_CHARS = 16_000;
@@ -96,10 +97,16 @@ export interface StreamDelta {
    *  successful tool result (`status: "async_launched"`). Persisted on the tool row's
    *  meta so the card can open the sub-agent's transcript once the popup row is gone. */
   agentId?: string;
-  /** First 200 chars of the stringified tool input. Present on PreToolUse-sourced
-   *  `tool_use` deltas (fired just before the tool runs, full input assembled).
-   *  Absent on the SSE-proxy `content_block_start` delta (input not yet known). */
+  /** First 200 chars of the stringified tool input. */
   input?: string;
+  /** What the call's card shows: its input, output and failure, redacted and bounded
+   *  (see shared/tool-detail.ts). On `tool_use` when the engine has the input by then,
+   *  on `tool_update` when it learns the input after the call was announced, and on
+   *  `tool_result` with the output. Stored on the tool row's `meta.tool`. */
+  toolDetail?: ToolDetail;
+  /** The whole of the call's input and output, when `toolDetail` was cut (it then carries `full: true`).
+   *  Kept by the session's stream writer, which takes it off the delta before the delta goes anywhere. */
+  toolFull?: ToolFull;
   /** Set on a `tool_use` made inside a sub-agent (a sidechain) rather than by
    *  the session's main agent. Persisted on the tool row's meta. */
   sidechain?: boolean;

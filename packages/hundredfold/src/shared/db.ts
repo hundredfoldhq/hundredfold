@@ -16,7 +16,7 @@ import { migrateBoardHooksSchema } from '../board-hooks/migrate.js';
 import { migratePluginsSchema } from '../plugins/migrate.js';
 import { migrateFilesSchema } from '../sessions/migrate-files.js';
 import { CREATE_ENGINE_SPEND_TABLE } from '../sessions/engine-spend.js';
-import { CREATE_TABLE, CREATE_MESSAGES_TABLE, CREATE_MESSAGES_INDEX, CREATE_META_TABLE, CREATE_MESSAGES_ORDER_INDEX, CREATE_MESSAGES_PARTIAL_INDEX, CREATE_SESSION_KEY_INDEX, CREATE_DELEGATION_IDEMPOTENCY_INDEX, CREATE_LAST_ACTIVITY_INDEX, CREATE_PARENT_INDEX, CREATE_WORKFLOW_RUN_INDEX, CREATE_STATUS_INDEX, CREATE_WORK_ITEM_SESSION_INDEX, CREATE_QUEUE_ITEMS_TABLE, CREATE_FILES_TABLE, CREATE_CHAT_PINS_TABLE, migrateMessagesSchema, migrateFtsSchema, migrateSessionsSchema, migrateQueueItemsSchema, migrateCallbackDeliveriesSchema, runImmediateMigrationWithRetry, runSqliteBusyRetry } from '../sessions/migrate.js';
+import { CREATE_TABLE, CREATE_MESSAGES_TABLE, CREATE_MESSAGES_INDEX, CREATE_META_TABLE, CREATE_MESSAGES_ORDER_INDEX, CREATE_MESSAGES_PARTIAL_INDEX, CREATE_SESSION_KEY_INDEX, CREATE_DELEGATION_IDEMPOTENCY_INDEX, CREATE_LAST_ACTIVITY_INDEX, CREATE_PARENT_INDEX, CREATE_WORKFLOW_RUN_INDEX, CREATE_STATUS_INDEX, CREATE_WORK_ITEM_SESSION_INDEX, CREATE_QUEUE_ITEMS_TABLE, CREATE_FILES_TABLE, CREATE_CHAT_PINS_TABLE, CREATE_TOOL_DETAILS_TABLE, migrateMessagesSchema, migrateFtsSchema, migrateSessionsSchema, migrateQueueItemsSchema, migrateCallbackDeliveriesSchema, runImmediateMigrationWithRetry, runSqliteBusyRetry } from '../sessions/migrate.js';
 
 let db: Database.Database | undefined;
 
@@ -275,6 +275,7 @@ export function initDb(): Database.Database {
     database.exec(CREATE_FILES_TABLE);
     migrateFilesSchema(database);
     database.exec(CREATE_CHAT_PINS_TABLE);
+    database.exec(CREATE_TOOL_DETAILS_TABLE);
     database.exec(CREATE_ENGINE_SPEND_TABLE);
   });
   try {

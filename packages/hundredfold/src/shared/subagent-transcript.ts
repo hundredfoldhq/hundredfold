@@ -1,3 +1,5 @@
+import type { ToolDetail } from "./tool-detail.js";
+
 /**
  * A background sub-agent's conversation, read-only: the contract of
  * `GET /api/sessions/:id/subagents/:agentId/transcript`. A sub-agent is not a gateway session;
@@ -10,7 +12,7 @@ export type SubagentEntry =
   /** What it said. */
   | { kind: "text"; text: string; at: string | null }
   /** A tool call and, once it has come back, its result. */
-  | { kind: "tool"; id: string; name: string; input: string; result: string | null; isError: boolean; at: string | null };
+  | { kind: "tool"; id: string; name: string; input: string; result: string | null; isError: boolean; at: string | null; detail?: ToolDetail };
 
 export type SubagentTranscriptUnavailable = "no-conversation" | "not-found" | "unreadable";
 

@@ -13,6 +13,8 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../shared/logger.js';
+import { mergeToolDetail, type ToolDetail } from '../shared/tool-detail.js';
+import { deleteOrphanedToolDetails } from './tool-details.js';
 import { initDb } from '../shared/db.js';
 import { recordEngineSpend } from './engine-spend.js';
 import { stripControlChars } from '../shared/sanitize.js';
@@ -1790,7 +1792,7 @@ export function searchSessions(query: string, limit = 100, scopeDepartment?: str
   const rows = db
     .prepare(
       `SELECT * FROM sessions
-       WHERE (title LIKE ? ESCAPE '\\' OR employee LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id AND messages.content LIKE ? ESCAPE '\\'))
+       WHERE (title LIKE ? ESCAPE '\\' OR employee LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id AND messages.role != 'thinking' AND messages.content LIKE ? ESCAPE '\\'))
          AND (? IS NULL OR scope_department = ?)
        ORDER BY last_activity DESC LIMIT ?`,
     )
@@ -2320,6 +2322,7 @@ export function deleteSession(id: string): boolean {
     const session = db.prepare('SELECT work_item_id FROM sessions WHERE id = ?').get(id) as { work_item_id: string | null } | undefined;
     if (!session || session.work_item_id) return false;
     db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM tool_details WHERE session_id = ?').run(id);
     db.prepare('DELETE FROM queue_items WHERE session_id = ?').run(id);
     db.prepare('DELETE FROM meta WHERE key = ?').run(stoppedMarkerKey(id));
     db.prepare('DELETE FROM chat_pins WHERE pin_key = ?').run(id);
@@ -2341,6 +2344,7 @@ export function deleteSessions(ids: string[]): number {
     if (deletable.length === 0) return { changes: 0, deletedIds: [] };
     const placeholders = deletable.map(() => '?').join(',');
     db.prepare(`DELETE FROM messages WHERE session_id IN (${placeholders})`).run(...deletable);
+    db.prepare(`DELETE FROM tool_details WHERE session_id IN (${placeholders})`).run(...deletable);
     db.prepare(`DELETE FROM queue_items WHERE session_id IN (${placeholders})`).run(...deletable);
     db.prepare(`DELETE FROM meta WHERE key IN (${placeholders})`).run(...deletable.map(stoppedMarkerKey));
     db.prepare(`DELETE FROM chat_pins WHERE pin_key IN (${placeholders})`).run(...deletable);
@@ -2506,6 +2510,7 @@ export function getMessagePage(sessionId: string, options: MessagePageOptions = 
   const db = initDb();
   const limit = normalizeMessagePageLimit(options.limit);
   const pageLimit = limit + 1;
+  const visible = options.withoutThinking ? "AND role != 'thinking'" : '';
   let rows: MessageRow[];
 
   if (options.before) {
@@ -2518,7 +2523,7 @@ export function getMessagePage(sessionId: string, options: MessagePageOptions = 
       .prepare(`
         SELECT rowid, id, role, content, timestamp, media, partial, seq, tool_call, tool_id, blocks, meta
         FROM messages
-        WHERE session_id = ?
+        WHERE session_id = ? ${visible}
           AND (
             timestamp < ?
             OR (timestamp = ? AND COALESCE(seq, 0) < ?)
@@ -2542,7 +2547,7 @@ export function getMessagePage(sessionId: string, options: MessagePageOptions = 
       .prepare(`
         SELECT rowid, id, role, content, timestamp, media, partial, seq, tool_call, tool_id, blocks, meta
         FROM messages
-        WHERE session_id = ?
+        WHERE session_id = ? ${visible}
         ORDER BY timestamp DESC, COALESCE(seq, 0) DESC, rowid DESC
         LIMIT ?
       `)
@@ -2606,7 +2611,7 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
   const before = db
     .prepare(
       `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
-       WHERE session_id = ?
+       WHERE session_id = ? AND role != 'thinking'
          AND (timestamp < ?
               OR (timestamp = ? AND COALESCE(seq, -1) < ?)
               OR (timestamp = ? AND COALESCE(seq, -1) = ? AND rowid < ?))
@@ -2617,7 +2622,7 @@ export function getMessageContext(sessionId: string, messageId: string, radius =
   const after = db
     .prepare(
       `SELECT id, role, content, timestamp, seq, rowid, meta FROM messages
-       WHERE session_id = ?
+       WHERE session_id = ? AND role != 'thinking'
          AND (timestamp > ?
               OR (timestamp = ? AND COALESCE(seq, -1) > ?)
               OR (timestamp = ? AND COALESCE(seq, -1) = ? AND rowid > ?))
@@ -2756,23 +2761,37 @@ export function updatePartialMessage(id: string, content: string): void {
   db.prepare('UPDATE messages SET content = ? WHERE id = ? AND partial = 1').run(content, id);
 }
 
-/** Settle one exact partial tool row and attach its durable activity receipt and,
- *  for an `Agent`/`Task` launch, the sub-agent id its result carries. */
-export function settlePartialToolMessage(id: string, content: string, activityReceiptId?: string, agentId?: string): void {
+/** Settle one exact partial tool row and attach its durable activity receipt, the
+ *  sub-agent id an `Agent`/`Task` launch's result carries, and the call's detail
+ *  (input, output, failure) for the card a reload draws. */
+export function settlePartialToolMessage(id: string, content: string, activityReceiptId?: string, agentId?: string, toolDetail?: ToolDetail): void {
   const db = initDb();
   const row = db.prepare('SELECT meta FROM messages WHERE id = ? AND partial = 1').get(id) as { meta: string | null } | undefined;
   if (!row) return;
   const current = parseMetaColumn(row.meta) ?? {};
+  const detail = mergeToolDetail(current.tool as ToolDetail | undefined, toolDetail);
   const meta = {
     ...current,
     ...(activityReceiptId ? { activityReceiptId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...(detail ? { tool: detail } : {}),
   };
   db.prepare('UPDATE messages SET content = ?, meta = ? WHERE id = ? AND partial = 1').run(
     content,
     Object.keys(meta).length > 0 ? JSON.stringify(meta) : null,
     id,
   );
+}
+
+/** Add the call's detail to a still-running partial tool row: the input the engine assembled after it announced the call. */
+export function updatePartialToolDetail(id: string, toolDetail: ToolDetail): void {
+  const db = initDb();
+  const row = db.prepare('SELECT meta FROM messages WHERE id = ? AND partial = 1').get(id) as { meta: string | null } | undefined;
+  if (!row) return;
+  const current = parseMetaColumn(row.meta) ?? {};
+  const detail = mergeToolDetail(current.tool as ToolDetail | undefined, toolDetail);
+  if (!detail) return;
+  db.prepare('UPDATE messages SET meta = ? WHERE id = ? AND partial = 1').run(JSON.stringify({ ...current, tool: detail }), id);
 }
 
 /** Replace a stored (non-partial) message's text in place. Used by external-turn
@@ -2786,7 +2805,12 @@ export function updateMessageContent(id: string, content: string): void {
 /** Delete all live partial blocks for a session (called at turn end before the final insert). */
 export function deletePartialMessages(sessionId: string): number {
   const db = initDb();
-  return db.prepare('DELETE FROM messages WHERE session_id = ? AND partial = 1').run(sessionId).changes;
+  const settle = db.transaction(() => {
+    const deleted = db.prepare('DELETE FROM messages WHERE session_id = ? AND partial = 1').run(sessionId).changes;
+    deleteOrphanedToolDetails(sessionId);
+    return deleted;
+  });
+  return settle();
 }
 
 /** Keep streamed blocks as canonical history. Used by engines whose final
@@ -2810,6 +2834,8 @@ export function settlePartialMessages(sessionId: string, preserveMessageIds: Rea
       finalized += finalize.run(sessionId, id).changes;
     }
     const deleted = db.prepare('DELETE FROM messages WHERE session_id = ? AND partial = 1').run(sessionId).changes;
+    // A call whose row was dropped has no card to load its detail.
+    deleteOrphanedToolDetails(sessionId);
     return finalized + deleted;
   });
   return settle();
@@ -2818,7 +2844,14 @@ export function settlePartialMessages(sessionId: string, preserveMessageIds: Rea
 /** Boot sweep: drop any partial blocks stranded by a mid-turn gateway restart. */
 export function clearAllPartialMessages(): number {
   const db = initDb();
-  return db.prepare('DELETE FROM messages WHERE partial = 1').run().changes;
+  const sweep = db.transaction(() => {
+    const swept = db.prepare('DELETE FROM messages WHERE partial = 1').run().changes;
+    if (swept > 0) {
+      db.prepare('DELETE FROM tool_details WHERE tool_id NOT IN (SELECT tool_id FROM messages WHERE tool_id IS NOT NULL AND session_id = tool_details.session_id)').run();
+    }
+    return swept;
+  });
+  return sweep();
 }
 
 export function getSessionDelivery(id: string): SessionDelivery | undefined {

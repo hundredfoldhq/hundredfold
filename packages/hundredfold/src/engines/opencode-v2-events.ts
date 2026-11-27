@@ -13,6 +13,8 @@
  * | v2 event                      | line         |
  * |-------------------------------|--------------|
  * | session.text.ended            | text         |
+ * | session.reasoning.ended       | reasoning    |
+ * | session.tool.called           | tool_use (running) |
  * | session.tool.success / failed | tool_use     |
  * | session.step.ended            | step_finish  |
  * | session.step.failed           | error        |
@@ -69,16 +71,21 @@ function textLine(sessionId: string, messageId: string, ordinal: unknown, text: 
   });
 }
 
-interface ToolResult {
+/** A tool call as the turn reports it: running with its input, or finished with its output too. */
+interface ToolReport {
   callId: string;
   messageId: string;
   name: string | undefined;
   input: unknown;
-  status: "completed" | "error";
-  output: string;
+  status: "running" | "completed" | "error";
+  output?: string;
+  /** The change an edit made, as a unified diff, in the place a 1.x edit reports it. */
+  diff?: string;
 }
 
-function toolLine(sessionId: string, tool: ToolResult): string {
+type ToolResult = ToolReport & { status: "completed" | "error"; output: string };
+
+function toolLine(sessionId: string, tool: ToolReport): string {
   return JSON.stringify({
     type: "tool_use",
     sessionID: sessionId,
@@ -88,8 +95,21 @@ function toolLine(sessionId: string, tool: ToolResult): string {
       messageID: tool.messageId,
       type: "tool",
       ...(tool.name ? { tool: tool.name } : {}),
-      state: { status: tool.status, input: record(tool.input) ?? {}, output: tool.output },
+      state: {
+        status: tool.status,
+        input: record(tool.input) ?? {},
+        ...(tool.output !== undefined ? { output: tool.output } : {}),
+        ...(tool.diff ? { metadata: { diff: tool.diff } } : {}),
+      },
     },
+  });
+}
+
+function reasoningLine(sessionId: string, messageId: string, ordinal: unknown, text: string, end: number): string {
+  return JSON.stringify({
+    type: "reasoning",
+    sessionID: sessionId,
+    part: { id: `${messageId}#reasoning${String(ordinal ?? 0)}`, messageID: messageId, type: "reasoning", text, time: { end } },
   });
 }
 
@@ -109,6 +129,12 @@ function stepFinishLine(sessionId: string, data: Record<string, unknown>): strin
 export class V2RunLines {
   private readonly toolNames = new Map<string, string>();
   private readonly toolInputs = new Map<string, unknown>();
+  /** Reasoning streamed so far, by block, for a block that ends without carrying its text. */
+  private readonly reasoning = new Map<string, string>();
+  /** Text streamed so far in a block that has not ended, by block. */
+  private readonly openText = new Map<string, { messageId: string; ordinal: unknown; text: string }>();
+  /** Blocks whose text was reported ahead of a call, so their end reports nothing more. */
+  private readonly reportedText = new Set<string>();
 
   constructor(private readonly sessionId: string) {}
 
@@ -118,24 +144,79 @@ export class V2RunLines {
       if (str(data.id) && str(data.name)) this.toolNames.set(data.id as string, data.name as string);
       return undefined;
     },
-    "session.tool.called": (data) => {
-      if (str(data.id)) this.toolInputs.set(data.id as string, data.input);
-      return undefined;
-    },
+    // The call starts running: report it with its input, as 1.x does once a tool part runs.
+    "session.tool.called": (data) => this.toolCalled(data),
     "session.tool.success": (data) => this.toolResult(true, data),
     "session.tool.failed": (data) => this.toolResult(false, data),
-    "session.text.ended": (data, event) => (typeof data.text === "string" && data.text
-      ? textLine(this.sessionId, str(data.assistantMessageID) ?? "", data.ordinal, data.text, numberOr(event.created, Date.now()))
-      : undefined),
+    "session.text.delta": (data) => {
+      const chunk = str(data.delta);
+      if (!chunk) return undefined;
+      const key = textKey(data);
+      const open = this.openText.get(key) ?? { messageId: str(data.assistantMessageID) ?? "", ordinal: data.ordinal, text: "" };
+      this.openText.set(key, { ...open, text: open.text + chunk });
+      return undefined;
+    },
+    "session.text.ended": (data, event) => {
+      const key = textKey(data);
+      this.openText.delete(key);
+      if (this.reportedText.delete(key)) return undefined;
+      return typeof data.text === "string" && data.text
+        ? textLine(this.sessionId, str(data.assistantMessageID) ?? "", data.ordinal, data.text, numberOr(event.created, Date.now()))
+        : undefined;
+    },
+    "session.reasoning.delta": (data) => {
+      const key = reasoningKey(data);
+      const chunk = str(data.delta) ?? str(data.text);
+      if (chunk) this.reasoning.set(key, (this.reasoning.get(key) ?? "") + chunk);
+      return undefined;
+    },
+    "session.reasoning.ended": (data, event) => this.reasoningEnded(data, event),
     "session.step.ended": (data) => stepFinishLine(this.sessionId, data),
     "session.step.failed": (data) => this.errorLine(data),
     "session.execution.failed": (data) => this.errorLine(data),
   };
 
-  /** The line for one of the turn's own events, or undefined when `run`
-   *  would print nothing for it. */
-  lineFor(event: V2Event): string | undefined {
-    return this.readers[event.type]?.(event.data ?? {}, event);
+  /**
+   * The lines for one of the turn's own events, in order; none when `run` would print nothing
+   * for it. A call starts before the text that introduced it has ended, so the text streamed so
+   * far is reported first, as a 1.x stream would have it, and that text's end reports nothing.
+   */
+  linesFor(event: V2Event): string[] {
+    const data = event.data ?? {};
+    const lead = event.type === "session.tool.called" ? this.textAheadOfCall(event) : [];
+    const line = this.readers[event.type]?.(data, event);
+    return line === undefined ? lead : [...lead, line];
+  }
+
+  private textAheadOfCall(event: V2Event): string[] {
+    const lines: string[] = [];
+    for (const [key, open] of this.openText) {
+      this.openText.delete(key);
+      if (!open.text) continue;
+      this.reportedText.add(key);
+      lines.push(textLine(this.sessionId, open.messageId, open.ordinal, open.text, numberOr(event.created, Date.now())));
+    }
+    return lines;
+  }
+
+  private toolCalled(data: Record<string, unknown>): string | undefined {
+    const callId = str(data.id);
+    if (!callId) return undefined;
+    this.toolInputs.set(callId, data.input);
+    return toolLine(this.sessionId, {
+      callId,
+      messageId: str(data.assistantMessageID) ?? "",
+      name: this.toolNames.get(callId),
+      input: data.input,
+      status: "running",
+    });
+  }
+
+  private reasoningEnded(data: Record<string, unknown>, event: V2Event): string | undefined {
+    const key = reasoningKey(data);
+    const text = (str(data.text) ?? this.reasoning.get(key) ?? "").trim();
+    this.reasoning.delete(key);
+    return text ? reasoningLine(this.sessionId, str(data.assistantMessageID) ?? "", data.ordinal, text, numberOr(event.created, Date.now())) : undefined;
   }
 
   private errorLine(data: Record<string, unknown>): string | undefined {
@@ -154,8 +235,17 @@ export class V2RunLines {
       input: this.toolInputs.get(callId),
       status: ok ? "completed" : "error",
       output: ok ? contentText(data.content) : str(error?.message) ?? "the tool failed",
+      ...(ok ? filePatch(data.metadata) : {}),
     });
   }
+}
+
+function textKey(data: Record<string, unknown>): string {
+  return `${str(data.assistantMessageID) ?? ""}#${String(data.ordinal ?? 0)}`;
+}
+
+function reasoningKey(data: Record<string, unknown>): string {
+  return `${str(data.assistantMessageID) ?? ""}#${String(data.ordinal ?? str(data.id) ?? 0)}`;
 }
 
 function numberOr(value: unknown, fallback: number): number {
@@ -189,6 +279,10 @@ function storedBlockLines(
   if (block.type === "text") {
     return typeof block.text === "string" && block.text ? [textLine(sessionId, messageId, at.ordinal, block.text, at.completed)] : [];
   }
+  if (block.type === "reasoning") {
+    const text = typeof block.text === "string" ? block.text.trim() : "";
+    return text ? [reasoningLine(sessionId, messageId, at.ordinal, text, at.completed)] : [];
+  }
   const tool = block.type === "tool" ? storedToolResult(messageId, block) : undefined;
   return tool ? [toolLine(sessionId, tool)] : [];
 }
@@ -200,7 +294,15 @@ function storedToolResult(messageId: string, block: Record<string, unknown>): To
   const callId = str(block.id);
   if (!callId || (status !== "completed" && status !== "error")) return undefined;
   const output = status === "completed" ? contentText(state.content) : str(record(state.error)?.message) ?? "the tool failed";
-  return { callId, messageId, name: str(block.name), input: state.input, status, output };
+  return { callId, messageId, name: str(block.name), input: state.input, status, output, ...(status === "completed" ? filePatch(state.metadata) : {}) };
+}
+
+/** A 2.x edit's change: the patch of the one file it touched. A change across several files is left out. */
+function filePatch(metadata: unknown): { diff?: string } {
+  const files = record(metadata)?.files;
+  if (!Array.isArray(files) || files.length !== 1) return {};
+  const patch = str(record(files[0])?.patch);
+  return patch ? { diff: patch } : {};
 }
 
 /** Whether a stored reply ends its turn: completed, and finished for a reason

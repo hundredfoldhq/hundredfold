@@ -256,7 +256,7 @@ function rolesCompatible(message: SessionMessage, entry: TranscriptTailEntry): b
 }
 
 function findPersistedSequence(existing: SessionMessage[], entries: TranscriptTailEntry[]): SessionMessage[] | null {
-  const recent = existing.filter((m) => !m.partial).slice(-Math.max(50, entries.length * 4));
+  const recent = existing.filter((m) => !m.partial && m.role !== "thinking").slice(-Math.max(50, entries.length * 4));
   const matched: SessionMessage[] = [];
   let cursor = 0;
   for (const entry of entries) {
@@ -291,7 +291,7 @@ function findPersistedSequence(existing: SessionMessage[], entries: TranscriptTa
  * the normal insert.
  */
 function trailingPersistedPrefix(existing: SessionMessage[], entries: TranscriptTailEntry[]): SessionMessage[] {
-  const recent = existing.filter((m) => !m.partial);
+  const recent = existing.filter((m) => !m.partial && m.role !== "thinking");
   for (let length = Math.min(recent.length, entries.length); length > 0; length -= 1) {
     const candidate = recent.slice(-length);
     const mirrors = candidate.every(

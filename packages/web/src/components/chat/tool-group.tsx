@@ -1,8 +1,10 @@
 import { useRef, type CSSProperties } from 'react'
-import { ChevronDown, FileText, Globe, Search, Terminal, Wrench, type IconComponent } from '@/components/ui/icon'
+import { Bot, ChevronDown, FileText, Globe, ListTodo, PenLine as FilePen, Plug, Search, Terminal, Wrench, type IconComponent } from '@/components/ui/icon'
 import type { Message } from '@/lib/conversations'
 import type { SubagentRef } from '@/lib/subagent-transcript'
 import { statusMark } from './chat-blocks'
+import { ToolCallCard } from './tool-call-card'
+import { identifyTool, summarizeTool, toolDetailOf, type ToolKind } from '@/lib/tool-summary'
 import { commsArrivalDelayMs } from './message-arrival'
 import { usePersistentExpansion } from './transcript-expansion'
 import { cn } from '@/lib/utils'
@@ -30,10 +32,25 @@ const TOOL_GLYPH_RULES: ReadonlyArray<{
   { glyph: Globe, matches: ['fetch', 'web', 'browser', 'http'] },
 ]
 
+const KIND_GLYPHS: Partial<Record<ToolKind, IconComponent>> = {
+  bash: Terminal,
+  read: FileText,
+  write: FilePen,
+  edit: FilePen,
+  search: Search,
+  web: Globe,
+  agent: Bot,
+  todo: ListTodo,
+}
+
+/** A builtin by its kind; any other tool by what its name suggests, an MCP tool falling back to a plug. */
 export function toolGlyphForName(toolName: string): IconComponent {
+  const { kind } = identifyTool(toolName)
+  const kindGlyph = KIND_GLYPHS[kind]
+  if (kindGlyph) return kindGlyph
   const normalized = toolName.replace(/^mcp__.*?__/i, '').toLowerCase()
   return TOOL_GLYPH_RULES.find(({ matches }) => matches.some((match) => normalized.includes(match)))?.glyph
-    ?? Wrench
+    ?? (kind === 'mcp' ? Plug : Wrench)
 }
 
 /** The stagger this arrival sits at, as the shared `--arrive-delay` rail reads
@@ -77,9 +94,31 @@ function visibleToolEntries(msgs: Message[], activeIndex: number, showAll: boole
   return indexed.slice(0, 10)
 }
 
-const CHIP_BASE = 'inline-flex min-h-9 max-w-full items-center gap-1.5 px-2.5 py-1 text-left'
+const CHIP_BASE = 'flex min-h-8 w-full min-w-0 items-center gap-2 px-2 py-1 text-left'
+const CHIP_BUTTON = 'cursor-pointer rounded-md border-none bg-transparent font-[inherit] transition-colors duration-150 hover:bg-[var(--fill-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]'
 
-function ToolChipContent({ msg, index, status }: { msg: Message; index: number; status: 'done' | 'running' | 'queued' }) {
+type ChipStatus = 'done' | 'running' | 'queued' | 'error'
+
+function chipStatus(msg: Message, isActive: boolean, failed: boolean): ChipStatus {
+  if (isToolDone(msg)) return failed ? 'error' : 'done'
+  return isActive ? 'running' : 'queued'
+}
+
+/** The call's name as its chip titles it: an MCP call is its server and tool. */
+function chipTitle(toolCall: string | undefined, index: number): string {
+  if (!toolCall) return `Tool ${index + 1}`
+  const { kind, server, name } = identifyTool(toolCall)
+  return kind === 'mcp' ? `${server} › ${name}` : toolCall
+}
+
+function ToolChipContent({ msg, index, status, summary, expanded }: {
+  msg: Message
+  index: number
+  status: ChipStatus
+  summary: string
+  /** Present when the call has detail to open: whether it is open. */
+  expanded?: boolean
+}) {
   const ToolGlyph = toolGlyphForName(msg.toolCall || '')
   return (
     <>
@@ -87,11 +126,125 @@ function ToolChipContent({ msg, index, status }: { msg: Message; index: number; 
         {statusMark(status)}
       </span>
       <ToolGlyph size={13} aria-hidden="true" className="shrink-0 text-[var(--text-tertiary)]" />
-      <span className="min-w-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
-        {msg.toolCall || `Tool ${index + 1}`}
+      <span className="min-w-0 max-w-[45%] shrink-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
+        {chipTitle(msg.toolCall, index)}
       </span>
+      {summary && (
+        <span
+          data-testid="tool-summary"
+          className="min-w-0 flex-1 truncate font-[family-name:var(--font-code)] text-[length:var(--text-caption1)] text-[var(--text-tertiary)]"
+        >
+          {summary}
+        </span>
+      )}
+      {expanded !== undefined && (
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          className={`ml-auto shrink-0 text-[var(--text-quaternary)] transition-transform duration-150 ease-[var(--ease-smooth)] ${expanded ? 'rotate-180' : 'rotate-0'}`}
+        />
+      )}
     </>
   )
+}
+
+/** A background Agent/Task call's chip: opening the sub-agent's transcript, and beside it the call's detail. */
+function SubagentChipRow({ msg, index, status, summary, agentId, onOpen, className, style, enter, toggle }: {
+  msg: Message
+  index: number
+  status: ChipStatus
+  summary: string
+  agentId: string
+  onOpen: OpenSubagentCard
+  className: string
+  style: CSSProperties | undefined
+  enter: ChipEnter | undefined
+  toggle: ChipToggle | null
+}) {
+  return (
+    <div data-tool-enter={enter} style={style} className={className}>
+      <button
+        type="button"
+        data-pane-focus-preserving
+        className={cn(CHIP_BASE, CHIP_BUTTON, 'min-w-0 flex-1')}
+        aria-label={`Open the ${msg.toolCall || 'Agent'} sub-agent transcript`}
+        onClick={(event) => onOpen({ id: agentId, description: null, agentType: null }, event.currentTarget)}
+      >
+        <ToolChipContent msg={msg} index={index} status={status} summary={summary} />
+      </button>
+      {toggle && (
+        <button type="button" data-pane-focus-preserving className={cn(CHIP_BUTTON, 'grid size-8 shrink-0 place-items-center p-0')} {...toggle.props}>
+          <ChevronDown size={12} aria-hidden="true" className={`text-[var(--text-quaternary)] transition-transform duration-150 ${toggle.open ? 'rotate-180' : 'rotate-0'}`} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface ChipToggle {
+  open: boolean
+  props: { 'aria-expanded': boolean; 'aria-label': string; onClick: () => void }
+}
+
+/** What a chip shows and how it opens: its detail, status and one-line summary, and the toggle for the detail. */
+function useChipModel(entry: ToolEntry, activeIndex: number) {
+  const { msg, index } = entry
+  const detail = toolDetailOf(msg)
+  const [open, setOpen] = usePersistentExpansion(`tool-card:${toolChipKey(entry)}`, false)
+  const toggle: ChipToggle | null = detail
+    ? {
+        open,
+        props: {
+          'aria-expanded': open,
+          'aria-label': `${open ? 'Hide' : 'Show'} the ${msg.toolCall || 'tool'} call's input and result`,
+          onClick: () => setOpen(!open),
+        },
+      }
+    : null
+  return {
+    detail,
+    toggle,
+    status: chipStatus(msg, index === activeIndex, detail?.isError === true),
+    summary: summarizeTool(msg.toolCall || '', detail?.input),
+  }
+}
+
+/** The chip itself: a button that opens the call's detail, a sub-agent card, or plain text for a call with none. */
+function ToolChipRow({ entry, status, summary, toggle, arrival, enter, onOpenSubagent }: {
+  entry: ToolEntry
+  status: ChipStatus
+  summary: string
+  toggle: ChipToggle | null
+  arrival: number | undefined
+  enter: ChipEnter | undefined
+  onOpenSubagent?: OpenSubagentCard
+}) {
+  const { msg, index } = entry
+  const agentId = subagentIdOf(msg)
+  const style = enter ? arriveDelay(arrival) : undefined
+  const content = (expanded?: boolean) => (
+    <ToolChipContent msg={msg} index={index} status={status} summary={summary} expanded={expanded} />
+  )
+  // Only a background sub-agent launch carries an agent id: its card opens the same
+  // read-only transcript the waiting-on popup does, which is gone once it finishes.
+  // The card keeps no description or agent type, so the view opens without the row's labels.
+  if (agentId && onOpenSubagent) {
+    return (
+      <SubagentChipRow
+        msg={msg} index={index} status={status} summary={summary} agentId={agentId} onOpen={onOpenSubagent}
+        className={cn('flex w-full min-w-0 items-center', enter && 'tool-arrive')}
+        style={style} enter={enter} toggle={toggle}
+      />
+    )
+  }
+  if (toggle) {
+    return (
+      <button type="button" data-tool-enter={enter} data-pane-focus-preserving style={style} className={cn(CHIP_BASE, CHIP_BUTTON, enter && 'tool-arrive')} {...toggle.props}>
+        {content(toggle.open)}
+      </button>
+    )
+  }
+  return <div data-tool-enter={enter} style={style} className={cn(CHIP_BASE, enter && 'tool-arrive')}>{content()}</div>
 }
 
 function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
@@ -101,32 +254,15 @@ function ToolChip({ entry, activeIndex, arrival, enter, onOpenSubagent }: {
   enter: ChipEnter | undefined
   onOpenSubagent?: OpenSubagentCard
 }) {
-  const { msg, index } = entry
-  const status = isToolDone(msg) ? 'done' : index === activeIndex ? 'running' : 'queued'
-  const agentId = subagentIdOf(msg)
-  const className = cn(CHIP_BASE, enter && 'tool-arrive')
-  const style = enter ? arriveDelay(arrival) : undefined
-  // Only a background sub-agent launch carries an agent id: its card opens the same
-  // read-only transcript the waiting-on popup does, which is gone once it finishes.
-  // The card keeps no description or agent type, so the view opens without the row's labels.
-  if (agentId && onOpenSubagent) {
-    return (
-      <button
-        type="button"
-        data-tool-enter={enter}
-        data-pane-focus-preserving
-        style={style}
-        className={cn(className, 'cursor-pointer rounded-md border-none bg-transparent font-[inherit] transition-colors duration-150 hover:bg-[var(--fill-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]')}
-        aria-label={`Open the ${msg.toolCall || 'Agent'} sub-agent transcript`}
-        onClick={(event) => onOpenSubagent({ id: agentId, description: null, agentType: null }, event.currentTarget)}
-      >
-        <ToolChipContent msg={msg} index={index} status={status} />
-      </button>
-    )
-  }
+  const { detail, toggle, status, summary } = useChipModel(entry, activeIndex)
   return (
-    <div data-tool-enter={enter} style={style} className={className}>
-      <ToolChipContent msg={msg} index={index} status={status} />
+    <div className="flex w-full min-w-0 flex-col">
+      <ToolChipRow entry={entry} status={status} summary={summary} toggle={toggle} arrival={arrival} enter={enter} onOpenSubagent={onOpenSubagent} />
+      {detail && toggle?.open && (
+        <div className="min-w-0 pl-2">
+          <ToolCallCard toolCall={entry.msg.toolCall || ''} toolId={entry.msg.toolId} detail={detail} running={status !== 'done' && status !== 'error'} />
+        </div>
+      )}
     </div>
   )
 }
@@ -157,7 +293,7 @@ function ToolChipList({ msgs, activeIndex, showAll, onShowAll, arrivals, isEnter
   const hiddenToolCount = Math.max(0, msgs.length - entries.length)
   return (
     <div
-      className="mt-1.5 flex max-w-[min(620px,calc(100vw_-_var(--space-6)))] flex-col items-start gap-1 pl-1"
+      className="mt-1.5 flex w-full min-w-0 flex-col items-stretch gap-0.5"
       data-testid="tool-group-list"
     >
       {entries.map((entry, position) => {
@@ -179,7 +315,7 @@ function ToolChipList({ msgs, activeIndex, showAll, onShowAll, arrivals, isEnter
         <button
           type="button"
           onClick={onShowAll}
-          className="ml-6 inline-flex min-h-8 items-center gap-1 rounded-full border-none bg-transparent px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-[background-color,color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)] active:scale-[0.96]"
+          className="ml-6 inline-flex min-h-8 self-start items-center gap-1 rounded-full border-none bg-transparent px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-[background-color,color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)] active:scale-[0.96]"
         >
           Show {hiddenToolCount} more
           <ChevronDown size={13} className="shrink-0 text-[var(--text-quaternary)]" />

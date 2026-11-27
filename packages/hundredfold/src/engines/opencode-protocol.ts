@@ -157,7 +157,8 @@ export function parseEventLine(line: string): Record<string, unknown> | undefine
  *  spread so the start and the result cannot disagree about which call they are. */
 export function toolIdentity(part: Record<string, unknown>): { toolName?: string; toolId?: string } {
   const toolName = trimmedString(part.tool);
-  const toolId = trimmedString(part.callID);
+  // 1.x names the call `callID`. A 2.x run's part has its own `partID`, and its `id` is the call's.
+  const toolId = trimmedString(part.callID) ?? (trimmedString(part.partID) ? trimmedString(part.id) : undefined);
   return { ...(toolName ? { toolName } : {}), ...(toolId ? { toolId } : {}) };
 }
 

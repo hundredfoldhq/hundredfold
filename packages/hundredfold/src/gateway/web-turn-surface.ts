@@ -52,6 +52,7 @@ function deltaPayload(sessionId: string, delta: StreamDelta): GatewayEventMap["s
     activityReceiptId: delta.activityReceiptId,
     agentId: delta.agentId,
     input: delta.input,
+    ...(delta.toolDetail ? { toolDetail: delta.toolDetail } : {}),
     ...(delta.sidechain ? { sidechain: true } : {}),
     block: delta.block,
     streamBlock: delta.streamBlock,

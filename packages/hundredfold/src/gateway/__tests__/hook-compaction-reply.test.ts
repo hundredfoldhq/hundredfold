@@ -68,3 +68,17 @@ describe("POST /api/internal/hook after a compaction", () => {
     expect(reply.body).toEqual({ message: "ok" });
   });
 });
+
+describe("POST /api/internal/hook with a tool's whole result", () => {
+  // A tool hook carries the call's input and result; the chat keeps up to a million characters of the
+  // result, so a result over 64 KB must reach the gateway (a refused hook loses the call's completion).
+  it("takes a megabyte of result", async () => {
+    const reply = await relay({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: { stdout: "x".repeat(1_000_000) } });
+    expect(reply.status).toBe(200);
+  });
+
+  it("still refuses a body past its cap", async () => {
+    const reply = await relay({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: { stdout: "x".repeat(9 * 1024 * 1024) } });
+    expect(reply.status).toBe(413);
+  });
+});

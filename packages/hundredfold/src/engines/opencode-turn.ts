@@ -2,6 +2,7 @@ import type { EngineResult, StreamDelta } from "../shared/types.js";
 import { isBillingFailureMessage } from "../shared/engine-failure.js";
 import { isRateLimitMessage } from "../shared/rateLimit.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
+import { patchHunks, toolEndParts, toolStartParts } from "../shared/tool-detail.js";
 import {
   asRecord,
   contextTokensFromStep,
@@ -48,6 +49,8 @@ export class OpencodeTurn {
   /** The first assistant message this turn's events named: where the turn begins in the session's history. */
   private firstMessageId: string | undefined;
   private contextTokens: number | undefined;
+  /** Calls already announced as a `tool_use`, so a call reported again at its end is not announced twice. */
+  private readonly announcedTools = new Set<string>();
   /** opencode assigns this; until it speaks, the id we asked it to resume. */
   private sessionId: string;
 
@@ -62,14 +65,8 @@ export class OpencodeTurn {
     const event = parseEventLine(line);
     if (!event) return;
 
-    // Every event carries it, including the `error` one — so a turn that failed
-    // before producing anything still reports the session it failed in, and the
-    // next turn resumes rather than silently starting a new conversation.
-    const sessionId = trimmedString(event.sessionID);
-    if (sessionId) this.sessionId = sessionId;
-
     const part = asRecord(event.part) ?? {};
-    this.firstMessageId ??= trimmedString(part.messageID) || undefined;
+    this.noteEvent(event, part);
     switch (event.type) {
       case "text":
         this.readText(part, onStream);
@@ -77,14 +74,31 @@ export class OpencodeTurn {
       case "tool_use":
         this.readToolUse(part, onStream);
         break;
+      case "reasoning":
+        this.readReasoning(part, onStream);
+        break;
       case "step_finish":
         this.readStepFinish(part);
         break;
       case "error":
-        this.turnError = opencodeErrorText(event);
-        this.endedInError = true;
+        this.readError(event);
         break;
     }
+  }
+
+  /** What every event says about the turn, whatever its type. */
+  private noteEvent(event: Record<string, unknown>, part: Record<string, unknown>): void {
+    // Every event carries it, including the `error` one — so a turn that failed
+    // before producing anything still reports the session it failed in, and the
+    // next turn resumes rather than silently starting a new conversation.
+    const sessionId = trimmedString(event.sessionID);
+    if (sessionId) this.sessionId = sessionId;
+    this.firstMessageId ??= trimmedString(part.messageID) || undefined;
+  }
+
+  private readError(event: Record<string, unknown>): void {
+    this.turnError = opencodeErrorText(event);
+    this.endedInError = true;
   }
 
   private readText(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {
@@ -99,31 +113,53 @@ export class OpencodeTurn {
     if (onStream) onStream({ type: "text", content: text });
   }
 
+  /** The model's reasoning, for the chat to show. It is neither an answer nor proof of progress: it
+   *  changes nothing about how the turn ends. */
+  private readReasoning(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {
+    const text = typeof part.text === "string" ? part.text : "";
+    if (text.trim() && onStream) onStream({ type: "thinking", content: text });
+  }
+
   private readToolUse(part: Record<string, unknown>, onStream: ((delta: StreamDelta) => void) | null): void {
     this.producedOutput = true;
     if (!onStream) return;
     const identity = toolIdentity(part);
     const state = asRecord(part.state) ?? {};
-
-    onStream({
-      type: "tool_use",
-      content: describeToolCall(identity.toolName, asRecord(state.input)),
-      ...identity,
-    });
-
-    // A tool part is reported at whatever state it reached. `pending` and
-    // `running` have no output yet, so only the two terminal states produce a
-    // result — verified against opencode's own status union.
+    if (this.firstSighting(identity.toolId ?? trimmedString(part.id))) {
+      onStream({
+        type: "tool_use",
+        content: describeToolCall(identity.toolName, asRecord(state.input)),
+        ...identity,
+        ...toolStartParts(state.input),
+      });
+    }
+    // `pending` and `running` have no output yet, so only the two terminal states
+    // produce a result — verified against opencode's own status union.
     const status = trimmedString(state.status);
-    if (status !== "completed" && status !== "error") return;
+    if (status === "completed" || status === "error") onStream(this.toolResult(identity, state, status === "error"));
+  }
+
+  /** A call is announced once: a server turn reports it at `running` (its input is assembled by
+   *  then) and again at its end, and only the first report is a `tool_use`. */
+  private firstSighting(callKey: string | undefined): boolean {
+    if (callKey === undefined) return true;
+    const announced = this.announcedTools.has(callKey);
+    this.announcedTools.add(callKey);
+    return !announced;
+  }
+
+  private toolResult(identity: { toolName?: string; toolId?: string }, state: Record<string, unknown>, failed: boolean): StreamDelta {
     const output = typeof state.output === "string" ? state.output : "";
-    const activityReceiptId = extractActivityReceiptId(output, { isError: status === "error" });
-    onStream({
+    const activityReceiptId = extractActivityReceiptId(output, { isError: failed });
+    const detailOutput = failed ? trimmedString(state.error) ?? output : editPatch(state, output) ?? output;
+    const toolParts = toolEndParts({ input: state.input, output: detailOutput, isError: failed });
+    return {
       type: "tool_result",
       content: output.slice(0, 500),
       ...identity,
       ...(activityReceiptId ? { activityReceiptId } : {}),
-    });
+      ...toolParts,
+    };
   }
 
   /** One model round trip finished. A turn is several of these, so cost
@@ -260,4 +296,24 @@ export class OpencodeTurn {
         ? outcome.noAnswer ?? "opencode exited successfully without a final assistant response"
         : `opencode exited with code ${outcome.code}: ${outcome.stderr.slice(0, 500)}`);
   }
+}
+
+/**
+ * An edit's change as numbered hunks, from the diff its metadata carries, when its output is no
+ * more than a one-line acknowledgement ("Edit applied successfully."). Output with more to say,
+ * such as diagnostics, is kept as it is. 1.x reports the diff as `metadata.diff`; a 2.x run
+ * reports each file's patch under `metadata.metadata.files`, and only a single file's is used.
+ */
+function editPatch(state: Record<string, unknown>, output: string): string | undefined {
+  if (output.trim().includes("\n")) return undefined;
+  const metadata = objectOf(state.metadata);
+  return patchHunks(metadata?.diff) ?? patchHunks(singleFilePatch(objectOf(metadata?.metadata)?.files));
+}
+
+function singleFilePatch(files: unknown): unknown {
+  return Array.isArray(files) && files.length === 1 ? objectOf(files[0])?.patch : undefined;
+}
+
+function objectOf(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }

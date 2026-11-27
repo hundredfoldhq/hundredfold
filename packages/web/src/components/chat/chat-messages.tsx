@@ -28,6 +28,8 @@ import { JumpToLatestButton } from './jump-to-latest'
 import { TranscriptEmptyState } from './chat-transcript-empty'
 import { TranscriptExpansionProvider, useTranscriptExpansionStore } from './transcript-expansion'
 import { ThinkingIndicator } from './thinking-indicator'
+import { ThinkingRow } from './thinking-row'
+import { isBlankThinkingRow } from '@/lib/thinking'
 import { turnSpacerClass } from './turn-spacer'
 import { answerCaption, usePendingWork, type PendingWork } from './pending-work'
 import type { BackgroundActivity, DelegatedActivity } from '@/lib/api'
@@ -73,6 +75,11 @@ function isDelegationToolCall(msg: Message): boolean {
 function isDispatchToolCall(msg: Message): boolean {
   const name = msg.toolCall || ''
   return name === 'send_to_session' || name.endsWith('__send_to_session')
+}
+
+/** A tool call that joins the run of calls it sits in (a follow-up to another session stands apart). */
+function isGroupableToolCall(msg: Message): boolean {
+  return msg.role === 'assistant' && Boolean(msg.toolCall) && !isDispatchToolCall(msg)
 }
 
 const ACTIVITY_BLOCK_TYPES = new Set(['todo-activity', 'workflow-definition', 'workflow-run'])
@@ -206,13 +213,21 @@ export function groupMessages(messages: Message[]): MessageItem[] {
       i++
       continue
     }
+    if (isBlankThinkingRow(messages[i])) {
+      i++
+      continue
+    }
     if (messages[i].role === 'assistant' && messages[i].toolCall) {
       const toolMsgs: Message[] = []
       const start = i
-      while (
-        i < messages.length && messages[i].role === 'assistant' && messages[i].toolCall
-        && !isDispatchToolCall(messages[i])
-      ) {
+      while (i < messages.length) {
+        // Reasoning between two calls ends the run, as interim prose does, so it reads where it came:
+        // after the calls before it and before the ones after. A blank block shows nothing and cuts nothing.
+        if (isBlankThinkingRow(messages[i])) {
+          i++
+          continue
+        }
+        if (!isGroupableToolCall(messages[i])) break
         const suppressedByReceipt = Boolean(messages[i].id && suppressedToolIds.has(messages[i].id as string))
         if ((!hasDelegationBlock || !isDelegationToolCall(messages[i])) && !suppressedByReceipt) {
           toolMsgs.push(messages[i])
@@ -904,6 +919,10 @@ export function ChatMessages({
   const pendingTurnId = turnPending || !liveFinalPresent ? currentTurnId : null
   const incompleteTurnIds = pendingTurnId ? new Set([pendingTurnId]) : new Set<string>()
 
+  // The reasoning block being written: the turn runs, nothing came after it, no answer text has
+  // started. Once the next block opens, or the turn ends, the row reads as done.
+  const liveThinkingId = loading && !streamingText && latestMessage?.role === 'thinking' && !isBlankThinkingRow(latestMessage) ? latestMessage.id : null
+
   // Memoize grouped messages to avoid re-running on streaming-only re-renders
   const groupedMessages = useMemo(() => groupMessages(messages), [messages])
   const renderGroups = partitionForFold(
@@ -940,10 +959,22 @@ export function ChatMessages({
 
   // Stick-to-bottom: one hook owns follow-intent, growth-follow, resize/keyboard,
   // tab-return, the open, and the jump affordance. See use-stick-to-bottom.ts.
+  const { followedMessageCount, followedMessageKey } = useMemo(() => {
+    let count = 0
+    let key: string | null = null
+    for (const message of messages) {
+      if (message.role === 'thinking') continue
+      count += 1
+      key = message.id ?? null
+    }
+    return { followedMessageCount: count, followedMessageKey: key }
+  }, [messages])
   const { containerRef, showJump, unreadCount, scrollToBottom } = useStickToBottom({
     streamingText,
-    messageCount: messages.length,
-    latestMessageKey: messages.at(-1)?.id ?? null,
+    // Reasoning grows in place and says nothing new: it is never an unread message, and
+    // the growth itself is followed by the content-size observer.
+    messageCount: followedMessageCount,
+    latestMessageKey: followedMessageKey,
     scrollToEnd: virtualized ? scrollToEnd : undefined,
     takeLastWriteTop: virtualized ? () => takeTranscriptWriteTop(virtualizer) : undefined,
     initialScrollTop,
@@ -1100,6 +1131,19 @@ export function ChatMessages({
 
     const { msg, index: i } = item
     const meta = rowMeta[i]
+    if (msg.role === 'thinking') {
+      return (
+        <ThinkingRow
+          key={msg.id || i}
+          msg={msg}
+          index={i}
+          live={msg.id === liveThinkingId}
+          prevRole={meta.prevRole}
+          showTimestamp={meta.showTimestamp}
+          formattedTimestamp={formatTimestamp(msg.timestamp)}
+        />
+      )
+    }
     return (
       <MessageRow
         key={msg.id || i}
@@ -1177,7 +1221,7 @@ export function ChatMessages({
 
           {/* Running indicator — pre-first-token only; once streamingText arrives the
               caret carries the "live" signal, so suppress this to avoid a double cue. */}
-          {loading && messages.length > 0 && !streamingText && (
+          {loading && messages.length > 0 && !streamingText && !liveThinkingId && (
             <ThinkingIndicator prevRole={messages[messages.length - 1].role} />
           )}
 

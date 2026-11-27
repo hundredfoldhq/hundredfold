@@ -79,7 +79,7 @@ export const SCOPED_ROUTES: readonly ScopedRoute[] = [
   ...rows("sessions-list", ["GET"], "/api/sessions"),
   ...rows("session-search", ["GET"], "/api/search/sessions"),
   ...rows("message-search", ["GET"], "/api/search/messages"),
-  ...rows("session", ["GET"], "/api/sessions/:id", "/api/sessions/:id/messages", "/api/sessions/:id/transcript", "/api/sessions/:id/context", "/api/sessions/:id/context-usage", "/api/sessions/:id/waits", "/api/sessions/:id/subagents/:agentId/transcript"),
+  ...rows("session", ["GET"], "/api/sessions/:id", "/api/sessions/:id/messages", "/api/sessions/:id/transcript", "/api/sessions/:id/context", "/api/sessions/:id/context-usage", "/api/sessions/:id/waits", "/api/sessions/:id/subagents/:agentId/transcript", "/api/sessions/:id/tool-details/:toolId"),
   ...rows("session", ["POST"], "/api/sessions/:id/stop", "/api/sessions/:id/compact"),
   ...rows("session-children", ["GET"], "/api/sessions/:id/children"),
   ...rows("session-message", ["POST"], "/api/sessions/:id/message"),

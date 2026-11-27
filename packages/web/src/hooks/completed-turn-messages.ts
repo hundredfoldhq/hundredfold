@@ -15,20 +15,8 @@ export function reconcileCompletedTurnMessages(args: {
   const turnRows = args.messages.slice(turnStart)
   const preserved = turnRows
     .filter((message) => !isGrownStreamedCopy(message, args.streamedCopyId, exactResult))
-    .filter((message) =>
-      message.role === 'user'
-      || Boolean(message.media?.length)
-      || Boolean(message.toolCall)
-      || message.role === 'notification'
-      || hasDurableBlocks(message)
-      || hasInterimProse(message, exactResult))
-    .map((message) => {
-      if (message.toolCall && !message.content.startsWith('Used ')) return { ...message, content: `Used ${message.toolCall}` }
-      if (message.role === 'assistant' && !message.toolCall && !message.blocks?.length && !message.media?.length) {
-        return { ...message, partial: undefined, meta: { assistantPhase: 'commentary', ...message.meta } }
-      }
-      return message
-    })
+    .filter((message) => survivesCompletion(message, exactResult))
+    .map(settleRow)
 
   return [
     ...args.messages.slice(0, turnStart),
@@ -68,7 +56,32 @@ function isSidechainToolRow(row: Message): boolean {
 }
 
 function isPlainPartialProse(row: Message): boolean {
-  return row.role === 'assistant' && row.partial === true && !row.toolCall && !row.blocks?.length && !row.media?.length
+  return row.partial === true && isPlainProse(row)
+}
+
+/** A row the turn leaves behind, with what was still in flight on it settled. */
+function settleRow(message: Message): Message {
+  if (message.role === 'thinking') return message.partial ? { ...message, partial: undefined } : message
+  if (message.toolCall && !message.content.startsWith('Used ')) return { ...message, content: `Used ${message.toolCall}` }
+  if (isPlainProse(message)) {
+    return { ...message, partial: undefined, meta: { assistantPhase: 'commentary', ...message.meta } }
+  }
+  return message
+}
+
+function isPlainProse(message: Message): boolean {
+  return message.role === 'assistant' && !message.toolCall && !message.blocks?.length && !message.media?.length
+}
+
+/** What the turn leaves behind besides its final answer. Reasoning is evidence like interim prose: it stays, in order. */
+function survivesCompletion(message: Message, exactResult: string): boolean {
+  return message.role === 'user'
+    || message.role === 'notification'
+    || message.role === 'thinking'
+    || Boolean(message.media?.length)
+    || Boolean(message.toolCall)
+    || hasDurableBlocks(message)
+    || hasInterimProse(message, exactResult)
 }
 
 function hasDurableBlocks(message: Message): boolean {

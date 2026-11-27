@@ -638,6 +638,8 @@ export async function startGateway(
     // The reverse tunnel's forward-to end. Loopback on the gateway, so this is
     // the port the remote hook relay and MCP servers ultimately reach.
     gatewayPort: () => port,
+    // Read live, like `remote`: whether a local session asks Claude Code for readable thinking.
+    thinkingSummaries: () => currentConfig.engines.claude.thinkingSummaries !== false,
   });
 
   // Codex has two modes: headless `codex exec --json` for chat/default work

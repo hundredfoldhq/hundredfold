@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { FileText, Globe, Search, Terminal, Wrench } from '@/components/ui/icon'
+import { Bot, FileText, Globe, ListTodo, PenLine, Plug, Search, Terminal, Wrench } from '@/components/ui/icon'
 import { ChatMessages, toolGlyphForName } from '../chat-messages'
 import type { Message } from '@/lib/conversations'
 
@@ -23,6 +23,10 @@ describe('ChatMessages tool groups', () => {
     ['WebFetch', Globe],
     ['unknown_tool', Wrench],
     ['mcp__hundredfold__FILE_EDIT', FileText],
+    ['Edit', PenLine],
+    ['Agent', Bot],
+    ['TodoWrite', ListTodo],
+    ['mcp__hundredfold__get_work_item', Plug],
   ])('maps %s to its tool-kind glyph', (toolName, expectedGlyph) => {
     expect(toolGlyphForName(toolName)).toBe(expectedGlyph)
   })

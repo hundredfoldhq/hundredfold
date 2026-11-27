@@ -44,8 +44,12 @@ export function completedStreamedBlockIds(args: {
       && !message.blocks?.length
       && Boolean(message.content.trim())
       && (!exactResult || message.content.trim() !== exactResult);
+    // The model's thinking is kept with the prose it came before, and goes the same way when the turn
+    // is cut off: it is not an answer, so it never stands in for the final row.
+    const thinking = message.role === "thinking" && Boolean(message.content.trim());
     const preserve =
-      message.role === "user"
+      thinking
+      || message.role === "user"
       || message.role === "notification"
       || Boolean(message.media?.length)
       || (Boolean(message.toolCall) && !isUnfinishedSidechainTool(message))

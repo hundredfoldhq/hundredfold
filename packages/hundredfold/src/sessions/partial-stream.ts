@@ -1,12 +1,15 @@
 import type { ChatBlockEnvelope, LiveStreamBlock, StreamDelta } from "../shared/types.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
 import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
+import { logger } from "../shared/logger.js";
 import {
   applyBlockEnvelope,
   insertPartialMessage,
   settlePartialToolMessage,
   updatePartialMessage,
+  updatePartialToolDetail,
 } from "./registry.js";
+import { saveToolDetail } from "./tool-details.js";
 
 function scopeBlockEnvelopeForTurn(
   envelope: ChatBlockEnvelope,
@@ -59,9 +62,16 @@ export function foldPartialText(curText: string, delta: StreamDelta): string {
   return curText;
 }
 
+/** The most one thinking row keeps: the head, then a marker. A model can think for a long time, and the row is
+ *  part of every read of the session. */
+export const THINKING_ROW_MAX = 20_000;
+const THINKING_CUT_MARKER = "…";
+
 export interface PartialStreamWriter {
   /** Persist the delta and return it as it should go out: a text delta carries
-   *  its block and offset, and a delta that ends a block carries that block. */
+   *  its block and offset, and a delta that ends a block carries that block.
+   *  Thinking past its cap is dropped (`null`): it goes nowhere. */
+  persist(delta: StreamDelta & { type: "thinking" }): StreamDelta | null;
   persist(delta: StreamDelta): StreamDelta;
   finish(): void;
 }
@@ -90,6 +100,10 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
   let partialSeq = 0;
   let curTextId: string | null = null;
   let curText = "";
+  /** What the open block holds: the answer's text, or the model's thinking (its own row, role "thinking"). */
+  let curRole: "assistant" | "thinking" = "assistant";
+  /** The open thinking block hit `THINKING_ROW_MAX`: what follows is dropped. */
+  let thinkingCut = false;
   let curBlock = ++lastStreamBlock;
   const registration = {
     attemptToken,
@@ -98,6 +112,8 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
   const startBlock = () => {
     curTextId = null;
     curText = "";
+    curRole = "assistant";
+    thinkingCut = false;
     curBlock = ++lastStreamBlock;
   };
   // Where the delta sits in the block, read before it is folded in.
@@ -109,6 +125,8 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
     }
     return delta;
   };
+  /** Calls whose card was cut, so the store holds their input and their output has to join it. */
+  const fullTools = new Set<string>();
   const openPartialTools: Array<{
     messageId: string;
     toolName: string;
@@ -125,12 +143,50 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
     partialFlushTimer = null;
     if (!curText.trim()) return;
     if (curTextId) updatePartialMessage(curTextId, curText);
-    else curTextId = insertPartialMessage(sessionId, "assistant", curText, partialSeq++);
+    else curTextId = insertPartialMessage(sessionId, curRole, curText, partialSeq++);
+  };
+  /** Close the open text or thinking block, so what comes next opens its own row. */
+  const endRun = () => {
+    clearScheduledFlush();
+    flushPartialText();
+    startBlock();
+  };
+  const keepFull = (toolId: string | undefined, toolFull: StreamDelta["toolFull"]) => {
+    if (!toolId || !toolFull) return;
+    try {
+      saveToolDetail(sessionId, toolId, toolFull);
+      fullTools.add(toolId);
+    } catch (err) {
+      logger.warn(`Failed to keep the full detail of a tool call for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  /** One chunk of thinking: kept to the row's cap, which ends the block's growth with a marker. */
+  const foldThinking = (delta: StreamDelta): StreamDelta | null => {
+    const chunk = typeof delta.content === "string" ? delta.content : "";
+    if (!chunk || thinkingCut) return null;
+    const room = THINKING_ROW_MAX - curText.length;
+    const kept = chunk.length > room ? chunk.slice(0, room) + THINKING_CUT_MARKER : chunk;
+    if (chunk.length > room) thinkingCut = true;
+    const out: StreamDelta = { ...delta, content: kept, streamBlock: curBlock, offset: curText.length };
+    curText += kept;
+    if (!partialFlushTimer) partialFlushTimer = setTimeout(flushPartialText, 600);
+    return out;
   };
 
   return {
-    persist(delta) {
+    persist: ((received: StreamDelta): StreamDelta | null => {
       liveWriters.set(sessionId, registration);
+      // The whole of a call's detail belongs to the store, not to the stream.
+      const { toolFull, ...delta } = received;
+      // Thinking and the answer's text are separate rows: a change from one to the other closes the open block.
+      if (delta.type === "thinking") {
+        if (curRole !== "thinking") {
+          endRun();
+          curRole = "thinking";
+        }
+        return foldThinking(delta);
+      }
+      if ((delta.type === "text" || delta.type === "text_snapshot") && curRole === "thinking") endRun();
       const outgoing = positioned(delta);
       if (delta.type === "text" || delta.type === "text_snapshot") {
         if (typeof delta.content !== "string") return delta;
@@ -162,14 +218,26 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
           partialSeq++,
           tool,
           delta.toolId,
-          sidechain ? { sidechain: true } : undefined,
+          {
+            ...(sidechain ? { sidechain: true } : {}),
+            ...(delta.toolDetail ? { tool: delta.toolDetail } : {}),
+          },
         );
+        keepFull(delta.toolId, toolFull);
         openPartialTools.push({
           messageId,
           toolName: tool,
           ...(delta.toolId ? { toolId: delta.toolId } : {}),
         });
         if (!sidechain) startBlock();
+        return outgoing;
+      }
+
+      if (delta.type === "tool_update") {
+        // The input of a call already announced: it joins that call's row and card.
+        const match = delta.toolId ? openPartialTools.find((entry) => entry.toolId === delta.toolId) : undefined;
+        if (match && delta.toolDetail) updatePartialToolDetail(match.messageId, delta.toolDetail);
+        if (match) keepFull(delta.toolId, toolFull);
         return outgoing;
       }
 
@@ -194,6 +262,15 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
           `Used ${match.toolName}`,
           activityReceiptId,
           delta.agentId,
+          delta.toolDetail,
+        );
+        // A call whose input was cut but whose output was not: the store still gets the output, so a
+        // card that loads the call's detail finds all of it.
+        keepFull(
+          delta.toolId,
+          toolFull ?? (delta.toolId && fullTools.has(delta.toolId) && delta.toolDetail
+            ? { ...(delta.toolDetail.output !== undefined ? { output: delta.toolDetail.output } : {}), ...(delta.toolDetail.isError ? { isError: true } : {}) }
+            : undefined),
         );
         return outgoing;
       }
@@ -208,7 +285,7 @@ export function createPartialStreamWriter(sessionId: string, attemptToken = ""):
         startBlock();
       }
       return outgoing;
-    },
+    }) as PartialStreamWriter["persist"],
     finish() {
       clearScheduledFlush();
       flushPartialText();

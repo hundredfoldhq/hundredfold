@@ -39,6 +39,13 @@ describe("claude-settings", () => {
     expect(rest).toEqual(buildSessionSettings(base).hooks);
   });
 
+  it("asks Claude Code for readable thinking only when told to: its default has the API omit the thinking text", () => {
+    const base = { sessionId: "hundredfold-abc", relayScript: "/h/relay.mjs" };
+    expect(buildSessionSettings(base)).not.toHaveProperty("showThinkingSummaries");
+    expect(buildSessionSettings({ ...base, showThinkingSummaries: false })).not.toHaveProperty("showThinkingSummaries");
+    expect(buildSessionSettings({ ...base, showThinkingSummaries: true }).showThinkingSummaries).toBe(true);
+  });
+
   it("shell-quotes hook relay paths and session ids", () => {
     const s = buildSessionSettings({ sessionId: "hundredfold ' tricky", relayScript: "/tmp/path with spaces/relay's.mjs" });
     const stop = s.hooks.Stop[0].hooks[0];

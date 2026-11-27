@@ -72,11 +72,15 @@ function answerKind(line: string): "text" | "error" | undefined {
  *  same text. A store re-read never reports either twice. */
 function reportKey(line: string): string | undefined {
   const parsed = JSON.parse(line) as { type: string; part?: Record<string, unknown> };
-  const part = parsed.part;
-  if (parsed.type === "tool_use") return `tool:${str(part?.callID)}:${str(record(part?.state)?.status)}`;
-  if (parsed.type === "text") return `text:${str(part?.id)}:${str(part?.text)}`;
-  return undefined;
+  return REPEAT_KEYS[parsed.type]?.(parsed.part ?? {});
 }
+
+/** The identity of a line a store re-read may report again, by line type. */
+const REPEAT_KEYS: Record<string, (part: Record<string, unknown>) => string> = {
+  tool_use: (part) => `tool:${str(part.callID)}:${str(record(part.state)?.status)}`,
+  text: (part) => `text:${str(part.id)}:${str(part.text)}`,
+  reasoning: (part) => `reasoning:${str(part.id)}:${str(part.text)}`,
+};
 
 /** The replies (assistant items) answering `prompt`, oldest first, from a
  *  history listed newest first: what follows the prompt up to the next input
@@ -659,7 +663,7 @@ export class OpencodeV2ServerTurn {
     "session.execution.succeeded": () => this.onExecutionEnded(),
     "session.execution.interrupted": () => this.onExecutionEnded(),
     "session.execution.failed": (_data, event) => {
-      if (this.runsOwnReply() && !this.terminationReason) this.feed(this.lines.lineFor(event));
+      if (this.runsOwnReply() && !this.terminationReason) this.feedEvent(event);
       this.onExecutionEnded();
     },
     "session.compaction.ended": () => { this.compacted = true; },
@@ -683,7 +687,7 @@ export class OpencodeV2ServerTurn {
     if (data.sessionID === this.sessionId && this.own.has(str(data.assistantMessageID) ?? "")) {
       this.foreground.onEvent(event);
       this.trackToolCall(event, data);
-      this.feed(this.lines.lineFor(event));
+      this.feedEvent(event);
     }
   }
 
@@ -792,7 +796,7 @@ export class OpencodeV2ServerTurn {
   private onStepEnded(data: Record<string, unknown>, event: V2Event): void {
     const id = str(data.assistantMessageID) ?? "";
     if (!this.own.has(id)) return;
-    this.feed(this.lines.lineFor(event));
+    this.feedEvent(event);
     this.newestOwnOpen = false;
     this.ownReply = { id, finish: data.finish, tokens: data.tokens, cost: data.cost, time: { completed: Date.now() } };
     if (v2ReplyIsDone(this.ownReply)) this.onReplyEnded();
@@ -804,7 +808,7 @@ export class OpencodeV2ServerTurn {
     const error = record(data.error);
     this.newestOwnOpen = false;
     this.ownReply = { id, finish: "error", error, time: { completed: Date.now() } };
-    if (!this.terminationReason && !isAbortError(error)) this.feed(this.lines.lineFor(event));
+    if (!this.terminationReason && !isAbortError(error)) this.feedEvent(event);
     this.onReplyEnded();
   }
 
@@ -907,6 +911,11 @@ export class OpencodeV2ServerTurn {
     } catch (err) {
       logger.warn(`opencode server turn could not answer ${route}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** Every line an event makes, in order. */
+  private feedEvent(event: V2Event): void {
+    for (const line of this.lines.linesFor(event)) this.feed(line);
   }
 
   private feed(line: string | undefined): void {

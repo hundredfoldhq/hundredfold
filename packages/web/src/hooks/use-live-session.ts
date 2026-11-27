@@ -31,6 +31,8 @@ export { reconcileCompletedTurnMessages } from './completed-turn-messages'
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import { withToolDetail } from '@/lib/tool-summary'
+import { applyThinkingChunk, carryLiveThinking } from '@/lib/thinking'
 import type { BackgroundActivity } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import {
@@ -336,7 +338,7 @@ function normalizeHistoryMessages(history: unknown): { messages: Message[]; firs
     const blocks = Array.isArray(m.blocks) ? m.blocks.filter(isChatBlock) : []
     return {
       id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
-      role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
+      role: (m.role as Message['role']) || 'assistant',
       content: String(m.content || m.text || ''),
       // Zero is an explicit "unknown" sentinel. Using Date.now() here makes a
       // legacy row appear to have happened at hydration time and fabricates
@@ -591,6 +593,8 @@ export function useLiveSession(
   // The block a gap in the streamed text was re-read for in this turn, so one gap reads once.
   const gapReadBlockRef = useRef(0)
   const readsOutRef = useRef(0)
+  // The thinking block the stream last extended this turn, so a chunk that opens another one is told apart.
+  const thinkingBlockRef = useRef<string | null>(null)
   const loadSessionRef = useRef<((id: string) => Promise<void>) | null>(null)
   const statusMessageIdRef = useRef<string | null>(null)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(initialSnapshot?.session ?? null)
@@ -752,6 +756,7 @@ export function useLiveSession(
     restoredStreamRef.current = null
     endedBlockRef.current = 0
     gapReadBlockRef.current = 0
+    thinkingBlockRef.current = null
   }, [])
 
   // The streaming text is still the one a cached snapshot restored, and nothing has placed it.
@@ -866,6 +871,50 @@ export function useLiveSession(
           }
           streamingTextRef.current = snapshot
           setStreamingText(snapshot)
+        } else if (deltaType === 'thinking') {
+          // A sub-agent's reasoning belongs to its own transcript, not to this one.
+          const chunk = String(p.content || '')
+          if (p.sidechain === true || !chunk) return
+          clearStatusMessage()
+          const blockId = typeof p.streamBlock === 'number' ? String(p.streamBlock) : ''
+          if (thinkingBlockRef.current !== blockId) {
+            // A block this view has not seen: a read sent before it holds no row for it.
+            thinkingBlockRef.current = blockId
+            rowFramesRef.current += 1
+          }
+          // Reasoning that starts after text ends that text block: the text goes into a row first,
+          // so the transcript keeps the order the model produced it in.
+          const streamedCopyId = streamedCopyIdRef.current
+          if (streamIsRestored()) {
+            dropRestoredStream()
+            setStreamingText('')
+          } else if (streamingTextRef.current) {
+            const flushed = streamingTextRef.current
+            streamedCopyIdRef.current = null
+            // The id on a thinking frame names the reasoning block, not the text block it ends:
+            // end the block that was streaming, so a read still reporting it as live is not
+            // taken for text this view has yet to show.
+            const streaming = streamPosRef.current
+            endStreamBlock(streaming ? { streamBlock: streaming.block } : {})
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setMessages((prev) => {
+              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+              return [
+                ...withoutGrownStreamedCopy(prev, streamedCopyId, flushed),
+                {
+                  id: crypto.randomUUID(),
+                  role: 'assistant' as const,
+                  content: flushed,
+                  timestamp: Date.now(),
+                },
+              ]
+            })
+          }
+          setMessages((prev) => {
+            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+            return applyThinkingChunk(prev, blockId, chunk, Date.now(), () => crypto.randomUUID())
+          })
         } else if (deltaType === 'tool_use') {
           clearStatusMessage()
           // A sub-agent's call arrives out of band, not in order with the main
@@ -902,6 +951,7 @@ export function useLiveSession(
           }
           const toolName = String(p.toolName || 'tool')
           const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
+          const toolDetail = messageMeta(p.toolDetail)
           setMessages((prev) => {
             if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
             const updated = [
@@ -913,12 +963,25 @@ export function useLiveSession(
                 timestamp: Date.now(),
                 toolCall: toolName,
                 ...(toolId ? { toolId } : {}),
-                ...(sidechain ? { meta: { sidechain: true } } : {}),
+                ...(sidechain || toolDetail ? { meta: { ...(sidechain ? { sidechain: true } : {}), ...(toolDetail ? { tool: toolDetail } : {}) } } : {}),
               },
             ]
             return updated
           })
+        } else if (deltaType === 'tool_update') {
+          // The input of a call already on screen, assembled after it was announced.
+          const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
+          const toolDetail = messageMeta(p.toolDetail)
+          if (!toolId || !toolDetail) return
+          setMessages((prev) => {
+            const index = prev.findIndex((m) => m.role === 'assistant' && m.toolCall && m.toolId === toolId && !m.content.startsWith('Used '))
+            if (index < 0) return prev
+            const updated = [...prev]
+            updated[index] = withToolDetail(prev[index], toolDetail)
+            return updated
+          })
         } else if (deltaType === 'tool_result') {
+          const toolDetail = messageMeta(p.toolDetail)
           setMessages((prev) => {
             const updated = [...prev]
             const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
@@ -950,7 +1013,7 @@ export function useLiveSession(
             }
             if (targetIndex >= 0) {
               const target = updated[targetIndex]
-              updated[targetIndex] = {
+              const settled = {
                 ...target,
                 content: `Used ${target.toolCall}`,
                 ...(activityReceiptId || agentId
@@ -963,6 +1026,7 @@ export function useLiveSession(
                     }
                   : {}),
               }
+              updated[targetIndex] = toolDetail ? withToolDetail(settled, toolDetail) : settled
             }
             return updated
           })
@@ -1366,7 +1430,8 @@ export function useLiveSession(
             return current
           }
           const next = backendMessages.length > 0 ? backendMessages : current
-          const merged = mergePagedSnapshot(current, next, isPagedHistory)
+          // The stored copy of the thinking block still streaming takes the view's row id and text.
+          const merged = carryLiveThinking(current, mergePagedSnapshot(current, next, isPagedHistory))
           const anchorIdx = turnStartAnchorId ? merged.findIndex((m) => m.id === turnStartAnchorId) : -1
           intermediateStartRef.current = anchorIdx >= 0 ? anchorIdx : merged.length
           return merged
