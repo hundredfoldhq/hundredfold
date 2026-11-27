@@ -202,9 +202,12 @@ describe("a pause the user asked for", () => {
     expect(paused).toMatchObject({ status: "user-paused", vadSpeaking: false, partial: "", needsTap: false })
   })
 
-  it("is not turned into another pause by a suspension, and resumed brings it back", () => {
+  it("pauses a connecting run but not a suspended one, and resumed brings it back", () => {
     const connecting = run([{ type: "connecting", mode: "hands-free" }])
-    expect(run([{ type: "user-paused" }], connecting).status).toBe("connecting")
+    // The session pauses a connecting run only when that run is a resume from a pause; the reducer allows it.
+    expect(run([{ type: "user-paused" }], connecting).status).toBe("user-paused")
+    const suspended = run([{ type: "suspended" }], on())
+    expect(run([{ type: "user-paused" }], suspended).status).toBe("suspended")
     expect(run([{ type: "user-paused" }, { type: "resumed" }], on()).status).toBe("on")
   })
 })

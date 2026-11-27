@@ -754,35 +754,142 @@ describe("pause and play from a headset button", () => {
     expect(r.session.getSnapshot().status).toBe("on")
   })
 
-  it("stop from a pause tells the gateway: it reaches it once more just to say goodbye", async () => {
-    const r = await started()
-    handler(r, "pause")()
-    expect(r.sockets).toHaveLength(1)
-    r.session.stop()
-    expect(r.sockets).toHaveLength(2)
-    expect(r.opened).toEqual(["s1", "s1"])
-    expect(r.sockets[1].frames).toHaveLength(0)
-    r.sockets[1].serverFrame(READY)
-    expect(r.sockets[1].types()).toEqual(["bye"])
-    expect(r.sockets[1].closed).toEqual({ code: 1000, reason: "bye" })
-    expect(r.session.getSnapshot().status).toBe("off")
-  })
-
-  it("the goodbye connection is dropped if the gateway never answers, and a dispose while paused says it too", async () => {
+  it("stop from a pause opens no connection: the gateway lets the kept attachment go on its own", async () => {
     vi.useFakeTimers()
     const r = await started()
     handler(r, "pause")()
-    r.session.dispose()
-    expect(r.sockets).toHaveLength(2)
-    await vi.advanceTimersByTimeAsync(5_001)
-    expect(r.sockets[1].closed).toEqual({ code: 1000, reason: "bye" })
-    expect(r.sockets[1].types()).toEqual([])
+    r.session.stop()
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS * 2)
+    expect(r.sockets).toHaveLength(1)
+    expect(r.sockets[0].types()).not.toContain("bye") // the paused socket was already closed with the pause code
+    expect(r.session.getSnapshot().status).toBe("off")
   })
 
-  it("stop when not paused sends no extra goodbye connection", async () => {
+  it("a dispose while paused opens no connection either", async () => {
     const r = await started()
-    r.session.stop()
+    handler(r, "pause")()
+    r.session.dispose()
     expect(r.sockets).toHaveLength(1)
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("stop from a pause leaves voice mode running in another tab that took the chat's attachment over", async () => {
+    // A gateway in miniature: one attachment per chat, and each new connection takes it over from the one before.
+    let holder: FakeSocket | null = null
+    const seen = new Set<FakeSocket>()
+    const connect = (...rigs: Rig[]) => {
+      for (const socket of rigs.flatMap((x) => x.sockets)) {
+        if (seen.has(socket)) continue
+        seen.add(socket)
+        if (holder?.isOpen) holder.serverFrame({ type: "detached", reason: "taken_over" })
+        holder = socket
+      }
+    }
+    const paused = await started()
+    connect(paused)
+    handler(paused, "pause")()
+    const other = rig()
+    await other.session.start()
+    connect(paused, other)
+    other.sockets[0].serverFrame(READY)
+    expect(other.session.getSnapshot().status).toBe("on")
+    paused.session.stop()
+    connect(paused, other) // a connection the stop opened would take the attachment over here
+    expect(paused.sockets).toHaveLength(1)
+    expect(other.session.getSnapshot()).toMatchObject({ status: "on", error: null })
+    expect(other.tracks[0].stopped).toBe(false)
+  })
+
+  it("play twice opens one socket and asks for nothing more", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "play")()
+    r.sockets[1].isOpen = false // a real socket is not open until the gateway answers
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(2)
+    expect(r.tracks).toHaveLength(1)
+    r.sockets[1].isOpen = true
+    r.sockets[1].serverFrame(READY)
+    expect(r.sockets[1].types().filter((t) => t === "resume")).toHaveLength(1)
+  })
+
+  it("a second pause runs its own window: the first pause's timer is gone", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS - 60_000)
+    handler(r, "play")()
+    r.sockets[1].serverFrame(READY)
+    handler(r, "pause")()
+    await vi.advanceTimersByTimeAsync(120_000) // past the first pause's window, well inside the second's
+    expect(r.tracks[0].stopped).toBe(false)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: false })
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: true })
+  })
+
+  it("a pause pressed while play is still connecting pauses again, and the pause keeps its start", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    r.clock.now += 30_000
+    handler(r, "play")()
+    expect(r.session.getSnapshot().status).toBe("connecting")
+    r.clock.now += 1_000
+    handler(r, "pause")()
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", error: null })
+    expect(r.sockets[1].closed).toEqual({ code: USER_PAUSE_CLOSE, reason: "paused" })
+    expect(r.mediaSession.playbackState).toBe("paused")
+    expect(r.tracks[0].stopped).toBe(false)
+    r.sockets[1].serverFrame(READY) // late, from the socket let go of
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    r.clock.now += 9_000
+    handler(r, "play")()
+    r.sockets[2].serverFrame(READY)
+    expect(r.sockets[2].frames).toContainEqual({ type: "resume", suspendedMs: 40_000 })
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+  })
+
+  it("once play has connected, the pause action pauses as usual; a reconnect that is not a resume is still ended by it", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "play")()
+    r.sockets[1].serverFrame(READY)
+    handler(r, "pause")()
+    r.clock.now += 5_000
+    handler(r, "play")()
+    r.sockets[2].serverFrame(READY)
+    expect(r.sockets[2].frames).toContainEqual({ type: "resume", suspendedMs: 5_000 })
+    // A later reconnect that is not a resume from a pause (a device suspension that lost the socket, tapped back) is
+    // still ended by the action.
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    r.sockets[2].drop(1006)
+    expect(r.session.getSnapshot().status).toBe("suspended")
+    void r.session.resumeFromTap()
+    expect(r.session.getSnapshot().status).toBe("connecting")
+    handler(r, "pause")()
+    expect(r.session.getSnapshot().status).toBe("off")
+  })
+
+  it("a stop while play is connecting forgets the resume: the next run's first connect cannot be paused", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "play")()
+    r.session.stop()
+    await r.session.start()
+    r.session.pause()
+    expect(r.session.getSnapshot().status).toBe("connecting")
+  })
+
+  it("the pause action does nothing while a pause that ran out waits for its tap", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    await vi.advanceTimersByTimeAsync(PAUSE_HOLD_MS)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: true })
+    handler(r, "pause")()
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: true })
   })
 
   it("a run started again after a stop from a pause is a fresh one: a device suspension is shown", async () => {
@@ -835,7 +942,7 @@ describe("pause and play from a headset button", () => {
     expect(r.tracks[0].stopped).toBe(true)
     expect(r.mediaSession.metadata).toBeNull()
     handler(r, "play")?.()
-    expect(r.sockets).toHaveLength(2) // only the goodbye connection; play opened nothing
+    expect(r.sockets).toHaveLength(1) // play after the stop opened nothing
     expect(r.session.getSnapshot().status).toBe("off")
   })
 })

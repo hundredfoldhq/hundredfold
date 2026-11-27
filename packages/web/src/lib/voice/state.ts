@@ -227,8 +227,9 @@ const ACTION_HANDLERS: ActionHandlers = {
   frame: (state, a) => frame(state, a.frame, a.now),
   closed,
   suspended: (state) => (state.status === "off" ? state : { ...state, status: "suspended", notice: SUSPENDED_NOTICE, vadSpeaking: false, partial: "" }),
-  // The user paused voice mode (the headset button): listening and speaking are off until they carry on.
-  "user-paused": (state) => (state.status === "on" ? { ...state, status: "user-paused", vadSpeaking: false, partial: "", needsTap: false } : state),
+  // The user paused voice mode (the headset button): listening and speaking are off until they carry on. A pause can
+  // also come while the socket of a resume is still connecting.
+  "user-paused": (state) => (state.status === "on" || state.status === "connecting" ? { ...state, status: "user-paused", vadSpeaking: false, partial: "", needsTap: false } : state),
   "native-state": nativeState,
   // The chat is re-read on return: replies that finished while the device was away are in it by now.
   // The suspended notice described a state that is over; any other notice stays until dismissed.
