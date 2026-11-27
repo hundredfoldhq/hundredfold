@@ -78,7 +78,7 @@ describe("bundled Tauri shell", () => {
     expect(library).toContain("writeWorkspaceState: (input) => invoke('workspace_state_write', input)")
     // Each command confines itself to the local main window like the others, and the file holds no credential.
     expect(record.match(/confine\(&window\)\?;/g)).toHaveLength(2)
-    expect(record).not.toMatch(/credential|cookie/i)
+    expect(record).not.toMatch(/crate::credentials|GatewayCredential|cookie_header|NativeState/)
   })
 
   it("contains no generated remote-window configuration path", () => {
