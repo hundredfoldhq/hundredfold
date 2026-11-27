@@ -95,7 +95,8 @@ export class NativeGatewayProfiles {
         : undefined,
     }
     this.#revision = stored.revision
-    this.#written = recordKey(stored.activeId, stored.profiles)
+    // A record read from the old key is not yet written under the new one.
+    this.#written = stored.migrated ? "" : recordKey(stored.activeId, stored.profiles)
     this.transport = this.#createTransport()
     // Loading must not write: a record that could not be read would otherwise be
     // replaced by the empty one. Only a record read from the old key has to be saved.
@@ -132,8 +133,9 @@ export class NativeGatewayProfiles {
     if (id === this.#snapshot.activeId) return
     const profile = this.#profile(id)
     this.#update({ ...this.#snapshot, status: "switching", switchingProfileId: id, failedProfileId: undefined, error: undefined, notice: undefined })
-    await this.#commit(id, false)
-    const generation = this.#snapshot.generation
+    // The generation this selection created, taken before any await: a later
+    // selection that commits meanwhile must not be mistaken for this one.
+    const generation = await this.#commit(id, false)
     try {
       await this.#authState(createNativeGatewayTransport(profile.origin, this.options.bridge))
       // Validation is asynchronous: removal wins if it landed while the candidate answered.
@@ -281,13 +283,17 @@ export class NativeGatewayProfiles {
     return instance?.trim() || new URL(transport.profile.origin).host
   }
 
-  async #commit(activeId: string | undefined, activeReachable = activeId !== undefined): Promise<void> {
+  /** Makes `activeId` the active workspace and resolves with the generation that made it so. */
+  async #commit(activeId: string | undefined, activeReachable = activeId !== undefined): Promise<number> {
     await this.options.beforeCommit?.()
     if (activeId) this.#profile(activeId)
+    const generation = this.#snapshot.generation + 1
     this.#snapshot = {
       ...this.#snapshot,
       activeId,
-      generation: this.#snapshot.generation + 1,
+      generation,
+      // A new selection answers whatever the old one left unsaid.
+      notice: undefined,
       status: activeId !== undefined && !activeReachable ? "switching" : "ready",
       switchingProfileId: activeReachable ? undefined : activeId,
       failedProfileId: undefined,
@@ -303,6 +309,7 @@ export class NativeGatewayProfiles {
     // disk before the app shows it as made.
     await this.#flushDurable()
     this.#emit()
+    return generation
   }
 
   #update(snapshot: NativeGatewayProfilesSnapshot): void {

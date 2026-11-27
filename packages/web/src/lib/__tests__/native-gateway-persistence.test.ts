@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { HundredfoldNativeBridge, NativeResponsePayload } from "@/platform/native-bridge"
+import { LEGACY_STORAGE_KEYS } from "@hundredfold/legacy-names"
 import { createNativeGatewayProfiles } from "../native-gateway-profiles"
 import { restoreNativeGatewayRecord } from "../native-gateway-restore"
 import { MemoryStorage, bridgeFixture, response } from "./native-gateway-fixtures"
@@ -320,5 +321,81 @@ describe("a fallback is deliberate and visible", () => {
     const { first, alpha, beta } = await pairTwo(bridge, new MemoryStorage())
     await first.remove(beta.id)
     expect(first.snapshot()).toMatchObject({ activeId: alpha.id, notice: undefined })
+  })
+})
+
+describe("a record read from the old storage key", () => {
+  it("is saved under the current key, and sent to the shell, the first time it is loaded", async () => {
+    const { bridge } = bridgeFixture()
+    const shell = shellFile()
+    Object.assign(bridge, shell.methods)
+    const storage = new MemoryStorage()
+    storage.setItem(LEGACY_STORAGE_KEYS.activeOrigin, ALPHA)
+
+    const profiles = launch(bridge, storage)
+    expect(profiles.snapshot().activeId).toBe("native:" + ALPHA)
+    expect(storage.getItem(LEGACY_STORAGE_KEYS.activeOrigin)).toBeNull()
+    const saved = JSON.parse(storage.getItem(KEY)!) as { activeId: string }
+    expect(saved.activeId).toBe("native:" + ALPHA)
+    await profiles.flush()
+    expect(shell.file.writes).toHaveLength(1)
+    expect(JSON.parse(shell.file.record!)).toMatchObject({ activeId: "native:" + ALPHA })
+    // A second launch finds the record where it belongs and writes nothing more.
+    launch(bridge, storage)
+    expect(shell.file.writes).toHaveLength(1)
+  })
+})
+
+describe("selections made close together", () => {
+  it("judges each selection by its own check even while the shell is slow to save", async () => {
+    const { bridge, requests } = bridgeFixture()
+    const gamma = "http://127.0.0.1:7781"
+    const storage = new MemoryStorage()
+    const { first, alpha, beta } = await pairTwo(bridge, storage)
+    const third = await first.pair(gamma, "c")
+    // From here on every write to the shell is held until released.
+    const gates: Array<ReturnType<typeof held<void>>> = []
+    Object.assign(bridge, {
+      writeWorkspaceState: vi.fn(() => { const gate = held<void>(); gates.push(gate); return gate.promise }),
+    })
+    const profiles = launch(bridge, storage)
+    expect(profiles.snapshot().activeId).toBe(alpha.id)
+
+    const betaCheck = held<NativeResponsePayload>()
+    const gammaCheck = held<NativeResponsePayload>()
+    requests.mockImplementationOnce(() => betaCheck.promise)
+    requests.mockImplementationOnce(() => gammaCheck.promise)
+    const selectBeta = profiles.select(beta.id)
+    selectBeta.catch(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const selectGamma = profiles.select(third.id)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Writes go to the shell one at a time: release the first, then the second behind it.
+    await vi.waitFor(() => expect(gates.length).toBe(1))
+    gates[0]!.resolve()
+    await vi.waitFor(() => expect(gates.length).toBe(2))
+    gates[1]!.resolve()
+    betaCheck.reject(new TypeError("connection refused"))
+    await expect(selectBeta).rejects.toBeDefined()
+    // Beta's failure is about beta, which is no longer the one being selected.
+    expect(profiles.snapshot()).toMatchObject({ activeId: third.id, failedProfileId: undefined, error: undefined })
+    gammaCheck.resolve(response({ authRequired: true, authenticated: true, instance: "gamma" }))
+    await selectGamma
+    expect(profiles.snapshot()).toMatchObject({ activeId: third.id, status: "ready", failedProfileId: undefined, error: undefined, activeReachable: true })
+  })
+})
+
+describe("a notice that no longer applies", () => {
+  it("is cleared when a workspace is paired and made active", async () => {
+    const { bridge } = bridgeFixture()
+    const storage = new MemoryStorage()
+    const { beta } = await pairTwo(bridge, storage)
+    const record = JSON.parse(storage.getItem(KEY)!) as { activeId: string }
+    storage.setItem(KEY, JSON.stringify({ ...record, activeId: "native:http://127.0.0.1:9999" }))
+
+    const profiles = launch(bridge, storage, false)
+    expect(profiles.snapshot().notice).toMatch(/no longer paired/i)
+    await profiles.pair(BETA, "b", { activate: true })
+    expect(profiles.snapshot()).toMatchObject({ activeId: beta.id, notice: undefined })
   })
 })
