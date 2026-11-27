@@ -127,6 +127,7 @@ describe("voice routes", () => {
       const answered = await request("POST", "/api/voice/end", operator);
       endVoiceCall = undefined;
       expect(answered.status).toBe(403);
+      expect(answered.body.error).toMatch(/hung up by the session in it/);
       expect(called).toBe(false);
     });
 

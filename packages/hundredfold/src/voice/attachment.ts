@@ -32,6 +32,8 @@ const REASON_MAX = 200;
  * (an older build, a lost frame) must not leave the call open for good.
  */
 export const END_GRACE_MS = 20_000;
+/** A hang-up asked for in a turn that never ends (or was not in a turn at all) must not fire at the end of some later one. */
+export const END_REQUEST_TTL_MS = 5 * 60_000;
 
 export interface AttachmentInit {
   id: string;
@@ -73,6 +75,9 @@ export class VoiceAttachment {
   /** Someone is speaking, so a pending hang-up waits to hear whether they are done. */
   private endHeld = false;
   private cancelEndGrace: CancelTimer | null = null;
+  private cancelEndExpiry: CancelTimer | null = null;
+  /** The turn ended while the client was away: the call ends as soon as the client comes back, before it is told it is ready. */
+  private endOnReturn = false;
   private readonly announced = new Set<string>();
 
   constructor(init: AttachmentInit) {
@@ -169,17 +174,25 @@ export class VoiceAttachment {
    * ended and everything it said has been played (or been cut by the user), with a bounded wait for the report.
    * Someone speaking meanwhile keeps the call until it is known whether they said anything. Asking twice changes nothing.
    */
-  endWhenSpoken(): void {
+  endWhenSpoken(turnAlreadyEnded = false): void {
     if (this.ended || this.endRequested) return;
     this.endRequested = true;
-    this.endTurnDone = false;
-    this.endHeld = false;
+    this.endTurnDone = turnAlreadyEnded;
+    // Someone already mid-utterance (they kept talking after saying it) is heard out first.
+    this.endHeld = this.capture?.inUtterance === true;
+    if (turnAlreadyEnded) return this.tryEnd();
+    this.cancelEndExpiry = this.deps.clock.setTimeout(() => this.cancelHangup(), END_REQUEST_TTL_MS);
   }
 
   /** The hang-up goes through once the asking turn is over, nobody is mid-utterance and the goodbye has been heard (or the grace ran out). */
   private tryEnd(): void {
     if (!this.endRequested || !this.endTurnDone || this.endHeld || this.ended) return;
-    if (this.suspended || !this.voice.speaking()) return this.detach("ended");
+    // A client that is away hears nothing and may be back at any moment: the end waits for it, and is told then.
+    if (this.suspended) {
+      this.endOnReturn = true;
+      return;
+    }
+    if (!this.voice.speaking()) return this.detach("ended");
     this.cancelEndGrace ??= this.deps.clock.setTimeout(() => this.detach("ended"), END_GRACE_MS);
   }
 
@@ -203,8 +216,21 @@ export class VoiceAttachment {
     this.endRequested = false;
     this.endTurnDone = false;
     this.endHeld = false;
+    this.endOnReturn = false;
     this.cancelEndGrace?.();
     this.cancelEndGrace = null;
+    this.cancelEndExpiry?.();
+    this.cancelEndExpiry = null;
+  }
+
+  /** Whether a hang-up has been asked for and not yet carried out or dropped. */
+  get hangupPending(): boolean {
+    return this.endRequested && !this.ended;
+  }
+
+  /** Whether the turn that asked for the hang-up has ended. */
+  get hangupTurnEnded(): boolean {
+    return this.endTurnDone;
   }
 
   /** The suspend window ran out. */
@@ -218,6 +244,8 @@ export class VoiceAttachment {
     this.stopKeepalive();
     this.cancelEndGrace?.();
     this.cancelEndGrace = null;
+    this.cancelEndExpiry?.();
+    this.cancelEndExpiry = null;
     this.capture?.close();
     this.voice.close();
     this.onEnd(this);
@@ -230,6 +258,11 @@ export class VoiceAttachment {
     this.capture = null;
     this.bargeIn.clear();
     this.voice.suspend();
+    // The utterance that held a pending hang-up died with the capture, and a grace timer has no client to wait on.
+    this.endHeld = false;
+    this.cancelEndGrace?.();
+    this.cancelEndGrace = null;
+    this.tryEnd();
   }
 
   // ── session events in ──────────────────────────────────────────────────────
@@ -274,6 +307,8 @@ export class VoiceAttachment {
     this.announceBackground();
     if (this.endRequested) {
       this.endTurnDone = true;
+      this.cancelEndExpiry?.();
+      this.cancelEndExpiry = null;
       this.tryEnd();
     }
   }
@@ -306,6 +341,8 @@ export class VoiceAttachment {
     }
     this.hello = true;
     this.mode = frame.mode;
+    // The user asked to hang up and the turn ended while they were away: the call is over, and the client is told so.
+    if (this.suspended && this.endOnReturn) return this.detach("ended");
     this.capture = this.openCapture();
     // A client that has said hello is back whether or not it sends `resume`: it is a live attachment again, so
     // a take-over, a second drop and the suspend window all treat it as one.

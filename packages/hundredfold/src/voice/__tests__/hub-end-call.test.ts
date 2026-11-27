@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { END_GRACE_MS } from "../attachment.js";
+import { END_GRACE_MS, END_REQUEST_TTL_MS } from "../attachment.js";
 import { createHarness, playedAll, SESSION } from "./hub-harness.js";
 import { settle } from "./fakes.js";
 
@@ -150,14 +150,93 @@ describe("hanging up a call from the assistant's side", () => {
     expect(socket.ofType("detached")).toEqual([{ type: "detached", reason: "ended" }]);
   });
 
-  it("ends a call whose client has gone away (suspended) when the turn ends, with no goodbye to wait for", async () => {
+  it("a hang-up that comes due while the client is away is carried out, and told, when the client returns", async () => {
     const h = createHarness();
     const { socket, attachment } = h.connect();
     h.hub.socketClosed(attachment, socket, 1006);
     expect(attachment.suspended).toBe(true);
     h.hub.endCall(SESSION);
     await goodbye(h);
+    // Still within the resume window: nothing to tell yet, and the grace period is not what ends it.
+    h.clock.advance(END_GRACE_MS * 2);
+    expect(h.hub.size()).toBe(1);
+    const back = h.connect();
+    expect(back.socket.ofType("ready")).toEqual([]);
+    expect(back.socket.ofType("detached")).toEqual([{ type: "detached", reason: "ended" }]);
+    expect(back.socket.closed?.code).toBe(1000);
     expect(h.hub.size()).toBe(0);
+  });
+
+  it("an utterance that died with a dropped connection no longer holds the hang-up", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    h.hub.endCall(SESSION);
+    await goodbye(h);
+    h.vad().start();
+    h.audio(first.attachment, 10);
+    playedAll(first.socket, first.attachment);
+    expect(first.socket.closed).toBeNull();
+    h.hub.socketClosed(first.attachment, first.socket, 1006);
+    const back = h.connect();
+    expect(back.socket.ofType("detached")).toEqual([{ type: "detached", reason: "ended" }]);
+    expect(h.hub.size()).toBe(0);
+  });
+
+  it("a user already mid-utterance when the hang-up is asked for is heard out first", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    h.event("session:started");
+    h.vad().start();
+    h.audio(attachment, 10);
+    h.hub.endCall(SESSION);
+    h.delta("text", "Goodbye.");
+    h.event("session:completed", { result: "Goodbye.", error: null });
+    await settle();
+    playedAll(socket, attachment);
+    h.clock.advance(END_GRACE_MS * 2);
+    expect(socket.ofType("detached")).toEqual([]);
+    // Their words keep the call.
+    h.vad().end();
+    h.stt.last().final("actually, one more thing");
+    await settle();
+    playedAll(socket, attachment);
+    expect(socket.ofType("detached")).toEqual([]);
+    expect(h.hub.size()).toBe(1);
+  });
+
+  it("a hang-up pending when a second tab takes the call over ends the call there too", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    h.hub.endCall(SESSION);
+    const second = h.connect();
+    expect(first.socket.ofType("detached")).toEqual([{ type: "detached", reason: "taken_over" }]);
+    await goodbye(h);
+    playedAll(second.socket, second.attachment);
+    expect(second.socket.ofType("detached")).toEqual([{ type: "detached", reason: "ended" }]);
+    expect(h.hub.size()).toBe(0);
+  });
+
+  it("a takeover after the asking turn already ended ends the new call at once", async () => {
+    const h = createHarness();
+    const first = h.connect();
+    h.hub.endCall(SESSION);
+    await goodbye(h);
+    expect(first.socket.closed).toBeNull();
+    const second = h.connect({ hello: false });
+    expect(second.socket.ofType("detached")).toEqual([{ type: "detached", reason: "ended" }]);
+    expect(h.hub.size()).toBe(0);
+  });
+
+  it("a request made outside any turn expires instead of ending some later turn", async () => {
+    const h = createHarness();
+    const { socket, attachment } = h.connect();
+    h.hub.endCall(SESSION);
+    h.clock.advance(END_REQUEST_TTL_MS + 1);
+    await goodbye(h);
+    playedAll(socket, attachment);
+    h.clock.advance(END_GRACE_MS * 2);
+    expect(socket.ofType("detached")).toEqual([]);
+    expect(h.hub.size()).toBe(1);
   });
 
   it("leaves other sessions' calls alone", async () => {

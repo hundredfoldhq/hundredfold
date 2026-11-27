@@ -145,7 +145,8 @@ export async function handleVoiceApi(req: IncomingMessage, res: ServerResponse, 
 function endCall(res: ServerResponse, options: VoiceApiOptions): boolean {
   const identity = options.resolveCaller?.();
   if (identity?.kind !== "session") {
-    json(res, { error: UNIDENTIFIED_TOOL_CALL_ERROR }, 403);
+    const error = identity?.kind === "operator" ? "A voice call is hung up by the session in it, with its end_voice_call tool." : UNIDENTIFIED_TOOL_CALL_ERROR;
+    json(res, { error }, 403);
     return true;
   }
   if (!options.endCall || options.endCall(identity.callerId) === "no-call") {

@@ -326,8 +326,8 @@ const ATTESTED = {
   // capability with no prose to buy it back from, and it cannot be offered only during a call: an engine's manifest
   // is fixed when its server starts, before any call exists. It takes no arguments and its description is one
   // line ("Hang up your voice call; the chat stays. Only on a clear request."), the least that says what it ends and
-  // when to use it. +36 on the JSON-RPC wrapper, +45 on Pi, +40 on OpenAI, so the ceiling moves by the 45 and Pi
-  // sits ON it again (4449 -> 4494).
+  // when to use it. +36 on the JSON-RPC wrapper, +45 on Pi, +40 on OpenAI, so the ceiling moves by 44 (4450 -> 4494)
+  // and Pi, 45 over its old total, sits ON it again (4449 -> 4494).
   rpc: { tokens: 4099, sha256: "07a34e675aff5434aedf6b0a0b5895c6a09bc96a90a52627ff14fd82da1424f2" },
   pi: { tokens: 4494, sha256: "d08134eeb8d8c36138951c7648509b7ebb6bb294edf1af39035ef152a8412256" },
   openai: { tokens: 4242, sha256: "50f83e5711fcdded75194fc3eec7db5a1964b1497f9e747c60d70f7442d54965" },

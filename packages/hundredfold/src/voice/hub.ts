@@ -126,10 +126,17 @@ export class VoiceHub {
       existing.adopt(socket, request.principal);
       return existing;
     }
+    // A hang-up the assistant is carrying out outlives the tab it was asked in: the call the user returns to ends too.
+    const hangUp = existing.hangupPending;
+    const hangUpTurnEnded = existing.hangupTurnEnded;
     this.takingOver = request.sessionId;
     try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
-    if (config) return this.create(socket, request, config);
+    if (config) {
+      const created = this.create(socket, request, config);
+      if (hangUp) created.endWhenSpoken(hangUpTurnEnded);
+      return created;
+    }
     // Voice went off between the detach and here: no new attachment will end this conversation, so this is its end.
     this.discardEmpty(request.sessionId);
     return this.refuseDisabled(socket);
