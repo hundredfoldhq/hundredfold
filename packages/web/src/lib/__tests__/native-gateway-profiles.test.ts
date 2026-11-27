@@ -202,6 +202,29 @@ describe("native gateway profiles", () => {
     })
   })
 
+  it("keeps the shell's own reason when a { code, message } rejection fails a switch or the startup check", async () => {
+    const { bridge, requests } = bridgeFixture()
+    const storage = new MemoryStorage()
+    const profiles = createNativeGatewayProfiles({ bridge, storage })
+    const alpha = await profiles.pair("http://127.0.0.1:7779", "alpha", { activate: true })
+    const beta = await profiles.pair("http://127.0.0.1:7780", "beta")
+    const rejection = { code: "transport-failed", message: "The gateway request failed" }
+
+    requests.mockRejectedValueOnce(rejection)
+    await expect(profiles.select(beta.id)).rejects.toBe(rejection)
+    expect(profiles.snapshot()).toMatchObject({ failedProfileId: beta.id, error: "The gateway request failed" })
+
+    const reloaded = createNativeGatewayProfiles({ bridge, storage })
+    requests.mockRejectedValueOnce({ code: "not-paired", message: "This gateway profile is not paired" })
+    await reloaded.verifyActive()
+    expect(reloaded.snapshot()).toMatchObject({ status: "unreachable", error: "This gateway profile is not paired" })
+
+    requests.mockRejectedValueOnce({ code: "x" })
+    await reloaded.verifyActive()
+    expect(reloaded.snapshot().error).toBe("Gateway is unreachable")
+    expect(alpha.id).not.toBe(beta.id)
+  })
+
   it("proves a remembered gateway that still answers", async () => {
     const { bridge, storage } = { ...bridgeFixture(), storage: new MemoryStorage() }
     await createNativeGatewayProfiles({ bridge, storage }).pair("http://127.0.0.1:7779", "alpha", { activate: true })
