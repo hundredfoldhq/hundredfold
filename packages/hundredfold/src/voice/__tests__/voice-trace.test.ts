@@ -49,6 +49,17 @@ describe("trace lines", () => {
   it("report an error without an address", () => {
     expect(errorField(new Error("could not reach https://api.example.com/v1/audio?key=abc now"))).toBe("could not reach <url> now");
   });
+
+  it("formats any thrown value without throwing itself", () => {
+    const bare = Object.create(null) as object;
+    const odd = new Error("x");
+    Object.defineProperty(odd, "message", { value: 42 });
+    const hostile = { toString: () => { throw new Error("no"); } };
+    expect(errorField(bare)).toBe("unknown");
+    expect(errorField(odd)).toBe("unknown");
+    expect(errorField(hostile)).toBe("unknown");
+    expect(errorField(undefined)).toBe("undefined");
+  });
 });
 
 describe("wavFacts", () => {
@@ -149,6 +160,47 @@ describe("what a spoken conversation logs", () => {
     await settle();
     const dropped = h.warnings.filter((line) => line.includes("event=audio_out_dropped"));
     expect(dropped).toHaveLength(1);
+  });
+
+  it("does not warn about a settled reply that is the last text block of a turn that used a tool", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await h.say(attachment, "go");
+    h.event("session:started");
+    h.delta("text", "Let me check that. ");
+    h.delta("tool_use", "", { toolName: "Bash" });
+    h.delta("tool_result", "ok");
+    h.delta("text", "The answer is four.");
+    await settle();
+    h.event("session:completed", { result: "The answer is four.", error: null });
+    await settle();
+    expect(all(h).join("\n")).toContain("event=turn_ended");
+    expect(h.warnings.filter((line) => line.includes("event=reply_snapshot_ignored"))).toEqual([]);
+  });
+
+  it("does not warn about a settled reply that only lost the whitespace the stream ended in", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await h.say(attachment, "go");
+    h.event("session:started");
+    h.delta("text", "It is noon.\n\n");
+    await settle();
+    h.event("session:completed", { result: "It is noon.", error: null });
+    await settle();
+    expect(all(h).join("\n")).toContain("event=turn_ended");
+    expect(h.warnings.filter((line) => line.includes("event=reply_snapshot_ignored"))).toEqual([]);
+  });
+
+  it("warns when the settled reply disagrees with what was streamed and spoken", async () => {
+    const h = createHarness();
+    const { attachment } = h.connect();
+    await h.say(attachment, "go");
+    h.event("session:started");
+    h.delta("text", "The answer is four.");
+    await settle();
+    h.event("session:completed", { result: "The answer is five.", error: null });
+    await settle();
+    expect(h.warnings.filter((line) => line.includes("event=reply_snapshot_ignored"))).toHaveLength(1);
   });
 
   it("a malformed hello gets the same answer as before and never throws out of the socket handler", () => {

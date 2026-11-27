@@ -249,10 +249,12 @@ export class ReplyVoice {
 
   /**
    * A snapshot that does not extend what was streamed adds nothing, so a reply the engine settled differently is spoken
-   * as it streamed: the mismatch is the thing to look for when speech and text disagree.
+   * as it streamed: the mismatch is the thing to look for when speech and text disagree. A snapshot that is the tail of
+   * what streamed is not a mismatch: an engine that settles a turn on its last text block (text, tool, text) or trims
+   * the trailing whitespace off it says so on every ordinary turn.
    */
   private traceIgnoredSnapshot(reply: Reply, snapshot: string): void {
-    if (snapshot === reply.text) return;
+    if (isTailOf(reply.text, snapshot)) return;
     this.trace.warn("reply_snapshot_ignored", { reply: reply.id, fed_chars: reply.text.length, snapshot_chars: snapshot.length, common_prefix: commonPrefix(reply.text, snapshot) });
   }
 
@@ -543,6 +545,11 @@ function commonPrefix(a: string, b: string): number {
   let at = 0;
   while (at < limit && a.charCodeAt(at) === b.charCodeAt(at)) at += 1;
   return at;
+}
+
+/** Whether `snapshot`, whitespace trimmed, is how `fed` ends: the whole of it, or its last block. */
+export function isTailOf(fed: string, snapshot: string): boolean {
+  return fed.trimEnd().endsWith(snapshot.trim());
 }
 
 /** The part of a snapshot not already fed, or "" when the snapshot only repeats what was. */

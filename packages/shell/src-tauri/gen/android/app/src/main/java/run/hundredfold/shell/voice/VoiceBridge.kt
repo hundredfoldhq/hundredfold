@@ -49,6 +49,7 @@ class VoiceBridge(private val activity: ComponentActivity) {
         val beganAt = SystemClock.elapsedRealtime()
         engineReady = CountDownLatch(1)
         startError = null
+        noEngineDrops = 0L
         Log.i(TAG, "event=bridge_start hands_free=$handsFree")
         ContextCompat.startForegroundService(
             context,
@@ -118,7 +119,7 @@ class VoiceBridge(private val activity: ComponentActivity) {
     companion object {
         private const val START_TIMEOUT_SECONDS = 8L
         private const val TAG = VoiceAudio.TAG
-        private var noEngineDrops = 0L
+        @Volatile private var noEngineDrops = 0L
 
         @Volatile private var engine: VoiceAudio? = null
         @Volatile private var engineReady: CountDownLatch? = null

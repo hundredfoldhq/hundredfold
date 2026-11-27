@@ -105,12 +105,13 @@ class VoiceService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "event=service_destroy has_audio=${audio != null} interrupted=${interruptedAt != 0L}")
-        unwatchDevices()
         VoiceBridge.detach(audio)
         audio?.stop()
         audio = null
         abandonFocus()
         releaseLocks()
+        // Logging only: a failure here must not stop the teardown above or below it.
+        runCatching { unwatchDevices() }
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }

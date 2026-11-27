@@ -736,14 +736,16 @@ final class VoiceController {
                 .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
             // Without `.shouldResume`, or if the audio cannot be brought back, the
             // session ends the way a permanent loss of audio focus does on Android.
-            let suspended = began.map { (DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds) / 1_000_000 } ?? 0
-            VoiceLog.info("event=interruption_ended should_resume=\(options.contains(.shouldResume)) suspended_ms=\(suspended)")
+            let interrupted = began.map { (DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds) / 1_000_000 } ?? 0
+            VoiceLog.info("event=interruption_ended should_resume=\(options.contains(.shouldResume)) interrupted_ms=\(interrupted)")
             guard options.contains(.shouldResume),
                   (try? AVAudioSession.sharedInstance().setActive(true)) != nil,
                   restartAudio() else {
                 endSession("interruption")
                 return
             }
+            let suspended = began.map { (DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds) / 1_000_000 } ?? 0
+            VoiceLog.info("event=interruption_resumed suspended_ms=\(suspended)")
             hf_voice_on_interruption(false, suspended)
         @unknown default:
             break

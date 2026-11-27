@@ -1,7 +1,7 @@
 //! One-line diagnostic events for the native voice path.
 //!
 //! Every line reads `event=<snake_case_name> key=value key=value` and uses the same key
-//! names as the Swift and Kotlin audio code (`segment_id`, `seq`, `bytes`, `frames`, `ms`,
+//! names as the Swift and Kotlin audio code (`segment`, `seq`, `bytes`, `frames`, `ms`,
 //! `rms`, `threshold`, `reason`, `code`), so one timeline can be read across all three.
 //! Lines never carry transcripts, reply text, credentials or URLs: only ids, counts, sizes
 //! and timings.
@@ -13,7 +13,7 @@
 //! Lines go to stderr by default. A host that has a better place for them (iOS, where the
 //! stderr redirect only logs in debug builds) installs a [`Sink`] with [`set_sink`].
 
-use std::{fmt, sync::OnceLock};
+use std::{fmt, io::Write, sync::OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
@@ -57,7 +57,10 @@ pub fn emit(level: Level, args: fmt::Arguments<'_>) {
     let line = args.to_string();
     match SINK.get() {
         Some(sink) => sink(level, &line),
-        None => eprintln!("hf_voice {} {line}", level.as_str()),
+        // `eprintln!` panics when stderr cannot be written, and this runs on the capture thread.
+        None => {
+            let _ = writeln!(std::io::stderr(), "hf_voice {} {line}", level.as_str());
+        }
     }
 }
 

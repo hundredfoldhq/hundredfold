@@ -97,6 +97,11 @@ export const silentTracer: Tracer = { info: () => undefined, warn: () => undefin
 
 /** The message of an error, short and free of addresses, for the `error=` field. */
 export function errorField(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>").slice(0, 160);
+  try {
+    const text = error instanceof Error ? error.message : String(error);
+    if (typeof text !== "string") return "unknown";
+    return text.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>").slice(0, 160);
+  } catch {
+    return "unknown";
+  }
 }
