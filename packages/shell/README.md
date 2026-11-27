@@ -13,6 +13,14 @@ only: `pair`, `request`, `stream`, and `forget`. Those commands accept
 root-relative gateway paths, reject credential-bearing headers and redirects,
 and return no cookie or token to JavaScript.
 
+Two more commands, `workspace_state_read` and `workspace_state_write`, keep the
+record of which gateways are paired and which one is active in a small file in the
+app's data directory (written atomically and synced before the call returns, at
+most 64 KB, a JSON object). The WebView writes `localStorage` behind the page, so a
+selection made just before the OS ends the app can be lost there; this copy is what
+the next launch opens on when it is newer. The record names gateways only: it never
+carries a credential.
+
 Plain HTTP gateways are accepted only on loopback — a literal loopback address
 or the name `localhost`. LAN, tailnet, and remote gateways require HTTPS. Each
 of those four commands also verifies that it came from the local `main` window,
