@@ -461,6 +461,15 @@ describe("playback and barge-in", () => {
     expect(getDebugLog()).toContain("event=audio_without_segment segment=7")
   })
 
+  it("still warns about audio for a segment that was never started, straight after a cut", async () => {
+    const r = await started()
+    speak(r)
+    r.sockets[0].serverFrame({ type: "stop_playback", reason: "speech" })
+    clearDebugLog()
+    r.sockets[0].serverAudio(8)
+    expect(getDebugLog()).toContain("event=audio_without_segment segment=8")
+  })
+
   it("warns about audio for another segment once the cut is long past", async () => {
     const now = vi.spyOn(performance, "now").mockReturnValue(10_000)
     let log: string

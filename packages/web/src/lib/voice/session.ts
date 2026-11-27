@@ -79,9 +79,6 @@ const CONTEXT_RESUME_WAIT_MS = 300
 /** How long a microphone request made without a tap may take before the tap is asked for instead. */
 const MICROPHONE_REACQUIRE_WAIT_MS = 2_000
 
-/** Audio for an unknown segment this soon after a cut is the cut reply's frames still in flight, so it is logged at debug. */
-const AFTER_CUT_GRACE_MS = 2_000
-
 /** How long a cut segment's id is remembered, so its late audio is logged at debug too. */
 const CUT_MEMORY_MS = 30_000
 
@@ -141,7 +138,6 @@ export class BrowserVoiceSession implements VoiceController {
   private readonly audioSeq = new SeqTracker()
   /** Segments a local barge-in or a stop_playback just cut, by when: their in-flight audio is expected, not a fault. */
   private readonly cutAt = new Map<number, number>()
-  private lastCutAtMs: number | null = null
   private stopContextTrace: (() => void) | null = null
   private pttAt = 0
 
@@ -601,8 +597,8 @@ export class BrowserVoiceSession implements VoiceController {
     const step = this.audioSeq.next(chunk.seq)
     if (!trace) {
       const fields = { segment: chunk.segmentId, seq: chunk.seq, samples: chunk.pcm.length }
-      const cutAt = this.cutAt.get(chunk.segmentId) ?? this.lastCutAtMs
-      if (cutAt !== null && (this.cutAt.has(chunk.segmentId) || now - cutAt < AFTER_CUT_GRACE_MS)) {
+      const cutAt = this.cutAt.get(chunk.segmentId)
+      if (cutAt !== undefined) {
         voiceLog.debug("audio_after_cut", () => ({ ...fields, since_cut_ms: Math.round(now - cutAt) }))
       } else {
         voiceLog.warn("audio_without_segment", fields)
@@ -652,7 +648,6 @@ export class BrowserVoiceSession implements VoiceController {
   /** The segments just cut, so the audio still in flight for them is logged at debug, as the player does. */
   private rememberCut(ids: number[]): void {
     const now = voiceNow()
-    this.lastCutAtMs = now
     for (const [id, at] of this.cutAt) if (now - at >= CUT_MEMORY_MS) this.cutAt.delete(id)
     for (const id of ids) this.cutAt.set(id, now)
   }
