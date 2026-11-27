@@ -36,6 +36,9 @@ const api = await import("../api.js");
 
 const baseConfig = (): HundredfoldConfig => ({ gateway: {}, engines: { default: "claude" } }) as unknown as HundredfoldConfig;
 
+/** What `res.write` reports: false is a full socket buffer, which must never cost the client a frame. */
+let writeResult = true;
+
 function makeRes() {
   let status = 200;
   let ended = false;
@@ -54,7 +57,7 @@ function makeRes() {
     },
     write(buf: Buffer | string) {
       chunks.push(asBuffer(buf));
-      return true;
+      return writeResult;
     },
     end(buf?: Buffer | string) {
       if (buf) chunks.push(asBuffer(buf));
@@ -114,6 +117,7 @@ let config: HundredfoldConfig;
 beforeEach(() => {
   config = baseConfig();
   kokoro.available = false;
+  writeResult = true;
 });
 
 describe("GET /api/tts", () => {
@@ -155,5 +159,15 @@ describe("POST /api/tts", () => {
     expect(raw.readUInt32BE(11)).toBe(3);
     expect(raw.subarray(15, 18).toString()).toBe("XYZ");
     expect(raw).toHaveLength(18);
+  });
+});
+
+describe("POST /api/tts under backpressure", () => {
+  it("writes every frame's length prefix and its audio even when the socket buffer reports full", async () => {
+    kokoro.available = true;
+    writeResult = false;
+    const res = await call(config, "POST", "/api/tts", { text: "hello there" });
+    const frame = (wav: string) => Buffer.concat([Buffer.from([0, 0, 0, wav.length]), Buffer.from(wav)]);
+    expect(res.raw.equals(Buffer.concat([frame("WAVDATA"), frame("XYZ")]))).toBe(true);
   });
 });

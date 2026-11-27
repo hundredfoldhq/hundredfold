@@ -19,6 +19,7 @@ import { VOICE_INPUT_SAMPLE_RATE } from "../shared/gateway-events.js";
 import type { SttProvider, SttQuality, SttStream, VadEvent, VadStream } from "./provider.js";
 import type { VoiceClock, CancelTimer } from "./hub-types.js";
 import { VAD_HOLD_MS } from "./sidecar/client.js";
+import { errorField, silentTracer, type Tracer } from "./trace.js";
 import { looksUnfinished } from "./unfinished-speech.js";
 
 /** Bytes of PCM16 mono at the input rate per millisecond. */
@@ -76,6 +77,8 @@ export interface CaptureOptions {
   clock: VoiceClock;
   newId(): string;
   events: CaptureEvents;
+  /** Diagnostic lines; absent: nothing is logged. */
+  trace?: Tracer;
 }
 
 /** One utterance in flight. */
@@ -116,7 +119,10 @@ export class UtteranceCapture {
   /** Set while the VAD said speech ended but the words so far look unfinished, so the end is held. */
   private cancelHold: CancelTimer | null = null;
 
+  private readonly trace: Tracer;
+
   constructor(private readonly options: CaptureOptions) {
+    this.trace = options.trace ?? silentTracer;
     options.vad.on((event) => this.onVad(event));
   }
 
@@ -183,6 +189,7 @@ export class UtteranceCapture {
 
   private onVad({ kind, atMs, speechMs }: VadEvent): void {
     if (this.closed || this.options.pushToTalk) return;
+    this.trace.debug("vad_event", () => ({ kind, at_ms: Math.round(atMs), speech_ms: speechMs === undefined ? undefined : Math.round(speechMs), written_ms: Math.round(this.written / BYTES_PER_MS) }));
     if (kind === "reset") return this.onReset(atMs);
     if (kind === "end") return this.onVadEnd(atMs, speechMs);
     // Speech resumed inside a hold: the same utterance goes on.
@@ -210,7 +217,10 @@ export class UtteranceCapture {
     if (this.capturing && speechMs !== undefined) this.capturing.speechMs = (this.capturing.speechMs ?? 0) + speechMs;
     const catchUp = this.capturing?.catchUp;
     // Only a live utterance has words to judge; a catch-up one ends where the VAD says.
-    if (!catchUp && this.holdEnd()) return;
+    if (!catchUp && this.holdEnd()) {
+      this.trace.info("utterance_end_held", { utterance: this.capturing?.id, hold_ms: this.options.unfinishedHoldMs });
+      return;
+    }
     this.closeOpen(catchUp ? this.catchUpEnd(atMs) : this.written);
     this.ignoringUntilEnd = false;
   }
@@ -267,6 +277,10 @@ export class UtteranceCapture {
     };
     stream.on((event) => this.onStt(open, event));
     this.capturing = open;
+    this.trace.info("utterance_open", {
+      utterance: open.id, catch_up: catchUp, from_ms: Math.round(fromByte / BYTES_PER_MS), written_ms: Math.round(this.written / BYTES_PER_MS),
+      preroll_ms: catchUp ? undefined : Math.round((this.written - fromByte) / BYTES_PER_MS), mode: this.options.pushToTalk ? "push-to-talk" : "hands-free",
+    });
     this.options.events.onStart(open.id);
     if (!catchUp) this.feed(open, fromByte, this.written);
   }
@@ -338,6 +352,10 @@ export class UtteranceCapture {
 
   private finish(open: Open): void {
     open.endedAt = this.options.clock.now();
+    this.trace.info("utterance_closed", {
+      utterance: open.id, audio_ms: Math.round(open.audioMs), speech_ms: open.speechMs === null ? undefined : Math.round(open.speechMs),
+      live_ms: open.endedAt - open.startedAt, partial_chars: open.partial.length, catch_up: open.catchUp !== null,
+    });
     this.awaiting.add(open);
     open.cancelTimeout = this.options.clock.setTimeout(() => this.fail(open), FINAL_TIMEOUT_MS);
     open.stream.end();
@@ -347,12 +365,14 @@ export class UtteranceCapture {
     this.capturing = null;
     if (open.catchUp) this.finishCatchUp(open, Math.min(this.written, open.catchUp.fromByte + this.options.maxUtteranceMs * BYTES_PER_MS));
     this.ignoringUntilEnd = true;
+    this.trace.warn("utterance_too_long", { utterance: open.id, max_ms: this.options.maxUtteranceMs });
     this.options.events.onTooLong(open.id);
     this.finish(open);
   }
 
-  private onStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string; quality?: SttQuality }): void {
+  private onStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string; message?: string; quality?: SttQuality }): void {
     if (open.settled || this.closed) return;
+    this.traceStt(open, event);
     if (event.type === "partial") {
       open.partial = event.text ?? "";
       this.options.events.onPartial(open.id, open.partial);
@@ -369,8 +389,18 @@ export class UtteranceCapture {
     });
   }
 
+  /** One line per recognition event: a partial at debug, the final and an error at info and warn. */
+  private traceStt(open: Open, event: { type: "partial" | "final" | "error"; text?: string; message?: string; quality?: SttQuality }): void {
+    const base = { utterance: open.id, audio_ms: Math.round(open.audioMs) };
+    if (event.type === "partial") return this.trace.debug("stt_partial", () => ({ utterance: open.id, chars: (event.text ?? "").length }));
+    if (event.type === "error") return this.trace.warn("stt_error", { ...base, error: errorField(event.message ?? "unknown") });
+    const now = this.options.clock.now();
+    this.trace.info("stt_final", { ...base, chars: (event.text ?? "").length, stt_ms: Math.max(0, now - (open.endedAt ?? now)), confidence: event.quality?.confidence, no_speech: event.quality?.noSpeechProb });
+  }
+
   private fail(open: Open): void {
     if (open.settled) return;
+    this.trace.warn("stt_gave_up", { utterance: open.id, audio_ms: Math.round(open.audioMs), waited_ms: open.endedAt === null ? undefined : this.options.clock.now() - open.endedAt });
     this.discard(open);
     if (this.capturing === open) this.capturing = null;
     this.options.events.onFailed(open.id);

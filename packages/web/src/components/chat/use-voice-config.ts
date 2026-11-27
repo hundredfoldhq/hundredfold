@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import { errorFields, voiceLog, voiceNow } from '@/lib/voice-log'
 import { useMember } from '@/hooks/use-principal'
 import { parseVoiceConfig, VOICE_DISABLED, type VoiceClientConfig } from '@/lib/voice/config'
 
@@ -13,10 +14,16 @@ const CACHE_MS = 60_000
 async function fetchVoiceConfig(): Promise<VoiceClientConfig> {
   const read = (api as { getVoiceConfig?: () => Promise<unknown> }).getVoiceConfig
   if (typeof read !== 'function') return VOICE_DISABLED
+  const startedAt = voiceNow()
   try {
-    return parseVoiceConfig(await read())
-  } catch {
+    const parsed = parseVoiceConfig(await read())
+    voiceLog.info('voice_config', parsed.enabled
+      ? { enabled: true, available: parsed.available, mode: parsed.mode, barge_in: parsed.bargeIn, onset_threshold: parsed.onset.threshold, onset_min_speech_ms: parsed.onset.minSpeechMs, install: parsed.install?.state, reason_chars: parsed.reason?.length, fetch_ms: voiceNow() - startedAt }
+      : { enabled: false, fetch_ms: voiceNow() - startedAt })
+    return parsed
+  } catch (error) {
     // No route (voice absent), no access, or a gateway that predates voice: the control stays hidden.
+    voiceLog.info('voice_config_unavailable', { fetch_ms: voiceNow() - startedAt, ...errorFields(error) })
     return VOICE_DISABLED
   }
 }

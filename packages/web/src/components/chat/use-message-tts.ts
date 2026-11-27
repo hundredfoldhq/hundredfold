@@ -7,6 +7,7 @@
  * spinner from `phase` and call `toggle()`.
  */
 import { useCallback, useSyncExternalStore } from "react"
+import { voiceLog } from "@/lib/voice-log"
 import { TtsController, TTS_IDLE_SNAPSHOT, type TtsPhase } from "./tts-controller"
 import { createTtsStart, defaultTtsDeps } from "./tts-engine"
 
@@ -37,5 +38,6 @@ export function useMessageTts(id: string, text: string): MessageTts {
 
 /** Stop any active read-aloud (call on chat unmount / navigation). */
 export function stopMessageTts(): void {
+  if (controller) voiceLog.info("tts_stop_external", { active: controller.getSnapshot().id })
   controller?.stop()
 }

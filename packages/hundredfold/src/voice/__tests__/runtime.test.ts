@@ -32,7 +32,7 @@ describe("voice is off unless the configuration turns it on (FR-021)", () => {
 });
 
 describe("the emit tee", () => {
-  const log = { info: () => undefined, warn: (m: string) => warnings.push(m) };
+  const log = { info: () => undefined, warn: (m: string) => warnings.push(m), debug: () => undefined };
   const warnings: string[] = [];
 
   it("runs the gateway's emit first, unchanged, then hands the event to the hub", () => {

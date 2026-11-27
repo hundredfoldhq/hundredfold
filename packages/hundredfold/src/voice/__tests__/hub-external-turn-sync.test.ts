@@ -58,7 +58,7 @@ function liveHub(sessionId: string) {
     findReplyMessageId: registry.latestAssistantMessageId,
     externalRepliesSince: registry.externalRepliesSince,
     clock,
-    log: { info: () => undefined, warn: () => undefined },
+    log: { info: () => undefined, warn: () => undefined, debug: () => undefined },
     newId: () => `id${++counter}`,
   });
   const socket = new FakeSocket();

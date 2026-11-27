@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
+use hundredfold_voice_core::{diag_info, diag_warn};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -7,6 +8,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Instant,
 };
 use tauri::{ipc::Channel, State, WebviewWindow};
 use tokio::sync::mpsc;
@@ -268,6 +270,30 @@ fn normal_close() -> Message {
     }))
 }
 
+/// What crossed one socket, for the line logged when it ends.
+#[derive(Default)]
+struct SocketStats {
+    text_rx: u64,
+    binary_rx: u64,
+    bytes_rx: u64,
+    text_tx: u64,
+    binary_tx: u64,
+    bytes_tx: u64,
+    pings_rx: u64,
+    last_rx: Option<Instant>,
+    max_rx_gap_ms: u128,
+}
+
+impl SocketStats {
+    fn received(&mut self) {
+        let now = Instant::now();
+        if let Some(last) = self.last_rx {
+            self.max_rx_gap_ms = self.max_rx_gap_ms.max(now.duration_since(last).as_millis());
+        }
+        self.last_rx = Some(now);
+    }
+}
+
 async fn run_socket(
     stream_id: String,
     request: http::Request<()>,
@@ -275,15 +301,41 @@ async fn run_socket(
     sink: impl SocketSink,
     registry: StreamRegistry,
 ) {
-    let Ok((socket, _)) = tokio_tungstenite::connect_async(request).await else {
-        sink.failed(&stream_id);
-        registry
-            .lock()
-            .ok()
-            .map(|mut streams| streams.remove(&stream_id));
-        return;
+    // The route is the first two path segments (`/ws/voice`): enough to tell sockets apart without the session id.
+    let route = request
+        .uri()
+        .path()
+        .split('/')
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("/");
+    let opened_at = Instant::now();
+    diag_info!("event=ws_connecting stream_id={stream_id} route={route}");
+    let socket = match tokio_tungstenite::connect_async(request).await {
+        Ok((socket, response)) => {
+            diag_info!(
+                "event=ws_open stream_id={stream_id} route={route} status={} ms={}",
+                response.status().as_u16(),
+                opened_at.elapsed().as_millis()
+            );
+            socket
+        }
+        Err(error) => {
+            diag_warn!(
+                "event=ws_connect_failed stream_id={stream_id} route={route} ms={} error={:?}",
+                opened_at.elapsed().as_millis(),
+                error.to_string().chars().take(200).collect::<String>()
+            );
+            sink.failed(&stream_id);
+            registry
+                .lock()
+                .ok()
+                .map(|mut streams| streams.remove(&stream_id));
+            return;
+        }
     };
     if !sink.opened(&stream_id) {
+        diag_warn!("event=ws_closed stream_id={stream_id} cause=sink_refused_open");
         registry
             .lock()
             .ok()
@@ -291,28 +343,78 @@ async fn run_socket(
         return;
     }
     let (mut writer, mut reader) = socket.split();
+    let mut stats = SocketStats::default();
+    let mut cause = "closed_here";
     loop {
         tokio::select! {
             outgoing = receiver.recv() => match outgoing {
-                Some(OutgoingFrame::Text(text)) => if writer.send(Message::Text(text.into())).await.is_err() { break; },
-                Some(OutgoingFrame::Binary(bytes)) => if writer.send(Message::Binary(bytes.into())).await.is_err() { break; },
+                Some(OutgoingFrame::Text(text)) => {
+                    stats.text_tx += 1;
+                    stats.bytes_tx += text.len() as u64;
+                    if writer.send(Message::Text(text.into())).await.is_err() { cause = "send_failed"; break; }
+                }
+                Some(OutgoingFrame::Binary(bytes)) => {
+                    stats.binary_tx += 1;
+                    stats.bytes_tx += bytes.len() as u64;
+                    if writer.send(Message::Binary(bytes.into())).await.is_err() { cause = "send_failed"; break; }
+                }
                 Some(OutgoingFrame::Close) | None => { let _ = writer.send(normal_close()).await; break; }
             },
             incoming = reader.next() => match incoming {
-                Some(Ok(Message::Text(text))) => if !sink.text(&stream_id, text.to_string()) { break; },
-                Some(Ok(Message::Binary(bytes))) => if !sink.binary(&stream_id, bytes.to_vec()) { break; },
+                Some(Ok(Message::Text(text))) => {
+                    stats.received();
+                    stats.text_rx += 1;
+                    stats.bytes_rx += text.len() as u64;
+                    if !sink.text(&stream_id, text.to_string()) { cause = "sink_stopped"; break; }
+                }
+                Some(Ok(Message::Binary(bytes))) => {
+                    stats.received();
+                    stats.binary_rx += 1;
+                    stats.bytes_rx += bytes.len() as u64;
+                    if !sink.binary(&stream_id, bytes.to_vec()) { cause = "sink_stopped"; break; }
+                }
                 Some(Ok(Message::Close(frame))) => {
                     let (code, reason) = frame.map(|frame| (Some(frame.code.into()), frame.reason.to_string()))
                         .unwrap_or((None, String::new()));
+                    diag_info!(
+                        "event=ws_close_received stream_id={stream_id} code={} reason={:?}",
+                        code.map_or(-1, |code: u16| i32::from(code)),
+                        reason.chars().take(64).collect::<String>()
+                    );
                     sink.closed(&stream_id, code, reason);
+                    cause = "remote_close";
                     break;
                 }
-                Some(Ok(Message::Ping(bytes))) => if writer.send(Message::Pong(bytes)).await.is_err() { break; },
+                Some(Ok(Message::Ping(bytes))) => {
+                    stats.received();
+                    stats.pings_rx += 1;
+                    if writer.send(Message::Pong(bytes)).await.is_err() { cause = "send_failed"; break; }
+                }
                 Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
-                Some(Err(_)) | None => break,
+                Some(Err(error)) => {
+                    diag_warn!(
+                        "event=ws_read_error stream_id={stream_id} error={:?}",
+                        error.to_string().chars().take(200).collect::<String>()
+                    );
+                    cause = "read_error";
+                    break;
+                }
+                None => { cause = "stream_ended"; break; }
             }
         }
     }
+    diag_info!(
+        "event=ws_closed stream_id={stream_id} route={route} cause={cause} ms_open={} text_rx={} binary_rx={} bytes_rx={} text_tx={} binary_tx={} bytes_tx={} pings_rx={} max_rx_gap_ms={}",
+        opened_at.elapsed().as_millis(),
+        stats.text_rx,
+        stats.binary_rx,
+        stats.bytes_rx,
+        stats.text_tx,
+        stats.binary_tx,
+        stats.bytes_tx,
+        stats.pings_rx,
+        stats.max_rx_gap_ms
+    );
     registry
         .lock()
         .ok()

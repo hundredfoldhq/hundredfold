@@ -82,6 +82,10 @@ export interface StoredReply {
 export interface VoiceLog {
   info(message: string): void;
   warn(message: string): void;
+  /** Per-frame and per-chunk detail; off at the gateway's default level. */
+  debug(message: string): void;
+  /** Whether `debug` writes anything; absent means it may. */
+  debugEnabled?(): boolean;
 }
 
 export interface VoiceHubDeps {

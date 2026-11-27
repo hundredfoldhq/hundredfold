@@ -257,7 +257,7 @@ describe("the voice style reaches the engine prompt of a spoken turn only", () =
       findReplyMessageId: registry.latestAssistantMessageId,
       externalRepliesSince: registry.externalRepliesSince,
       clock,
-      log: { info: () => undefined, warn: () => undefined },
+      log: { info: () => undefined, warn: () => undefined, debug: () => undefined },
       newId: () => `id${++ids}`,
     });
     const attachment = hub.attach(new FakeSocket(), { sessionId: session.id, principal: { kind: "operator" } })!;
@@ -314,7 +314,7 @@ describe("what the hub stores on the chat, through the real registry (what the w
       findReplyMessageId: registry.latestAssistantMessageId,
       externalRepliesSince: registry.externalRepliesSince,
       clock,
-      log: { info: () => undefined, warn: () => undefined },
+      log: { info: () => undefined, warn: () => undefined, debug: () => undefined },
       newId: () => `id${++ids}`,
     });
     const socket = new FakeSocket();
