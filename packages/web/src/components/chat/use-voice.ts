@@ -55,7 +55,7 @@ export interface UseVoice {
 /** What a tap on the control does. In push-to-talk the button is held to talk once running, so only the end button stops; while connecting there is no hold yet, so a tap cancels. */
 export function tapAction(phase: VoicePhase, needsTap: boolean, mode: 'hands-free' | 'push-to-talk'): 'start' | 'resume' | 'stop' | 'none' {
   if (phase === 'off') return 'start'
-  if (needsTap) return 'resume'
+  if (needsTap || phase === 'user-paused') return 'resume'
   return mode === 'hands-free' || phase === 'connecting' || phase === 'suspended' || phase === 'paused' ? 'stop' : 'none'
 }
 

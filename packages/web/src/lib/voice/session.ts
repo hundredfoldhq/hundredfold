@@ -77,6 +77,12 @@ const CONTEXT_RESUME_WAIT_MS = 300
 /** How long a microphone request made without a tap may take before the tap is asked for instead. */
 const MICROPHONE_REACQUIRE_WAIT_MS = 2_000
 
+/**
+ * The close code of a pause the user asked for. It is not an ending code, so the gateway keeps the attachment for its
+ * suspend window and holds the replies that finish meanwhile, to play them when voice mode carries on.
+ */
+export const USER_PAUSE_CLOSE = 4000
+
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
@@ -118,7 +124,11 @@ export class BrowserVoiceSession implements VoiceController {
   private watcher: SuspendWatcher | null = null
   private detector: OnsetDetector | null = null
   private cuePlayer: VoiceCuePlayerLike | null = null
-  private removeMediaSession: (() => void) | null = null
+  private mediaSession: ReturnType<typeof installMediaSession> | null = null
+  /** When the user paused voice mode, while it is paused. */
+  private pausedAt: number | null = null
+  /** Names the socket whose frames count: bumped on every open and every pause, so a socket let go of is not heard from again. */
+  private socketSeq = 0
   private wakeLock: ScreenWakeLock | null = null
   private closing = false
   /** Bumped on every start and every teardown; an await that resumes under a different value belongs to a run that is over. */
@@ -222,6 +232,7 @@ export class BrowserVoiceSession implements VoiceController {
     void ctx.resume().catch(() => undefined)
     const microphone = this.microphoneLive() ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
+    this.endPause()
     if (this.socket?.isOpen) {
       this.apply({ type: "resumed" })
       this.sendResume()
@@ -233,13 +244,57 @@ export class BrowserVoiceSession implements VoiceController {
     return microphone ? this.replaceMicrophone(microphone, this.generation) : Promise.resolve()
   }
 
+  // ── user pause ────────────────────────────────────────────────────────────
+
+  /**
+   * The user paused voice mode (a headset's play/pause button): speech stops at once, nothing is listened for and the
+   * gateway is let go of, so it holds what finishes meanwhile. The microphone and audio stay as they are, so carrying
+   * on needs no tap.
+   */
+  pause(): void {
+    if (this.store.snapshot.status !== "on") return
+    this.talking = false
+    this.pausedAt = this.deps.now()
+    this.player?.flush()
+    // Frames and audio of the socket being let go of are not heard from again, and its late close is not a lost connection.
+    this.socketSeq++
+    this.socket?.close(USER_PAUSE_CLOSE, "paused")
+    this.socket = null
+    this.mediaSession?.setPlaying(false)
+    this.apply({ type: "user-paused" })
+  }
+
+  /**
+   * The play action while paused: carry on where it left off. A browser may not hand audio or the microphone back
+   * outside a tap; then the control asks for one tap instead.
+   */
+  resumePaused(): void {
+    if (this.store.snapshot.status !== "user-paused") return
+    const ctx = this.ctx
+    if (!ctx || ctx.state !== "running" || !this.microphoneLive()) {
+      this.apply({ type: "needs-tap" })
+      return
+    }
+    void this.resumeFromTap()
+  }
+
+  /** Forgets a pause that is ending: the gateway is told how long it lasted once the new socket is ready. */
+  private endPause(): void {
+    if (this.pausedAt === null) return
+    this.pendingResumeMs = Math.max(0, this.deps.now() - this.pausedAt)
+    this.pausedAt = null
+    this.mediaSession?.setPlaying(true)
+  }
+
   // ── socket ────────────────────────────────────────────────────────────────
 
   private openSocket(sessionId: string): void {
+    const seq = ++this.socketSeq
+    const current = () => seq === this.socketSeq
     this.socket = this.deps.openSocket(sessionId, {
-      onFrame: (frame) => this.onFrame(frame),
-      onAudio: (chunk) => this.onAudio(chunk),
-      onClose: (close) => this.onClose(close),
+      onFrame: (frame) => { if (current()) this.onFrame(frame) },
+      onAudio: (chunk) => { if (current()) this.onAudio(chunk) },
+      onClose: (close) => { if (current()) this.onClose(close) },
     }, this.options.mode)
   }
 
@@ -299,7 +354,11 @@ export class BrowserVoiceSession implements VoiceController {
 
   private onReady(frame: Extract<VoiceServerFrame, { type: "ready" }>): void {
     this.detector = this.options.bargeIn ? new OnsetDetector(frame.onset) : null
-    this.removeMediaSession ??= installMediaSession(this.deps.mediaSession, () => this.stop(), this.deps.createMediaMetadata ?? (() => null))
+    this.mediaSession ??= installMediaSession(
+      this.deps.mediaSession,
+      { onStop: () => this.stop(), onPause: () => this.pause(), onPlay: () => this.resumePaused() },
+      this.deps.createMediaMetadata ?? (() => null),
+    )
     this.sendResume()
   }
 
@@ -377,7 +436,8 @@ export class BrowserVoiceSession implements VoiceController {
   private watchForSuspension(ctx: VoiceAudioContext): void {
     this.watcher?.stop()
     const watcher = new SuspendWatcher(this.deps.doc, {
-      onSuspended: () => this.apply({ type: "suspended" }),
+      // A device suspension during a pause the user asked for changes nothing visible: the pause already stands.
+      onSuspended: () => { if (this.pausedAt === null) this.apply({ type: "suspended" }) },
       onReturn: ({ suspendedMs }) => { void this.handleReturn(suspendedMs) },
     }, this.deps.now)
     const track = this.capture?.track
@@ -410,6 +470,11 @@ export class BrowserVoiceSession implements VoiceController {
    * over without a gesture, is left for the one tap-to-resume.
    */
   private async handleReturn(suspendedMs: number): Promise<void> {
+    if (this.pausedAt !== null) {
+      // Back from a suspension while paused: nothing to put back until the user carries on, which checks the microphone and audio itself.
+      this.watcher?.clear()
+      return
+    }
     this.pendingResumeMs = suspendedMs
     const ctx = this.ctx
     const generation = this.generation
@@ -486,6 +551,7 @@ export class BrowserVoiceSession implements VoiceController {
     this.generation++
     this.talking = false
     this.pendingResumeMs = null
+    this.pausedAt = null
     this.capture?.stop()
     this.capture = null
     this.cuePlayer?.dispose()
@@ -495,8 +561,8 @@ export class BrowserVoiceSession implements VoiceController {
     this.watcher?.stop()
     this.watcher = null
     this.detector = null
-    this.removeMediaSession?.()
-    this.removeMediaSession = null
+    this.mediaSession?.remove()
+    this.mediaSession = null
     this.wakeLock?.release()
     this.wakeLock = null
     const ctx = this.ctx

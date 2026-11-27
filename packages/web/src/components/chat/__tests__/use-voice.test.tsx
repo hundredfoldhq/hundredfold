@@ -361,6 +361,11 @@ describe('tapAction', () => {
     expect(tapAction('listening', false, 'hands-free')).toBe('stop')
   })
 
+  it('a tap on a pause the user asked for resumes it, whatever the mode', () => {
+    expect(tapAction('user-paused', false, 'hands-free')).toBe('resume')
+    expect(tapAction('user-paused', false, 'push-to-talk')).toBe('resume')
+  })
+
   it('a tap while connecting cancels, in push-to-talk too', () => {
     expect(tapAction('connecting', false, 'hands-free')).toBe('stop')
     expect(tapAction('connecting', false, 'push-to-talk')).toBe('stop')

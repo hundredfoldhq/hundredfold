@@ -87,6 +87,18 @@ describe('VoiceControl', () => {
     expect(voiceControlLabel(withPhase(needsTap))).toBe('Voice paused. Tap to resume')
   })
 
+  it('says a pause the user asked for (the headset button) is resumed with a tap, in push-to-talk too', () => {
+    const paused = voiceReducer(stateAfter(), { type: 'user-paused' })
+    expect(voiceControlLabel(withPhase(paused, { phase: 'user-paused' }))).toBe('Voice paused. Tap to resume')
+    const voice = withPhase(paused, { phase: 'user-paused', mode: 'push-to-talk' })
+    render(<VoiceControl voice={voice} />)
+    const button = document.querySelector('[data-voice-control]') as HTMLElement
+    expect(button.getAttribute('data-state')).toBe('user-paused')
+    expect(document.querySelector('[data-voice-end]')).toBeNull()
+    fireEvent.click(button)
+    expect(voice.onTap).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a paused state when a call or another app took the audio', () => {
     const paused = voiceReducer(stateAfter(), { type: 'native-state', state: 'paused', reason: 'interruption' })
     const voice = withPhase(paused, { phase: 'paused' })

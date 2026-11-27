@@ -5,7 +5,7 @@ import { floatToInt16 } from "../pcm"
 import { MUTED_RETURN_WAIT_MS } from "../suspend"
 import { VoicePlayer } from "../player"
 import type { VoiceSessionStarter } from "../controller"
-import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
+import { BrowserVoiceSession, USER_PAUSE_CLOSE, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
 import { GATEWAY_SOCKET_OPEN, type GatewaySocketConnection } from "@/lib/gateway-transport"
@@ -531,6 +531,139 @@ describe("media session", () => {
     stop()
     expect(r.session.getSnapshot().status).toBe("off")
     expect(r.mediaSession.metadata).toBeNull()
+  })
+})
+
+describe("pause and play from a headset button", () => {
+  const handler = (r: Rig, action: string) => r.mediaSession.setActionHandler.mock.calls.filter(([a]) => a === action).at(-1)?.[1] as () => void
+  function speak(r: Rig) {
+    r.sockets[0].serverFrame({ type: "turn", state: "speaking" })
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: "Hello there." })
+    r.sockets[0].serverAudio(1, 12_000)
+  }
+
+  it("takes over the pause and play actions and does not end voice mode on pause", async () => {
+    const r = await started()
+    expect(r.mediaSession.playbackState).toBe("playing")
+    handler(r, "pause")()
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    expect(r.mediaSession.metadata).not.toBeNull()
+    expect(handler(r, "play")).toBeTypeOf("function")
+  })
+
+  it("pause stops speech at once, stops sending the microphone and lets the gateway go with a close that is not an ending", async () => {
+    const r = await started()
+    speak(r)
+    handler(r, "pause")()
+    expect(r.contexts[0].sources.every((s) => s.stoppedAt === 0)).toBe(true)
+    expect(r.sockets[0].closed).toEqual({ code: USER_PAUSE_CLOSE, reason: "paused" })
+    expect(voicePhase(r.session.getSnapshot())).toBe("user-paused")
+    expect(r.mediaSession.playbackState).toBe("paused")
+    r.emitCapture(frameAt(0.3))
+    expect(r.sockets[0].audio).toHaveLength(0)
+    // The close is the pause's own: it neither ends the run nor shows as a lost connection.
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", error: null })
+    expect(r.tracks[0].stopped).toBe(false)
+  })
+
+  it("speech and frames from the socket let go of are not heard", async () => {
+    const r = await started()
+    const old = r.sockets[0]
+    handler(r, "pause")()
+    old.serverFrame({ type: "segment_start", segmentId: 2, messageId: null, text: "Late." })
+    old.serverAudio(2, 12_000)
+    expect(r.contexts[0].sources).toHaveLength(0)
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+  })
+
+  it("pause does nothing unless voice mode is running, and twice is the same as once", async () => {
+    const r = rig()
+    r.session.pause()
+    expect(r.session.getSnapshot().status).toBe("off")
+    await r.session.start()
+    r.session.pause() // still connecting
+    expect(r.session.getSnapshot().status).toBe("connecting")
+    r.sockets[0].serverFrame(READY)
+    r.session.pause()
+    r.session.pause()
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it("play reopens the gateway with no tap, keeps the microphone and tells it how long the pause was", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    r.clock.now += 45_000
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(2)
+    expect(r.tracks).toHaveLength(1) // no new microphone request
+    expect(r.session.getSnapshot().status).toBe("connecting")
+    expect(r.mediaSession.playbackState).toBe("playing")
+    r.sockets[1].serverFrame(READY)
+    expect(r.sockets[1].frames).toContainEqual({ type: "resume", suspendedMs: 45_000 })
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+    r.emitCapture(frameAt(0.3))
+    expect(r.sockets[1].audio).toHaveLength(1)
+  })
+
+  it("play while not paused does nothing", async () => {
+    const r = await started()
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(1)
+    expect(r.session.getSnapshot().status).toBe("on")
+  })
+
+  it("a device suspension during the pause leaves it standing; play then carries on when the microphone survived", async () => {
+    vi.useFakeTimers()
+    const r = await started()
+    handler(r, "pause")()
+    r.doc.set("hidden")
+    r.tracks[0].muted = true
+    r.tracks[0].emit("mute")
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    r.tracks[0].muted = false
+    r.tracks[0].emit("unmute")
+    r.doc.set("visible")
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(r.session.getSnapshot().status).toBe("user-paused")
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(2)
+    expect(r.session.getSnapshot().status).toBe("connecting")
+  })
+
+  it("play asks for one tap when the browser took the microphone or the audio away, and the tap resumes", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    r.tracks[0].stop()
+    handler(r, "play")()
+    expect(r.sockets).toHaveLength(1)
+    expect(r.session.getSnapshot()).toMatchObject({ status: "user-paused", needsTap: true })
+    const tapped = r.session.resumeFromTap()
+    expect(r.sockets).toHaveLength(2)
+    await tapped
+    expect(r.tracks).toHaveLength(2)
+    r.sockets[1].serverFrame(READY)
+    expect(voicePhase(r.session.getSnapshot())).toBe("listening")
+  })
+
+  it("a tap on the control resumes a paused session the same way", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    await r.session.resumeFromTap()
+    expect(r.sockets).toHaveLength(2)
+    r.sockets[1].serverFrame(READY)
+    expect(r.sockets[1].types()).toContain("resume")
+  })
+
+  it("stop still ends voice mode from a pause, and releases everything", async () => {
+    const r = await started()
+    handler(r, "pause")()
+    handler(r, "stop")()
+    expect(r.session.getSnapshot().status).toBe("off")
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.mediaSession.metadata).toBeNull()
+    handler(r, "play")?.()
+    expect(r.sockets).toHaveLength(1)
   })
 })
 

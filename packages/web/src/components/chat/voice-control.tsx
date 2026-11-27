@@ -31,6 +31,7 @@ const LABELS: Record<VoiceControlView, LabelFn> = {
   working: (v) => `Voice mode on, working${v.state.tool ? ` on ${v.state.tool}` : ''}. Tap to stop`,
   speaking: () => 'Voice mode on, speaking. Talk to interrupt, or tap to stop',
   paused: () => 'Voice mode paused by a call or another app. Tap to stop',
+  'user-paused': () => 'Voice paused. Tap to resume',
   suspended: (v) => (v.state.needsTap ? 'Voice paused. Tap to resume' : 'Voice paused by the device. Tap to stop'),
 }
 
@@ -90,6 +91,7 @@ function tone(view: VoiceControlView): string {
     case 'unavailable': return 'bg-transparent text-[var(--text-tertiary)] opacity-60'
     case 'installing': return 'bg-[var(--fill-secondary)] text-[var(--text-secondary)]'
     case 'paused':
+    case 'user-paused':
     case 'suspended': return 'bg-[var(--fill-secondary)] text-[var(--text-secondary)] outline outline-1 outline-dashed outline-[var(--text-tertiary)]'
     case 'hearing': return 'bg-[var(--accent)] text-[var(--accent-contrast)]'
     default: return 'bg-[var(--accent-fill)] text-[var(--accent)]'
@@ -128,7 +130,7 @@ const KEYFRAMES = `
 
 /** In push-to-talk the button is held rather than tapped, once voice mode is running. */
 function isHeld(voice: UseVoice): boolean {
-  const idle = ['off', 'connecting', 'suspended', 'paused'].includes(voice.phase)
+  const idle = ['off', 'connecting', 'suspended', 'paused', 'user-paused'].includes(voice.phase)
   return voice.mode === 'push-to-talk' && !idle
 }
 

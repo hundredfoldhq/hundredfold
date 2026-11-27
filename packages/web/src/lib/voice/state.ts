@@ -12,7 +12,7 @@ import type { NativeStateEvent } from "@/platform/native-bridge"
 import { parseCueSettings } from "./cues"
 
 /** What the control shows. `off` means voice mode is not running for this chat. */
-export type VoicePhase = "off" | "paused" | "connecting" | "listening" | "hearing" | "thinking" | "working" | "speaking" | "suspended"
+export type VoicePhase = "off" | "paused" | "connecting" | "listening" | "hearing" | "thinking" | "working" | "speaking" | "suspended" | "user-paused"
 
 export interface VoiceBackgroundTask {
   taskId: string
@@ -29,7 +29,7 @@ export interface VoiceReadyInfo {
 }
 
 export interface VoiceUiState {
-  status: "off" | "connecting" | "on" | "suspended" | "paused"
+  status: "off" | "connecting" | "on" | "suspended" | "paused" | "user-paused"
   mode: VoiceMode
   turn: VoiceTurnState
   /** The gateway's voice-activity state: someone is talking. */
@@ -78,6 +78,7 @@ export type VoiceAction =
   | { type: "frame"; frame: VoiceServerFrame; now: number }
   | { type: "closed"; code: number; reason: string; requested: boolean }
   | { type: "suspended" }
+  | { type: "user-paused" }
   | { type: "native-state"; state: NativeStateEvent["state"]; reason?: NativeStateEvent["reason"]; code?: number }
   | { type: "resumed" }
   | { type: "needs-tap" }
@@ -119,6 +120,7 @@ const OFF_PHASE: Record<Exclude<VoiceUiState["status"], "on">, VoicePhase> = {
   connecting: "connecting",
   suspended: "suspended",
   paused: "paused",
+  "user-paused": "user-paused",
 }
 
 /** What to call the state, from the gateway's turn and the voice-activity flag. */
@@ -225,6 +227,8 @@ const ACTION_HANDLERS: ActionHandlers = {
   frame: (state, a) => frame(state, a.frame, a.now),
   closed,
   suspended: (state) => (state.status === "off" ? state : { ...state, status: "suspended", notice: SUSPENDED_NOTICE, vadSpeaking: false, partial: "" }),
+  // The user paused voice mode (the headset button): listening and speaking are off until they carry on.
+  "user-paused": (state) => (state.status === "on" ? { ...state, status: "user-paused", vadSpeaking: false, partial: "", needsTap: false } : state),
   "native-state": nativeState,
   // The chat is re-read on return: replies that finished while the device was away are in it by now.
   // The suspended notice described a state that is over; any other notice stays until dismissed.

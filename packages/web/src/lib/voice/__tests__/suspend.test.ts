@@ -243,25 +243,37 @@ describe("installMediaSession", () => {
     return { session, handlers }
   }
 
-  it("shows voice mode as on and routes stop and pause to the stop action", () => {
+  const actions = () => ({ onStop: vi.fn(), onPause: vi.fn(), onPlay: vi.fn() })
+
+  it("shows voice mode as on and routes stop, pause and play to their own actions", () => {
     const { session, handlers } = fakeSession()
-    const onStop = vi.fn()
-    installMediaSession(session, onStop, () => ({ title: "Voice mode is on" }))
+    const a = actions()
+    installMediaSession(session, a, () => ({ title: "Voice mode is on" }))
     expect(session.metadata).toEqual({ title: "Voice mode is on" })
     expect(session.playbackState).toBe("playing")
     handlers.get("stop")?.()
     handlers.get("pause")?.()
-    expect(onStop).toHaveBeenCalledTimes(2)
+    handlers.get("play")?.()
+    expect([a.onStop.mock.calls.length, a.onPause.mock.calls.length, a.onPlay.mock.calls.length]).toEqual([1, 1, 1])
+  })
+
+  it("keeps the playback state current, so the headset button sends play once paused", () => {
+    const { session } = fakeSession()
+    const media = installMediaSession(session, actions(), () => ({}))
+    media.setPlaying(false)
+    expect(session.playbackState).toBe("paused")
+    media.setPlaying(true)
+    expect(session.playbackState).toBe("playing")
   })
 
   it("takes the handlers down again", () => {
     const { session, handlers } = fakeSession()
-    installMediaSession(session, () => {}, () => ({}))()
+    installMediaSession(session, actions(), () => ({})).remove()
     expect(handlers.get("stop")).toBeNull()
     expect(session.metadata).toBeNull()
   })
 
   it("does nothing where the browser has no media session", () => {
-    expect(() => installMediaSession(undefined, () => {}, () => ({}))()).not.toThrow()
+    expect(() => { const m = installMediaSession(undefined, actions(), () => ({})); m.setPlaying(false); m.remove() }).not.toThrow()
   })
 })

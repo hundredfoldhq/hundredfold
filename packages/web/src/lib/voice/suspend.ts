@@ -175,31 +175,51 @@ export interface MediaSessionLike {
   setActionHandler(action: string, handler: (() => void) | null): void
 }
 
+/** What the lock-screen, notification and headset buttons do. */
+export interface MediaSessionActions {
+  /** The stop action: ends voice mode. */
+  onStop(): void
+  /** The pause action (a headset's play/pause button while playing): voice mode waits, ready to carry on. */
+  onPause(): void
+  /** The play action (the same button while paused): voice mode carries on. */
+  onPlay(): void
+}
+
+const MEDIA_ACTIONS = ["stop", "pause", "play"] as const
+
 /**
- * Lock-screen and notification control where the browser offers one: shows
- * that voice mode is on and routes the stop (and pause) action to `onStop`.
- * Returns the function that takes it down again.
+ * Lock-screen, notification and headset control where the browser offers one:
+ * shows that voice mode is on and routes the stop, pause and play actions to
+ * `actions`. A headset's single button sends `pause` while the session says it
+ * is playing and `play` once it says it is paused, so the session keeps its
+ * `playbackState` current through the returned `setPlaying`. Returns that and
+ * the function that takes it all down again.
  */
 export function installMediaSession(
   session: MediaSessionLike | undefined,
-  onStop: () => void,
+  actions: MediaSessionActions,
   createMetadata: () => unknown,
-): () => void {
-  if (!session) return () => undefined
+): { setPlaying(playing: boolean): void; remove(): void } {
+  const none = { setPlaying: () => undefined, remove: () => undefined }
+  if (!session) return none
+  const handlers = { stop: actions.onStop, pause: actions.onPause, play: actions.onPlay }
   try {
     session.metadata = createMetadata()
     session.playbackState = "playing"
-    session.setActionHandler("stop", onStop)
-    session.setActionHandler("pause", onStop)
+    for (const action of MEDIA_ACTIONS) session.setActionHandler(action, handlers[action])
   } catch {
-    return () => undefined
+    return none
   }
-  return () => {
-    try {
-      session.setActionHandler("stop", null)
-      session.setActionHandler("pause", null)
-      session.playbackState = "none"
-      session.metadata = null
-    } catch { /* the browser dropped it already */ }
+  return {
+    setPlaying(playing) {
+      try { session.playbackState = playing ? "playing" : "paused" } catch { /* the browser dropped it already */ }
+    },
+    remove() {
+      try {
+        for (const action of MEDIA_ACTIONS) session.setActionHandler(action, null)
+        session.playbackState = "none"
+        session.metadata = null
+      } catch { /* the browser dropped it already */ }
+    },
   }
 }
