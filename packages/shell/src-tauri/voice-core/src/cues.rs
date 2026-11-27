@@ -26,6 +26,12 @@ pub enum Cue {
 /// How long the start cue sounds: its last beep ends at 340 ms. Mirrors `START_CUE_MS` in `cues.ts`.
 pub const START_CUE_MS: u64 = 340;
 
+/// Headroom between asking the platform to play the start cue and the beeps actually sounding (the
+/// call into Kotlin or Swift, building the track, output latency). The session stops the loop
+/// `START_CUE_MS + START_CUE_LATENCY_MS` after it asked, so a slow start still gets all three beeps;
+/// the loop is 2 s long, well beyond that, so it cannot come round again before the stop.
+pub const START_CUE_LATENCY_MS: u64 = 300;
+
 /// How long after the start cue ends the microphone stays muted toward the gateway: the room can
 /// still be ringing, and the speaker's output can reach the microphone a little late.
 pub const START_CUE_TAIL_MS: u64 = 250;
