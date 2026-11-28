@@ -10,6 +10,7 @@ import { getSession, insertMessage, updateSessionForAttempt } from "../registry.
 import { normalizeBlockDeltaForTurn, type PartialStreamWriter } from "../partial-stream.js";
 import { settleTurn } from "./completion.js";
 import type { TurnHeartbeat } from "./heartbeat.js";
+import { noteTurnOutput } from "./output-clock.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
 import { rememberCompactionReminder } from "./compaction-reminder.js";
@@ -114,6 +115,7 @@ function handleStreamDelta(args: EngineAttemptArgs, delta: StreamDelta): void {
     logger.warn(`Dropped invalid block delta for session ${sessionId}: ${normalized.error}`);
     return;
   }
+  noteTurnOutput(sessionId);
   const outgoing = normalized.delta;
   // Live context-meter: message_start.usage arrives as a `context` delta, once
   // per assistant message, so persisting it here is cheap and makes the meter

@@ -17,6 +17,7 @@ import { createPartialStreamWriter } from "../partial-stream.js";
 import { runEngineAttempt, resolveModelFallback, type EngineAttempt } from "./engine-run.js";
 import { compactColdSessionFirst, settlePreemptedBeforeEngine } from "./auto-compact.js";
 import { armTurnHeartbeat } from "./heartbeat.js";
+import { clearTurnOutput, markTurnOutput } from "./output-clock.js";
 import { preflightTurn, resolveTurnPrompt, warnIfNearUsageLimit } from "./preflight.js";
 import { withLeftBackgroundNote } from "../left-background-tasks.js";
 import { backgroundSessionMayHoldPrompt, isLostConversationError, isProcessStartFailure } from "../../shared/process-start.js";
@@ -46,7 +47,12 @@ import { noteTurnServed } from "./served-health.js";
  */
 export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<void> {
   let turn: TurnInput | undefined = input;
-  while (turn) turn = await runTurnOnce(turn, surface);
+  try {
+    while (turn) turn = await runTurnOnce(turn, surface);
+  } finally {
+    // The turn is over, every pass of it: a stale clock must not speak for the next one.
+    clearTurnOutput(input.session.id);
+  }
 }
 
 /**
@@ -57,6 +63,8 @@ export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<v
  */
 async function runTurnOnce(input: TurnInput, surface: TurnSurface): Promise<TurnInput | undefined> {
   const sessionId = input.session.id;
+  // Every pass, every transport: the clock runs from here, not from when the engine is reached.
+  markTurnOutput(sessionId);
   const terminalFields = (): UpdateSessionFields => input.terminalFields?.() ?? {};
 
   await awaitEffortLevels(input.config, input.session.engine, input.session, input.employee);
@@ -92,6 +100,7 @@ async function runTurnOnce(input: TurnInput, surface: TurnSurface): Promise<Turn
     turnStartedAt: Date.now(),
     terminalFields,
   };
+  markTurnOutput(sessionId, run.turnStartedAt);
 
   return await runPlannedTurn(run);
 }
