@@ -7,6 +7,9 @@ import {
 } from "./helpers/callback-harness.js";
 import { judgeTargetTurn, stalledSendPayload, sweepLateralSends } from "../lateral-send-watch.js";
 import { markSessionStopped } from "../../sessions/stopped-marker.js";
+import { resumePendingQueueItem } from "../callback-queue-recovery.js";
+import { LATERAL_STALL_DELIVERY_KIND } from "../../sessions/lateral-notice-staleness.js";
+import { getQueueItem } from "../../sessions/queue-item-registry.js";
 import { makeResponse, withRouteBackedFetch } from "./helpers/callback-requests.js";
 import {
   CALLER_SESSION_CAPABILITY_HEADER, CALLER_SESSION_HEADER, TOOL_CALL_HEADER, TOOL_CALL_HEADER_VALUE, ensureSessionCapability,
@@ -292,6 +295,34 @@ describe("an accepted message that has not run", () => {
       // reported, and its sender must still hear about it: the dropped notice's claim does not hold that state.
       expect(sweepLateralSends(context, { now: Date.now() + 30 * 60_000 }).reported).toEqual([replaced.body.queueItemId]);
       expect(sweepLateralSends(context, { now: Date.now() + 60 * 60_000 }).reported).toEqual([]);
+      await eventually(() => expect(undeliveredTurns(calls)).toHaveLength(1));
+      expect(undeliveredTurns(calls)[0].text).toContain(replaced.body.queueItemId);
+      expect(undeliveredTurns(calls)[0].text).not.toContain(sent.body.queueItemId);
+    });
+    held.get("hold: target's long turn")!();
+    await eventually(() => expect(delivered(calls, "plan B")).toHaveLength(1));
+  }, 20000);
+
+  it("drops a stale notice found on restart, and still reports the replacement stuck behind the same turn", async () => {
+    const fixture = setup({ limit: false });
+    const { calls, held, context, target, caller } = fixture;
+    await post(context, target.id, { message: "hold: target's long turn" });
+    await eventually(() => expect(held.has("hold: target's long turn")).toBe(true));
+    const sent = await post(context, target.id, { message: "plan A" }, toolHeaders(caller.id));
+    const releaseCaller = await holdCaller(fixture);
+    await withRouteBackedFetch(context, {}, async () => {
+      expect(sweepLateralSends(context, { now: Date.now() + 16 * 60_000 }).reported).toEqual([sent.body.queueItemId]);
+      await eventually(() => expect(notices(caller.id)).toHaveLength(1));
+      const replaced = await post(context, target.id, { message: "plan B", supersedes: sent.body.queueItemId }, toolHeaders(caller.id));
+      expect(replaced.body.superseded).toBe("withdrawn");
+      // The gateway restarts with the notice still pending: a fresh queue owns nothing, so replay judges it.
+      const noticeRow = dbModule.initDb().prepare("SELECT queue_item_id FROM callback_deliveries WHERE delivery_kind = ?").pluck().get(LATERAL_STALL_DELIVERY_KIND) as string;
+      const restarted = { ...context, sessionManager: { ...context.sessionManager, getQueue: () => new queueModule.SessionQueue() } } as unknown as ApiContext;
+      expect(resumePendingQueueItem(getQueueItem(noticeRow)!, restarted)).toBe(false);
+      expect(getQueueItem(noticeRow)?.status).toBe("cancelled");
+      // Its claim went with it: the replacement behind the same silent turn is reported.
+      expect(sweepLateralSends(context, { now: Date.now() + 30 * 60_000 }).reported).toEqual([replaced.body.queueItemId]);
+      releaseCaller();
       await eventually(() => expect(undeliveredTurns(calls)).toHaveLength(1));
       expect(undeliveredTurns(calls)[0].text).toContain(replaced.body.queueItemId);
       expect(undeliveredTurns(calls)[0].text).not.toContain(sent.body.queueItemId);
