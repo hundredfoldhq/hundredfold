@@ -403,6 +403,12 @@ export class VoiceAttachment {
       this.voice.unsuspend();
     }
     const ready = this.readyFrame();
+    this.traceReady(ready);
+    this.send(ready);
+    this.startKeepalive();
+  }
+
+  private traceReady(ready: VoiceServerFrame): void {
     if (ready.type === "ready") {
       this.trace.info("ready_sent", {
         input_rate: ready.input.sampleRate, output_rate: ready.output.sampleRate, stt: ready.stt.provider, partials: ready.stt.partials,
@@ -411,8 +417,6 @@ export class VoiceAttachment {
         vad_threshold: this.config.vad.threshold, vad_min_speech_ms: this.config.vad.minSpeechMs, vad_silence_ms: this.config.vad.silenceMs, tts_speed: this.liveSpeed(),
       });
     }
-    this.send(ready);
-    this.startKeepalive();
   }
 
   /** A `keepalive` frame every interval while a socket is attached, so the client can tell a quiet connection from a dead one. */
