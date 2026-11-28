@@ -28,7 +28,7 @@ import { recordTurnRequester } from "../sessions/turn-requester.js";
 import { recordTurnStartedByChildReport } from "../sessions/settled-session-reply.js";
 import { isHeartbeatQueueItem, markHeartbeatTurn } from "../heartbeats/turn-origin.js";
 import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
-import { staleLateralNoticeReason } from "../sessions/lateral-notice-staleness.js";
+import { retireStaleLateralNotice } from "../sessions/lateral-notice-staleness.js";
 import { clearTurnOutput, markTurnOutput } from "../sessions/turn/output-clock.js";
 import type { ApiContext } from "./api.js";
 
@@ -98,7 +98,7 @@ async function runQueuedTurn(
     return;
   }
   // Likewise a notice that a sender's messages are undelivered, once they have all run or been withdrawn.
-  const staleNotice = staleLateralNoticeReason(opts.queueItemId);
+  const staleNotice = retireStaleLateralNotice(opts.queueItemId);
   if (staleNotice) {
     logger.info(`Dropped stale undelivered-messages notice ${opts.queueItemId} for session ${session.id}: ${staleNotice}`);
     return;
@@ -113,8 +113,6 @@ async function runQueuedTurn(
     return;
   }
   opts.onAttempt(startedAttempt.attemptToken);
-  // The turn's progress clock starts with the attempt, not when the runner reaches the engine.
-  markTurnOutput(session.id);
   if (isHeartbeatQueueItem(opts.queueItemId)) markHeartbeatTurn(session.id, startedAttempt.attemptToken);
   startDelegatedTurn(startedAttempt, opts.queueItemId);
   recordTurnRequester(startedAttempt, opts.queueItemId);
@@ -122,6 +120,8 @@ async function runQueuedTurn(
   context.emit("session:started", { sessionId: session.id });
   // Item moved pending → running: refresh the queue panel.
   if (opts.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey: opts.sessionKey });
+  // The turn's progress clock starts with the attempt, not when the runner reaches the engine.
+  markTurnOutput(session.id);
   try {
     await runWebSession(startedAttempt, context, { ...request, attemptToken: startedAttempt.attemptToken, queueItemId: opts.queueItemId });
   } finally {

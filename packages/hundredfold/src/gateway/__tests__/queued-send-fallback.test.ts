@@ -272,7 +272,7 @@ describe("an accepted message that has not run", () => {
     expect(undeliveredTurns(calls)).toHaveLength(0);
   }, 20000);
 
-  it("drops a notice whose message its sender withdrew while it waited", async () => {
+  it("drops a notice whose message its sender withdrew while it waited, and still reports the replacement stuck behind the same turn", async () => {
     const fixture = setup({ limit: false });
     const { calls, held, queue, context, target, caller } = fixture;
     await post(context, target.id, { message: "hold: target's long turn" });
@@ -287,8 +287,15 @@ describe("an accepted message that has not run", () => {
       releaseCaller();
       await eventually(() => expect(queue.isRunning(caller.sessionKey!)).toBe(false));
       await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(undeliveredTurns(calls)).toHaveLength(0);
+      // The target is as silent as it was. The replacement is stuck behind the very state the dropped notice
+      // reported, and its sender must still hear about it: the dropped notice's claim does not hold that state.
+      expect(sweepLateralSends(context, { now: Date.now() + 30 * 60_000 }).reported).toEqual([replaced.body.queueItemId]);
+      expect(sweepLateralSends(context, { now: Date.now() + 60 * 60_000 }).reported).toEqual([]);
+      await eventually(() => expect(undeliveredTurns(calls)).toHaveLength(1));
+      expect(undeliveredTurns(calls)[0].text).toContain(replaced.body.queueItemId);
+      expect(undeliveredTurns(calls)[0].text).not.toContain(sent.body.queueItemId);
     });
-    expect(undeliveredTurns(calls)).toHaveLength(0);
     held.get("hold: target's long turn")!();
     await eventually(() => expect(delivered(calls, "plan B")).toHaveLength(1));
   }, 20000);

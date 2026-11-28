@@ -47,7 +47,12 @@ import { noteTurnServed } from "./served-health.js";
  */
 export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<void> {
   let turn: TurnInput | undefined = input;
-  while (turn) turn = await runTurnOnce(turn, surface);
+  try {
+    while (turn) turn = await runTurnOnce(turn, surface);
+  } finally {
+    // The turn is over, every pass of it: a stale clock must not speak for the next one.
+    clearTurnOutput(input.session.id);
+  }
 }
 
 /**
@@ -58,6 +63,8 @@ export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<v
  */
 async function runTurnOnce(input: TurnInput, surface: TurnSurface): Promise<TurnInput | undefined> {
   const sessionId = input.session.id;
+  // Every pass, every transport: the clock runs from here, not from when the engine is reached.
+  markTurnOutput(sessionId);
   const terminalFields = (): UpdateSessionFields => input.terminalFields?.() ?? {};
 
   await awaitEffortLevels(input.config, input.session.engine, input.session, input.employee);
@@ -113,7 +120,6 @@ async function runPlannedTurn(run: TurnRun): Promise<TurnInput | undefined> {
     return undefined;
   } finally {
     run.heartbeat.stop();
-    clearTurnOutput(run.input.session.id);
   }
 }
 

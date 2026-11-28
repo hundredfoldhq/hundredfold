@@ -46,6 +46,21 @@ export function staleLateralNoticeReason(queueItemId: string | undefined): strin
   }
 }
 
+/**
+ * Drop the notice parked on `queueItemId` if it is stale, and say why; null
+ * when it is not. Its outbox claim is retired with it: the claim's identity is
+ * the target's state, and a claim left standing would silence the report of a
+ * message still stuck behind that same state (one sent in place of a
+ * withdrawn one, say). The row stays, under an identity nothing claims again.
+ */
+export function retireStaleLateralNotice(queueItemId: string | undefined): string | null {
+  const reason = staleLateralNoticeReason(queueItemId);
+  if (!reason) return null;
+  initDb().prepare("UPDATE callback_deliveries SET source_attempt = source_attempt || ':retired:' || id WHERE queue_item_id = ? AND delivery_kind = ?")
+    .run(queueItemId, LATERAL_STALL_DELIVERY_KIND);
+  return reason;
+}
+
 /** The ids the row's notices reported as waiting, or null when the row is not one to judge: it carries anything else, or a notice with a dropped message. */
 function waitingIdsOfNoticeRow(queueItemId: string): string[] | null {
   const db = initDb();

@@ -11,11 +11,11 @@ import { dispatchWebSessionRun } from "./web-session-dispatch.js";
 import { isStoppedByUser } from "../sessions/stopped-marker.js";
 import { withdrawPendingQueueItemsForStop } from "../sessions/queue-stop.js";
 import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
-import { staleLateralNoticeReason } from "../sessions/lateral-notice-staleness.js";
+import { retireStaleLateralNotice } from "../sessions/lateral-notice-staleness.js";
 
 /** Why a queued wake (a child-watch tick, an undelivered-messages notice) has nothing left to say, else null. */
 function staleQueuedWake(queueItemId: string): string | null {
-  return staleChildWatchWakeReason(queueItemId) ?? staleLateralNoticeReason(queueItemId);
+  return staleChildWatchWakeReason(queueItemId) ?? retireStaleLateralNotice(queueItemId);
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
