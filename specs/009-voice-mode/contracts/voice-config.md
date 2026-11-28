@@ -111,3 +111,5 @@ The gateway takes the environment variables named by the enabled block's `apiKey
 
 `POST /api/voice/install` (operator only) starts the local bootstrap if it has not run;
 it is idempotent and returns the same `install` object.
+
+`POST /api/voice/end` (a session's own tool call, the built-in `end_voice_call` tool; no body, no session id) hangs up the voice call on the calling session once its goodbye has been heard, and answers `200 {"status": "ending"}`. `409 {"error"}` when no call is open on that session or voice is not running; `403 {"error"}` for the operator or a call that lost its session identity. The call ends with `detached {reason: "ended"}` and close `1000` (see `voice-socket.md`).

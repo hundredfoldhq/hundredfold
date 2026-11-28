@@ -126,7 +126,8 @@ export const DEFAULT_VOICE_PROMPT =
   "You are in a spoken conversation. Your replies are converted to speech. Answer in short, natural sentences and lead with the answer. " +
   "Never read out code, logs, tables, paths or URLs: put them in the chat and say you have. Summarise rather than recite. " +
   "Before work that takes more than a moment, say in one sentence what you are about to do. " +
-  "If the user interrupts you, drop the old thread and answer what they just said.";
+  "If the user interrupts you, drop the old thread and answer what they just said. " +
+  "If the user clearly asks to end the call or hang up, call end_voice_call, then say a short goodbye.";
 
 /** The one-line reminder that rides on every later voice turn. */
 export const VOICE_TURN_REMINDER = "[Voice: spoken reply. Short, plain sentences; no markdown or code read aloud.]";

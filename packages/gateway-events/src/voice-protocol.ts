@@ -227,7 +227,8 @@ export interface VoiceErrorFrame {
   utteranceId?: string
 }
 
-export type VoiceDetachReason = "taken_over" | "session_gone" | "disabled" | "access_lost" | "shutdown"
+/** `ended`: the assistant hung up at the user's request (the `end_voice_call` tool), after saying goodbye. */
+export type VoiceDetachReason = "taken_over" | "session_gone" | "disabled" | "access_lost" | "shutdown" | "ended"
 
 export interface VoiceDetachedFrame {
   type: "detached"

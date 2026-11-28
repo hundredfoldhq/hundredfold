@@ -131,6 +131,11 @@ export class UtteranceCapture {
     return this.capturing !== null;
   }
 
+  /** Whether an utterance is open or waiting for its transcript: what the person said is not known yet. */
+  get inUtterance(): boolean {
+    return this.capturing !== null || this.awaiting.size > 0;
+  }
+
   /** One frame of client audio. */
   write(pcm: Buffer): void {
     if (this.closed) return;

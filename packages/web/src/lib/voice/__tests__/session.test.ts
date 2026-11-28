@@ -568,6 +568,18 @@ describe("stopping", () => {
     expect(r.sockets[0].audio).toHaveLength(0)
   })
 
+  it("an assistant hang-up releases the microphone and audio and leaves no error behind", async () => {
+    const r = await started()
+    r.sockets[0].serverFrame({ type: "detached", reason: "ended" })
+    expect(r.session.getSnapshot()).toMatchObject({ status: "off", error: null })
+    expect(r.tracks[0].stopped).toBe(true)
+    expect(r.captureStops).toHaveBeenCalled()
+    expect(r.contexts[0].close).toHaveBeenCalled()
+    expect(r.sockets[0].isOpen).toBe(false)
+    r.emitCapture(frameAt(0.1))
+    expect(r.sockets[0].audio).toHaveLength(0)
+  })
+
   it("after a detach a tap starts one clean run, not a second one beside the first", async () => {
     const r = await started()
     r.sockets[0].serverFrame({ type: "detached", reason: "taken_over" })

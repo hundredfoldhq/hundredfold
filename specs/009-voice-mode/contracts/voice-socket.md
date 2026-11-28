@@ -64,7 +64,7 @@ nothing) and the session still has no message, the gateway deletes it and emits 
 | `metrics` | `utteranceId`, `sttMs`, `ttfaMs \| null` | per exchange |
 | `error` | `code`, `message`, `utteranceId?` | `bad_frame`, `utterance_too_long`, `stt_failed`, `tts_failed`, `dispatch_failed`, `speech_unavailable`, `internal` |
 | `keepalive` | | every `ready.keepaliveMs` while attached; no state, only proof of life (browsers cannot see ws pings). A client that saw `keepaliveMs` may treat the connection as lost after 2.5 intervals with no message of any kind. Additive: no protocol version bump |
-| `detached` | `reason` | `taken_over`, `session_gone`, `disabled`, `access_lost`, `shutdown` |
+| `detached` | `reason` | `taken_over`, `session_gone`, `disabled`, `access_lost`, `shutdown`, `ended` (the assistant hung up at the user's request, after its goodbye was heard; the close that follows is `1000`) |
 
 ## Close codes
 

@@ -100,6 +100,7 @@ describe("buildTools", () => {
       "delegate_task",
       "dispatch_work_item",
       "edit_work_item",
+      "end_voice_call",
       "find_employees",
       "get_cron_run_history",
       "get_employee",
@@ -221,7 +222,7 @@ describe("handleMcpRequest — tools/call", () => {
 
   it("compiles every advertised registry schema or supplies its shared runtime schema", () => {
     const tools = buildTools();
-    expect(tools).toHaveLength(51);
+    expect(tools).toHaveLength(52);
     for (const tool of tools) {
       expect(() => tool.runtimeSchema ?? z.fromJSONSchema({ ...tool.inputSchema, additionalProperties: false } as Parameters<typeof z.fromJSONSchema>[0]), tool.name).not.toThrow();
     }

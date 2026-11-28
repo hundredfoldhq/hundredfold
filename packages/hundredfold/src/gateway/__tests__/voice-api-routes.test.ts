@@ -15,6 +15,7 @@ let api: Api;
 let registry: typeof import("../../sessions/registry.js");
 let voice: unknown;
 let voiceRunning: (() => boolean) | undefined;
+let endVoiceCall: ((sessionId: string) => "ending" | "no-call") | undefined;
 
 function makeRes() {
   const chunks: Buffer[] = [];
@@ -33,6 +34,7 @@ const apiCtx = {
   gatewayAuthToken: "test-token",
   emit: () => undefined,
   get voiceRunning() { return voiceRunning; },
+  get endVoiceCall() { return endVoiceCall; },
   sessionManager: { getEngines: () => new Map(), getEngine: () => undefined, getQueue: () => ({}) },
 } as unknown as import("../api.js").ApiContext;
 
@@ -91,5 +93,58 @@ describe("voice routes", () => {
     const answered = await request("POST", "/api/voice/install", operator);
     expect(answered.status).toBe(409);
     expect(answered.body.error).toMatch(/not enabled/);
+  });
+
+  describe("POST /api/voice/end", () => {
+    it("hangs up the calling session's own call, and only that one", async () => {
+      const session = registry.createSession({ engine: "claude", source: "web", sourceRef: "voice-routes-end" });
+      const asked: string[] = [];
+      endVoiceCall = (id) => { asked.push(id); return "ending"; };
+      const answered = await request("POST", "/api/voice/end", asSession(session.id));
+      endVoiceCall = undefined;
+      expect(answered).toEqual({ status: 200, body: { status: "ending" } });
+      expect(asked).toEqual([session.id]);
+    });
+
+    it("answers 409 when no call is open on the session", async () => {
+      const session = registry.createSession({ engine: "claude", source: "web", sourceRef: "voice-routes-end-none" });
+      endVoiceCall = () => "no-call";
+      const answered = await request("POST", "/api/voice/end", asSession(session.id));
+      endVoiceCall = undefined;
+      expect(answered.status).toBe(409);
+      expect(answered.body.error).toMatch(/No voice call/);
+    });
+
+    it("answers 409 when voice is not running at all", async () => {
+      const session = registry.createSession({ engine: "claude", source: "web", sourceRef: "voice-routes-end-off" });
+      endVoiceCall = undefined;
+      expect((await request("POST", "/api/voice/end", asSession(session.id))).status).toBe(409);
+    });
+
+    it("refuses the operator, who has no session to hang up for, without touching any call", async () => {
+      let called = false;
+      endVoiceCall = () => { called = true; return "ending"; };
+      const answered = await request("POST", "/api/voice/end", operator);
+      endVoiceCall = undefined;
+      expect(answered.status).toBe(403);
+      expect(answered.body.error).toMatch(/hung up by the session in it/);
+      expect(called).toBe(false);
+    });
+
+    it("refuses a tool call that lost its identity or capability, without touching any call", async () => {
+      const session = registry.createSession({ engine: "claude", source: "web", sourceRef: "voice-routes-end-lost" });
+      let called = false;
+      endVoiceCall = () => { called = true; return "ending"; };
+      const noCapability = { "x-hundredfold-tool-call": "hundredfold-mcp", "x-hundredfold-caller-session": session.id };
+      const wrongCapability = { ...asSession(session.id), "x-hundredfold-session-capability": "not-the-capability" };
+      const answers = [
+        await request("POST", "/api/voice/end", noCapability),
+        await request("POST", "/api/voice/end", wrongCapability),
+        await request("POST", "/api/voice/end", { "x-hundredfold-tool-call": "hundredfold-mcp" }),
+      ];
+      endVoiceCall = undefined;
+      expect(answers.map((a) => a.status).every((status) => status >= 400)).toBe(true);
+      expect(called).toBe(false);
+    });
   });
 });

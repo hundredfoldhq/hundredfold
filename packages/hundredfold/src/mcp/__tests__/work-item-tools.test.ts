@@ -88,7 +88,7 @@ describe("work-item tools — registry + schemas", () => {
     expect(names.some((n) => /approval/.test(n))).toBe(false);
     expect(names).toContain("archive_work_item");
     expect(names.some((n) => /cancel/i.test(n) && /work_item/.test(n))).toBe(false);
-    expect(names).toHaveLength(51);
+    expect(names).toHaveLength(52);
   });
 
   it("positions list as recent/filter summaries and search as text/filter hits", () => {

@@ -89,6 +89,17 @@ export class VoiceHub {
     if (sessionId) this.attachments.get(sessionId)?.onSessionEvent(event, record!);
   }
 
+  /**
+   * The assistant hangs up the call on a session (the `end_voice_call` tool). `no-call` when no client is in a
+   * spoken conversation with it; otherwise the call ends once the goodbye has been said, not at once.
+   */
+  endCall(sessionId: string): "ending" | "no-call" {
+    const attachment = this.attachments.get(sessionId);
+    if (!attachment) return "no-call";
+    attachment.endWhenSpoken();
+    return "ending";
+  }
+
   /** Voice turned off while attached: every attachment ends with a reason. */
   checkConfig(): void {
     if (this.deps.config()) return;
@@ -125,10 +136,17 @@ export class VoiceHub {
       return existing;
     }
     this.trace.info("hub_take_over", { session: request.sessionId, att: existing.id });
+    // A hang-up the assistant is carrying out outlives the tab it was asked in: the call the user returns to ends too.
+    const hangUp = existing.hangupPending;
+    const hangUpTurnEnded = existing.hangupTurnEnded;
     this.takingOver = request.sessionId;
     try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
-    if (config) return this.create(socket, request, config);
+    if (config) {
+      const created = this.create(socket, request, config);
+      if (hangUp) created.endWhenSpoken(hangUpTurnEnded);
+      return created;
+    }
     // Voice went off between the detach and here: no new attachment will end this conversation, so this is its end.
     this.discardEmpty(request.sessionId);
     return this.refuseDisabled(socket);

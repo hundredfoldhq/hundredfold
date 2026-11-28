@@ -8,7 +8,7 @@ import { EXPECTED_ENUMS, EXPECTED_REQUIRED, EXPECTED_TOOL_NAMES } from "./tool-m
 // concise rather than growing into this ceiling. Rebased down when the
 // Experiments and Workflow tools were removed, so the ceiling again sits ON
 // the largest wrapper (Pi).
-const MAX_MANIFEST_TOKENS = 4450;
+const MAX_MANIFEST_TOKENS = 4494;
 // Exact gate: js-tiktoken 1.0.21 with its local o200k_base ranks. The provider
 // projection is the OpenAI Responses API function-tool request shape pinned on 2026-07-12.
 const ATTESTED = {
@@ -322,9 +322,15 @@ const ATTESTED = {
   // (default children)." where the enum already says which, and spawn_session's
   // `fallbackMode` said "for the new session" about a field of spawn_session.
   // One token under the old totals; the ceiling and the tool count are unchanged.
-  rpc: { tokens: 4063, sha256: "84dc3a3098560fb23f74560ed8f9cfc323a1db4519bd3c773bf1d4ddd5ec416d" },
-  pi: { tokens: 4449, sha256: "b96b05abbe6a9e94614d314a5535c5ce1e25a6ad1698075e02fb7d4966011c25" },
-  openai: { tokens: 4202, sha256: "7596570083ddbecec52d3b368080dda5df11febe5c76601510a70a8b0a6d62a6" },
+  // Rebased for `end_voice_call`, the tool that lets the assistant hang up the voice call it is in. A new public
+  // capability with no prose to buy it back from, and it cannot be offered only during a call: an engine's manifest
+  // is fixed when its server starts, before any call exists. It takes no arguments and its description is one
+  // line ("Hang up your voice call; the chat stays. Only on a clear request."), the least that says what it ends and
+  // when to use it. +36 on the JSON-RPC wrapper, +45 on Pi, +40 on OpenAI, so the ceiling moves by 44 (4450 -> 4494)
+  // and Pi, 45 over its old total, sits ON it again (4449 -> 4494).
+  rpc: { tokens: 4099, sha256: "07a34e675aff5434aedf6b0a0b5895c6a09bc96a90a52627ff14fd82da1424f2" },
+  pi: { tokens: 4494, sha256: "d08134eeb8d8c36138951c7648509b7ebb6bb294edf1af39035ef152a8412256" },
+  openai: { tokens: 4242, sha256: "50f83e5711fcdded75194fc3eec7db5a1964b1497f9e747c60d70f7442d54965" },
 } as const;
 
 type TokenizerLoader = () => Promise<[{ Tiktoken: typeof import("js-tiktoken/lite").Tiktoken }, { default: typeof import("js-tiktoken/ranks/o200k_base").default }]>;
@@ -391,7 +397,7 @@ describe("tool manifest budget", () => {
   it("keeps tool names, required arrays, and enum arrays stable", () => {
     const tools = buildTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(51);
+    expect(tools).toHaveLength(52);
 
     const required = Object.fromEntries(tools.map((t) => [t.name, t.inputSchema.required ?? []]));
     expect(required).toEqual(EXPECTED_REQUIRED);

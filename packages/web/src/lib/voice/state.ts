@@ -53,6 +53,8 @@ export interface VoiceUiState {
   syncTick: number
   /** Resuming needs a tap (the browser wants a fresh gesture for the microphone or audio). */
   needsTap: boolean
+  /** The assistant hung up at the user's request: the close or stop that follows is the expected end, not a lost connection. */
+  hungUp: boolean
 }
 
 export const INITIAL_VOICE_STATE: VoiceUiState = {
@@ -71,6 +73,7 @@ export const INITIAL_VOICE_STATE: VoiceUiState = {
   error: null,
   syncTick: 0,
   needsTap: false,
+  hungUp: false,
 }
 
 export type VoiceAction =
@@ -136,12 +139,14 @@ const CLOSE_MESSAGES: Record<number, string> = {
   [VOICE_CLOSE.limit]: "Too many voice connections are open on this gateway.",
 }
 
-const DETACH_MESSAGES: Record<VoiceDetachReason, string> = {
+/** A hang-up the assistant made at the user's request is not an error: it ends with nothing to explain. */
+const DETACH_MESSAGES: Record<VoiceDetachReason, string | null> = {
   taken_over: "Voice mode moved to another tab.",
   session_gone: "This chat no longer exists.",
   disabled: "Voice was turned off on the gateway.",
   access_lost: "You no longer have access to this chat.",
   shutdown: "The gateway is restarting.",
+  ended: null,
 }
 
 function ended(state: VoiceUiState, patch: Partial<VoiceUiState>): VoiceUiState {
@@ -150,6 +155,7 @@ function ended(state: VoiceUiState, patch: Partial<VoiceUiState>): VoiceUiState 
 
 function closed(state: VoiceUiState, action: Extract<VoiceAction, { type: "closed" }>): VoiceUiState {
   if (action.requested) return ended(state, {})
+  if (state.hungUp) return ended(state, { hungUp: true })
   if (state.status === "suspended") return { ...state, needsTap: true }
   const known = CLOSE_MESSAGES[action.code]
   // A close the gateway already explained with a `detached` frame keeps that explanation.
@@ -199,7 +205,7 @@ const FRAME_HANDLERS: FrameHandlers = {
   metrics: (state, f) => ({ ...state, ttfaMs: f.ttfaMs ?? state.ttfaMs, syncTick: state.syncTick + 1 }),
   // A failed utterance is over: its partial and voice-activity flag must not hold the control on "hearing".
   error: (state, f) => ({ ...state, error: f.message, partial: "", vadSpeaking: false }),
-  detached: (state, f) => ended(state, { error: DETACH_MESSAGES[f.reason] }),
+  detached: (state, f) => ended(state, { error: DETACH_MESSAGES[f.reason], hungUp: f.reason === "ended" }),
 }
 
 function frame(state: VoiceUiState, f: VoiceServerFrame, now: number): VoiceUiState {
@@ -212,7 +218,7 @@ function nativeState(state: VoiceUiState, a: ActionOf<"native-state">): VoiceUiS
   switch (a.state) {
     case "paused": return state.status === "off" ? state : { ...state, status: "paused", notice: PAUSED_NOTICE, vadSpeaking: false, partial: "" }
     case "running": return state.status === "paused" ? { ...state, status: state.ready ? "on" : "connecting", notice: null } : state
-    case "stopped": return ended(state, { error: nativeStopError(a) })
+    case "stopped": return state.hungUp ? ended(state, { hungUp: true }) : ended(state, { error: nativeStopError(a) })
     case "connecting": return state
   }
 }

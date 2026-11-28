@@ -23,7 +23,7 @@ const NEVER = [
   "set_work_item_dispatch",
   "stop_session",
   "send_connector_message", "request_work_item_approval",
-  "escalate_work_item_approval", "arm_heartbeat", "stop_heartbeat", "publish_attachment", "land_on_work_item",
+  "escalate_work_item_approval", "arm_heartbeat", "stop_heartbeat", "end_voice_call", "publish_attachment", "land_on_work_item",
 ];
 
 /** Realistic values for keys whose handlers validate format before calling the gateway. */

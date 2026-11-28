@@ -15,7 +15,9 @@ import type { LocalSpeech } from "../voice/providers/local.js";
 import { createSttProvider, createTtsProvider, onVoiceInstallChange, sharedLocalSpeech, type ProviderDeps } from "../voice/providers/registry.js";
 import { findPythonCached, voicePaths, helloModels, resolveDevice, type InstallStatus } from "../voice/sidecar/bootstrap.js";
 import { readKokoroVoices } from "../voice/voices-file.js";
+import { UNIDENTIFIED_TOOL_CALL_ERROR } from "../mcp/identity.js";
 import { json, serverError, type ParsedRoute } from "./route-helpers.js";
+import type { CallerIdentity } from "./session-comm-guards.js";
 
 /** OpenAI's built-in speech voices (public information about the provider), for a picker. */
 export const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"];
@@ -28,6 +30,10 @@ export interface VoiceApiDeps extends ProviderDeps {
    * since is not running. Absent (a bare context) means no claim is made either way.
    */
   voiceRunning?: () => boolean;
+  /** The gateway's verified view of who is calling; `POST /api/voice/end` is for a session's own tool call. */
+  resolveCaller?: () => CallerIdentity;
+  /** Hang up the voice call on a session once its goodbye is said; absent while voice is not running. */
+  endCall?: (sessionId: string) => "ending" | "no-call";
 }
 
 /** What `GET /api/voice/config` says while the config has voice on and the gateway has no voice runtime. */
@@ -122,10 +128,33 @@ export async function handleVoiceApi(req: IncomingMessage, res: ServerResponse, 
   if (route.pathname === "/api/voice/install" && route.method === "POST") {
     return startInstall(res, options);
   }
+  if (route.pathname === "/api/voice/end" && route.method === "POST") {
+    return endCall(res, options);
+  }
   if (route.pathname === "/api/voice/transcribe" && route.method === "POST") {
     return transcribeRecording(req, res, route, options);
   }
   return false;
+}
+
+/**
+ * `POST /api/voice/end`: the `end_voice_call` tool. It acts on the calling session's own voice call and takes
+ * no session id, so a session can never hang up a call on another one. The operator has no session to speak
+ * for, and a tool call that lost its identity is refused here too, as for heartbeats.
+ */
+function endCall(res: ServerResponse, options: VoiceApiOptions): boolean {
+  const identity = options.resolveCaller?.();
+  if (identity?.kind !== "session") {
+    const error = identity?.kind === "operator" ? "A voice call is hung up by the session in it, with its end_voice_call tool." : UNIDENTIFIED_TOOL_CALL_ERROR;
+    json(res, { error }, 403);
+    return true;
+  }
+  if (!options.endCall || options.endCall(identity.callerId) === "no-call") {
+    json(res, { error: "No voice call is open on this chat." }, 409);
+    return true;
+  }
+  json(res, { status: "ending" });
+  return true;
 }
 
 const TOO_LONG = "Recording too long (20 minutes at most)";

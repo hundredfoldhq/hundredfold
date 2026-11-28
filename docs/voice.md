@@ -258,6 +258,19 @@ The web does this with `POST /api/sessions` and `{ "speech": true }` and no `pro
 
 A voice conversation that ends on such a chat before a message was spoken (hang up, a clean close, the ten-minute resume window running out, voice turned off) deletes the empty chat on the gateway, so nothing is left behind. A chat that never gets a voice connection at all (the tab closed between the two requests) stays as an empty chat and can be deleted like any other.
 
+## Hanging up by voice
+
+Say "hang up" or "end the call" and the assistant ends the voice call itself, with no need to reach for the control. It does it with the built-in `end_voice_call` tool, which says a short goodbye first: the call ends once the turn that called the tool is over and the goodbye has been heard, so the microphone and the speaker stop on their own. The client is told with `detached { reason: "ended" }`, and nothing shows as an error.
+
+What it ends, and what it does not:
+
+- It ends the **call**, not the chat. The chat, its messages and its engine are untouched; start voice again, or type, and the conversation carries on. (A chat made for a spoken start that never got a message is still removed, as for any other end of the call.)
+- It acts on the calling session's own call only. The tool takes no session id, so a session cannot hang up another chat's call, and a call by the operator or by a tool call that lost its identity is refused (`403`).
+- With no call open (typed chat, or voice off) it fails with `409` and the assistant answers in text instead. The tool is on the built-in server for every session because an engine's tool list is fixed when it starts, before any call exists, so it cannot appear only during a call.
+- There is no spoken "are you sure": an instruction to hang up is clear, ending a call costs nothing (start another), and a confirmation round trip in a hands-free call is worse than the mistake. The tool's own description and the built-in voice prompt limit it to a clear request. If you start speaking while the goodbye is still pending, the hang-up waits to hear what you say: words drop it and the call stays; noise or a failed recognition lets it go through after the goodbye. If the client never reports the goodbye played (an older build, a lost frame), the call ends 20 seconds after the turn does.
+- The request is not lost on the way: if the phone drops the connection while it is pending, the call ends as soon as the client reconnects (it is told `ended` instead of `ready`); if a second tab takes the call over, the hang-up carries over to it; and a request that is never followed by the end of its turn lapses after five minutes rather than ending some later turn.
+- A custom `voice.prompt` replaces the built-in instructions, including the line that names the tool; the tool's description still tells the assistant what it is for.
+
 ## What happens when you speak over a long job
 
 Speaking while the assistant is working never stops the work. How the gateway lets your new message through depends on the session's engine:
