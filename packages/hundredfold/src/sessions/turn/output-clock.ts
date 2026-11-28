@@ -13,6 +13,11 @@ export function markTurnOutput(sessionId: string, at: number = Date.now()): void
   lastOutputAt.set(sessionId, at);
 }
 
+/** A block streamed: moves the clock of a turn in flight, and never starts one for a turn already ended. */
+export function noteTurnOutput(sessionId: string, at: number = Date.now()): void {
+  if (lastOutputAt.has(sessionId)) lastOutputAt.set(sessionId, at);
+}
+
 /** The last progress of the session's turn in flight, or undefined when none is running here. */
 export function lastTurnOutputAt(sessionId: string): number | undefined {
   return lastOutputAt.get(sessionId);

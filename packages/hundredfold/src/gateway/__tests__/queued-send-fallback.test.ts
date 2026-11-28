@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acceptWithoutExecuting, api, createParent, dbModule, eventually, makeContext, queueModule, registry, resetCallbackState, type ApiContext,
 } from "./helpers/callback-harness.js";
-import { judgeTargetTurn, sweepLateralSends } from "../lateral-send-watch.js";
+import { judgeTargetTurn, stalledSendPayload, sweepLateralSends } from "../lateral-send-watch.js";
 import { markSessionStopped } from "../../sessions/stopped-marker.js";
 import { makeResponse, withRouteBackedFetch } from "./helpers/callback-requests.js";
 import {
@@ -65,12 +65,18 @@ function setup(opts: { limit?: boolean; source?: string; progress?: () => TurnPr
   const limit = opts.limit !== false;
   const calls: Array<{ text: string; account: string }> = [];
   const gates: Array<() => void> = [];
+  const held = new Map<string, () => void>();
   const progressOf: { targetId?: string } = {};
   const engine: Engine & { turnProgress?: (sessionId: string) => TurnProgress | undefined } = {
     name: "claude",
     run: async (opts: EngineRunOpts) => {
       const account = opts.claudeProfile?.dir?.endsWith("claude-a") ? "A" : opts.claudeProfile?.dir?.endsWith("claude-b") ? "B" : "?";
       calls.push({ text: opts.prompt, account });
+      // A turn the test holds open until it releases it by name: a sender busy in a turn of its own.
+      if (opts.prompt.startsWith("hold:")) {
+        await new Promise<void>((resolve) => held.set(opts.prompt, resolve));
+        return { sessionId: `thread-${calls.length}`, result: "ok" };
+      }
       if (limit && calls.length === 1) {
         // The first turn holds the lane, then the account is out of allowance.
         await new Promise<void>((resolve) => gates.push(resolve));
@@ -88,7 +94,7 @@ function setup(opts: { limit?: boolean; source?: string; progress?: () => TurnPr
   const target = registry.createSession({ engine: "claude", model: "opus", employee: "worker-a", source: opts.source ?? "web", sourceRef: "web:fb-target", sessionKey: "web:fb-target", connector: opts.source ?? "web", prompt: "x" });
   progressOf.targetId = target.id;
   const caller = createParent("fb-caller");
-  return { calls, gates, queue, context, target, caller };
+  return { calls, gates, held, queue, context, target, caller };
 }
 
 // A message is delivered when it runs as its own turn. A prompt rebuilt for the account the session moved to may also carry it as
@@ -239,6 +245,78 @@ describe("an accepted message that has not run", () => {
     await eventually(() => expect(queue.isRunning(target.sessionKey)).toBe(false));
   }, 20000);
 
+  /** Put the caller in a turn of its own, so a notice to it waits behind that turn. */
+  async function holdCaller(fixture: { held: Map<string, () => void>; context: ApiContext; caller: { id: string } }) {
+    await post(fixture.context, fixture.caller.id, { message: "hold: own work" });
+    await eventually(() => expect(fixture.held.has("hold: own work")).toBe(true));
+    return () => fixture.held.get("hold: own work")!();
+  }
+
+  it("drops a notice whose messages were all delivered while it waited behind the sender's own turn", async () => {
+    const fixture = await queueThreeBehindATurn();
+    const { calls, gates, queue, context, target, caller, ids, base } = fixture;
+    const releaseCaller = await holdCaller(fixture);
+    await withRouteBackedFetch(context, {}, async () => {
+      expect(sweepLateralSends(context, { now: base + 16 * 60_000 }).reported).toEqual(ids);
+      await eventually(() => expect(notices(caller.id)).toHaveLength(1));
+      // The target gets going after all, and every message runs before the sender reads the notice.
+      gates[0]();
+      await eventually(() => {
+        expect(queue.isRunning(target.sessionKey)).toBe(false);
+        expect(delivered(calls, "plan C")).toHaveLength(1);
+      });
+      releaseCaller();
+      await eventually(() => expect(queue.isRunning(caller.sessionKey!)).toBe(false));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(undeliveredTurns(calls)).toHaveLength(0);
+  }, 20000);
+
+  it("drops a notice whose message its sender withdrew while it waited", async () => {
+    const fixture = setup({ limit: false });
+    const { calls, held, queue, context, target, caller } = fixture;
+    await post(context, target.id, { message: "hold: target's long turn" });
+    await eventually(() => expect(held.has("hold: target's long turn")).toBe(true));
+    const sent = await post(context, target.id, { message: "plan A" }, toolHeaders(caller.id));
+    const releaseCaller = await holdCaller(fixture);
+    await withRouteBackedFetch(context, {}, async () => {
+      expect(sweepLateralSends(context, { now: Date.now() + 16 * 60_000 }).reported).toEqual([sent.body.queueItemId]);
+      await eventually(() => expect(notices(caller.id)).toHaveLength(1));
+      const replaced = await post(context, target.id, { message: "plan B", supersedes: sent.body.queueItemId }, toolHeaders(caller.id));
+      expect(replaced.body.superseded).toBe("withdrawn");
+      releaseCaller();
+      await eventually(() => expect(queue.isRunning(caller.sessionKey!)).toBe(false));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(undeliveredTurns(calls)).toHaveLength(0);
+    held.get("hold: target's long turn")!();
+    await eventually(() => expect(delivered(calls, "plan B")).toHaveLength(1));
+  }, 20000);
+
+  it("tells the sender again when a later turn of the target goes silent", async () => {
+    const { gates, queue, context, target, caller, ids, base } = await queueThreeBehindATurn();
+    await withRouteBackedFetch(context, {}, async () => {
+      expect(sweepLateralSends(context, { now: base + 16 * 60_000 }).reported).toEqual(ids);
+      expect(sweepLateralSends(context, { now: base + 17 * 60_000 }).reported).toEqual([]);
+      // Another attempt of the same session, silent in its turn: a new state.
+      dbModule.initDb().prepare("UPDATE sessions SET attempt_token = ? WHERE id = ?").run("a-later-attempt", target.id);
+      expect(sweepLateralSends(context, { now: base + 18 * 60_000 }).reported).toEqual(ids);
+      await eventually(() => expect(notices(caller.id)).toHaveLength(2));
+    });
+    gates[0]();
+    await eventually(() => expect(queue.isRunning(target.sessionKey)).toBe(false));
+  }, 20000);
+
+  it("says the target is still making progress when a message it cannot run forces a notice", () => {
+    const payload = stalledSendPayload({
+      targetSessionId: "target-session", waitedMinutes: 7, targetStatus: "running",
+      turn: { kind: "working" }, sends: { queued: [], unowned: ["row-1"], dropped: [] },
+    });
+    expect(payload.message).toContain("still making progress (status running)");
+    expect(payload.message).not.toContain("no turn running");
+    expect(payload.meta).toMatchObject({ queueItemIds: ["row-1"], waitingQueueItemIds: ["row-1"], state: "unowned" });
+  });
+
   it("shows a message still waiting behind a turn as queued in the session read, and not once it is delivered", async () => {
     const { calls, gates, queue, context, target, ids } = await queueThreeBehindATurn();
     const read = async () => {
@@ -273,6 +351,10 @@ describe("an accepted message that has not run", () => {
     expect(judgeTargetTurn(target, "k", contextWith(reading(0)), now, now - 40 * 60_000)).toEqual({ kind: "silent", silentMinutes: 30 });
     expect(judgeTargetTurn(target, "k", contextWith({ ...reading(1), lastProgressAt: now - 61 * 60_000 }), now, now)).toEqual({ kind: "silent", silentMinutes: 61 });
     expect(judgeTargetTurn({ ...target, status: "waiting" }, "k", contextWith(reading(1)), now, now)).toEqual({ kind: "other", laneRunning: true });
+    // Waiting behind a turn typed in the terminal gets the long window, timed from when the wait began, not forever.
+    const terminalWait = (sinceMinutes: number): TurnProgress => ({ ...reading(0), lastProgressAt: now - sinceMinutes * 60_000, waitingForTerminalTurn: true });
+    expect(judgeTargetTurn(target, "k", contextWith(terminalWait(30)), now, now)).toEqual({ kind: "working" });
+    expect(judgeTargetTurn(target, "k", contextWith(terminalWait(61)), now, now)).toEqual({ kind: "silent", silentMinutes: 61 });
   });
   /** Lose the dispatch of one agent message to `target`, then sweep long after it was sent. */
   async function sweepLost(opts: { stop?: boolean; noEngine?: boolean; source?: string }) {
@@ -307,6 +389,20 @@ describe("an accepted message that has not run", () => {
     expect(statuses(target.id)).toEqual(["cancelled"]);
     expect(notice).toContain("dropped");
     expect(notice).not.toContain("still queued");
+  }, 20000);
+
+  it("reports a second message left unowned on the same target, not only the first", async () => {
+    const { calls, context, target, caller } = setup({ limit: false, source: "telegram" });
+    const lost = { ...context, sessionManager: { ...context.sessionManager, getQueue: () => acceptWithoutExecuting() } } as unknown as ApiContext;
+    const first = await post(lost, target.id, { message: "plan A" }, toolHeaders(caller.id));
+    await withRouteBackedFetch(context, {}, async () => {
+      expect(sweepLateralSends(context, { now: Date.now() + 6 * 60_000 }).reported).toEqual([first.body.queueItemId]);
+      const second = await post(lost, target.id, { message: "plan B" }, toolHeaders(caller.id));
+      expect(sweepLateralSends(context, { now: Date.now() + 60 * 60_000 }).reported).toEqual([first.body.queueItemId, second.body.queueItemId]);
+      expect(sweepLateralSends(context, { now: Date.now() + 61 * 60_000 }).reported).toEqual([]);
+      await eventually(() => expect(undeliveredTurns(calls)).toHaveLength(2));
+      expect(undeliveredTurns(calls)[1].text).toContain(second.body.queueItemId);
+    });
   }, 20000);
 
   it("does not promise a run for a message to a connector-owned session nothing here can dispatch", async () => {

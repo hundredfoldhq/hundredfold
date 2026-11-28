@@ -11,6 +11,12 @@ import { dispatchWebSessionRun } from "./web-session-dispatch.js";
 import { isStoppedByUser } from "../sessions/stopped-marker.js";
 import { withdrawPendingQueueItemsForStop } from "../sessions/queue-stop.js";
 import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
+import { staleLateralNoticeReason } from "../sessions/lateral-notice-staleness.js";
+
+/** Why a queued wake (a child-watch tick, an undelivered-messages notice) has nothing left to say, else null. */
+function staleQueuedWake(queueItemId: string): string | null {
+  return staleChildWatchWakeReason(queueItemId) ?? staleLateralNoticeReason(queueItemId);
+}
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
   coalescePendingParentCompletionQueueItems();
@@ -64,10 +70,10 @@ export function resumePendingQueueItem(item: QueueItem, context: ApiContext): bo
   // A child-watch wake that went stale while the gateway was down is dropped
   // here, before the session is marked running for a turn that will not happen.
   // A row the live queue already owns is judged when its turn starts instead.
-  const staleWake = staleChildWatchWakeReason(item.id);
+  const staleWake = staleQueuedWake(item.id);
   if (staleWake) {
     cancelQueueItem(item.id);
-    logger.info(`Dropped stale child-watch wake ${item.id} for session ${session.id} on replay: ${staleWake}`);
+    logger.info(`Dropped stale wake ${item.id} for session ${session.id} on replay: ${staleWake}`);
     return false;
   }
   session = maybeRevertEngineOverride(session, undefined, context.getConfig());

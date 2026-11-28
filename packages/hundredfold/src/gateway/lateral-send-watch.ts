@@ -4,6 +4,7 @@ import { logger } from "../shared/logger.js";
 import { reportsTurnProgress, type Session, type SessionDeliveryPayload } from "../shared/types.js";
 import { claimSessionDelivery, getQueueItem, getSession } from "../sessions/registry.js";
 import { lastTurnOutputAt } from "../sessions/turn/output-clock.js";
+import { LATERAL_STALL_DELIVERY_KIND } from "../sessions/lateral-notice-staleness.js";
 import { deliverClaimedSessionDelivery } from "../sessions/callbacks.js";
 import { parseLateralSendKey } from "../sessions/queued-send-supersede.js";
 import type { ApiContext } from "./api.js";
@@ -46,7 +47,7 @@ export const LATERAL_SILENT_AFTER_MS = 15 * 60_000;
 /** The same, while a tool call or a model request of that turn is in flight: a long build is work, not a stall. */
 export const LATERAL_BUSY_SILENT_AFTER_MS = 60 * 60_000;
 export const LATERAL_SWEEP_MS = 60_000;
-export const LATERAL_STALL_DELIVERY_KIND = "lateral-send-stalled";
+export { LATERAL_STALL_DELIVERY_KIND };
 
 /** What became of the row: still owned by the lane, left with nothing to run it, or dropped. */
 export type StalledSendState = "queued" | "unowned" | "dropped";
@@ -94,7 +95,6 @@ export function judgeTargetTurn(target: Session, laneKey: string, context: ApiCo
   const laneRunning = context.sessionManager.getQueue().isRunning(laneKey);
   if (!laneRunning || target.status !== "running") return { kind: "other", laneRunning };
   const reading = readTurnProgress(target, context);
-  if (reading.waitingForTerminalTurn) return { kind: "working" };
   const lastProgress = Math.max(reading.lastProgressAt, lastTurnOutputAt(target.id) ?? 0) || waitingSince;
   const silentMs = now - lastProgress;
   if (silentMs < (reading.busy ? LATERAL_BUSY_SILENT_AFTER_MS : LATERAL_SILENT_AFTER_MS)) return { kind: "working" };
@@ -102,14 +102,14 @@ export function judgeTargetTurn(target: Session, laneKey: string, context: ApiCo
 }
 
 /** What the target's engine says of its turn, where it reports progress at all. */
-function readTurnProgress(target: Session, context: ApiContext): { lastProgressAt: number; busy: boolean; waitingForTerminalTurn: boolean } {
+function readTurnProgress(target: Session, context: ApiContext): { lastProgressAt: number; busy: boolean } {
   const engine = context.sessionManager.getEngine(target.engine);
   const progress = engine && reportsTurnProgress(engine) ? engine.turnProgress(target.id) : undefined;
-  if (!progress) return { lastProgressAt: 0, busy: false, waitingForTerminalTurn: false };
+  if (!progress) return { lastProgressAt: 0, busy: false };
   return {
     lastProgressAt: progress.lastProgressAt,
-    busy: progress.activeTools > 0 || progress.activeUpstream,
-    waitingForTerminalTurn: progress.waitingForTerminalTurn === true,
+    // Waiting behind a turn typed in the terminal is a state, timed like a long tool from when the wait began.
+    busy: progress.activeTools > 0 || progress.activeUpstream || progress.waitingForTerminalTurn === true,
   };
 }
 
@@ -131,6 +131,7 @@ function aboutMessages(ids: string[], rest: (one: boolean) => string): string {
 }
 
 function targetState(turn: TargetTurn, targetStatus: string): string {
+  if (turn.kind === "working") return `it is in a turn that is still making progress (status ${targetStatus})`;
   if (turn.kind === "silent") return `it is in a turn that has shown no progress for ${turn.silentMinutes} minutes (status ${targetStatus})`;
   if (turn.kind === "other" && turn.laneRunning) return `it is still working through an earlier turn (status ${targetStatus})`;
   return `it has no turn running (status ${targetStatus})`;
@@ -179,22 +180,24 @@ export function stalledSendPayload(input: {
   return {
     message: [head, ...fateSentences(sends), "You are told again about this session only if its state changes."].join(" "),
     displayMessage: `${one ? `Message ${all[0].slice(0, 8)}` : `${all.length} messages`} to ${targetSessionId.slice(0, 8)} ${state === "dropped" ? "dropped" : "undelivered"} after ${waitedMinutes} min`,
-    meta: { kind: LATERAL_STALL_DELIVERY_KIND, targetSessionId, queueItemIds: all, state },
+    // waitingQueueItemIds: what the dispatch re-checks before the notice's turn runs (lateral-notice-staleness.ts).
+    meta: { kind: LATERAL_STALL_DELIVERY_KIND, targetSessionId, queueItemIds: all, waitingQueueItemIds: [...sends.queued, ...sends.unowned], state },
   };
 }
 
 /**
  * The identity of one report: the target's state as the sender would act on
  * it. The same state reached again is no news; a new turn, a new status, a
- * message left with nothing to run it, or a newly dropped message is. Messages
- * merely added to the queue behind an already-reported state are not.
+ * newly unowned message (each one needs the sender to resend it) or a newly
+ * dropped message is. Messages merely queued behind an already-reported state
+ * are not.
  */
 function reportIdentity(target: Session, turn: TargetTurn, sends: WaitingSends): string {
   const signature = [
     turn.kind === "other" ? `other:${turn.laneRunning ? "lane" : "nolane"}` : turn.kind,
     target.status,
     target.attemptToken ?? "",
-    sends.unowned.length > 0 ? "unowned" : "",
+    [...sends.unowned].sort().join(","),
     [...sends.dropped].sort().join(","),
   ].join("|");
   return `stalled:${createHash("sha256").update(signature).digest("hex").slice(0, 16)}`;
