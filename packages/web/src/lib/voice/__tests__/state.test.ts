@@ -191,3 +191,23 @@ describe("notices", () => {
     expect(s.background).toEqual([])
   })
 })
+
+describe("a pause the user asked for", () => {
+  it("is only from running, drops what was being heard, and clears a pending tap request", () => {
+    expect(voicePhase(run([{ type: "user-paused" }], on()))).toBe("user-paused")
+    expect(run([{ type: "user-paused" }]).status).toBe("off")
+    const heard = run([frame({ type: "vad", speaking: true }), frame({ type: "transcript", utteranceId: "u", text: "half a sen", final: false }), { type: "needs-tap" }], on())
+    expect(heard.needsTap).toBe(true)
+    const paused = run([{ type: "user-paused" }], heard)
+    expect(paused).toMatchObject({ status: "user-paused", vadSpeaking: false, partial: "", needsTap: false })
+  })
+
+  it("pauses a connecting run but not a suspended one, and resumed brings it back", () => {
+    const connecting = run([{ type: "connecting", mode: "hands-free" }])
+    // The session pauses a connecting run only when that run is a resume from a pause; the reducer allows it.
+    expect(run([{ type: "user-paused" }], connecting).status).toBe("user-paused")
+    const suspended = run([{ type: "suspended" }], on())
+    expect(run([{ type: "user-paused" }], suspended).status).toBe("suspended")
+    expect(run([{ type: "user-paused" }, { type: "resumed" }], on()).status).toBe("on")
+  })
+})

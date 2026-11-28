@@ -30,6 +30,8 @@ const SESSION_EVENTS = new Set([
 export interface AttachRequest {
   sessionId: string;
   principal: VoicePrincipal;
+  /** Only end this principal's suspended attachment on the session, if there is one; never attach (`?end=suspended`). */
+  endSuspended?: boolean;
 }
 
 export class VoiceHub {
@@ -69,6 +71,7 @@ export class VoiceHub {
   attach(socket: VoiceSocket, request: AttachRequest): VoiceAttachment | null {
     const config = this.deps.config();
     if (!config) return this.refuseDisabled(socket);
+    if (request.endSuspended) return this.endSuspended(socket, request);
     const existing = this.attachments.get(request.sessionId);
     this.trace.info("hub_attach", { session: request.sessionId, principal: request.principal.kind, existing: existing ? (existing.suspended ? "suspended" : "live") : "none", attachments: this.attachments.size });
     if (existing) return this.replace(existing, socket, request);
@@ -132,6 +135,18 @@ export class VoiceHub {
     // Voice went off between the detach and here: no new attachment will end this conversation, so this is its end.
     this.discardEmpty(request.sessionId);
     return this.refuseDisabled(socket);
+  }
+
+  /**
+   * A goodbye for a conversation the client left suspended (it paused, then ended voice mode). It ends as a `bye`
+   * would end it, dropping what it held and discarding an empty spoken start, but only while no socket is attached:
+   * one that another tab or device of the same principal has picked up, or is picking up, carries on untouched.
+   */
+  private endSuspended(socket: VoiceSocket, request: AttachRequest): null {
+    const existing = this.attachments.get(request.sessionId);
+    if (existing && existing.suspendedSince !== null && samePrincipal(existing.principal, request.principal)) existing.expire();
+    socket.close(1000, "bye");
+    return null;
   }
 
   /** Voice was switched off before this socket got an attachment: say so as an attached client would hear it, not as a missing chat. */

@@ -52,6 +52,8 @@ export interface VoiceCaptureHandle {
 /** Everything the session touches in the outside world, so tests can script it. */
 export interface BrowserVoiceDeps {
   openSocket(sessionId: string, handlers: VoiceSocketHandlers, mode: VoiceMode): VoiceSocketLike
+  /** Ends the conversation the gateway kept for a pause, unless another tab or device is using it now. */
+  endSuspended?(sessionId: string): void
   createContext(): VoiceAudioContext
   requestMicrophone(): Promise<MediaStream>
   startCapture(ctx: VoiceAudioContext, stream: MediaStream, onFrame: (pcm: Int16Array) => void): Promise<VoiceCaptureHandle>
@@ -62,7 +64,18 @@ export interface BrowserVoiceDeps {
   /** `navigator.wakeLock`, where the browser has one. */
   wakeLock?: WakeLockLike
   createMediaMetadata?: () => unknown
+  /**
+   * A silent looping element that holds the page's audio focus, which is what lets a phone route its lock screen and
+   * headset buttons to the media session of a page that only plays Web Audio. Started inside a tap or a media action.
+   */
+  createKeepAlive?: () => MediaKeepAlive
   now(): number
+}
+
+export interface MediaKeepAlive {
+  play(): void
+  pause(): void
+  dispose(): void
 }
 
 export interface BrowserVoiceOptions {
@@ -79,12 +92,25 @@ const CONTEXT_RESUME_WAIT_MS = 300
 /** How long a microphone request made without a tap may take before the tap is asked for instead. */
 const MICROPHONE_REACQUIRE_WAIT_MS = 2_000
 
+/** How long a pause holds the microphone: the gateway forgets a paused attachment after about this long, so the page lets go too. */
+export const PAUSE_HOLD_MS = 10 * 60_000
+
+/**
+ * The close code of a pause the user asked for. It is not an ending code, so the gateway keeps the attachment for its
+ * suspend window and holds the replies that finish meanwhile, to play them when voice mode carries on.
+ */
+export const USER_PAUSE_CLOSE = 4000
+
+/** How long after cutting off a resume that was still connecting the goodbye for the kept conversation waits. */
+export const RESUME_CUT_GRACE_MS = 1_500
+
 /** How long a cut segment's id is remembered, so its late audio is logged at debug too. */
 const CUT_MEMORY_MS = 30_000
 
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
+    endSuspended: (sessionId) => VoiceSocket.endSuspended(sessionId),
     createContext: () => new AudioContext({ latencyHint: "interactive" }) as unknown as VoiceAudioContext,
     requestMicrophone: () => requestMicrophone(),
     startCapture: (ctx, stream, onFrame) => startCapture(ctx as unknown as AudioContext, stream, onFrame),
@@ -94,7 +120,36 @@ export function defaultBrowserDeps(): BrowserVoiceDeps {
     mediaSession: typeof navigator !== "undefined" && "mediaSession" in navigator ? (navigator.mediaSession as unknown as MediaSessionLike) : undefined,
     wakeLock: typeof navigator !== "undefined" && "wakeLock" in navigator ? (navigator.wakeLock as unknown as WakeLockLike) : undefined,
     createMediaMetadata: () => new MediaMetadata({ title: "Voice mode is on", artist: "Hundredfold" }),
+    createKeepAlive: () => silentKeepAlive(),
     now: () => Date.now(),
+  }
+}
+
+/**
+ * Twelve seconds of 8 kHz silence as a WAV file. Some browsers do not treat a clip of a second or two as media worth
+ * routing headset buttons to, so the loop is long enough to count as playing something.
+ */
+function silentWavUrl(): string {
+  const samples = 8000 * 12
+  const bytes = new Uint8Array(44 + samples).fill(0x80)
+  const view = new DataView(bytes.buffer)
+  const text = (at: number, value: string) => { for (let i = 0; i < value.length; i++) view.setUint8(at + i, value.charCodeAt(i)) }
+  text(0, "RIFF"); view.setUint32(4, 36 + samples, true); text(8, "WAVE"); text(12, "fmt ")
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, 8000, true); view.setUint32(28, 8000, true); view.setUint16(32, 1, true); view.setUint16(34, 8, true)
+  text(36, "data"); view.setUint32(40, samples, true)
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return `data:audio/wav;base64,${btoa(binary)}`
+}
+
+function silentKeepAlive(): MediaKeepAlive {
+  const element = new Audio(silentWavUrl())
+  element.loop = true
+  return {
+    play: () => { void element.play().catch(() => undefined) },
+    pause: () => element.pause(),
+    dispose: () => { element.pause(); element.removeAttribute("src"); element.load() },
   }
 }
 
@@ -123,7 +178,15 @@ export class BrowserVoiceSession implements VoiceController {
   private watcher: SuspendWatcher | null = null
   private detector: OnsetDetector | null = null
   private cuePlayer: VoiceCuePlayerLike | null = null
-  private removeMediaSession: (() => void) | null = null
+  private mediaSession: ReturnType<typeof installMediaSession> | null = null
+  /** When the user paused voice mode, while it is paused. */
+  private pausedAt: number | null = null
+  /** When the pause being resumed began, until the gateway is ready again: a press meanwhile pauses again rather than ending voice mode. */
+  private resumingFrom: number | null = null
+  /** Names the socket whose frames count: bumped on every open and every pause, so a socket let go of is not heard from again. */
+  private socketSeq = 0
+  private pauseTimer: ReturnType<typeof setTimeout> | null = null
+  private keepAlive: MediaKeepAlive | null = null
   private wakeLock: ScreenWakeLock | null = null
   private closing = false
   /** Bumped on every start and every teardown; an await that resumes under a different value belongs to a run that is over. */
@@ -168,6 +231,8 @@ export class BrowserVoiceSession implements VoiceController {
     voiceLog.info("session_start", { kind: "browser", mode: this.options.mode, barge_in: this.options.bargeIn, session: this.session, new_chat: this.session === null, ...contextFields(ctx) })
     this.wakeLock = new ScreenWakeLock(this.deps.wakeLock, this.deps.doc)
     this.wakeLock.acquire()
+    this.keepAlive = this.deps.createKeepAlive?.() ?? null
+    this.keepAlive?.play()
     if (this.session !== null) {
       this.openSocket(this.session)
       return this.attachMicrophone(microphone, generation)
@@ -202,10 +267,25 @@ export class BrowserVoiceSession implements VoiceController {
     voiceLog.info("session_stop", { kind: "browser", status: this.store.snapshot.status, run_ms: this.runMs() })
     this.closing = true
     dropHandoff(this)
-    this.socket?.send({ type: "bye" })
+    const saidBye = this.socket?.send({ type: "bye" }) === true
     this.socket?.close(1000, "bye")
+    this.endKeptConversation(saidBye)
     this.teardown()
     this.apply({ type: "stopped" })
+  }
+
+  /** A stop from a pause, or from a resume that had not connected yet: the conversation the gateway kept for it ends too. */
+  private endKeptConversation(saidBye: boolean): void {
+    const session = this.session
+    if (session === null) return
+    if (this.pausedAt !== null) {
+      // No socket to say goodbye on: end it, unless another tab or device has picked it up meanwhile.
+      this.deps.endSuspended?.(session)
+    } else if (this.resumingFrom !== null && !saidBye) {
+      // A resume cut off while still connecting: the gateway may already have handed it the conversation, and keeps it
+      // again once the cut reaches it. The goodbye follows after that, or it would find a socket attached and do nothing.
+      setTimeout(() => this.deps.endSuspended?.(session), RESUME_CUT_GRACE_MS)
+    }
   }
 
   dispose(): void {
@@ -243,6 +323,7 @@ export class BrowserVoiceSession implements VoiceController {
     void ctx.resume().catch(() => undefined)
     const microphone = this.microphoneLive() ? null : this.deps.requestMicrophone()
     this.watcher?.clear()
+    this.endPause()
     if (this.socket?.isOpen) {
       this.apply({ type: "resumed" })
       this.sendResume()
@@ -254,13 +335,95 @@ export class BrowserVoiceSession implements VoiceController {
     return microphone ? this.replaceMicrophone(microphone, this.generation) : Promise.resolve()
   }
 
+  // ── user pause ────────────────────────────────────────────────────────────
+
+  /**
+   * The user paused voice mode (a headset's play/pause button): speech stops at once, nothing is listened for and the
+   * gateway is let go of, so it holds what finishes meanwhile. The microphone and audio stay as they are, so carrying
+   * on needs no tap.
+   */
+  pause(): void {
+    const status = this.store.snapshot.status
+    // A press while the socket of a resume is still connecting pauses again: the pause carries on from when it began.
+    const resuming = status === "connecting" && this.resumingFrom !== null
+    if (status !== "on" && !resuming) return
+    this.talking = false
+    this.pausedAt = resuming ? this.resumingFrom : this.deps.now()
+    this.resumingFrom = null
+    this.player?.flush()
+    // Frames and audio of the socket being let go of are not heard from again, and its late close is not a lost connection.
+    this.socketSeq++
+    this.socket?.close(USER_PAUSE_CLOSE, "paused")
+    this.socket = null
+    this.mediaSession?.setPlaying(false)
+    this.keepAlive?.pause()
+    // A pause does not keep the screen awake, and does not hold the microphone for ever.
+    this.wakeLock?.release()
+    this.pauseTimer = setTimeout(() => this.pauseRanOut(), PAUSE_HOLD_MS)
+    this.apply({ type: "user-paused" })
+  }
+
+  /**
+   * The pause action from a headset or the lock screen. Where voice mode is not running to pause (first connecting,
+   * suspended by the device, paused by a call) it ends it, as the action always did; while already paused it does
+   * nothing, and while a resume from a pause is still connecting it pauses again.
+   */
+  private mediaPause(): void {
+    const status = this.store.snapshot.status
+    if (status === "on" || (status === "connecting" && this.resumingFrom !== null)) this.pause()
+    else if (status !== "user-paused" && status !== "off") this.stop()
+  }
+
+  /** The pause has gone on as long as the gateway keeps the attachment: the microphone is let go, and carrying on takes one tap. */
+  private pauseRanOut(): void {
+    this.pauseTimer = null
+    if (this.store.snapshot.status !== "user-paused") return
+    this.capture?.stop()
+    this.capture = null
+    this.apply({ type: "needs-tap" })
+  }
+
+  private clearPauseTimer(): void {
+    if (this.pauseTimer === null) return
+    clearTimeout(this.pauseTimer)
+    this.pauseTimer = null
+  }
+
+  /**
+   * The play action while paused: carry on where it left off. A browser may not hand audio or the microphone back
+   * outside a tap; then the control asks for one tap instead.
+   */
+  resumePaused(): void {
+    if (this.store.snapshot.status !== "user-paused") return
+    const ctx = this.ctx
+    if (!ctx || ctx.state !== "running" || !this.microphoneLive()) {
+      this.apply({ type: "needs-tap" })
+      return
+    }
+    void this.resumeFromTap()
+  }
+
+  /** Forgets a pause that is ending: the gateway is told how long it lasted once the new socket is ready. */
+  private endPause(): void {
+    if (this.pausedAt === null) return
+    this.pendingResumeMs = Math.max(0, this.deps.now() - this.pausedAt)
+    this.resumingFrom = this.pausedAt
+    this.pausedAt = null
+    this.clearPauseTimer()
+    this.mediaSession?.setPlaying(true)
+    this.keepAlive?.play()
+    this.wakeLock?.acquire()
+  }
+
   // ── socket ────────────────────────────────────────────────────────────────
 
   private openSocket(sessionId: string): void {
+    const seq = ++this.socketSeq
+    const current = () => seq === this.socketSeq
     this.socket = this.deps.openSocket(sessionId, {
-      onFrame: (frame) => this.onFrame(frame),
-      onAudio: (chunk) => this.onAudio(chunk),
-      onClose: (close) => this.onClose(close),
+      onFrame: (frame) => { if (current()) this.onFrame(frame) },
+      onAudio: (chunk) => { if (current()) this.onAudio(chunk) },
+      onClose: (close) => { if (current()) this.onClose(close) },
     }, this.options.mode)
   }
 
@@ -321,9 +484,14 @@ export class BrowserVoiceSession implements VoiceController {
 
   private onReady(frame: Extract<VoiceServerFrame, { type: "ready" }>): void {
     this.detector = this.options.bargeIn ? new OnsetDetector(frame.onset) : null
+    this.resumingFrom = null
     this.onset = frame.onset
     this.logReady(frame)
-    this.removeMediaSession ??= installMediaSession(this.deps.mediaSession, () => this.stop(), this.deps.createMediaMetadata ?? (() => null))
+    this.mediaSession ??= installMediaSession(
+      this.deps.mediaSession,
+      { onStop: () => this.stop(), onPause: () => this.mediaPause(), onPlay: () => this.resumePaused() },
+      this.deps.createMediaMetadata ?? (() => null),
+    )
     this.sendResume()
   }
 
@@ -405,7 +573,8 @@ export class BrowserVoiceSession implements VoiceController {
   private watchForSuspension(ctx: VoiceAudioContext): void {
     this.watcher?.stop()
     const watcher = new SuspendWatcher(this.deps.doc, {
-      onSuspended: () => this.apply({ type: "suspended" }),
+      // A device suspension during a pause the user asked for changes nothing visible: the pause already stands.
+      onSuspended: () => { if (this.pausedAt === null) this.apply({ type: "suspended" }) },
       onReturn: ({ suspendedMs }) => { void this.handleReturn(suspendedMs) },
     }, this.deps.now)
     const track = this.capture?.track
@@ -533,6 +702,11 @@ export class BrowserVoiceSession implements VoiceController {
     this.generation++
     this.talking = false
     this.pendingResumeMs = null
+    this.pausedAt = null
+    this.resumingFrom = null
+    this.clearPauseTimer()
+    this.keepAlive?.dispose()
+    this.keepAlive = null
     this.capture?.stop()
     this.capture = null
     this.cuePlayer?.dispose()
@@ -542,8 +716,8 @@ export class BrowserVoiceSession implements VoiceController {
     this.watcher?.stop()
     this.watcher = null
     this.detector = null
-    this.removeMediaSession?.()
-    this.removeMediaSession = null
+    this.mediaSession?.remove()
+    this.mediaSession = null
     this.wakeLock?.release()
     this.wakeLock = null
     const ctx = this.ctx

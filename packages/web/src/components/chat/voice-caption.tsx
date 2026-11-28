@@ -15,6 +15,7 @@ const STATUS: Record<VoicePhase, (voice: UseVoice) => string | null> = {
   working: (v) => (v.state.tool ? `Working · ${v.state.tool}` : 'Working…'),
   speaking: (v) => v.state.holding ?? 'Speaking',
   paused: () => 'Paused',
+  'user-paused': () => 'Voice paused. Tap the voice button to resume',
   suspended: (v) => (v.state.needsTap ? 'Voice paused. Tap the voice button to resume' : 'Voice paused'),
 }
 

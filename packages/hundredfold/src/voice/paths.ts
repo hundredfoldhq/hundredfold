@@ -11,3 +11,13 @@ export function voiceSessionId(requestUrl: string): string | null {
     return null;
   }
 }
+
+/**
+ * Whether a voice upgrade only asks to end a conversation its client left suspended (`?end=suspended`): a client
+ * that paused voice mode and then ended it says goodbye this way, without taking over an attachment another of its
+ * tabs or devices may be using.
+ */
+export function voiceEndsSuspended(requestUrl: string): boolean {
+  const query = requestUrl.split("?")[1];
+  return query !== undefined && new URLSearchParams(query).get("end") === "suspended";
+}
