@@ -281,6 +281,22 @@ describe("session tools — unit (stub gateway)", () => {
     expect(out.hint).toMatch(/idle/i);
   });
 
+  it("read_session marks a message the session has not been given yet as queued, and only that one", async () => {
+    const { ctx } = stub(() => ({
+      status: 200,
+      body: {
+        id: "s", engine: "claude", status: "running",
+        messages: [
+          { role: "notification", content: "earlier", timestamp: 1 },
+          { role: "notification", content: "waiting", timestamp: 2, queued: true },
+        ],
+      },
+    }), "reader");
+    const out = (await tool("read_session").handler({ sessionId: "s" }, ctx)) as { messages: Array<Record<string, unknown>> };
+    expect(out.messages[0]).not.toHaveProperty("queued");
+    expect(out.messages[1]).toMatchObject({ content: "waiting", queued: true });
+  });
+
   it("read_session forwards last=200 and last=0 without clamping", async () => {
     const { calls, ctx } = stub(() => ({ status: 200, body: { id: "s", status: "idle", messages: [] } }), "reader");
     await tool("read_session").handler({ sessionId: "s", last: 200 }, ctx);

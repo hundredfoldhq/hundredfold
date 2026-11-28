@@ -41,7 +41,7 @@ import { reroutedSessionMeta } from "../sessions/engine-override-window.js";
 import { stripControlChars, hasControlBytes } from "../shared/sanitize.js";
 import { CONNECTOR_ID_REQUIREMENTS, isValidConnectorId } from "../shared/connector-id.js";
 import { initDb } from "../shared/db.js";
-import { countPendingQueueItemsByKey, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
+import { countPendingQueueItemsByKey, pendingTurnMessageIds, runningQueuePromptsForSession } from "../sessions/queue-item-registry.js";
 import { withdrawPendingSwitchOfDelivery } from "../sessions/pending-switch.js";
 import {
   listSessions,
@@ -1928,9 +1928,15 @@ export async function handleApiRequest(
       const liveStream = includeMessages && session.status === "running"
         ? getLiveStreamBlock(session.id, session.attemptToken)
         : null;
-      const messages = liveStream?.messageId
+      const streamed = liveStream?.messageId
         ? storedMessages.map((message) => message.id === liveStream.messageId ? { ...message, content: liveStream.text } : message)
         : storedMessages;
+      // A message is logged when it is accepted. One still waiting behind a turn says so,
+      // or a reader takes it for read.
+      const waiting = streamed.length > 0 ? pendingTurnMessageIds(session.id, session.sessionKey || session.sourceRef || session.id) : null;
+      const messages = waiting && waiting.size > 0
+        ? streamed.map((message) => waiting.has(message.id) ? { ...message, queued: true } : message)
+        : streamed;
 
       // Backfill from Claude Code's JSONL transcript if our DB has no messages.
       // Run async + transactional so the GET doesn't block on multi-MB JSONL

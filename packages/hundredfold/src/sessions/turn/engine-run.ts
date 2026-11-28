@@ -10,6 +10,7 @@ import { getSession, insertMessage, updateSessionForAttempt } from "../registry.
 import { normalizeBlockDeltaForTurn, type PartialStreamWriter } from "../partial-stream.js";
 import { settleTurn } from "./completion.js";
 import type { TurnHeartbeat } from "./heartbeat.js";
+import { markTurnOutput } from "./output-clock.js";
 import type { TurnInput, TurnPlan, TurnSurface } from "./types.js";
 import { withBoardReminder } from "./board-reminder.js";
 import { rememberCompactionReminder } from "./compaction-reminder.js";
@@ -109,6 +110,7 @@ function handleStreamDelta(args: EngineAttemptArgs, delta: StreamDelta): void {
   // A delta can arrive after the user deleted the session; never resurrect
   // registry state for it.
   if (!getSession(sessionId)) return;
+  markTurnOutput(sessionId);
   const normalized = normalizeBlockDeltaForTurn(delta, args.turnStartedAt);
   if (!normalized.ok) {
     logger.warn(`Dropped invalid block delta for session ${sessionId}: ${normalized.error}`);

@@ -17,6 +17,7 @@ import { createPartialStreamWriter } from "../partial-stream.js";
 import { runEngineAttempt, resolveModelFallback, type EngineAttempt } from "./engine-run.js";
 import { compactColdSessionFirst, settlePreemptedBeforeEngine } from "./auto-compact.js";
 import { armTurnHeartbeat } from "./heartbeat.js";
+import { clearTurnOutput, markTurnOutput } from "./output-clock.js";
 import { preflightTurn, resolveTurnPrompt, warnIfNearUsageLimit } from "./preflight.js";
 import { withLeftBackgroundNote } from "../left-background-tasks.js";
 import { backgroundSessionMayHoldPrompt, isLostConversationError, isProcessStartFailure } from "../../shared/process-start.js";
@@ -92,6 +93,7 @@ async function runTurnOnce(input: TurnInput, surface: TurnSurface): Promise<Turn
     turnStartedAt: Date.now(),
     terminalFields,
   };
+  markTurnOutput(sessionId, run.turnStartedAt);
 
   return await runPlannedTurn(run);
 }
@@ -111,6 +113,7 @@ async function runPlannedTurn(run: TurnRun): Promise<TurnInput | undefined> {
     return undefined;
   } finally {
     run.heartbeat.stop();
+    clearTurnOutput(run.input.session.id);
   }
 }
 

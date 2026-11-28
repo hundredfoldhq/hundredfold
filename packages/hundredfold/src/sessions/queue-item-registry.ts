@@ -333,7 +333,28 @@ export function openTurnMessages(sessionId: string): { prompts: string[]; messag
   const db = initDb();
   const items = db.prepare(
     "SELECT id, prompt, message_id AS messageId, dispatch_payload FROM queue_items WHERE session_id = ? AND status IN ('pending', 'running')",
-  ).all(sessionId) as Array<{ id: string; prompt: string; messageId: string | null; dispatch_payload: string | null }>;
+  ).all(sessionId) as CarryingRow[];
+  return { prompts: items.map((item) => item.prompt), messageIds: carriedMessageIds(db, items) };
+}
+
+/**
+ * The logged messages a session has not been given yet: those its pending
+ * rows carry. A message is logged when it is accepted, so without this a
+ * reader of the transcript cannot tell one still waiting behind a turn from
+ * one the session has read. Read by the lane key, which the queue index leads with.
+ */
+export function pendingTurnMessageIds(sessionId: string, sessionKey: string): Set<string> {
+  const db = initDb();
+  const items = db.prepare(
+    "SELECT id, prompt, message_id AS messageId, dispatch_payload FROM queue_items WHERE session_key = ? AND status = 'pending' AND session_id = ?",
+  ).all(sessionKey, sessionId) as CarryingRow[];
+  return carriedMessageIds(db, items);
+}
+
+interface CarryingRow { id: string; prompt: string; messageId: string | null; dispatch_payload: string | null }
+
+/** The ids of the logged messages these rows answer: their own, folded ones, and the callback deliveries batched into them. */
+function carriedMessageIds(db: ReturnType<typeof initDb>, items: CarryingRow[]): Set<string> {
   const messageIds = new Set(items.flatMap((item) => [
     ...(item.messageId ? [item.messageId] : []), ...(parseDispatchPayload(item.dispatch_payload)?.foldedMessageIds ?? [])]));
   if (items.length > 0) {
@@ -342,7 +363,7 @@ export function openTurnMessages(sessionId: string): { prompts: string[]; messag
     ).all(...items.map((item) => item.id)) as Array<{ messageId: string }>;
     for (const { messageId } of delivered) messageIds.add(messageId);
   }
-  return { prompts: items.map((item) => item.prompt), messageIds };
+  return messageIds;
 }
 
 /** Every pending row, each lane's rows in the order its slots will claim them. */

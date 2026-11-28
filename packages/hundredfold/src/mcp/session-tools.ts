@@ -122,7 +122,7 @@ interface SessionRecord {
   lastError?: string | null;
   parentSessionId?: string | null;
   stopped?: boolean;
-  messages?: Array<{ role?: string; content?: string; timestamp?: number; meta?: unknown }>;
+  messages?: Array<{ role?: string; content?: string; timestamp?: number; meta?: unknown; queued?: boolean }>;
 }
 
 function summarize(s: SessionRecord): Record<string, unknown> {
@@ -323,10 +323,12 @@ export function buildSessionTools(): HundredfoldMcpTool[] {
       if (status >= 400) throw gatewayFailure(`reading session "${sessionId}"`, status, body);
       const s = (body ?? {}) as SessionRecord;
       // A notification's `content` is the web UI's short banner; the agent reads the body it carries.
+      // `queued`: accepted but not yet given to the session, which is still in an earlier turn.
       const messages = (Array.isArray(s.messages) ? s.messages : []).map((m) => ({
         role: m.role,
         content: agentReadableContent(m),
         timestamp: m.timestamp,
+        ...(m.queued === true ? { queued: true } : {}),
       }));
       return {
         ...summarize(s),
