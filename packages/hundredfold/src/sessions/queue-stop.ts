@@ -5,6 +5,7 @@ import {
   cancelQueueItem, listPendingQueueItemIdsForSession, markRunningQueueItemsCompletedForSession, withdrawPendingQueueItem, type QueueItem,
 } from "./queue-item-registry.js";
 import { getSessionDeliveryByQueueItemId } from "./registry.js";
+import { removeUnrunNoticeBubbles } from "./lateral-notice-staleness.js";
 
 /**
  * Withdraw every message still parked for `sessionId`, bubbles and all, so that
@@ -20,22 +21,30 @@ import { getSessionDeliveryByQueueItemId } from "./registry.js";
  * the killed turn's lane settles, and a restart in that window would put it back
  * to `pending` and replay the stopped turn's own prompt.
  *
+ * The exception is an undelivered-messages notice: it was never given to the
+ * session, so its bubble goes with its row (and its outbox claim is released
+ * by the next report, which sees the row cancelled).
+ *
  * Returns the rows withdrawn with their bubbles, as read inside the transaction,
- * and how many delivery-owned rows were cancelled.
+ * how many delivery-owned rows were cancelled, and the ids of the notice bubbles removed.
  */
-export function withdrawPendingQueueItemsForStop(sessionId: string): { withdrawn: QueueItem[]; cancelledDeliveries: number } {
+export function withdrawPendingQueueItemsForStop(sessionId: string): { withdrawn: QueueItem[]; cancelledDeliveries: number; removedNoticeMessageIds: string[] } {
   return initDb().transaction(() => {
     const withdrawn: QueueItem[] = [];
     let cancelledDeliveries = 0;
+    const removedNoticeMessageIds: string[] = [];
     for (const itemId of listPendingQueueItemIdsForSession(sessionId)) {
       if (getSessionDeliveryByQueueItemId(itemId)) {
-        if (cancelQueueItem(itemId)) cancelledDeliveries++;
+        if (cancelQueueItem(itemId)) {
+          cancelledDeliveries++;
+          removedNoticeMessageIds.push(...removeUnrunNoticeBubbles(itemId));
+        }
         continue;
       }
       const item = withdrawPendingQueueItem(itemId);
       if (item) withdrawn.push(item);
     }
     markRunningQueueItemsCompletedForSession(sessionId);
-    return { withdrawn, cancelledDeliveries };
+    return { withdrawn, cancelledDeliveries, removedNoticeMessageIds };
   }).immediate();
 }

@@ -46,19 +46,70 @@ export function staleLateralNoticeReason(queueItemId: string | undefined): strin
   }
 }
 
+/** Marks a notice's outbox identity as given up: nothing claims it again. */
+const RETIRED_SUFFIX = ":retired:";
+
+/**
+ * Give up the outbox claim of the notice(s) matching `where`. The claim's
+ * identity is the target's state, and one left standing silences the report of
+ * a message still stuck behind that same state. The row stays, under an
+ * identity nothing claims again. Idempotent.
+ */
+function retireClaims(where: string, ...params: unknown[]): number {
+  return initDb().prepare(
+    `UPDATE callback_deliveries SET source_attempt = source_attempt || '${RETIRED_SUFFIX}' || id
+     WHERE delivery_kind = ? AND source_attempt NOT LIKE '%${RETIRED_SUFFIX}%' AND ${where}`,
+  ).run(LATERAL_STALL_DELIVERY_KIND, ...params).changes;
+}
+
+/**
+ * Remove the bubbles of the notice(s) parked on `queueItemId`, and return their
+ * ids so every view can drop them. A notice that never ran was never given to
+ * its sender; left in the transcript it reads exactly like one that was, which
+ * is how a dropped notice came to sit beside a delivered one with the same words.
+ * The delivery keeps its row and its `messageId`, which no longer names a message.
+ */
+export function removeUnrunNoticeBubbles(queueItemId: string): string[] {
+  const db = initDb();
+  return db.transaction(() => {
+    const ids = db.prepare("SELECT message_id FROM callback_deliveries WHERE queue_item_id = ? AND delivery_kind = ? AND message_id IS NOT NULL")
+      .pluck().all(queueItemId, LATERAL_STALL_DELIVERY_KIND) as string[];
+    const drop = db.prepare("DELETE FROM messages WHERE id = ?");
+    return ids.filter((id) => drop.run(id).changes > 0);
+  }).immediate();
+}
+
 /**
  * Drop the notice parked on `queueItemId` if it is stale, and say why; null
- * when it is not. Its outbox claim is retired with it: the claim's identity is
- * the target's state, and a claim left standing would silence the report of a
- * message still stuck behind that same state (one sent in place of a
- * withdrawn one, say). The row stays, under an identity nothing claims again.
+ * when it is not. Its outbox claim is retired with it, and its bubble removed
+ * (the ids come back for the caller to announce).
  */
-export function retireStaleLateralNotice(queueItemId: string | undefined): string | null {
+export function retireStaleLateralNotice(queueItemId: string | undefined): { reason: string; removedMessageIds: string[] } | null {
   const reason = staleLateralNoticeReason(queueItemId);
-  if (!reason) return null;
-  initDb().prepare("UPDATE callback_deliveries SET source_attempt = source_attempt || ':retired:' || id WHERE queue_item_id = ? AND delivery_kind = ?")
-    .run(queueItemId, LATERAL_STALL_DELIVERY_KIND);
-  return reason;
+  if (!reason || !queueItemId) return null;
+  retireClaims("queue_item_id = ?", queueItemId);
+  return { reason, removedMessageIds: removeUnrunNoticeBubbles(queueItemId) };
+}
+
+/**
+ * Release the claims of the notices to `callerSessionId` about `targetSessionId`
+ * that closed without running. A notice is claimed per target state, and a claim
+ * held by one that never ran would silence that state for good. Closed without
+ * running means: dead-lettered, or accepted onto a row that was cancelled (its
+ * sender stopped, or the row could not be replayed). A notice that ran, or is
+ * still pending, keeps its claim. Read at the point of the next report, so every
+ * way a notice can close is covered, not only the ones that remember to say so.
+ *
+ * A dead-lettered notice is released only after `deadLetterCooldownMs`: a
+ * sender that keeps refusing its notices must not be handed a fresh one, to be
+ * dead-lettered in turn, on every sweep.
+ */
+export function retireClosedLateralNotices(callerSessionId: string, targetSessionId: string, now: number, deadLetterCooldownMs: number): number {
+  return retireClaims(
+    `target_session_id = ? AND source_id = ? AND ((status = 'dead_letter' AND COALESCE(dead_lettered_at, 0) <= ?)
+       OR (status = 'accepted' AND EXISTS (SELECT 1 FROM queue_items WHERE queue_items.id = callback_deliveries.queue_item_id AND queue_items.status = 'cancelled')))`,
+    callerSessionId, targetSessionId, now - deadLetterCooldownMs,
+  );
 }
 
 /** The ids the row's notices reported as waiting, or null when the row is not one to judge: it carries anything else, or a notice with a dropped message. */
