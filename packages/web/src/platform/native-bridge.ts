@@ -49,6 +49,14 @@ export interface HundredfoldNativeBridge {
   stream(input: NativeStreamInput, onEvent: (event: NativeStreamEvent) => void): Promise<{ streamId: string }>
   forget(input: { target: NativeGatewayTarget }): Promise<{ localRemoved: boolean; remoteRevoked: boolean }>
   /**
+   * The paired-workspace record, kept in a file the shell syncs to disk. The page's
+   * own `localStorage` is written behind the page by the WebView, so a selection made
+   * just before the OS ends the app can be lost; this copy has reached the disk when
+   * the write resolves. Absent on a shell that predates it.
+   */
+  readWorkspaceState?(): Promise<string | null>
+  writeWorkspaceState?(input: { document: string }): Promise<void>
+  /**
    * Native voice mode (the mobile shell only; absent elsewhere, where the web
    * client handles audio itself). Capture and playback run in native code, so
    * audio never passes through JavaScript; the gateway's JSON frames come back

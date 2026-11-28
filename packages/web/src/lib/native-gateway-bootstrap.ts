@@ -6,6 +6,7 @@ import {
 } from "./native-gateway-profiles"
 import { queryClient } from "./query-client"
 import { nativeBridge } from "@/platform/native-bridge"
+import { restoreNativeGatewayRecord } from "./native-gateway-restore"
 
 const PROFILE_BOUND_KEYS = [
   "hundredfold-chat-tabs",
@@ -32,12 +33,24 @@ function createManager(): NativeGatewayProfiles | undefined {
   return createNativeGatewayProfiles({
     bridge,
     storage: localStorage,
+    durable: bridge.writeWorkspaceState ? (document) => bridge.writeWorkspaceState!({ document }) : undefined,
     beforeCommit: async () => {
       await queryClient.cancelQueries()
       queryClient.clear()
       resetProfileBoundStorage(localStorage)
     },
   })
+}
+
+/**
+ * Run once at startup, before the first read of the paired workspaces: the shell
+ * keeps its own copy of the record, which is the only one that holds the last
+ * selection when the app was killed before the WebView wrote its storage.
+ */
+export async function restoreNativeGatewayState(): Promise<void> {
+  const bridge = nativeBridge()
+  if (!bridge || typeof localStorage === "undefined") return
+  await restoreNativeGatewayRecord(bridge, localStorage)
 }
 
 export function nativeGatewayProfiles(): NativeGatewayProfiles | undefined {

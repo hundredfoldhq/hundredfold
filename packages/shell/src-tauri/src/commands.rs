@@ -75,6 +75,12 @@ impl NativeError {
     pub fn credential_store() -> Self {
         Self::new("credential-store", "The OS credential store is unavailable")
     }
+    pub(crate) fn state_store() -> Self {
+        Self::new(
+            "state-store",
+            "The workspace record could not be read or written",
+        )
+    }
     pub(crate) fn not_paired() -> Self {
         Self::new("not-paired", "This gateway profile is not paired")
     }

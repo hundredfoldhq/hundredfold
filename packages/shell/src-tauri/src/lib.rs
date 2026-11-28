@@ -17,6 +17,7 @@ mod origin;
 mod probe;
 mod stream;
 mod voice;
+mod workspace_state;
 
 #[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
@@ -55,6 +56,8 @@ const BRIDGE_SCRIPT: &str = r#"
         return internals.invoke('stream', { input, onEvent: on_event });
       },
       forget: (input) => invoke('forget', input),
+      readWorkspaceState: () => internals.invoke('workspace_state_read', {}),
+      writeWorkspaceState: (input) => invoke('workspace_state_write', input),
       /*voice*/
     }),
   });
@@ -96,6 +99,8 @@ pub fn run() {
         commands::request,
         stream::stream,
         commands::forget,
+        workspace_state::workspace_state_read,
+        workspace_state::workspace_state_write,
         voice::voice_start,
         voice::voice_stop,
         voice::voice_ptt,
@@ -108,6 +113,8 @@ pub fn run() {
         commands::request,
         stream::stream,
         commands::forget,
+        workspace_state::workspace_state_read,
+        workspace_state::workspace_state_write,
         voice::voice_start,
         voice::voice_stop,
         voice::voice_ptt,

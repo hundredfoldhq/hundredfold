@@ -68,6 +68,19 @@ describe("bundled Tauri shell", () => {
     expect(probeCapability.permissions).toEqual(["core:default"])
   })
 
+  it("registers the workspace record commands next to the gateway commands, for the main window only", () => {
+    const library = readFileSync(resolve(here, "src-tauri/src/lib.rs"), "utf8")
+    const record = readFileSync(resolve(here, "src-tauri/src/workspace_state.rs"), "utf8")
+    // Both handler lists (desktop and mobile) carry both commands.
+    expect(library.match(/workspace_state::workspace_state_read/g)).toHaveLength(2)
+    expect(library.match(/workspace_state::workspace_state_write/g)).toHaveLength(2)
+    expect(library).toContain("readWorkspaceState: () => internals.invoke('workspace_state_read', {})")
+    expect(library).toContain("writeWorkspaceState: (input) => invoke('workspace_state_write', input)")
+    // Each command confines itself to the local main window like the others, and the file holds no credential.
+    expect(record.match(/confine\(&window\)\?;/g)).toHaveLength(2)
+    expect(record).not.toMatch(/crate::credentials|GatewayCredential|cookie_header|NativeState/)
+  })
+
   it("contains no generated remote-window configuration path", () => {
     const sources = ["package.json", "src-tauri/tauri.conf.json", "src-tauri/src/lib.rs"]
       .map((path) => readFileSync(resolve(here, path), "utf8"))

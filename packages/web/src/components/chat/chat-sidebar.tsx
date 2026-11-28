@@ -54,6 +54,7 @@ import { isTerminalSession } from "@/lib/terminal-session"
 import { TERMINAL_AVATAR } from "@/components/ui/employee-avatar"
 import { compareByRecency, isVisibleSource } from "@/components/chat/session-sources"
 import { MobileSessionRow } from "@/components/chat/mobile-session-row"
+import { WorkspaceTitle } from "@/components/workspaces/workspace-title"
 import { SessionDepartmentBadge } from "@/components/session-department-badge"
 import {
   formatTime,
@@ -1865,6 +1866,7 @@ export function ChatSidebar({
           listScrolled && "shadow-[0_1px_0_0_var(--separator)]",
         )}
       >
+        {variant === "mobile" ? <WorkspaceTitle /> : null}
         {/* Selection bar — replaces the resting/search band while a batch is
             being assembled. Archive and Delete are disabled at zero selected
             rather than hidden, so the actions never move under the finger. */}

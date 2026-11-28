@@ -233,6 +233,9 @@ async function mount(): Promise<void> {
       import('./lib/native-gateway-bootstrap'),
       import('./components/auth/native-pairing-screen'),
     ])
+    // Before the first read of the saved workspace, so the page opens on the shell's
+    // record when the WebView lost the last selection.
+    await bootstrap.restoreNativeGatewayState()
     initialNativeOrigin = bootstrap.installSavedNativeGateway()
     profiles = bootstrap.nativeGatewayProfiles()
     PairingScreen = pairing.NativePairingScreen

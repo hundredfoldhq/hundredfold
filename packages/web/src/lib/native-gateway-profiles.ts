@@ -15,6 +15,11 @@ import {
   type NativeGatewayProfile,
 } from "./native-gateway-profile-storage"
 
+/** The longest a switch waits for the shell to confirm its copy of the record is on disk. */
+const DURABLE_WRITE_TIMEOUT_MS = 1500
+/** The longest one write to the shell may take before the next is let through behind it. */
+const DURABLE_WRITE_ABANDON_MS = 5000
+
 export type { NativeGatewayProfile } from "./native-gateway-profile-storage"
 export { StaleGatewayGenerationError } from "./native-gateway-socket"
 
@@ -30,6 +35,12 @@ export interface NativeGatewayProfilesSnapshot {
   /** The profile the last failure was about, whichever kind. Whether the ACTIVE gateway answers is `activeReachable`, never this. */
   failedProfileId?: string
   error?: string
+  /**
+   * Something the app did to the selection that the person did not directly ask
+   * for, said once so it is never a silent switch. Cleared by the next selection
+   * or by `dismissNotice`.
+   */
+  notice?: string
   /** Whether the ACTIVE gateway has answered since it became active. Storage remembers which gateway was open last, never that it still runs. */
   activeReachable: boolean
 }
@@ -38,6 +49,23 @@ interface NativeGatewayProfilesOptions {
   bridge: HundredfoldNativeBridge
   storage: Storage
   beforeCommit?: () => void | Promise<void>
+  /** Where a second copy of the record goes, to a place that survives the app being killed. */
+  durable?: (document: string) => Promise<void>
+}
+
+/** Settles with `work`, or rejects once `ms` have passed; the work is left to finish on its own. */
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), ms) })
+  try {
+    return await Promise.race([work, expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function recordKey(activeId: string | undefined, profiles: NativeGatewayProfile[]): string {
+  return JSON.stringify({ activeId, profiles })
 }
 
 function stale(manager: NativeGatewayProfiles, generation: number): boolean {
@@ -49,6 +77,10 @@ export class NativeGatewayProfiles {
   readonly #listeners = new Set<() => void>()
   readonly #sockets = new Set<GatewaySocketConnection>()
   #snapshot: NativeGatewayProfilesSnapshot
+  #revision: number
+  /** What the last write held, so a status change that leaves the record alone writes nothing. */
+  #written: string
+  #durable: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: NativeGatewayProfilesOptions) {
     const stored = loadNativeGatewayProfiles(options.storage)
@@ -58,9 +90,17 @@ export class NativeGatewayProfiles {
       generation: 0,
       status: "ready",
       activeReachable: false,
+      notice: stored.lostActive
+        ? "The workspace you last used is no longer paired. Choose a workspace to continue."
+        : undefined,
     }
+    this.#revision = stored.revision
+    // A record read from the old key is not yet written under the new one.
+    this.#written = stored.migrated ? "" : recordKey(stored.activeId, stored.profiles)
     this.transport = this.#createTransport()
-    this.#persist()
+    // Loading must not write: a record that could not be read would otherwise be
+    // replaced by the empty one. Only a record read from the old key has to be saved.
+    if (stored.migrated) this.#persist()
   }
 
   snapshot = (): NativeGatewayProfilesSnapshot => this.#snapshot
@@ -85,15 +125,17 @@ export class NativeGatewayProfiles {
     const profiles = [...this.#snapshot.profiles.filter((entry) => entry.id !== profile.id), profile]
     this.#update({ ...this.#snapshot, profiles })
     if (options.activate || !this.#snapshot.activeId) await this.#commit(profile.id)
+    else await this.#flushDurable()
     return profile
   }
 
   async select(id: string): Promise<void> {
     if (id === this.#snapshot.activeId) return
     const profile = this.#profile(id)
-    this.#update({ ...this.#snapshot, status: "switching", switchingProfileId: id, failedProfileId: undefined, error: undefined })
-    await this.#commit(id, false)
-    const generation = this.#snapshot.generation
+    this.#update({ ...this.#snapshot, status: "switching", switchingProfileId: id, failedProfileId: undefined, error: undefined, notice: undefined })
+    // The generation this selection created, taken before any await: a later
+    // selection that commits meanwhile must not be mistaken for this one.
+    const generation = await this.#commit(id, false)
     try {
       await this.#authState(createNativeGatewayTransport(profile.origin, this.options.bridge))
       // Validation is asynchronous: removal wins if it landed while the candidate answered.
@@ -117,11 +159,16 @@ export class NativeGatewayProfiles {
   async verifyActive(): Promise<void> {
     const id = this.#snapshot.activeId
     if (!id) return
+    const generation = this.#snapshot.generation
     this.#update({ ...this.#snapshot, status: "checking", switchingProfileId: undefined, failedProfileId: undefined, error: undefined })
     try {
       await this.#authState(createNativeGatewayTransport(this.#profile(id).origin, this.options.bridge))
+      // The answer is about the gateway that was active when it was asked. If the
+      // selection moved on meanwhile, it says nothing about the one now active.
+      if (stale(this, generation)) return
       this.#update({ ...this.#snapshot, status: "ready", failedProfileId: undefined, error: undefined, activeReachable: true })
     } catch (error) {
+      if (stale(this, generation)) return
       const reason = nativeErrorMessage(error, "Gateway is unreachable")
       this.#update({ ...this.#snapshot, status: "unreachable", failedProfileId: id, error: reason, activeReachable: false })
     }
@@ -131,8 +178,9 @@ export class NativeGatewayProfiles {
     const profile = this.#profile(id)
     const remaining = this.#snapshot.profiles.filter((entry) => entry.id !== id)
     const wasActive = id === this.#snapshot.activeId
+    let fallback: NativeGatewayProfile | undefined
     if (wasActive) {
-      const fallback = remaining[0]
+      fallback = remaining[0]
       if (fallback) await this.select(fallback.id)
       else await this.#commit(undefined)
     }
@@ -143,7 +191,10 @@ export class NativeGatewayProfiles {
       failedProfileId: failed,
       error: failed ? this.#snapshot.error : undefined,
       status: !failed && this.#snapshot.activeReachable ? "ready" : this.#snapshot.status,
+      // Removing the workspace in use moves the app to another one. Say so.
+      notice: fallback ? `Switched to ${fallback.name} because ${profile.name} was removed.` : this.#snapshot.notice,
     })
+    await this.#flushDurable()
     await this.options.bridge.forget({ target: { origin: profile.origin } })
   }
 
@@ -157,6 +208,15 @@ export class NativeGatewayProfiles {
     const profile = this.#profile(id)
     await this.#authState(createNativeGatewayTransport(profile.origin, this.options.bridge))
     this.#update({ ...this.#snapshot, status: "ready", failedProfileId: undefined, error: undefined, activeReachable: true })
+  }
+
+  dismissNotice(): void {
+    if (this.#snapshot.notice) this.#update({ ...this.#snapshot, notice: undefined })
+  }
+
+  /** Resolves once the shell has the latest record on disk, or after a bounded wait if it cannot say. */
+  flush(): Promise<void> {
+    return this.#flushDurable()
   }
 
   #createTransport(): GatewayTransport {
@@ -223,13 +283,17 @@ export class NativeGatewayProfiles {
     return instance?.trim() || new URL(transport.profile.origin).host
   }
 
-  async #commit(activeId: string | undefined, activeReachable = activeId !== undefined): Promise<void> {
+  /** Makes `activeId` the active workspace and resolves with the generation that made it so. */
+  async #commit(activeId: string | undefined, activeReachable = activeId !== undefined): Promise<number> {
     await this.options.beforeCommit?.()
     if (activeId) this.#profile(activeId)
+    const generation = this.#snapshot.generation + 1
     this.#snapshot = {
       ...this.#snapshot,
       activeId,
-      generation: this.#snapshot.generation + 1,
+      generation,
+      // A new selection answers whatever the old one left unsaid.
+      notice: undefined,
       status: activeId !== undefined && !activeReachable ? "switching" : "ready",
       switchingProfileId: activeReachable ? undefined : activeId,
       failedProfileId: undefined,
@@ -241,7 +305,11 @@ export class NativeGatewayProfiles {
     }
     this.#sockets.clear()
     this.#persist()
+    // The selection is what the person will find on the next launch, so it is on
+    // disk before the app shows it as made.
+    await this.#flushDurable()
     this.#emit()
+    return generation
   }
 
   #update(snapshot: NativeGatewayProfilesSnapshot): void {
@@ -251,10 +319,25 @@ export class NativeGatewayProfiles {
   }
 
   #persist(): void {
-    persistNativeGatewayProfiles(this.options.storage, {
+    const key = recordKey(this.#snapshot.activeId, this.#snapshot.profiles)
+    if (key === this.#written) return
+    this.#written = key
+    const document = persistNativeGatewayProfiles(this.options.storage, {
+      revision: ++this.#revision,
       activeId: this.#snapshot.activeId,
       profiles: this.#snapshot.profiles,
     })
+    const durable = this.options.durable
+    if (!durable) return
+    // One write at a time, in order, so a slow earlier write can never land after a later one.
+    this.#durable = this.#durable.then(() => withTimeout(durable(document), DURABLE_WRITE_ABANDON_MS)).catch((error: unknown) => {
+      console.warn("[native-gateway] the shell could not save the workspace record", error)
+    })
+  }
+
+  async #flushDurable(): Promise<void> {
+    if (!this.options.durable) return
+    await withTimeout(this.#durable, DURABLE_WRITE_TIMEOUT_MS).catch(() => {})
   }
 
   #emit(): void {

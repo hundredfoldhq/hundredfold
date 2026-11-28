@@ -244,12 +244,12 @@ const neverChanges = () => () => {}
 function useGatewayScreen() {
   const manager = nativeGatewayProfiles()
   const read = manager?.snapshot ?? readEmpty
-  const { profiles, activeId, status, activeReachable, error } = useSyncExternalStore(manager?.subscribe ?? neverChanges, read, read)
+  const { profiles, activeId, status, activeReachable, error, notice } = useSyncExternalStore(manager?.subscribe ?? neverChanges, read, read)
   const active = profiles.find((profile) => profile.id === activeId)
   // The ACTIVE gateway failing is what this screen exists for, and activeReachable
   // is what answers that: failedProfileId names the latest failure of any kind.
   const unreachable = activeReachable ? undefined : active
-  return { manager, profiles, activeId, active, unreachable, checking: status === "checking", gatewayError: error }
+  return { manager, profiles, activeId, active, unreachable, checking: status === "checking", gatewayError: error, notice }
 }
 
 /** Busy key plus error, shared by every action this screen can start. */
@@ -278,7 +278,7 @@ function useGatewayAction() {
  * to, with no way to reach the others it already paired.
  */
 export function NativePairingScreen({ onPaired }: { onPaired?: (origin: string) => void }) {
-  const { manager, profiles, activeId, active, unreachable, checking, gatewayError } = useGatewayScreen()
+  const { manager, profiles, activeId, active, unreachable, checking, gatewayError, notice } = useGatewayScreen()
   const [origin, setOrigin] = useState(initialOrigin)
   const [code, setCode] = useState("")
   const { busy, error, run } = useGatewayAction()
@@ -298,6 +298,7 @@ export function NativePairingScreen({ onPaired }: { onPaired?: (origin: string) 
     <main className="h-dvh overflow-y-auto bg-[var(--bg)] text-[var(--text-primary)] flex items-start sm:items-center justify-center px-[var(--space-4)] py-[max(var(--safe-top),var(--space-8))]">
       <section className="w-full max-w-[560px] glass-card rounded-[var(--radius-xl)] p-[var(--space-6)]">
         <ScreenHeader unreachableName={unreachable?.name} />
+        {notice ? <p role="status" data-testid="workspace-notice" className={`mb-[var(--space-5)] text-[length:var(--text-footnote)] text-[var(--text-secondary)] ${PANEL}`}>{notice}</p> : null}
         <PairedGateways
           profiles={profiles}
           activeId={activeId}

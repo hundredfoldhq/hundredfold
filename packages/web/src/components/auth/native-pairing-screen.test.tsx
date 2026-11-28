@@ -111,6 +111,21 @@ describe("NativePairingScreen", () => {
     expect(screen.getByRole("heading", { name: "Cannot reach Alpha" })).toBeTruthy()
   })
 
+  it("says why no workspace is open when the saved one is no longer paired, and lists the others to choose from", () => {
+    snapshot = {
+      profiles: [alpha, beta],
+      generation: 0,
+      status: "ready",
+      activeReachable: false,
+      notice: "The workspace you last used is no longer paired. Choose a workspace to continue.",
+    }
+    render(<NativePairingScreen />)
+
+    expect(screen.getByRole("status").textContent).toContain("no longer paired")
+    expect(screen.getByText("Alpha")).toBeTruthy()
+    expect(screen.getByText("Beta")).toBeTruthy()
+  })
+
   it("waits on the connecting state while the remembered gateway is being checked", () => {
     snapshot = { profiles: [alpha], activeId: alpha.id, generation: 0, status: "checking", activeReachable: false }
     render(<NativePairingScreen />)
