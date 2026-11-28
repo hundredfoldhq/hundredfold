@@ -256,6 +256,14 @@ describe("an accepted message that has not run", () => {
     return () => fixture.held.get("hold: own work")!();
   }
 
+  /** The fixture's context, with every emitted event recorded; and the message ids the views were told to drop. */
+  function recordEvents(base: ApiContext) {
+    const events: Array<{ event: string; data: unknown }> = [];
+    const context = { ...base, emit: (event: string, data: unknown) => events.push({ event, data }) } as unknown as ApiContext;
+    const told = () => events.flatMap((entry) => (entry.data as { withdrawnMessageIds?: string[] }).withdrawnMessageIds ?? []);
+    return { context, told };
+  }
+
   it("drops a notice whose messages were all delivered while it waited behind the sender's own turn", async () => {
     const fixture = await queueThreeBehindATurn();
     const { calls, gates, queue, context, target, caller, ids, base } = fixture;
@@ -278,7 +286,9 @@ describe("an accepted message that has not run", () => {
 
   it("drops a notice whose message its sender withdrew while it waited, and still reports the replacement stuck behind the same turn", async () => {
     const fixture = setup({ limit: false });
-    const { calls, held, queue, context, target, caller } = fixture;
+    const recorded = recordEvents(fixture.context);
+    const context = recorded.context;
+    const { calls, held, queue, target, caller } = fixture;
     await post(context, target.id, { message: "hold: target's long turn" });
     await eventually(() => expect(held.has("hold: target's long turn")).toBe(true));
     const sent = await post(context, target.id, { message: "plan A" }, toolHeaders(caller.id));
@@ -292,8 +302,9 @@ describe("an accepted message that has not run", () => {
       await eventually(() => expect(queue.isRunning(caller.sessionKey!)).toBe(false));
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(undeliveredTurns(calls)).toHaveLength(0);
-      // The dropped notice never ran, so it is not left in the transcript to read as given.
+      // The dropped notice never ran, so it is not left in the transcript to read as given, and every view is told.
       expect(notices(caller.id)).toHaveLength(0);
+      expect(recorded.told()).toHaveLength(1);
       // The target is as silent as it was. The replacement is stuck behind the very state the dropped notice
       // reported, and its sender must still hear about it: the dropped notice's claim does not hold that state.
       expect(sweepLateralSends(context, { now: Date.now() + 30 * 60_000 }).reported).toEqual([replaced.body.queueItemId]);
@@ -310,7 +321,9 @@ describe("an accepted message that has not run", () => {
 
   it("drops a stale notice found on restart, and still reports the replacement stuck behind the same turn", async () => {
     const fixture = setup({ limit: false });
-    const { calls, held, context, target, caller } = fixture;
+    const recorded = recordEvents(fixture.context);
+    const context = recorded.context;
+    const { calls, held, target, caller } = fixture;
     await post(context, target.id, { message: "hold: target's long turn" });
     await eventually(() => expect(held.has("hold: target's long turn")).toBe(true));
     const sent = await post(context, target.id, { message: "plan A" }, toolHeaders(caller.id));
@@ -326,6 +339,7 @@ describe("an accepted message that has not run", () => {
       expect(resumePendingQueueItem(getQueueItem(noticeRow)!, restarted)).toBe(false);
       expect(getQueueItem(noticeRow)?.status).toBe("cancelled");
       expect(notices(caller.id)).toHaveLength(0);
+      expect(recorded.told()).toHaveLength(1);
       // Its claim went with it: the replacement behind the same silent turn is reported.
       expect(sweepLateralSends(context, { now: Date.now() + 30 * 60_000 }).reported).toEqual([replaced.body.queueItemId]);
       releaseCaller();
@@ -366,6 +380,10 @@ describe("an accepted message that has not run", () => {
       const claimed = dbModule.initDb().prepare("SELECT payload FROM callback_deliveries WHERE delivery_kind = ? ORDER BY created_at DESC, rowid DESC").pluck().get(LATERAL_STALL_DELIVERY_KIND) as string;
       expect(claimed).toContain(replaced.body.queueItemId);
       expect(claimed).not.toContain(sent.body.queueItemId);
+      // A closed notice is retired once: the sweeps that followed did not append to its key again.
+      const keys = dbModule.initDb().prepare("SELECT source_attempt FROM callback_deliveries WHERE delivery_kind = ?").pluck().all(LATERAL_STALL_DELIVERY_KIND) as string[];
+      expect(keys.filter((key) => key.includes(":retired:"))).toHaveLength(1);
+      expect(keys.every((key) => key.split(":retired:").length <= 2)).toBe(true);
     });
     held.get("hold: target's long turn")!();
     held.get("hold: own work")?.();
@@ -384,7 +402,7 @@ describe("an accepted message that has not run", () => {
   }, 20000);
 
   it("reports a later message behind the same state once the notice's row could not be replayed on restart", async () => {
-    await reportCloseThenResend(({ context, caller, noticeRow }) => {
+    const { events } = await reportCloseThenResend(({ context, caller, noticeRow }) => {
       // Stopped while the row was parked, and the gateway restarted before the stop reached it.
       markSessionStopped(caller.id);
       const restarted = { ...context, sessionManager: { ...context.sessionManager, getQueue: () => new queueModule.SessionQueue() } } as unknown as ApiContext;
@@ -392,6 +410,8 @@ describe("an accepted message that has not run", () => {
       expect(getQueueItem(noticeRow)?.status).toBe("cancelled");
       expect(notices(caller.id)).toHaveLength(0);
     });
+    // Every view was told the bubble is gone.
+    expect(events.flatMap((entry) => (entry.data as { withdrawnMessageIds?: string[] }).withdrawnMessageIds ?? [])).toHaveLength(1);
   }, 20000);
 
   /** The target held in a silent turn, A queued to it, and a sweep that claims a notice no gateway takes: it stays pending. */
@@ -435,20 +455,29 @@ describe("an accepted message that has not run", () => {
   }, 20000);
 
   it("does not hand a sender that keeps refusing its notices a new one on every sweep", async () => {
-    const { calls, held, context, caller, sent, now, deliveryId } = await claimUndeliveredNotice();
+    const { held, context, target, caller, sent, now, deliveryId } = await claimUndeliveredNotice();
+    // The notice runs out of delivery attempts, and the sender is not stopped: nothing about the state has changed.
+    expect(registry.recordSessionDeliveryFailure(deliveryId, "sender unreachable", { now: Date.now(), nextAttemptAt: Date.now() + 1000, maxAttempts: 0 })?.status).toBe("dead_letter");
+    const notices = () => dbModule.initDb().prepare("SELECT COUNT(*) FROM callback_deliveries WHERE delivery_kind = ?").pluck().get(LATERAL_STALL_DELIVERY_KIND);
+    await withRouteBackedFetch(context, {}, async () => {
+      // A sweep every 16 minutes for four hours: one notice, not one per sweep.
+      for (let minutes = 32; minutes <= 240; minutes += 16) expect(sweepLateralSends(context, { now: now + minutes * 60_000 }).reported).toEqual([]);
+      expect(notices()).toBe(1);
+      // A message it was never told about is news, and is reported once.
+      const later = await post(context, target.id, { message: "plan C" }, toolHeaders(caller.id));
+      expect(sweepLateralSends(context, { now: now + 250 * 60_000 }).reported).toEqual([sent.body.queueItemId, later.body.queueItemId]);
+      expect(sweepLateralSends(context, { now: now + 266 * 60_000 }).reported).toEqual([]);
+    });
+    held.get("hold: target's long turn")!();
+  }, 20000);
+
+  it("tells a sender stopped on purpose nothing about its messages", async () => {
+    const { held, context, caller, now, deliveryId } = await claimUndeliveredNotice();
     markSessionStopped(caller.id);
     await post(context, caller.id, { callbackDeliveryId: deliveryId });
     expect(registry.getSessionDelivery(deliveryId)?.status).toBe("dead_letter");
-    // A stopped sender is told nothing, however many sweeps pass.
     for (const minutes of [20, 30, 40, 50]) expect(sweepLateralSends(context, { now: now + minutes * 60_000 }).reported).toEqual([]);
     expect(dbModule.initDb().prepare("SELECT COUNT(*) FROM callback_deliveries WHERE delivery_kind = ?").pluck().get(LATERAL_STALL_DELIVERY_KIND)).toBe(1);
-    // Started again, it is told about what is still stuck, and not again until the state changes.
-    clearSessionStopped(caller.id);
-    await withRouteBackedFetch(context, {}, async () => {
-      expect(sweepLateralSends(context, { now: now + 60 * 60_000 }).reported).toEqual([sent.body.queueItemId]);
-      expect(sweepLateralSends(context, { now: now + 61 * 60_000 }).reported).toEqual([]);
-    });
-    expect(calls.filter((call) => call.text.includes("not been delivered after")).length).toBeLessThanOrEqual(1);
     held.get("hold: target's long turn")!();
   }, 20000);
 

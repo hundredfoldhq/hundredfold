@@ -217,7 +217,7 @@ interface SenderTargetGroup {
 function reportGroup(group: SenderTargetGroup, turn: TargetTurn, now: number): boolean {
   const { callerSessionId, target, sends } = group;
   // A notice for this sender that closed without running must not hold the state it reported.
-  retireClosedLateralNotices(callerSessionId, target.id, now, LATERAL_SILENT_AFTER_MS);
+  retireClosedLateralNotices(callerSessionId, target.id, [...sends.queued, ...sends.unowned, ...sends.dropped]);
   const { delivery, claimed } = claimSessionDelivery({
     targetSessionId: callerSessionId,
     sourceKind: "session",
