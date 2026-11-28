@@ -13,6 +13,7 @@ import { backgroundedNote, buildVoiceEnvelope, interruptedNote } from "./envelop
 import type { VoiceDeliveryMode, VoiceHubDeps } from "./hub-types.js";
 import type { ReplyVoice } from "./reply-voice.js";
 import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
+import { createTracer, errorField, type Tracer } from "./trace.js";
 import type { FinishedUtterance } from "./utterance-capture.js";
 
 /** How many times a young tool call is waited out before it is treated as long work regardless. */
@@ -37,6 +38,8 @@ export interface DispatcherOptions {
   send(frame: VoiceServerFrame): void;
   /** Work an engine moved to the background; the attachment announces it. */
   onBackgrounded(tasks: readonly BackgroundedWork[]): void;
+  /** Diagnostic lines; absent: written to the deps log under the session id alone. */
+  trace?: Tracer;
 }
 
 /** What to do with one utterance, once the policy has spoken. */
@@ -75,7 +78,11 @@ export class Dispatcher {
   /** The style the engine was last told (in the full block or a line); "" when none. */
   private styleSent = "";
 
-  constructor(private readonly options: DispatcherOptions) {}
+  private readonly trace: Tracer;
+
+  constructor(private readonly options: DispatcherOptions) {
+    this.trace = options.trace ?? createTracer(options.deps.log, { session: options.sessionId });
+  }
 
   /** A compaction forgot the instructions: the next spoken turn carries them again. */
   promptOwed(): void {
@@ -90,6 +97,7 @@ export class Dispatcher {
       if (this.options.live()) await this.carryOut(plan, input);
     } catch (error) {
       deps.log.warn(`voice: could not deliver a message to ${this.options.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+      this.trace.warn("dispatch_failed", { utterance: input.utterance.id, error: errorField(error) });
       send({ type: "error", code: "dispatch_failed", message: "That could not be sent to the session.", utteranceId: input.utterance.id });
     }
   }
@@ -104,7 +112,14 @@ export class Dispatcher {
       if (!session || !engine) throw new Error("the session or its engine is gone");
       const input = this.policyInput(engine, round >= MAX_WAIT_ROUNDS);
       const decision = decideBargeIn(input);
-      if (decision.kind !== "wait_then_decide") return { decision, engine, engineName: session.engine, longWork: input.longWork };
+      this.trace.debug("dispatch_decision", () => ({
+        round, kind: decision.kind, turn_running: input.turnRunning, long_work: input.longWork?.tool, soft: input.soft, steerable: input.steerable,
+        wait_ms: decision.kind === "wait_then_decide" ? decision.waitMs : undefined,
+      }));
+      if (decision.kind !== "wait_then_decide") {
+        this.trace.info("dispatch_plan", { engine: session.engine, kind: decision.kind, turn_running: input.turnRunning, long_work: input.longWork?.tool, waited_rounds: round });
+        return { decision, engine, engineName: session.engine, longWork: input.longWork };
+      }
       await new Promise<void>((resolve) => deps.clock.setTimeout(resolve, decision.waitMs));
       if (!this.options.live()) return { decision: { kind: "new_turn" }, engine, engineName: session.engine, longWork: null };
     }
@@ -138,11 +153,17 @@ export class Dispatcher {
     if (delivery.suppress) voice.suppressUntilBoundary();
     const before = { sent: this.promptSent, engine: this.promptEngine, style: this.styleSent };
     const envelope = this.envelope(input.words, plan.engineName, delivery.notes);
+    const deliveredAt = deps.clock.now();
+    this.trace.info("dispatch_deliver", {
+      utterance: input.utterance.id, mode: delivery.mode, holding: delivery.holding, suppress_old_reply: delivery.suppress,
+      chars: input.words.length, envelope_chars: envelope.length, after_interrupt: input.interrupted !== null, notes: delivery.notes.length,
+    });
     try {
-      await deps.deliver({
+      const result = await deps.deliver({
         sessionId, text: input.words, envelope, mode: delivery.mode, operator: this.options.operator,
         meta: { voice: { utteranceId: input.utterance.id, sttProvider: this.options.sttProvider, audioMs: input.utterance.audioMs } },
       });
+      this.trace.info("dispatch_delivered", { utterance: input.utterance.id, message: result.messageId, deliver_ms: deps.clock.now() - deliveredAt });
     } catch (error) {
       this.promptSent = before.sent;
       this.promptEngine = before.engine;
@@ -169,7 +190,12 @@ export class Dispatcher {
     if (!isSoftInterruptibleEngine(engine)) return deliveryFor("queue_with_holding", notes);
     const waiting = plan.longWork !== null;
     if (waiting) this.options.voice.speakHolding(this.options.config.holdingLine);
+    const started = this.options.deps.clock.now();
     const outcome = await engine.softInterrupt(this.options.sessionId, "voice barge-in");
+    this.trace.info("soft_interrupt", {
+      ended: outcome.ended, reason: outcome.ended ? undefined : outcome.reason, backgrounded: outcome.ended ? outcome.backgrounded.length : undefined,
+      ms: this.options.deps.clock.now() - started, waited_with_holding: waiting,
+    });
     if (outcome.ended) {
       if (outcome.backgrounded.length > 0) {
         this.options.onBackgrounded(outcome.backgrounded);

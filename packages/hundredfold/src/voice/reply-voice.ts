@@ -9,6 +9,7 @@ import type { JsonObject } from "../shared/types.js";
 import type { VoiceServerFrame, VoiceTurnState } from "../shared/gateway-events.js";
 import type { StoredReply, VoiceClock, VoiceHubDeps } from "./hub-types.js";
 import { SpeechPipeline, type CutResult, type PipelineOptions, type Segment } from "./speech-pipeline.js";
+import { silentTracer, type Tracer } from "./trace.js";
 
 /** One assistant reply as the hub follows it. */
 interface Reply {
@@ -46,6 +47,8 @@ export interface ReplyVoiceOptions {
   send(frame: VoiceServerFrame): void;
   sendAudio(frame: Buffer): void;
   deps: Pick<VoiceHubDeps, "mergeMessageMeta" | "findReplyMessageId" | "externalRepliesSince" | "log"> & { clock: VoiceClock };
+  /** Diagnostic lines for this conversation; absent: nothing is logged. */
+  trace?: Tracer;
 }
 
 /** A reply that finished while the client was away. */
@@ -76,10 +79,14 @@ export class ReplyVoice {
   /** The last barge-in cut, for the words or silence that follow it. */
   private lastCut: CutResult | null = null;
 
+  private readonly trace: Tracer;
+
   constructor(private readonly options: ReplyVoiceOptions) {
+    this.trace = options.trace ?? silentTracer;
     this.attachedAt = options.deps.clock.now();
     this.pipeline = new SpeechPipeline({
       ...options.pipeline,
+      trace: this.trace,
       sink: { json: (frame) => options.send(frame), audio: (frame) => options.sendAudio(frame) },
       onAudio: (segment) => this.onAudio(segment),
       onSynthesisError: (error) => this.onSynthesisError(error),
@@ -184,6 +191,7 @@ export class ReplyVoice {
   // ── session events ─────────────────────────────────────────────────────────
 
   onStarted(): void {
+    this.trace.info("turn_started", { suppressed_before: this.suppress, unplayed: this.pipeline.hasUnplayedReply(), held: this.pipeline.isHeld(), suspended: this.suspended });
     this.jumpToNewText();
     this.suppress = false;
     this.reply = this.newReply();
@@ -201,6 +209,7 @@ export class ReplyVoice {
   private jumpToNewText(): void {
     if (this.suspended || this.pipeline.isHeld() || !this.pipeline.hasUnplayedReply()) return;
     const cut = this.pipeline.cut(null, 0);
+    this.trace.info("reply_superseded", { heard_chars: cut.heard.length, unheard_sentences: cut.unheard.length, old_reply: cut.replyKey });
     this.options.send({ type: "stop_playback", reason: "new_reply" });
     this.recordCut(cut);
     for (const other of cut.others ?? []) this.recordCut(other);
@@ -224,12 +233,29 @@ export class ReplyVoice {
 
   /** A text delta, or a snapshot that reconciles the reply so far. */
   onText(content: string, snapshot: boolean): void {
-    if (this.suppress || !content) return;
+    if (this.suppress) {
+      if (content) this.trace.debug("reply_text_suppressed", () => ({ chars: content.length, snapshot }));
+      return;
+    }
+    if (!content) return;
     const reply = this.reply ?? (this.reply = this.newReply());
     const fresh = snapshot ? snapshotRemainder(reply.text, content) : content;
+    if (snapshot && !fresh) this.traceIgnoredSnapshot(reply, content);
     if (!fresh) return;
     reply.text += fresh;
+    this.trace.debug("reply_text", () => ({ reply: reply.id, chars: fresh.length, total_chars: reply.text.length, snapshot, spoken_live: !this.suspended }));
     if (!this.suspended) this.pipeline.feed(fresh);
+  }
+
+  /**
+   * A snapshot that does not extend what was streamed adds nothing, so a reply the engine settled differently is spoken
+   * as it streamed: the mismatch is the thing to look for when speech and text disagree. A snapshot that is the tail of
+   * what streamed is not a mismatch: an engine that settles a turn on its last text block (text, tool, text) or trims
+   * the trailing whitespace off it says so on every ordinary turn.
+   */
+  private traceIgnoredSnapshot(reply: Reply, snapshot: string): void {
+    if (isTailOf(reply.text, snapshot)) return;
+    this.trace.warn("reply_snapshot_ignored", { reply: reply.id, fed_chars: reply.text.length, snapshot_chars: snapshot.length, common_prefix: commonPrefix(reply.text, snapshot) });
   }
 
   onToolUse(name: string | undefined): void {
@@ -255,6 +281,10 @@ export class ReplyVoice {
    * as for a snapshot.
    */
   onTurnEnded(flush: boolean, result: string): void {
+    this.trace.info("turn_ended", {
+      flush, result_chars: result.length, reply: this.reply?.id, fed_chars: this.reply?.text.length, suppressed: this.suppress, suspended: this.suspended,
+      unplayed: this.pipeline.hasUnplayed(),
+    });
     this.onText(result, true);
     const cutOff = this.pendingMeta;
     this.pendingMeta = null;
@@ -321,17 +351,20 @@ export class ReplyVoice {
 
   private newReply(): Reply {
     const reply: Reply = { id: this.nextReplyId++, startedAt: this.options.deps.clock.now(), text: "", messageId: undefined, ttfaMs: undefined, heard: undefined };
+    this.trace.info("reply_start", { reply: reply.id, exchange: this.exchange?.utteranceId });
     this.pipeline.markReply(reply.id);
     return reply;
   }
 
   private finishReply(reply: Reply, flush: boolean): void {
     if (this.suspended) {
+      this.trace.info("reply_missed", { reply: reply.id, chars: reply.text.length });
       this.missed.push({ messageId: this.resolveMessage(reply), text: reply.text });
       return;
     }
     if (flush) this.pipeline.endReply();
     this.last = reply;
+    this.trace.info("reply_finished", { reply: reply.id, chars: reply.text.length, flush, duration_ms: this.options.deps.clock.now() - reply.startedAt });
     // Pin the stored message now, while it is the newest: a later reply must not be taken for it.
     this.resolveMessage(reply);
     void this.pipeline.whenIdle().then(() => this.applyMeta(reply)).catch((error: unknown) => this.logMetaFailure(error));
@@ -350,6 +383,7 @@ export class ReplyVoice {
     const fresh = rows.filter((row) => !this.dealtWith.has(row.id));
     for (const row of fresh) this.dealtWith.add(row.id);
     const speakable = fresh.filter((row) => row.content.trim());
+    this.trace.info("external_reply", { rows: rows.length, fresh: fresh.length, speakable: speakable.length, chars: speakable.reduce((n, row) => n + row.content.length, 0), suspended: this.suspended });
     if (speakable.length === 0) return;
     if (this.suspended) {
       for (const row of speakable) this.missed.push({ messageId: row.id, text: row.content });
@@ -445,6 +479,10 @@ export class ReplyVoice {
   /** What the stored message learns: all of it spoken, or what was heard when cut off. */
   private applyMeta(reply: Reply): void {
     const id = this.resolveMessage(reply);
+    this.trace.info("reply_spoken", {
+      reply: reply.id, message: id, fed_chars: reply.text.length, spoken_chars: this.spokenOf(reply).length, interrupted: reply.heard !== undefined,
+      heard_chars: reply.heard?.length, ttfa_ms: reply.ttfaMs,
+    });
     if (!id) return;
     const voice: JsonObject = {};
     // A cut-off reply keeps exactly what was heard, including nothing: the turn-end merge may already have stored every sentence sent.
@@ -500,6 +538,18 @@ export class ReplyVoice {
     this.lastTurnSent = key;
     this.options.send({ type: "turn", state, ...(state === "working" && this.tool ? { tool: this.tool } : {}) });
   }
+}
+
+function commonPrefix(a: string, b: string): number {
+  const limit = Math.min(a.length, b.length);
+  let at = 0;
+  while (at < limit && a.charCodeAt(at) === b.charCodeAt(at)) at += 1;
+  return at;
+}
+
+/** Whether `snapshot`, whitespace trimmed, is how `fed` ends: the whole of it, or its last block. */
+export function isTailOf(fed: string, snapshot: string): boolean {
+  return fed.trimEnd().endsWith(snapshot.trim());
 }
 
 /** The part of a snapshot not already fed, or "" when the snapshot only repeats what was. */

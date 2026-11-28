@@ -5,6 +5,7 @@ import {
   type GatewayTransport,
 } from "./gateway-transport"
 import { GuardedSocket, StaleGatewayGenerationError } from "./native-gateway-socket"
+import { nativeErrorMessage } from "./native-error"
 import { createNativeGatewayTransport, pairNativeGateway } from "./native-gateway-transport"
 import {
   canonicalNativeGatewayOrigin,
@@ -100,7 +101,7 @@ export class NativeGatewayProfiles {
       if (stale(this, generation)) throw new StaleGatewayGenerationError()
       this.#update({ ...this.#snapshot, status: "ready", switchingProfileId: undefined, activeReachable: true })
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "Gateway is unreachable"
+      const reason = nativeErrorMessage(error, "Gateway is unreachable")
       if (!stale(this, generation)) {
         this.#update({ ...this.#snapshot, status: "unreachable", switchingProfileId: undefined, failedProfileId: id, error: reason, activeReachable: false })
       }
@@ -121,7 +122,7 @@ export class NativeGatewayProfiles {
       await this.#authState(createNativeGatewayTransport(this.#profile(id).origin, this.options.bridge))
       this.#update({ ...this.#snapshot, status: "ready", failedProfileId: undefined, error: undefined, activeReachable: true })
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "Gateway is unreachable"
+      const reason = nativeErrorMessage(error, "Gateway is unreachable")
       this.#update({ ...this.#snapshot, status: "unreachable", failedProfileId: id, error: reason, activeReachable: false })
     }
   }

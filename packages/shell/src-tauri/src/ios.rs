@@ -10,6 +10,7 @@
 //! and run.
 
 use hundredfold_voice_core::{
+    diag::{self, Level},
     protocol::{Mode, Onset},
     session::Input,
 };
@@ -37,6 +38,25 @@ extern "C" {
     /// zero length stops the cue.
     fn hf_voice_set_cue(pcm: *const u8, length: usize);
     fn hf_voice_stop();
+    /// Writes one diagnostic line (UTF-8, `length` bytes, no NUL) to the unified log. `level` is 0 debug,
+    /// 1 info, 2 warning. Swift copies the bytes before returning.
+    fn hf_voice_log(level: u8, line: *const u8, length: usize);
+}
+
+fn log_to_swift(level: Level, line: &str) {
+    let level = match level {
+        Level::Debug => 0,
+        Level::Info => 1,
+        Level::Warn => 2,
+    };
+    // SAFETY: `line` is valid for `line.len()` bytes for the duration of the call.
+    unsafe { hf_voice_log(level, line.as_ptr(), line.len()) }
+}
+
+/// Sends the voice diagnostic lines to the unified log through Swift. The stderr redirect the shell
+/// otherwise relies on only logs in debug builds, so release builds would show nothing.
+pub fn install_log_sink() {
+    diag::set_sink(log_to_swift);
 }
 
 pub struct IosPlatform;

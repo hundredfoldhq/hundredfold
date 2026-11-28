@@ -73,6 +73,8 @@ function log(level: LogLevel, message: string) {
 }
 
 export const logger = {
+  /** Whether a debug line would be written: lets a caller skip building one. */
+  debugEnabled: () => LEVELS.debug >= LEVELS[minLevel],
   debug: (msg: string) => log("debug", msg),
   info: (msg: string) => log("info", msg),
   warn: (msg: string) => log("warn", msg),

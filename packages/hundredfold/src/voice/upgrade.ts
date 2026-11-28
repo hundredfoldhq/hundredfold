@@ -14,19 +14,36 @@ import { resolveCallerIdentity } from "../gateway/session-comm-guards.js";
 import { trackHeartbeat } from "../gateway/ws-heartbeat.js";
 import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
 import { getSession } from "../sessions/registry.js";
+import { logger } from "../shared/logger.js";
 import type { Session } from "../shared/types.js";
 import { adoptLegacyHeaders } from "../shared/wire-names.js";
 import { isTerminalSession } from "../terminals/session.js";
 import type { VoiceHub } from "./hub.js";
 import type { VoicePrincipal, VoiceSocket } from "./hub-types.js";
 import { voiceEndsSuspended, voiceSessionId } from "./paths.js";
+import { createTracer, errorField } from "./trace.js";
 
 export { voiceSessionId };
 
 /** Frames are small: JSON control and at most 4096 bytes of audio. */
 export const VOICE_MAX_PAYLOAD_BYTES = 16 * 1024;
 
-function refuse(socket: Duplex, status: string, error: string): true {
+const trace = createTracer(logger);
+
+/** Who is calling, as far as is safe to keep: the browser or webview and the page's host, never an address or a credential. */
+function callerFields(req: IncomingMessage): Record<string, string | undefined> {
+  const header = (name: string): string | undefined => {
+    const value = req.headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const origin = header("origin");
+  let originHost: string | undefined;
+  try { originHost = origin ? new URL(origin).host : undefined; } catch { originHost = "unparseable"; }
+  return { ua: header("user-agent")?.slice(0, 120), origin_host: originHost };
+}
+
+function refuse(socket: Duplex, status: string, error: string, req?: IncomingMessage): true {
+  trace.warn("ws_refused", { status, reason: error, ...(req ? callerFields(req) : {}) });
   socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ error })}`);
   socket.destroy();
   return true;
@@ -61,13 +78,13 @@ function refusedCaller(req: IncomingMessage, socket: Duplex, session: Session, d
     operatorAuthenticated: deps.operatorAuthenticated(req),
   });
   if (identity.kind === "operator") return false;
-  if (identity.kind === "unidentified-tool") return refuse(socket, "403 Forbidden", UNIDENTIFIED_TOOL_CALL_ERROR);
+  if (identity.kind === "unidentified-tool") return refuse(socket, "403 Forbidden", UNIDENTIFIED_TOOL_CALL_ERROR, req);
   if (identity.kind === "session" && !sessionIsWithinReach(session, identity.callerId)) {
-    return refuse(socket, "403 Forbidden", "That session is outside your reach.");
+    return refuse(socket, "403 Forbidden", "That session is outside your reach.", req);
   }
   // Someone with no credential at all learns only that one is needed, not what the endpoint is for.
-  if (identity.kind === "unauthenticated") return refuse(socket, "403 Forbidden", "Authentication is required.");
-  return refuse(socket, "403 Forbidden", "/ws/voice is for the operator; sessions cannot speak into other sessions.");
+  if (identity.kind === "unauthenticated") return refuse(socket, "403 Forbidden", "Authentication is required.", req);
+  return refuse(socket, "403 Forbidden", "/ws/voice is for the operator; sessions cannot speak into other sessions.", req);
 }
 
 /**
@@ -80,7 +97,7 @@ export function handleVoiceUpgrade(req: IncomingMessage, socket: Duplex, head: B
   if (sessionId === null || !deps.enabled()) return false;
   if (rejectCrossOriginUpgrade(req, socket)) return true;
   const session = attachableSession(sessionId);
-  if (session === "missing") return refuse(socket, "404 Not Found", "No such session.");
+  if (session === "missing") return refuse(socket, "404 Not Found", "No such session.", req);
   if (refusedCaller(req, socket, session, deps)) return true;
   acceptSocket(req, socket, head, deps, { sessionId, principal: { kind: "operator" } });
   return true;
@@ -99,7 +116,7 @@ export function upgradeMember(
   member: { principal: MemberPrincipal; sessionId: string; onSocket(ws: WebSocket): void },
 ): boolean {
   if (!deps.enabled()) return false;
-  if (attachableSession(member.sessionId) === "missing") return refuse(socket, "404 Not Found", "No such session.");
+  if (attachableSession(member.sessionId) === "missing") return refuse(socket, "404 Not Found", "No such session.", req);
   const principal: VoicePrincipal = { kind: "member", userId: member.principal.userId, userSessionId: member.principal.sessionId };
   acceptSocket(req, socket, head, deps, { sessionId: member.sessionId, principal, onSocket: member.onSocket });
   return true;
@@ -112,7 +129,10 @@ interface Accept {
 }
 
 function acceptSocket(req: IncomingMessage, socket: Duplex, head: Buffer, deps: VoiceUpgradeDeps, accept: Accept): void {
+  const openedAt = Date.now();
+  const caller = callerFields(req);
   deps.wss.handleUpgrade(req, socket, head, (ws) => {
+    trace.info("ws_open", { session: accept.sessionId, principal: accept.principal.kind, ...caller });
     trackHeartbeat(ws);
     accept.onSocket?.(ws);
     const endSuspended = voiceEndsSuspended(req.url || "");
@@ -129,9 +149,13 @@ function acceptSocket(req: IncomingMessage, socket: Duplex, head: Buffer, deps: 
     // let `close` report it, so an oversize frame ends the attachment instead of reading as a dropped network.
     let endedBy: number | null = null;
     ws.on("error", (error: Error & { code?: string }) => {
+      trace.warn("ws_error", { session: accept.sessionId, code: error.code, error: errorField(error) });
       if (error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") endedBy = 1009;
     });
-    ws.on("close", (code: number) => gone(endedBy ?? code));
+    ws.on("close", (code: number, reason?: Buffer) => {
+      trace.info("ws_close", { session: accept.sessionId, code: endedBy ?? code, reported_code: code, reason: reason?.toString("utf8").slice(0, 40), open_ms: Date.now() - openedAt });
+      gone(endedBy ?? code);
+    });
   });
 }
 

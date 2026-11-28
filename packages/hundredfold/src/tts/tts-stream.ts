@@ -6,8 +6,11 @@
  * readiness. The Kokoro engine is a process-wide singleton so there is
  * exactly one sidecar.
  */
+import { logger } from "../shared/logger.js";
+import { traceLine } from "../voice/trace.js";
 import { createKokoroTts } from "./kokoro.js";
 import type { Tts } from "./protocol.js";
+import { wavFacts } from "./wav-facts.js";
 
 type KokoroOpts = Parameters<typeof createKokoroTts>[0];
 
@@ -94,15 +97,29 @@ export async function streamTtsSentences(
   opts: KokoroOpts | undefined,
   onFrame: (wav: Buffer) => void,
   isCancelled: () => boolean,
+  requestId?: string,
 ): Promise<number> {
   const sentences = splitTtsSentences(text);
+  const startedAt = Date.now();
+  const id = requestId ?? "-";
+  logger.info(traceLine("tts_stream_start", { req: id, chars: text.length, sentences: sentences.length }));
   let count = 0;
   for (const sentence of sentences) {
-    if (isCancelled()) break;
+    if (isCancelled()) {
+      logger.info(traceLine("tts_stream_cancelled", { req: id, before: "synth", sentence: count + 1, sentences: sentences.length, frames: count, ms: Date.now() - startedAt }));
+      return count;
+    }
+    const synthStartedAt = Date.now();
     const wav = await getTts(opts).synthesize(sentence);
-    if (isCancelled()) break;
+    const synthMs = Date.now() - synthStartedAt;
+    if (isCancelled()) {
+      logger.info(traceLine("tts_stream_cancelled", { req: id, before: "send", sentence: count + 1, sentences: sentences.length, frames: count, synth_ms: synthMs, ms: Date.now() - startedAt }));
+      return count;
+    }
     onFrame(wav);
     count++;
+    logger.info(traceLine("tts_stream_frame", { req: id, n: count, of: sentences.length, chars: sentence.length, synth_ms: synthMs, since_start_ms: Date.now() - startedAt, ...wavFacts(wav) }));
   }
+  logger.info(traceLine("tts_stream_end", { req: id, frames: count, sentences: sentences.length, ms: Date.now() - startedAt }));
   return count;
 }

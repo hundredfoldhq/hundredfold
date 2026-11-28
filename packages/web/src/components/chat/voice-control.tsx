@@ -1,5 +1,6 @@
 import type { UseVoice } from './use-voice'
 import type { VoicePhase } from '@/lib/voice/state'
+import { voiceLog } from '@/lib/voice-log'
 
 /* The voice-mode control in the composer toolbar, beside Send.
  * One tap starts listening and speaking, a second tap stops; in push-to-talk
@@ -143,8 +144,8 @@ const HOLD_KEYS = new Set([' ', 'Enter'])
  */
 function pressProps(voice: UseVoice, held: boolean) {
   if (!held) return { onClick: voice.onTap }
-  const down = () => voice.controller?.pttDown()
-  const up = () => voice.controller?.pttUp()
+  const down = () => { voiceLog.debug('ptt_ui', { edge: 'down', phase: voice.phase }); voice.controller?.pttDown() }
+  const up = () => { voiceLog.debug('ptt_ui', { edge: 'up', phase: voice.phase }); voice.controller?.pttUp() }
   return {
     onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
       try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* not capturable: the window-level fallbacks below end the talk */ }

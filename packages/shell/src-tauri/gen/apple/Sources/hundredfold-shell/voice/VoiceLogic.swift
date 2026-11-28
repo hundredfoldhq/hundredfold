@@ -10,7 +10,8 @@ struct OnsetDetector {
     var threshold: Float = 0.05
     var minSpeechMs: Int = 200
     private let frameMs = 20
-    private var heldMs = 0
+    /// How long the level has held at or above the threshold so far; exposed for diagnostics.
+    private(set) var heldMs = 0
 
     mutating func configure(threshold: Float, minSpeechMs: Int) {
         self.threshold = threshold
@@ -85,6 +86,15 @@ struct PlaybackLedger {
     }
 
     func isPlaying(head: Int64) -> Bool { head < written }
+
+    /// Frames queued and not yet played, for diagnostics.
+    func pendingFrames(head: Int64) -> Int64 { max(0, written - head) }
+
+    /// The newest segment the gateway has not finished sending, for diagnostics.
+    var openSegmentId: Int? {
+        guard let last = segments.last, !last.ended else { return nil }
+        return last.id
+    }
 
     func currentSegment(head: Int64) -> Int? {
         guard head < written else { return nil }
