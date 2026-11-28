@@ -11,6 +11,7 @@ import { listReleasableParentCompletionQueuesForSource, RESTART_RESUME_META_KEY,
 import { removePendingSwitch } from "../sessions/pending-switch.js";
 import { interruptSessionTurn } from "./session-interrupt.js";
 import type { ApiContext } from "./api.js";
+import { announceRemovedMessages } from "./announce-withdrawn.js";
 
 export { isStoppedByUser } from "../sessions/stopped-marker.js";
 
@@ -53,16 +54,11 @@ function withoutRestartResumeMark(session: Session): JsonObject | undefined {
   return meta;
 }
 
-/** Tell every view the parked messages are gone, bubbles included. */
-function announceWithdrawn(context: ApiContext, session: Session, withdrawn: QueueItem[]): void {
-  if (withdrawn.length === 0) return;
-  const messageIds = withdrawn.flatMap((item) => (item.messageId ? [item.messageId] : []));
-  context.emit("queue:updated", {
-    sessionId: session.id,
-    sessionKey: session.sessionKey || session.sourceRef || session.id,
-    depth: 0,
-    ...(messageIds.length > 0 ? { withdrawnMessageIds: messageIds } : {}),
-  });
+/** Tell every view the parked messages are gone, bubbles included, and those of any notice that will now never run. */
+function announceWithdrawn(context: ApiContext, session: Session, withdrawn: QueueItem[], removedNoticeMessageIds: string[]): void {
+  const messageIds = [...withdrawn.flatMap((item) => (item.messageId ? [item.messageId] : [])), ...removedNoticeMessageIds];
+  if (withdrawn.length === 0 && messageIds.length === 0) return;
+  announceRemovedMessages(context, session, messageIds, { depth: 0 });
 }
 
 /** Let a parent's completion batch held behind this session's queue go on its way. */
@@ -84,7 +80,7 @@ function releaseHeldParentCompletions(context: ApiContext, session: Session): vo
 export function stopSession(context: ApiContext, session: Session, effectiveStatus: Session["status"]): SessionStopResult {
   // Rows first: the turn's slot settles as soon as the kill lands, and the next
   // slot must find nothing `pending` left to claim.
-  const { withdrawn, cancelledDeliveries } = withdrawPendingQueueItemsForStop(session.id);
+  const { withdrawn, cancelledDeliveries, removedNoticeMessageIds } = withdrawPendingQueueItemsForStop(session.id);
   const wasRunning = effectiveStatus === "running" || effectiveStatus === "waiting";
   const alreadyStopped = hasStoppedMark(session.id);
   if (wasRunning) interruptSessionTurn(context, session, USER_STOP_INTERRUPTION_REASON, USER_STOP_INTERRUPTION_REASON);
@@ -94,7 +90,7 @@ export function stopSession(context: ApiContext, session: Session, effectiveStat
   // A stop between a session's own switch request and its resume withdraws the switch: the resume, if it runs at all, is a plain one.
   // After the write above, which was built from the row as it stood and would bring the switch back.
   const withdrewSwitch = removePendingSwitch(session.id);
-  announceWithdrawn(context, session, withdrawn);
+  announceWithdrawn(context, session, withdrawn, removedNoticeMessageIds);
   releaseHeldParentCompletions(context, session);
   const cancelled = withdrawn.length + cancelledDeliveries;
   return { wasRunning, changed: wasRunning || !alreadyStopped || cancelled > 0 || transportMeta !== undefined || withdrewSwitch, cancelled };

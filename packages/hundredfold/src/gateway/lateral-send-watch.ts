@@ -4,8 +4,9 @@ import { logger } from "../shared/logger.js";
 import { reportsTurnProgress, type Session, type SessionDeliveryPayload } from "../shared/types.js";
 import { claimSessionDelivery, getQueueItem, getSession } from "../sessions/registry.js";
 import { lastTurnOutputAt } from "../sessions/turn/output-clock.js";
-import { LATERAL_STALL_DELIVERY_KIND } from "../sessions/lateral-notice-staleness.js";
+import { LATERAL_STALL_DELIVERY_KIND, retireClosedLateralNotices } from "../sessions/lateral-notice-staleness.js";
 import { deliverClaimedSessionDelivery } from "../sessions/callbacks.js";
+import { isStoppedByUser } from "../sessions/stopped-marker.js";
 import { parseLateralSendKey } from "../sessions/queued-send-supersede.js";
 import type { ApiContext } from "./api.js";
 import { resumePendingQueueItem } from "./callback-queue-recovery.js";
@@ -215,6 +216,8 @@ interface SenderTargetGroup {
 /** Tell the sender, once per target state: the outbox key makes a repeat a no-op. */
 function reportGroup(group: SenderTargetGroup, turn: TargetTurn, now: number): boolean {
   const { callerSessionId, target, sends } = group;
+  // A notice for this sender that closed without running must not hold the state it reported.
+  retireClosedLateralNotices(callerSessionId, target.id, [...sends.queued, ...sends.unowned, ...sends.dropped]);
   const { delivery, claimed } = claimSessionDelivery({
     targetSessionId: callerSessionId,
     sourceKind: "session",
@@ -262,7 +265,9 @@ function stalledState(send: PendingSend, context: ApiContext): StalledSendState 
 /** Add a row still waiting after the re-dispatch to its sender-and-target group. */
 function addToGroup(groups: Map<string, SenderTargetGroup>, send: PendingSend, rowState: StalledSendState): void {
   const key = parseLateralSendKey(send.dedupeKey);
-  if (!key || !getSession(key.callerSessionId)) return;
+  const sender = key && getSession(key.callerSessionId);
+  // A sender stopped on purpose cannot act on a notice, and would refuse it: hear nothing until it is started again.
+  if (!key || !sender || isStoppedByUser(sender)) return;
   const groupKey = `${key.callerSessionId}:${send.sessionId}`;
   let group = groups.get(groupKey);
   if (!group) {

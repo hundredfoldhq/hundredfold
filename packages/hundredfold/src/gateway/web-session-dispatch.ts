@@ -31,6 +31,7 @@ import { staleChildWatchWakeReason } from "../heartbeats/child-watch.js";
 import { retireStaleLateralNotice } from "../sessions/lateral-notice-staleness.js";
 import { clearTurnOutput, markTurnOutput } from "../sessions/turn/output-clock.js";
 import type { ApiContext } from "./api.js";
+import { announceRemovedMessages } from "./announce-withdrawn.js";
 
 /**
  * How a turn on a web-surfaced session is dispatched and run.
@@ -100,7 +101,8 @@ async function runQueuedTurn(
   // Likewise a notice that a sender's messages are undelivered, once they have all run or been withdrawn.
   const staleNotice = retireStaleLateralNotice(opts.queueItemId);
   if (staleNotice) {
-    logger.info(`Dropped stale undelivered-messages notice ${opts.queueItemId} for session ${session.id}: ${staleNotice}`);
+    logger.info(`Dropped stale undelivered-messages notice ${opts.queueItemId} for session ${session.id}: ${staleNotice.reason}`);
+    announceRemovedMessages(context, session, staleNotice.removedMessageIds);
     return;
   }
   const startedAttempt = beginSessionAttempt(session.id, {
