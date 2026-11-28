@@ -14,6 +14,8 @@
  * with a mock and the real engine swaps in transparently.
  */
 
+import { voiceLog, voiceNow } from "@/lib/voice-log"
+
 export type TtsPhase = "idle" | "loading" | "playing"
 
 export interface TtsSnapshot {
@@ -45,6 +47,8 @@ export class TtsController {
   private stopFn: (() => void) | null = null
   /** Bumped on every (re)start and reset; stale async callbacks check it and drop. */
   private gen = 0
+  /** Diagnostics only: when the active message was toggled on. */
+  private startedAt = 0
   private snapshot: TtsSnapshot = IDLE
   private listeners = new Set<() => void>()
 
@@ -68,9 +72,11 @@ export class TtsController {
   /** Toggle read-aloud for `id`: stop if it's the active message, else start it. */
   toggle(id: string, text: string): void {
     if (this.id === id && this.phase !== "idle") {
+      voiceLog.info("tts_toggle", { message: id, action: "stop", phase: this.phase })
       this.stop()
       return
     }
+    voiceLog.info("tts_toggle", { message: id, action: "start", chars: text.length, replaces: this.id, phase: this.phase })
     void this.begin(id, text)
   }
 
@@ -84,24 +90,29 @@ export class TtsController {
     const gen = ++this.gen
     this.id = id
     this.phase = "loading"
+    this.startedAt = voiceNow()
     this.emit()
 
     try {
       const stop = await this.start(text, {
         onPlaying: () => {
+          voiceLog.info("tts_playing", { message: id, stale: this.gen !== gen, since_toggle_ms: voiceNow() - this.startedAt })
           if (this.gen === gen) {
             this.phase = "playing"
             this.emit()
           }
         },
         onEnd: () => {
+          voiceLog.info("tts_ended", { message: id, stale: this.gen !== gen, since_toggle_ms: voiceNow() - this.startedAt })
           if (this.gen === gen) this.reset()
         },
         onError: () => {
+          voiceLog.warn("tts_error", { message: id, stale: this.gen !== gen, phase: this.phase, since_toggle_ms: voiceNow() - this.startedAt })
           if (this.gen === gen) this.reset()
         },
       })
       if (this.gen !== gen) {
+        voiceLog.info("tts_superseded", { message: id, since_toggle_ms: voiceNow() - this.startedAt })
         // A newer toggle (or stop) superseded us while starting — kill this one.
         try {
           stop()
@@ -111,7 +122,8 @@ export class TtsController {
         return
       }
       this.stopFn = stop
-    } catch {
+    } catch (error) {
+      voiceLog.warn("tts_start_threw", { message: id, stale: this.gen !== gen, err: error instanceof Error ? error.name : typeof error })
       if (this.gen === gen) this.reset()
     }
   }
@@ -137,6 +149,7 @@ export class TtsController {
 
   private emit(): void {
     if (this.id === this.snapshot.id && this.phase === this.snapshot.phase) return
+    voiceLog.info("tts_phase", { message: this.id ?? this.snapshot.id, from: this.snapshot.phase, to: this.phase, active_ms: this.startedAt === 0 ? null : voiceNow() - this.startedAt })
     this.snapshot = { id: this.id, phase: this.phase }
     for (const fn of this.listeners) fn()
   }

@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from "react"
 import type { WorkspaceInfo } from "@/lib/api"
 import { nativeGatewayProfiles } from "@/lib/native-gateway-bootstrap"
+import { nativeErrorMessage } from "@/lib/native-error"
 import { NativePairingDialog } from "@/components/auth/native-pairing-screen"
 
 type LauncherProps = {
@@ -48,7 +49,7 @@ export function NativeWorkspaceSwitcher({
     try {
       await profiles.select(workspace.id)
     } catch (reason) {
-      setError({ id: workspace.id, message: reason instanceof Error ? reason.message : "Gateway is unreachable" })
+      setError({ id: workspace.id, message: nativeErrorMessage(reason, "Gateway is unreachable") })
     }
   }
 
@@ -57,7 +58,7 @@ export function NativeWorkspaceSwitcher({
     try {
       await profiles.remove(workspace.id)
     } catch (reason) {
-      setError({ id: workspace.id, message: reason instanceof Error ? reason.message : "Gateway could not be removed" })
+      setError({ id: workspace.id, message: nativeErrorMessage(reason, "Gateway could not be removed") })
     }
   }
 

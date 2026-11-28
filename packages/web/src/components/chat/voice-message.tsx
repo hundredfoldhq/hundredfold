@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { formatDuration } from '@/lib/utils'
+import { errorFields, voiceLog } from '@/lib/voice-log'
 
 interface VoiceMessageProps {
   src: string
@@ -49,6 +50,7 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
       }
     }
     const onEnded = () => {
+      voiceLog.info('voice_message_ended', { played_s: audio.currentTime, duration_s: Number.isFinite(audio.duration) ? audio.duration : null })
       setPlaying(false)
       setProgress(0)
       setCurrentTime(0)
@@ -72,7 +74,9 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
       audioRef.current?.pause()
     } else {
       const audio = ensureAudio()
-      audio.play().catch(() => {})
+      audio.play().catch((error: unknown) => {
+        voiceLog.warn('voice_message_play_failed', { media_error: audio.error?.code, ready_state: audio.readyState, network_state: audio.networkState, ...errorFields(error) })
+      })
     }
   }, [ensureAudio, playing])
 

@@ -43,6 +43,12 @@ class PlaybackLedger(private val sampleRate: Int) {
     /** True while audio written to the output has not finished playing. */
     fun isPlaying(head: Long): Boolean = head < written
 
+    /** Frames written and not yet played, for diagnostics. */
+    fun pendingFrames(head: Long): Long = (written - head).coerceAtLeast(0)
+
+    /** The newest segment the gateway has not finished sending, for diagnostics. */
+    fun openSegmentId(): Int? = segments.lastOrNull()?.takeIf { !it.ended }?.id
+
     /** The segment under the head, or null when nothing is playing. */
     fun currentSegment(head: Long): Int? =
         if (head >= written) null else segments.firstOrNull { head < it.endFrame }?.id

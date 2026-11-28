@@ -8,7 +8,9 @@ import type { VoiceSessionStarter } from "../controller"
 import { BrowserVoiceSession, type BrowserVoiceDeps, type VoiceAudioContext, type VoiceSocketLike } from "../session"
 import { VoiceSocket, type VoiceSocketHandlers } from "../socket"
 import { voicePhase } from "../state"
+import { clearDebugLog, getDebugLog } from "@/lib/debug-log"
 import { GATEWAY_SOCKET_OPEN, type GatewaySocketConnection } from "@/lib/gateway-transport"
+import { resetVoiceLog, setVoiceDebug } from "@/lib/voice-log"
 import { FakeAudioContext, pcm } from "./fakes"
 
 class Emitter {
@@ -163,7 +165,7 @@ async function started(options?: Parameters<typeof rig>[0]) {
   return r
 }
 
-beforeEach(() => { vi.useRealTimers() })
+beforeEach(() => { vi.useRealTimers(); resetVoiceLog() })
 
 describe("starting from a tap", () => {
   it("creates the context, resumes it, asks for the microphone and opens the socket before any await (iOS)", () => {
@@ -429,6 +431,62 @@ describe("playback and barge-in", () => {
     const count = ctx(r).sources.length
     r.sockets[0].serverAudio(1)
     expect(ctx(r).sources).toHaveLength(count)
+  })
+
+  it("logs the audio still in flight after a local barge-in at debug, not as a warning", async () => {
+    const r = await started()
+    speak(r)
+    for (let i = 0; i < 13; i++) r.emitCapture(frameAt(0.1))
+    expect(r.sockets[0].types()).toContain("barge_in")
+    clearDebugLog()
+    setVoiceDebug(true)
+    for (let i = 0; i < 5; i++) r.sockets[0].serverAudio(1)
+    const log = getDebugLog()
+    expect(log).not.toContain("event=audio_without_segment")
+    expect(log.split("\n").filter((l) => l.includes("event=audio_after_cut segment=1"))).toHaveLength(5)
+  })
+
+  it("logs the audio still in flight after stop_playback at debug, not as a warning", async () => {
+    const r = await started()
+    speak(r)
+    r.sockets[0].serverFrame({ type: "stop_playback", reason: "new_reply" })
+    clearDebugLog()
+    r.sockets[0].serverAudio(1)
+    expect(getDebugLog()).not.toContain("event=audio_without_segment")
+  })
+
+  it("still warns about audio for a segment that was never started and not just cut", async () => {
+    const r = await started()
+    r.sockets[0].serverAudio(7)
+    expect(getDebugLog()).toContain("event=audio_without_segment segment=7")
+  })
+
+  it("still warns about audio for a segment that was never started, straight after a cut", async () => {
+    const r = await started()
+    speak(r)
+    r.sockets[0].serverFrame({ type: "stop_playback", reason: "speech" })
+    clearDebugLog()
+    r.sockets[0].serverAudio(8)
+    expect(getDebugLog()).toContain("event=audio_without_segment segment=8")
+  })
+
+  it("warns about audio for another segment once the cut is long past", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(10_000)
+    let log: string
+    try {
+      const r = await started()
+      speak(r)
+      r.sockets[0].serverFrame({ type: "stop_playback", reason: "speech" })
+      now.mockReturnValue(15_000)
+      clearDebugLog()
+      r.sockets[0].serverAudio(1)
+      r.sockets[0].serverAudio(8)
+      log = getDebugLog()
+    } finally {
+      now.mockRestore()
+    }
+    expect(log).not.toContain("event=audio_without_segment segment=1")
+    expect(log).toContain("event=audio_without_segment segment=8")
   })
 
   it("uses the onset settings the gateway sent in ready", async () => {

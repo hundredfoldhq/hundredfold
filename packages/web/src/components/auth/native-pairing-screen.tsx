@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/dialog"
 import { BrandMark } from "@/components/brand-mark-image"
 import { PRODUCT_NAME } from "@/lib/brand"
+import { nativeErrorMessage } from "@/lib/native-error"
+import { detectRuntime } from "@/platform/runtime"
 
 const INPUT_SHELL =
   "flex h-11 w-full items-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-3 shadow-[inset_0_0_0_1px_var(--separator)] transition-[box-shadow] duration-150 [transition-timing-function:var(--ease-smooth)] focus-within:shadow-[inset_0_0_0_1px_var(--accent),0_0_0_4px_var(--accent-fill)]"
@@ -29,6 +31,17 @@ const QUIET_BUTTON =
   "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--accent)] transition-[transform,background-color] duration-150 [transition-timing-function:var(--ease-snappy)] hover:bg-[var(--accent-fill)] active:scale-[0.96] disabled:opacity-45"
 const ICON_BUTTON =
   "inline-flex size-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-tertiary)] transition-[transform,background-color,color] duration-150 [transition-timing-function:var(--ease-snappy)] hover:bg-[var(--fill-secondary)] hover:text-[var(--system-red)] active:scale-[0.96] disabled:opacity-45"
+
+const LOOPBACK_ORIGIN = "http://127.0.0.1:7779"
+const REMOTE_ORIGIN_EXAMPLE = "https://gateway.example.com"
+
+/** A phone's loopback is the phone itself, so only the desktop shell has a gateway to prefill. */
+function isMobileShell(): boolean {
+  const { os } = detectRuntime()
+  return os === "ios" || os === "android"
+}
+
+const initialOrigin = () => (isMobileShell() ? "" : LOOPBACK_ORIGIN)
 
 interface FieldsProps { origin: string; code: string; onOrigin: (value: string) => void; onCode: (value: string) => void }
 
@@ -48,7 +61,7 @@ function PairingFields({ origin, code, onOrigin, onCode }: FieldsProps) {
         <PlugZap size={16} className="shrink-0 text-[var(--text-tertiary)]" aria-hidden />
         <input
           id="native-gateway-origin" className={INPUT} inputMode="url" spellCheck={false} required
-          value={origin} onChange={(event) => onOrigin(event.target.value)} placeholder="http://127.0.0.1:7779"
+          value={origin} onChange={(event) => onOrigin(event.target.value)} placeholder={isMobileShell() ? REMOTE_ORIGIN_EXAMPLE : LOOPBACK_ORIGIN}
         />
       </PairingField>
       <PairingField id="native-pair-code" label="Pair code">
@@ -75,7 +88,7 @@ function ErrorNote({ message }: { message?: string }) {
 }
 
 export function NativePairingDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const [origin, setOrigin] = useState("http://127.0.0.1:7779")
+  const [origin, setOrigin] = useState(initialOrigin)
   const [code, setCode] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -89,7 +102,7 @@ export function NativePairingDialog({ open, onOpenChange }: { open: boolean; onO
       onOpenChange(false)
       setCode("")
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Pairing failed")
+      setError(nativeErrorMessage(reason, "Pairing failed"))
     } finally {
       setBusy(false)
     }
@@ -188,7 +201,9 @@ function ScreenHeader({ unreachableName }: { unreachableName?: string }) {
         <p className="mt-1 text-pretty text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
           {unreachableName
             ? "The gateway is not answering. Start it again, choose another paired gateway, or pair a new one."
-            : "Add the gateway running on this Mac. HTTP is accepted only for loopback; other gateways require HTTPS."}
+            : isMobileShell()
+              ? "Enter the HTTPS address of your gateway and the pair code it shows."
+              : "Add the gateway running on this computer. HTTP is accepted only for loopback; other gateways require HTTPS."}
         </p>
       </div>
     </div>
@@ -247,7 +262,7 @@ function useGatewayAction() {
     try {
       await action()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The gateway did not answer")
+      setError(nativeErrorMessage(reason, "The gateway did not answer"))
     } finally {
       setBusy(undefined)
     }
@@ -264,7 +279,7 @@ function useGatewayAction() {
  */
 export function NativePairingScreen({ onPaired }: { onPaired?: (origin: string) => void }) {
   const { manager, profiles, activeId, active, unreachable, checking, gatewayError } = useGatewayScreen()
-  const [origin, setOrigin] = useState("http://127.0.0.1:7779")
+  const [origin, setOrigin] = useState(initialOrigin)
   const [code, setCode] = useState("")
   const { busy, error, run } = useGatewayAction()
 

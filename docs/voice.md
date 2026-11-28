@@ -324,6 +324,16 @@ The dictation microphones in Notes and Todo quick capture, and the voice notes t
 - **Telegram voice notes** arrive as Ogg/Opus, so decoding them needs `ffmpeg` on the gateway machine. It is optional: without it, the bot replies that it cannot decode the audio. Voice mode itself never needs it.
 - **Removed:** the separate whisper.cpp engine (`whisper-cli`, a downloaded ggml model, the Settings "Dictation" section and its language list) and `/api/stt/*`. A `stt:` block in `config.yaml` is ignored. Model files already downloaded stay under `~/.hundredfold/models/whisper/` and can be deleted by hand.
 
+## Diagnosing with the logs
+
+Every stage of a spoken turn writes one line per event, in the form `[voice] event=<name> key=value ...`, with ids, counts, lengths and milliseconds, never the words spoken or a credential.
+
+- **Gateway** (`logs/gateway.log`): `grep -E '\[voice(-sidecar)?\]' gateway.log`. One conversation is `grep 'att=<id>'`. The default level (`info`) is enough to follow a turn: `hello`, `ready_sent`, `utterance_open`, `stt_final`, `dispatch_plan`, `reply_start`, `segment_queued`, `synth_start`, `synth_end`, `segment_start`, `segment_end`, `reply_spoken`, and for an interruption `client_barge_in`, `pipeline_cut`, `barge_in_begin`, `barge_in_resume`. Each `segment_end` and `synth_end` carries frames, bytes, audio milliseconds and timings. Set the log level to `debug` to add every audio frame and provider chunk. Read-aloud (`/api/tts`) logs `tts_stream_*` and `kokoro_synth` lines, with the WAV's own rate and length.
+- **Web app:** lines are in the browser console and behind the mobile menu's "Share debug log". Add `?voice_debug=1` to the address, or run `window.__voiceDebug(true)` in the console, for per-chunk lines.
+- **Mobile app:** see "Diagnostic logs" in `packages/shell/README.md` (Console.app or `log stream` on iPhone, `adb logcat -s HundredfoldVoice` on Android).
+
+A cut-off or garbled reply is easiest to read from the per-segment summaries: `segment_end` on the gateway, `segment_summary` in the web app and `segment_received` / `segment_outcome` in the mobile app should agree on frames and audio milliseconds, and `reply_spoken` compares the characters the reply had with the characters that were spoken.
+
 ## Cost
 
 - **Local:** free; it uses the gateway machine's CPU or GPU and disk.

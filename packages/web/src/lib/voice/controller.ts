@@ -1,3 +1,4 @@
+import { voiceLog } from "@/lib/voice-log"
 import { INITIAL_VOICE_STATE, voiceReducer, type VoiceAction, type VoiceUiState } from "./state"
 
 /**
@@ -44,6 +45,7 @@ export class VoiceStore {
   dispatch(action: VoiceAction): void {
     const next = voiceReducer(this.state, action)
     if (next === this.state) return
+    logStateChange(this.state, next, action)
     this.state = next
     for (const listener of [...this.listeners]) listener()
   }
@@ -104,4 +106,18 @@ export function releaseClaim(controller: VoiceController): void {
 export function dropHandoff(controller: VoiceController): void {
   for (const [id, entry] of handoffs) if (entry.controller === controller) handoffs.delete(id)
   adopted.delete(controller)
+}
+
+/** Status and turn changes only; a change to anything else (a partial transcript) is not worth a line. */
+function logStateChange(from: VoiceUiState, to: VoiceUiState, action: VoiceAction): void {
+  if (from.status === to.status && from.turn === to.turn && from.error === to.error) return
+  voiceLog.info("ui_state", {
+    action: action.type === "frame" ? `frame:${action.frame.type}` : action.type,
+    status_from: from.status,
+    status_to: to.status,
+    turn_from: from.turn,
+    turn_to: to.turn,
+    error_chars: to.error === from.error ? undefined : to.error?.length ?? null,
+    needs_tap: to.needsTap,
+  })
 }

@@ -12,16 +12,23 @@
 
 use hundredfold_voice_core::{
     cues::render_loop,
+    diag_debug, diag_info, diag_warn,
     protocol::{Mode, Onset},
     session::{Action, Input, NativeState, Session, READY_TIMEOUT_MS},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, ipc::InvokeResponseBody, Runtime, State, WebviewWindow};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
 
 use crate::{
     commands::{confine, NativeError, NativeState as ShellState},
@@ -37,6 +44,10 @@ const CAPTURE_QUEUE_FRAMES: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `voice_stop` waits for the session to finish ending.
 const STOP_WAIT: Duration = Duration::from_secs(3);
+/// How often the session's running counts are logged.
+const STATS_EVERY: Duration = Duration::from_secs(10);
+/// A gap this long between gateway frames is worth a warning: the gateway sends a keepalive well inside it.
+const GATEWAY_SILENCE_WARN: Duration = Duration::from_secs(15);
 
 /// What the session asks of the platform's audio code.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +87,7 @@ fn platform() -> Option<Arc<dyn AudioPlatform>> {
 
 #[cfg(target_os = "ios")]
 fn platform() -> Option<Arc<dyn AudioPlatform>> {
+    crate::ios::install_log_sink();
     Some(Arc::new(crate::ios::IosPlatform))
 }
 
@@ -102,14 +114,30 @@ struct Active {
 /// access to Tauri state.
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Capture blocks handed over by the platform, their bytes, and those dropped because the session
+/// was not keeping up. Plain counters: the capture thread does no formatting for them.
+static CAPTURE_BLOCKS: AtomicU64 = AtomicU64::new(0);
+static CAPTURE_BYTES: AtomicU64 = AtomicU64::new(0);
+static CAPTURE_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// Captured audio from the platform. Called on the capture thread; never
 /// blocks.
 #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 pub fn platform_capture(bytes: &[u8]) {
+    CAPTURE_BLOCKS.fetch_add(1, Ordering::Relaxed);
+    CAPTURE_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
     if let Ok(active) = ACTIVE.lock() {
         if let Some(active) = active.as_ref() {
-            let _ = active.capture.try_send(bytes.to_vec());
+            if let Err(TrySendError::Full(_)) = active.capture.try_send(bytes.to_vec()) {
+                let dropped = CAPTURE_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                // Powers of two only: a stuck session would otherwise log 50 lines a second.
+                if dropped.is_power_of_two() {
+                    diag_warn!(
+                        "event=capture_queue_full run={} dropped_total={dropped} queue_frames={CAPTURE_QUEUE_FRAMES}",
+                        active.id
+                    );
+                }
+            }
         }
     }
 }
@@ -202,6 +230,7 @@ pub async fn voice_start<R: Runtime>(
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<VoiceAck, NativeError> {
     confine(&window)?;
+    let started_at = Instant::now();
     let mode = Mode::parse(&input.mode).ok_or_else(NativeError::invalid_request)?;
     let path = voice_path(&input.session_id).ok_or_else(NativeError::invalid_path)?;
     let origin = CanonicalOrigin::parse(&input.target.origin)?;
@@ -227,6 +256,11 @@ pub async fn voice_start<R: Runtime>(
             .as_ref()
             .is_some_and(|a| lock_status(&a.status).running)
         {
+            diag_warn!(
+                "event=voice_start_refused run={id} session_id={} reason=busy active_run={}",
+                input.session_id,
+                active.as_ref().map_or(0, |a| a.id)
+            );
             return Err(NativeError::voice_busy());
         }
         *active = Some(Active {
@@ -236,6 +270,15 @@ pub async fn voice_start<R: Runtime>(
             status: status.clone(),
         });
     }
+    // The capture counters are process-wide: a run's `stats` lines count from its own start.
+    CAPTURE_BLOCKS.store(0, Ordering::Relaxed);
+    CAPTURE_BYTES.store(0, Ordering::Relaxed);
+    CAPTURE_DROPPED.store(0, Ordering::Relaxed);
+    diag_info!(
+        "event=voice_start run={id} session_id={} mode={:?}",
+        input.session_id,
+        mode
+    );
     let release = move || {
         if let Ok(mut active) = ACTIVE.lock() {
             if active.as_ref().is_some_and(|a| a.id == id) {
@@ -248,6 +291,11 @@ pub async fn voice_start<R: Runtime>(
         let platform = platform.clone();
         tauri::async_runtime::spawn_blocking(move || platform.request_permissions()).await
     };
+    diag_info!(
+        "event=voice_permissions run={id} granted={} ms={}",
+        matches!(permitted, Ok(Ok(()))),
+        started_at.elapsed().as_millis()
+    );
     if !matches!(permitted, Ok(Ok(()))) {
         release();
         return Err(NativeError::permission_denied());
@@ -259,14 +307,23 @@ pub async fn voice_start<R: Runtime>(
         tauri::async_runtime::spawn_blocking(move || platform.start(mode)).await
     };
     match started {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => diag_info!(
+            "event=platform_started run={id} ms={}",
+            started_at.elapsed().as_millis()
+        ),
         Ok(Err(error)) => {
+            diag_warn!(
+                "event=platform_start_failed run={id} code={} ms={}",
+                error.code,
+                started_at.elapsed().as_millis()
+            );
             // The service may still come up late; make sure nothing is left running.
             platform.stop();
             release();
             return Err(error);
         }
         Err(_) => {
+            diag_warn!("event=platform_start_failed run={id} code=join_error");
             platform.stop();
             release();
             return Err(NativeError::transport());
@@ -281,6 +338,7 @@ pub async fn voice_start<R: Runtime>(
     ) {
         Ok(opened) => opened,
         Err(error) => {
+            diag_warn!("event=socket_open_failed run={id} code={}", error.code);
             platform.stop();
             release();
             return Err(error);
@@ -300,8 +358,19 @@ pub async fn voice_start<R: Runtime>(
         started_tx,
     ));
     match tokio::time::timeout(CONNECT_TIMEOUT, started_rx).await {
-        Ok(Ok(true)) => Ok(VoiceAck { ok: true }),
-        _ => {
+        Ok(Ok(true)) => {
+            diag_info!(
+                "event=voice_connected run={id} ms={}",
+                started_at.elapsed().as_millis()
+            );
+            Ok(VoiceAck { ok: true })
+        }
+        outcome => {
+            diag_warn!(
+                "event=voice_connect_failed run={id} timed_out={} ms={}",
+                outcome.is_err(),
+                started_at.elapsed().as_millis()
+            );
             let _ = own_control.send(Input::Stop {
                 reason: "connect_failed".into(),
             });
@@ -317,6 +386,10 @@ pub async fn voice_stop<R: Runtime>(window: WebviewWindow<R>) -> Result<VoiceAck
         .lock()
         .ok()
         .and_then(|active| active.as_ref().map(|a| a.status.clone()));
+    diag_info!(
+        "event=voice_stop_command running={}",
+        status.as_ref().is_some_and(|s| lock_status(s).running)
+    );
     platform_event(Input::Stop {
         reason: "user".into(),
     });
@@ -374,8 +447,12 @@ async fn run_session(
 ) {
     let mut started = Some(started);
     let mut session = Session::new(mode);
+    session.set_run_id(id);
     let clock = Instant::now();
     let mut platform_stopped = false;
+    let mut last_gateway_rx = Instant::now();
+    let mut last_stats = (Instant::now(), 0u64, 0u64);
+    let mut play_commands = 0u64;
     // Set when the socket opens, cleared once `ready` has arrived (or the session ended).
     let mut ready_deadline: Option<tokio::time::Instant> = None;
     let mut pending = session.begin();
@@ -383,7 +460,14 @@ async fn run_session(
         for action in pending.drain(..) {
             match action {
                 Action::SendText(text) => {
-                    let _ = sender.send(OutgoingFrame::Text(text));
+                    // Client frames carry only ids and numbers, never speech.
+                    diag_debug!(
+                        "event=client_frame run={id} chars={} frame={text}",
+                        text.chars().count()
+                    );
+                    if sender.send(OutgoingFrame::Text(text)).is_err() {
+                        diag_warn!("event=client_frame_not_sent run={id} reason=socket_task_gone");
+                    }
                 }
                 Action::SendBinary(bytes) => {
                     let _ = sender.send(OutgoingFrame::Binary(bytes));
@@ -392,6 +476,12 @@ async fn run_session(
                     let _ = web.send(InvokeResponseBody::Json(json));
                 }
                 Action::State(event) => {
+                    diag_info!(
+                        "event=native_state run={id} state={} reason={:?} code={}",
+                        event.state.as_str(),
+                        event.reason.as_deref().unwrap_or(""),
+                        event.code.map_or(-1, i32::from)
+                    );
                     if let Ok(mut status) = status.lock() {
                         status.state = event.state.as_str();
                         status.running = event.state != NativeState::Stopped;
@@ -402,23 +492,45 @@ async fn run_session(
                     platform.command(PlatformCommand::ConfigureOnset(onset))
                 }
                 Action::Play { segment_id, pcm } => {
+                    play_commands += 1;
+                    diag_debug!(
+                        "event=platform_play run={id} segment={segment_id} bytes={} count={play_commands}",
+                        pcm.len()
+                    );
                     platform.command(PlatformCommand::Play { segment_id, pcm })
                 }
                 Action::SegmentEnd(segment) => {
+                    diag_debug!("event=platform_segment_end run={id} segment={segment}");
                     platform.command(PlatformCommand::SegmentEnd(segment))
                 }
-                Action::SetCue(request) => platform.command(PlatformCommand::Cue(
-                    request.map(|request| render_loop(request.cue, request.volume)),
-                )),
-                Action::FlushPlayback => platform.command(PlatformCommand::Flush),
-                Action::PausePlayback => platform.command(PlatformCommand::Pause),
-                Action::ResumePlayback => platform.command(PlatformCommand::Resume),
+                Action::SetCue(request) => {
+                    diag_debug!(
+                        "event=platform_cue run={id} cue={:?}",
+                        request.as_ref().map(|request| request.cue)
+                    );
+                    platform.command(PlatformCommand::Cue(
+                        request.map(|request| render_loop(request.cue, request.volume)),
+                    ))
+                }
+                Action::FlushPlayback => {
+                    diag_info!("event=platform_flush run={id} cause=gateway_stop_playback");
+                    platform.command(PlatformCommand::Flush)
+                }
+                Action::PausePlayback => {
+                    diag_info!("event=platform_pause run={id}");
+                    platform.command(PlatformCommand::Pause)
+                }
+                Action::ResumePlayback => {
+                    diag_info!("event=platform_resume run={id}");
+                    platform.command(PlatformCommand::Resume)
+                }
                 Action::CloseSocket => {
                     let _ = sender.send(OutgoingFrame::Close);
                 }
                 Action::StopPlatform => {
                     if !platform_stopped {
                         platform_stopped = true;
+                        diag_info!("event=platform_stop run={id}");
                         platform.stop();
                     }
                 }
@@ -447,6 +559,39 @@ async fn run_session(
                 None => continue,
             },
         };
+        if matches!(input, Input::GatewayText(_) | Input::GatewayBinary(_)) {
+            let silent = last_gateway_rx.elapsed();
+            if silent >= GATEWAY_SILENCE_WARN {
+                diag_warn!(
+                    "event=gateway_silence run={id} ms={} t_ms={}",
+                    silent.as_millis(),
+                    clock.elapsed().as_millis()
+                );
+            }
+            last_gateway_rx = Instant::now();
+        }
+        if last_stats.0.elapsed() >= STATS_EVERY {
+            let blocks = CAPTURE_BLOCKS.load(Ordering::Relaxed);
+            let bytes = CAPTURE_BYTES.load(Ordering::Relaxed);
+            let totals = session.totals();
+            diag_info!(
+                "event=stats run={id} t_ms={} state={} capture_blocks={} capture_bytes={} capture_dropped_total={} up_frames={} up_discarded_bytes={} down_frames={} down_bytes={} down_dropped={} down_invalid={} seq_gaps={} gateway_idle_ms={}",
+                clock.elapsed().as_millis(),
+                session.state().as_str(),
+                blocks - last_stats.1,
+                bytes - last_stats.2,
+                CAPTURE_DROPPED.load(Ordering::Relaxed),
+                totals.up_frames,
+                totals.up_discarded_bytes,
+                totals.down_frames,
+                totals.down_bytes,
+                totals.down_dropped,
+                totals.down_invalid,
+                totals.seq_gaps,
+                last_gateway_rx.elapsed().as_millis()
+            );
+            last_stats = (Instant::now(), blocks, bytes);
+        }
         if let Some(started) =
             started.take_if(|_| matches!(input, Input::SocketOpened | Input::SocketClosed { .. }))
         {
@@ -464,6 +609,11 @@ async fn run_session(
     if let Some(started) = started.take() {
         let _ = started.send(false);
     }
+    diag_info!(
+        "event=run_session_end run={id} t_ms={} capture_dropped_total={}",
+        clock.elapsed().as_millis(),
+        CAPTURE_DROPPED.load(Ordering::Relaxed)
+    );
     if let Ok(mut status) = status.lock() {
         status.running = false;
         status.state = NativeState::Stopped.as_str();

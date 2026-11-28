@@ -16,6 +16,7 @@ import type { CancelTimer, VoiceHubDeps, VoicePrincipal, VoiceProviderSet, Voice
 import { phantomReason } from "./phantom-filter.js";
 import { ReplyVoice } from "./reply-voice.js";
 import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
+import { createTracer, errorField, type Tracer } from "./trace.js";
 import { UtteranceCapture, vadLagFor, type FinishedUtterance } from "./utterance-capture.js";
 
 const OPEN = 1;
@@ -79,8 +80,21 @@ export class VoiceAttachment {
   /** The turn ended while the client was away: the call ends as soon as the client comes back, before it is told it is ready. */
   private endOnReturn = false;
   private readonly announced = new Set<string>();
+  private readonly trace: Tracer;
+  /** Diagnostics only: what crossed the socket in each direction, so a cut-off reply can be told from a dropped one. */
+  private readonly startedAt: number;
+  private clientKind: string | undefined;
+  private framesIn = 0;
+  private audioInFrames = 0;
+  private audioInBytes = 0;
+  private audioOutFrames = 0;
+  private audioOutBytes = 0;
+  private droppedOut = 0;
+  private dropStreak = false;
 
   constructor(init: AttachmentInit) {
+    this.trace = createTracer(init.deps.log, { att: init.id, session: init.sessionId });
+    this.startedAt = init.deps.clock.now();
     this.id = init.id;
     this.sessionId = init.sessionId;
     this.principal = init.principal;
@@ -96,9 +110,11 @@ export class VoiceAttachment {
       send: (frame) => this.send(frame),
       sendAudio: (frame) => this.sendBinary(frame),
       deps: init.deps,
+      trace: this.trace,
     });
-    this.bargeIn = new BargeIn({ voice: this.voice, clock: init.deps.clock, enabled: init.config.bargeIn.enabled });
+    this.bargeIn = new BargeIn({ voice: this.voice, clock: init.deps.clock, enabled: init.config.bargeIn.enabled, trace: this.trace });
     this.dispatcher = new Dispatcher({
+      trace: this.trace,
       sessionId: init.sessionId, config: init.config, deps: init.deps, voice: this.voice,
       sttProvider: init.providers.stt.id, operator: init.principal.kind === "operator", live: () => !this.ended, send: (frame) => this.send(frame),
       onBackgrounded: (tasks) => this.announce(tasks.map((task) => ({ id: task.taskId, description: task.description }))),
@@ -124,16 +140,32 @@ export class VoiceAttachment {
   /** A JSON text frame from the client. */
   onText(raw: string): void {
     const frame = parseClientFrame(raw);
-    if (!frame) return this.badFrame("Unreadable frame.");
+    if (!frame) {
+      this.trace.warn("frame_unreadable", { bytes: raw.length });
+      return this.badFrame("Unreadable frame.");
+    }
+    this.framesIn += 1;
+    this.trace.debug("frame_in", () => ({ type: frame.type }));
     if (frame.type === "hello") return this.onHello(frame);
-    if (!this.hello) return this.badFrame("The first frame must be hello.");
+    if (!this.hello) {
+      this.trace.warn("frame_before_hello", { type: frame.type });
+      return this.badFrame("The first frame must be hello.");
+    }
     this.onFrame(frame);
   }
 
   /** A binary frame: client microphone audio. */
   onBinary(pcm: Buffer): void {
-    if (!this.hello) return this.badFrame("Audio before hello.");
-    if (pcm.length > VOICE_MAX_INPUT_FRAME_BYTES || pcm.length % 2 !== 0 || pcm.length === 0) return this.badFrame("Audio frame size.");
+    if (!this.hello) {
+      this.trace.warn("audio_in_rejected", { reason: "before_hello", bytes: pcm.length });
+      return this.badFrame("Audio before hello.");
+    }
+    if (pcm.length > VOICE_MAX_INPUT_FRAME_BYTES || pcm.length % 2 !== 0 || pcm.length === 0) {
+      this.trace.warn("audio_in_rejected", { reason: "frame_size", bytes: pcm.length, max: VOICE_MAX_INPUT_FRAME_BYTES });
+      return this.badFrame("Audio frame size.");
+    }
+    this.audioInFrames += 1;
+    this.audioInBytes += pcm.length;
     this.capture?.write(pcm);
   }
 
@@ -144,15 +176,24 @@ export class VoiceAttachment {
 
   /** A socket closed. Whether voice mode ends or waits for the client to come back; a stale socket's close changes nothing. */
   onSocketClosed(socket: VoiceSocket, code: number): void {
-    if (this.ended || this.socket !== socket) return;
+    if (this.ended || this.socket !== socket) {
+      this.trace.debug("socket_closed_stale", () => ({ code, ended: this.ended }));
+      return;
+    }
     this.socket = null;
     this.stopKeepalive();
-    if (this.byeReceived || ENDING_CODES.has(code)) return this.finish();
+    const ends = this.byeReceived || ENDING_CODES.has(code);
+    this.trace.info("socket_closed", {
+      code, bye: this.byeReceived, outcome: ends ? "end" : "suspend", client: this.clientKind, unplayed: this.voice.speaking(),
+      open_ms: this.deps.clock.now() - this.startedAt,
+    });
+    if (ends) return this.finish();
     this.suspend();
   }
 
   /** A later socket from the same principal picks up a suspended attachment. */
   adopt(socket: VoiceSocket, principal: VoicePrincipal): void {
+    this.trace.info("socket_adopted", { suspended_ms: this.suspendedAt === null ? undefined : this.deps.clock.now() - this.suspendedAt });
     this.socket = socket;
     this.principal = principal;
     this.hello = false;
@@ -163,6 +204,7 @@ export class VoiceAttachment {
   /** Tell the client why, close the socket, and end. */
   detach(reason: VoiceDetachReason): void {
     if (this.ended) return;
+    this.trace.info("detach", { reason });
     this.send({ type: "detached", reason });
     this.socket?.close(reason === "shutdown" ? 1001 : reason === "session_gone" ? VOICE_CLOSE.sessionGone : reason === "access_lost" ? VOICE_CLOSE.accessLost : 1000, reason);
     this.finish();
@@ -241,6 +283,11 @@ export class VoiceAttachment {
   private finish(): void {
     if (this.ended) return;
     this.ended = true;
+    this.trace.info("attachment_end", {
+      client: this.clientKind, lifetime_ms: this.deps.clock.now() - this.startedAt, frames_in: this.framesIn,
+      audio_in_frames: this.audioInFrames, audio_in_bytes: this.audioInBytes,
+      audio_out_frames: this.audioOutFrames, audio_out_bytes: this.audioOutBytes, audio_out_dropped: this.droppedOut,
+    });
     this.stopKeepalive();
     this.cancelEndGrace?.();
     this.cancelEndGrace = null;
@@ -254,6 +301,7 @@ export class VoiceAttachment {
   private suspend(): void {
     if (this.suspendedAt !== null) return;
     this.suspendedAt = this.deps.clock.now();
+    this.trace.info("suspended", { unplayed: this.voice.speaking(), audio_out_frames: this.audioOutFrames, audio_out_dropped: this.droppedOut });
     this.capture?.close();
     this.capture = null;
     this.bargeIn.clear();
@@ -293,6 +341,7 @@ export class VoiceAttachment {
   private onDelta(payload: Record<string, unknown>): void {
     if (payload.sidechain === true) return;
     const content = typeof payload.content === "string" ? payload.content : "";
+    this.trace.debug("session_delta", () => ({ type: String(payload.type), chars: content.length }));
     switch (payload.type) {
       case "text": return this.voice.onText(content, false);
       case "text_snapshot": return this.voice.onText(content, true);
@@ -332,10 +381,13 @@ export class VoiceAttachment {
 
   private onHello(frame: Extract<VoiceClientFrame, { type: "hello" }>): void {
     if (this.hello) return this.badFrame("hello was already sent.");
+    this.clientKind = typeof frame.client === "string" ? frame.client : undefined;
+    this.trace.info("hello", { client: this.clientKind, mode: frame.mode, protocol: frame.protocol, resuming: this.suspended });
     if (frame.protocol !== VOICE_PROTOCOL_VERSION) return this.protocolError("Unsupported protocol version.");
     if (frame.mode !== "hands-free" && frame.mode !== "push-to-talk") return this.badFrame("Unknown mode.");
     const unavailable = this.unavailableReason();
     if (unavailable) {
+      this.trace.warn("speech_unavailable", { reason: unavailable });
       this.send({ type: "error", code: "speech_unavailable", message: unavailable });
       return this.close(1000, "unavailable");
     }
@@ -350,7 +402,16 @@ export class VoiceAttachment {
       this.suspendedAt = null;
       this.voice.unsuspend();
     }
-    this.send(this.readyFrame());
+    const ready = this.readyFrame();
+    if (ready.type === "ready") {
+      this.trace.info("ready_sent", {
+        input_rate: ready.input.sampleRate, output_rate: ready.output.sampleRate, stt: ready.stt.provider, partials: ready.stt.partials,
+        tts: ready.tts.provider, voice: ready.tts.voice, onset_threshold: ready.onset.threshold, onset_min_ms: ready.onset.minSpeechMs,
+        barge_in: this.config.bargeIn.enabled, backgrounding: ready.backgrounding, mode: this.mode,
+        vad_threshold: this.config.vad.threshold, vad_min_speech_ms: this.config.vad.minSpeechMs, vad_silence_ms: this.config.vad.silenceMs, tts_speed: this.liveSpeed(),
+      });
+    }
+    this.send(ready);
     this.startKeepalive();
   }
 
@@ -373,7 +434,12 @@ export class VoiceAttachment {
     switch (frame.type) {
       case "ptt_down": return this.capture?.pttDown();
       case "ptt_up": return this.capture?.pttUp();
-      case "barge_in": return this.bargeIn.fromClient(frame.segmentId, frame.playedMs);
+      case "barge_in":
+        this.trace.info("client_barge_in", {
+          segment: frame.segmentId, played_ms: Math.round(frame.playedMs), speaking: this.voice.speaking(), enabled: this.config.bargeIn.enabled,
+          already_active: this.bargeIn.active, client: this.clientKind,
+        });
+        return this.bargeIn.fromClient(frame.segmentId, frame.playedMs);
       case "played":
         this.voice.markPlayed(frame.segmentId);
         return this.tryEnd();
@@ -387,6 +453,7 @@ export class VoiceAttachment {
 
   private onResume(): void {
     const missed = this.voice.takeMissed();
+    this.trace.info("client_resume", { missed_replies: missed.length });
     if (missed.length === 0) return;
     this.send({ type: "missed", messageIds: missed.flatMap((reply) => (reply.messageId ? [reply.messageId] : [])) });
     for (const reply of missed) this.voice.pipeline.speakText(reply.text, reply.messageId);
@@ -447,6 +514,7 @@ export class VoiceAttachment {
       pushToTalk: this.mode === "push-to-talk",
       clock: this.deps.clock,
       newId: () => this.deps.newId(),
+      trace: this.trace,
       events: {
         onVad: (speaking) => this.send({ type: "vad", speaking }),
         onStart: (id) => this.onUtteranceStart(id),
@@ -461,11 +529,13 @@ export class VoiceAttachment {
   private onUtteranceStart(id: string): void {
     this.holdHangup();
     const spoke = this.voice.speaking();
+    this.trace.info("utterance_start", { utterance: id, over_playback: spoke, barge_in_enabled: this.config.bargeIn.enabled, barge_in_active: this.bargeIn.active });
     if (spoke && this.config.bargeIn.enabled && !this.bargeIn.active) this.send({ type: "stop_playback", reason: "speech" });
     this.bargeIn.utteranceStarted(id, spoke);
   }
 
   private onUtteranceFailed(id: string): void {
+    this.trace.warn("utterance_failed", { utterance: id });
     this.send({ type: "error", code: "stt_failed", message: "Speech recognition failed for that.", utteranceId: id });
     this.bargeIn.utteranceFailed(id);
     this.releaseHangup();
@@ -475,6 +545,7 @@ export class VoiceAttachment {
   private enqueueFinal(utterance: FinishedUtterance): void {
     this.chain = this.chain.then(() => this.handleFinal(utterance)).catch((error: unknown) => {
       this.deps.log.warn(`voice: final handling failed for ${this.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+      this.trace.warn("final_handling_failed", { error: errorField(error) });
     });
   }
 
@@ -483,6 +554,7 @@ export class VoiceAttachment {
     const phantom = utterance.text.trim() ? phantomReason(utterance, this.config.filter) : null;
     // Noise that got past the VAD is told to the client as an utterance with no words, the way silence is, and goes no further.
     const words = phantom === null ? utterance.text.trim() : "";
+    this.trace.info("final_transcript", { utterance: utterance.id, chars: words.length, stt_ms: utterance.sttMs, audio_ms: utterance.audioMs, dropped: phantom !== null, empty: words === "" });
     if (phantom !== null) this.deps.log.info(`voice: dropped an utterance for ${this.sessionId}: ${phantom}`);
     this.send({ type: "transcript", utteranceId: utterance.id, text: words, final: true });
     if (!words) {
@@ -498,13 +570,39 @@ export class VoiceAttachment {
 
   private send(frame: VoiceServerFrame): void {
     const socket = this.socket;
-    if (!socket || socket.readyState !== OPEN) return;
+    if (!socket || socket.readyState !== OPEN) {
+      if (frame.type !== "keepalive") this.trace.debug("frame_dropped", () => ({ type: frame.type, socket: socket ? "not_open" : "none", suspended: this.suspended }));
+      return;
+    }
+    this.traceOut(frame);
     socket.send(JSON.stringify(frame));
+  }
+
+  private traceOut(frame: VoiceServerFrame): void {
+    switch (frame.type) {
+      case "keepalive": return;
+      case "stop_playback": return this.trace.info("stop_playback_sent", { reason: frame.reason, unplayed: this.voice.speaking() });
+      case "error": return this.trace.warn("error_sent", { code: frame.code, utterance: "utteranceId" in frame ? frame.utteranceId : undefined });
+      case "detached": return this.trace.info("detached_sent", { reason: frame.reason });
+      case "turn": return this.trace.info("turn_sent", { state: frame.state, tool: frame.tool });
+      case "metrics": return this.trace.info("metrics_sent", { utterance: frame.utteranceId, stt_ms: frame.sttMs, ttfa_ms: frame.ttfaMs });
+      default: return this.trace.debug("frame_out", () => ({ type: frame.type }));
+    }
   }
 
   private sendBinary(frame: Buffer): void {
     const socket = this.socket;
-    if (!socket || socket.readyState !== OPEN) return;
+    if (!socket || socket.readyState !== OPEN) {
+      this.droppedOut += 1;
+      if (!this.dropStreak) {
+        this.dropStreak = true;
+        this.trace.warn("audio_out_dropped", { socket: socket ? "not_open" : "none", suspended: this.suspended, bytes: frame.length, audio_out_frames: this.audioOutFrames });
+      }
+      return;
+    }
+    this.dropStreak = false;
+    this.audioOutFrames += 1;
+    this.audioOutBytes += frame.length;
     socket.send(frame);
   }
 

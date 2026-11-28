@@ -136,6 +136,29 @@ foreground service keeps the process alive), and it is **not** secure storage an
 must not be described as such. Persistent Android Keystore storage is a separate
 security change, not part of this feature.
 
+### Diagnostic logs
+
+The native voice path logs one line per event as `event=<name> key=value ...`, with the same
+key names on every side (`segment`, `seq`, `bytes`, `frames`, `ms`, `rms`, `threshold`,
+`reason`, `code`), so a spoken reply that is cut off or garbled can be followed from the
+gateway frame to the speaker. Lines carry ids, counts, sizes and timings only: never reply
+or transcript text, credentials or URLs. Rust lines also carry `run=<n>` (the native session)
+and `t_ms` (milliseconds since it started); `voice_start` links `run` to the gateway `session_id`.
+Swift and Kotlin lines carry no session id: line them up with the Rust lines by time.
+
+Info is the default level and is enough to diagnose: lifecycle, every barge-in decision
+(`barge_in_detected` with `rms`, `threshold`, `held_ms`; `barge_in_sent`; `stop_playback_received`
+with `since_barge_in_ms`), and a summary per segment (`segment_received`, `segment_outcome`
+with `outcome=played|cut_onset|stopped_by_gateway|...`, and `segment_first_chunk_played` (Swift) or
+`segment_audible` (Kotlin) for latency) and per playback window (`playback_idle`: the microphone level while speech played).
+Per-frame lines are debug.
+
+| Platform | Where | Debug lines |
+|---|---|---|
+| iPhone | Console.app or `log stream --level debug --predicate 'subsystem == "run.hundredfold.shell"'`; category `voice` (Swift) and `voice.core` (Rust, routed through `hf_voice_log`) | debug builds, or start a release build with `HF_VOICE_LOG=debug` |
+| Android | `adb logcat -s HundredfoldVoice RustStdoutStderr:I` (Rust lines start `hf_voice`) | `adb shell setprop log.tag.HundredfoldVoice DEBUG` before starting voice mode; Rust: debug builds |
+| Desktop | stderr of the shell process (the gateway socket lines; desktop has no native voice) | debug builds, or `HF_VOICE_LOG=debug` |
+
 ### Rust tests
 
 `pnpm --filter @hundredfold/shell test` runs the platform-independent core

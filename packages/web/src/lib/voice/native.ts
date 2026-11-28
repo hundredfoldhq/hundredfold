@@ -1,6 +1,8 @@
 import type { VoiceMode } from "@hundredfold/gateway-events"
 import type { HundredfoldNativeBridge, NativeStateEvent } from "@/platform/native-bridge"
+import { errorFields, voiceLog, voiceNow } from "@/lib/voice-log"
 import { parseServerFrame } from "./socket"
+import { describeServerFrame, isChattyFrame } from "./trace"
 import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import type { VoiceUiState } from "./state"
 
@@ -72,6 +74,11 @@ export class NativeVoiceSession implements VoiceController {
   private readonly store = new VoiceStore()
   private stopping = false
   private talking = false
+  // Diagnostics only.
+  private startedAt = 0
+  private forwarded = 0
+  private lastForwardedAt = 0
+  private pttAt = 0
 
   private session: string | null
 
@@ -92,6 +99,8 @@ export class NativeVoiceSession implements VoiceController {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
     this.stopping = false
     this.talking = false
+    this.startedAt = voiceNow()
+    voiceLog.info("session_start", { kind: "native", mode: this.options.mode, session: this.session, new_chat: this.session === null })
     this.store.dispatch({ type: "connecting", mode: this.options.mode })
     if (this.session === null) return this.createThenStart()
     return this.startShell(this.session)
@@ -123,8 +132,14 @@ export class NativeVoiceSession implements VoiceController {
       (raw) => this.onForwarded(raw),
     )
     return started.then(
-      (result) => { if (!result.ok) this.store.dispatch({ type: "failed", message: nativeStartMessage("unsupported") }) },
-      (error: unknown) => { this.store.dispatch({ type: "failed", message: nativeStartMessage(error) }) },
+      (result) => {
+        voiceLog.info("native_voice_started", { ok: result.ok, wait_ms: voiceNow() - this.startedAt })
+        if (!result.ok) this.store.dispatch({ type: "failed", message: nativeStartMessage("unsupported") })
+      },
+      (error: unknown) => {
+        voiceLog.warn("native_voice_start_failed", { code: errorCode(error), wait_ms: voiceNow() - this.startedAt, ...errorFields(error) })
+        this.store.dispatch({ type: "failed", message: nativeStartMessage(error) })
+      },
     )
   }
 
@@ -132,6 +147,7 @@ export class NativeVoiceSession implements VoiceController {
     if (this.store.snapshot.status === "off") return
     this.stopping = true
     this.talking = false
+    voiceLog.info("session_stop", { kind: "native", status: this.store.snapshot.status, run_ms: Math.round(voiceNow() - this.startedAt), forwarded: this.forwarded })
     dropHandoff(this)
     void this.bridge.voiceStop().catch(() => undefined)
     this.store.dispatch({ type: "stopped" })
@@ -144,12 +160,14 @@ export class NativeVoiceSession implements VoiceController {
   pttDown(): void {
     if (this.options.mode !== "push-to-talk" || this.store.snapshot.status !== "on" || this.talking) return
     this.talking = true
+    this.pttAt = voiceNow()
     void this.bridge.voicePtt({ down: true }).catch(() => undefined)
   }
 
   pttUp(): void {
     if (!this.talking) return
     this.talking = false
+    voiceLog.info("ptt_held", { held_ms: voiceNow() - this.pttAt, kind: "native" })
     void this.bridge.voicePtt({ down: false }).catch(() => undefined)
   }
 
@@ -167,12 +185,33 @@ export class NativeVoiceSession implements VoiceController {
   }
 
   private onForwarded(raw: unknown): void {
-    if (this.stopping) return
+    if (this.stopping) {
+      voiceLog.debug("native_frame_after_stop", { kind: typeof raw })
+      return
+    }
     const native = asNativeState(raw)
     const frame = native ? null : parseServerFrame(typeof raw === "string" ? raw : JSON.stringify(raw))
+    this.logForwarded(raw, native, frame)
     if (native) this.store.dispatch({ type: "native-state", state: native.state, reason: native.reason, code: native.code })
     else if (frame) this.store.dispatch({ type: "frame", frame, now: this.now() })
     // A run the shell or gateway ended while the button was held leaves nothing held.
     if (this.store.snapshot.status === "off") this.talking = false
+  }
+
+  /** What the shell forwarded and what the web side made of it. The shell's audio never passes through here. */
+  private logForwarded(raw: unknown, native: NativeStateEvent | null, frame: ReturnType<typeof parseServerFrame>): void {
+    const at = voiceNow()
+    const gap = this.lastForwardedAt === 0 ? null : at - this.lastForwardedAt
+    this.lastForwardedAt = at
+    this.forwarded += 1
+    if (native) {
+      voiceLog.info("native_state", { state: native.state, reason: native.reason, code: native.code, status: this.store.snapshot.status, gap_ms: gap })
+    } else if (frame) {
+      const fields = () => ({ via: "native", type: frame.type, gap_ms: gap, ...describeServerFrame(frame) })
+      if (isChattyFrame(frame)) voiceLog.debug("frame_in", fields)
+      else voiceLog.info("frame_in", fields)
+    } else {
+      voiceLog.warn("native_frame_ignored", { kind: typeof raw, chars: typeof raw === "string" ? raw.length : undefined })
+    }
   }
 }

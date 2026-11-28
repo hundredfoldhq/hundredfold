@@ -47,6 +47,7 @@ export function createHarness(options: HarnessOptions = {}) {
   const merges: Array<{ id: string; patch: unknown }> = [];
   const warnings: string[] = [];
   const infos: string[] = [];
+  const debugs: string[] = [];
   let ids = 0;
   /** The stored transcript as the hub reads it back; `external` rows are the ones the transcript sync stamped. */
   const stored: Array<{ id: string; role: string; content: string; toolCall: boolean; external: boolean; timestamp: number }> = [];
@@ -73,7 +74,7 @@ export function createHarness(options: HarnessOptions = {}) {
     findReplyMessageId: () => state.replyMessage,
     externalRepliesSince: (_session, sinceMs) => stored.filter((row) => row.external && row.role === "assistant" && !row.toolCall && row.timestamp > sinceMs),
     clock,
-    log: { info: (message) => { infos.push(message); }, warn: (message) => { warnings.push(message); } },
+    log: { info: (message) => { infos.push(message); }, warn: (message) => { warnings.push(message); }, debug: (message) => { debugs.push(message); } },
     newId: () => `id${++ids}`,
   };
   const hub = new VoiceHub(deps);
@@ -96,7 +97,7 @@ export function createHarness(options: HarnessOptions = {}) {
   }
 
   const h = {
-    clock, stt, tts, engine, vads, delivered, merges, warnings, infos, state, hub, deps,
+    clock, stt, tts, engine, vads, delivered, merges, warnings, infos, debugs, state, hub, deps,
     connect, store,
     /** Frames of one type the client has been sent. */
     vad: () => vads[vads.length - 1],
