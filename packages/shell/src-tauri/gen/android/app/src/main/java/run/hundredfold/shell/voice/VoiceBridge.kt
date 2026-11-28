@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -20,13 +22,16 @@ import java.util.concurrent.TimeUnit
 class VoiceBridge(private val activity: ComponentActivity) {
     private val permissionLauncher =
         activity.registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            VoiceNative.nativePermissionResult(missingPermissions(activity).isEmpty())
+            val granted = missingPermissions(activity).isEmpty()
+            Log.i(TAG, "event=voice_permission granted=$granted")
+            VoiceNative.nativePermissionResult(granted)
         }
 
     /** Asks for the microphone and, on Android 13+, notification access. */
     fun requestPermissions() {
         activity.runOnUiThread {
             val missing = missingPermissions(activity)
+            Log.i(TAG, "event=voice_permission_request missing=${missing.size}")
             if (missing.isEmpty()) {
                 VoiceNative.nativePermissionResult(true)
             } else {
@@ -41,8 +46,11 @@ class VoiceBridge(private val activity: ComponentActivity) {
      */
     fun start(@Suppress("UNUSED_PARAMETER") handsFree: Boolean) {
         val context = activity.applicationContext
+        val beganAt = SystemClock.elapsedRealtime()
         engineReady = CountDownLatch(1)
         startError = null
+        noEngineDrops = 0L
+        Log.i(TAG, "event=bridge_start hands_free=$handsFree")
         ContextCompat.startForegroundService(
             context,
             Intent(context, VoiceService::class.java).setAction(VoiceService.ACTION_START),
@@ -50,22 +58,35 @@ class VoiceBridge(private val activity: ComponentActivity) {
         // Whatever goes wrong below, the service must not come up late with no session
         // behind it, so a failed start always stops it.
         if (!engineReady!!.await(START_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            Log.w(TAG, "event=bridge_start_failed reason=timeout timeout_s=$START_TIMEOUT_SECONDS")
             stop()
             throw IllegalStateException("voice service did not start")
         }
         startError?.let {
+            Log.w(TAG, "event=bridge_start_failed reason=${it.javaClass.simpleName}")
             stop()
             throw IllegalStateException("voice service failed", it)
         }
+        Log.i(TAG, "event=bridge_started ms=${SystemClock.elapsedRealtime() - beganAt}")
     }
 
     fun configureOnset(threshold: Float, minSpeechMs: Int) {
         pendingOnset = threshold to minSpeechMs
+        Log.i(TAG, "event=onset_configured threshold=$threshold min_speech_ms=$minSpeechMs engine_up=${engine != null}")
         engine?.configureOnset(threshold, minSpeechMs)
     }
 
     fun play(segmentId: Int, pcm: ByteArray) {
-        engine?.play(segmentId, pcm)
+        val audio = engine
+        if (audio == null) {
+            // Powers of two only: frames arrive 50 times a second.
+            noEngineDrops += 1
+            if ((noEngineDrops and (noEngineDrops - 1)) == 0L) {
+                Log.w(TAG, "event=play_dropped reason=no_engine segment=$segmentId bytes=${pcm.size} count=$noEngineDrops")
+            }
+            return
+        }
+        audio.play(segmentId, pcm)
     }
 
     fun segmentEnd(segmentId: Int) {
@@ -90,12 +111,15 @@ class VoiceBridge(private val activity: ComponentActivity) {
     }
 
     fun stop() {
+        Log.i(TAG, "event=bridge_stop engine_up=${engine != null}")
         val context = activity.applicationContext
         context.stopService(Intent(context, VoiceService::class.java))
     }
 
     companion object {
         private const val START_TIMEOUT_SECONDS = 8L
+        private const val TAG = VoiceAudio.TAG
+        @Volatile private var noEngineDrops = 0L
 
         @Volatile private var engine: VoiceAudio? = null
         @Volatile private var engineReady: CountDownLatch? = null

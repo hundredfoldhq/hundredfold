@@ -14,6 +14,7 @@ import {
   samePrincipal, type CancelTimer, type VoiceHubDeps, type VoicePrincipal, type VoiceProviderSet, type VoiceSocket,
 } from "./hub-types.js";
 import type { ResolvedVoiceConfig } from "../shared/voice-config.js";
+import { createTracer, type Tracer } from "./trace.js";
 
 /** How long a suspended attachment waits for its client to come back. */
 export const RESUME_WINDOW_MS = 10 * 60 * 1000;
@@ -40,7 +41,11 @@ export class VoiceHub {
   /** The session whose attachment a takeover is ending: its conversation goes on in the new one. */
   private takingOver: string | null = null;
 
-  constructor(private readonly deps: VoiceHubDeps) {}
+  private readonly trace: Tracer;
+
+  constructor(private readonly deps: VoiceHubDeps) {
+    this.trace = createTracer(deps.log);
+  }
 
   /** How many attachments hold a session now, suspended ones included. */
   size(): number {
@@ -65,8 +70,10 @@ export class VoiceHub {
     const config = this.deps.config();
     if (!config) return this.refuseDisabled(socket);
     const existing = this.attachments.get(request.sessionId);
+    this.trace.info("hub_attach", { session: request.sessionId, principal: request.principal.kind, existing: existing ? (existing.suspended ? "suspended" : "live") : "none", attachments: this.attachments.size });
     if (existing) return this.replace(existing, socket, request);
     if (this.attachments.size >= config.limits.maxConcurrentAttachments && !this.evictOldestSuspended()) {
+      this.trace.warn("hub_refused", { session: request.sessionId, reason: "limit", attachments: this.attachments.size, max: config.limits.maxConcurrentAttachments });
       socket.close(VOICE_CLOSE.limit, "limit");
       return null;
     }
@@ -107,14 +114,17 @@ export class VoiceHub {
 
   private replace(existing: VoiceAttachment, socket: VoiceSocket, request: AttachRequest): VoiceAttachment | null {
     if (!samePrincipal(existing.principal, request.principal)) {
+      this.trace.warn("hub_refused", { session: request.sessionId, reason: "in_use", att: existing.id });
       socket.close(VOICE_CLOSE.inUse, "in_use");
       return null;
     }
     if (existing.suspended) {
+      this.trace.info("hub_adopt", { session: request.sessionId, att: existing.id, suspended_ms: existing.suspendedSince === null ? undefined : this.deps.clock.now() - existing.suspendedSince });
       this.cancelExpiry(request.sessionId);
       existing.adopt(socket, request.principal);
       return existing;
     }
+    this.trace.info("hub_take_over", { session: request.sessionId, att: existing.id });
     this.takingOver = request.sessionId;
     try { existing.detach("taken_over"); } finally { this.takingOver = null; }
     const config = this.deps.config();
@@ -143,6 +153,7 @@ export class VoiceHub {
       onEnd: (ended) => this.remove(ended),
     });
     this.attachments.set(request.sessionId, attachment);
+    this.trace.info("hub_created", { session: request.sessionId, att: attachment.id, attachments: this.attachments.size });
     return attachment;
   }
 
@@ -165,6 +176,7 @@ export class VoiceHub {
   socketClosed(attachment: VoiceAttachment, socket: VoiceSocket, code: number): void {
     attachment.onSocketClosed(socket, code);
     if (attachment.suspended && this.attachments.get(attachment.sessionId) === attachment) {
+      this.trace.info("hub_suspend_window", { session: attachment.sessionId, att: attachment.id, window_ms: RESUME_WINDOW_MS });
       this.cancelExpiry(attachment.sessionId);
       this.expiries.set(attachment.sessionId, this.deps.clock.setTimeout(() => attachment.expire(), RESUME_WINDOW_MS));
     }
@@ -172,6 +184,7 @@ export class VoiceHub {
 
   private remove(attachment: VoiceAttachment): void {
     if (this.attachments.get(attachment.sessionId) === attachment) this.attachments.delete(attachment.sessionId);
+    this.trace.info("hub_removed", { session: attachment.sessionId, att: attachment.id, attachments: this.attachments.size });
     this.cancelExpiry(attachment.sessionId);
     if (this.attachments.size === 0) this.closeRetired();
     if (this.takingOver !== attachment.sessionId && !this.attachments.has(attachment.sessionId)) this.discardEmpty(attachment.sessionId);

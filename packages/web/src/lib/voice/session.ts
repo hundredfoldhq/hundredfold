@@ -1,4 +1,5 @@
-import type { VoiceClientFrame, VoiceCueSettings, VoiceMode, VoiceServerFrame } from "@hundredfold/gateway-events"
+import { VOICE_AUDIO_HEADER_BYTES, VOICE_INPUT_SAMPLE_RATE, VOICE_OUTPUT_SAMPLE_RATE, type VoiceClientFrame, type VoiceCueSettings, type VoiceMode, type VoiceOnsetSettings, type VoiceServerFrame } from "@hundredfold/gateway-events"
+import { contextFields, errorFields, traceContextState, voiceLog, voiceNow } from "@/lib/voice-log"
 import { startCapture, requestMicrophone } from "./capture-worklet"
 import { DEFAULT_CUE_SETTINGS, START_CUE_TAIL_MS, VoiceCuePlayer, wantedCue, type CueAudioContext, type CueInputs, type VoiceCuePlayerLike } from "./cues"
 import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
@@ -15,6 +16,7 @@ import {
   type SuspendTrack,
 } from "./suspend"
 import type { VoiceAction, VoiceUiState } from "./state"
+import { SeqTracker, SegmentTrace } from "./trace"
 import { ScreenWakeLock, type WakeLockLike } from "./wake-lock"
 
 export interface VoiceAudioContext extends CueAudioContext, SuspendContext {
@@ -77,6 +79,9 @@ const CONTEXT_RESUME_WAIT_MS = 300
 /** How long a microphone request made without a tap may take before the tap is asked for instead. */
 const MICROPHONE_REACQUIRE_WAIT_MS = 2_000
 
+/** How long a cut segment's id is remembered, so its late audio is logged at debug too. */
+const CUT_MEMORY_MS = 30_000
+
 export function defaultBrowserDeps(): BrowserVoiceDeps {
   return {
     openSocket: (sessionId, handlers, mode) => VoiceSocket.open(sessionId, handlers, { mode }),
@@ -130,6 +135,15 @@ export class BrowserVoiceSession implements VoiceController {
   /** Until this time the microphone is not sent up and not fed to the detector: the start cue is playing, and may leak into it. */
   private uplinkMutedUntil = 0
   private session: string | null
+  // Diagnostics only: none of this feeds back into behaviour.
+  private runStartedAt = 0
+  private onset: VoiceOnsetSettings | null = null
+  private readonly traces = new Map<number, SegmentTrace>()
+  private readonly audioSeq = new SeqTracker()
+  /** Segments a local barge-in or a stop_playback just cut, by when: their in-flight audio is expected, not a fault. */
+  private readonly cutAt = new Map<number, number>()
+  private stopContextTrace: (() => void) | null = null
+  private pttAt = 0
 
   constructor(
     private readonly options: BrowserVoiceOptions,
@@ -155,6 +169,9 @@ export class BrowserVoiceSession implements VoiceController {
     void ctx.resume().catch(() => undefined)
     const microphone = this.deps.requestMicrophone()
     this.ctx = ctx
+    this.runStartedAt = voiceNow()
+    this.stopContextTrace = traceContextState(ctx, "voice")
+    voiceLog.info("session_start", { kind: "browser", mode: this.options.mode, barge_in: this.options.bargeIn, session: this.session, new_chat: this.session === null, ...contextFields(ctx) })
     this.wakeLock = new ScreenWakeLock(this.deps.wakeLock, this.deps.doc)
     this.wakeLock.acquire()
     if (this.session !== null) {
@@ -188,6 +205,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   stop(): void {
     if (this.store.snapshot.status === "off" && !this.ctx) return
+    voiceLog.info("session_stop", { kind: "browser", status: this.store.snapshot.status, run_ms: this.runMs() })
     this.closing = true
     dropHandoff(this)
     this.socket?.send({ type: "bye" })
@@ -203,6 +221,7 @@ export class BrowserVoiceSession implements VoiceController {
   pttDown(): void {
     if (this.options.mode !== "push-to-talk" || this.store.snapshot.status !== "on" || this.talking) return
     this.talking = true
+    this.pttAt = voiceNow()
     this.socket?.send({ type: "ptt_down" })
     this.syncCue()
   }
@@ -210,6 +229,7 @@ export class BrowserVoiceSession implements VoiceController {
   pttUp(): void {
     if (!this.talking) return
     this.talking = false
+    voiceLog.info("ptt_held", { held_ms: voiceNow() - this.pttAt })
     this.socket?.send({ type: "ptt_up" })
     this.syncCue()
   }
@@ -223,6 +243,7 @@ export class BrowserVoiceSession implements VoiceController {
   }
 
   resumeFromTap(): Promise<void> {
+    voiceLog.info("resume_from_tap", { status: this.store.snapshot.status, socket_open: this.socket?.isOpen === true, mic_live: this.microphoneLive(), ctx_state: this.ctx?.state })
     const ctx = this.ctx
     if (!ctx || this.session === null) return this.start()
     void ctx.resume().catch(() => undefined)
@@ -288,9 +309,9 @@ export class BrowserVoiceSession implements VoiceController {
   private applyToAudio(frame: VoiceServerFrame): void {
     switch (frame.type) {
       case "ready": this.onReady(frame); break
-      case "segment_start": this.player?.beginSegment(frame.segmentId); break
-      case "segment_end": this.player?.endSegment(frame.segmentId); break
-      case "stop_playback": this.player?.flush(); break
+      case "segment_start": this.traceSegmentStart(frame); this.player?.beginSegment(frame.segmentId); break
+      case "segment_end": this.traceSegmentEnd(frame.segmentId); this.player?.endSegment(frame.segmentId); break
+      case "stop_playback": this.onStopPlayback(frame.reason); break
       case "detached": this.onDetached(); break
       default: break
     }
@@ -298,6 +319,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   /** The gateway ended this attachment: release the microphone and audio now, keeping its reason on screen. */
   private onDetached(): void {
+    voiceLog.info("session_detached", { run_ms: this.runMs() })
     this.closing = true
     this.socket?.close(1000, "detached")
     this.teardown()
@@ -305,6 +327,8 @@ export class BrowserVoiceSession implements VoiceController {
 
   private onReady(frame: Extract<VoiceServerFrame, { type: "ready" }>): void {
     this.detector = this.options.bargeIn ? new OnsetDetector(frame.onset) : null
+    this.onset = frame.onset
+    this.logReady(frame)
     this.removeMediaSession ??= installMediaSession(this.deps.mediaSession, () => this.stop(), this.deps.createMediaMetadata ?? (() => null))
     this.sendResume()
     this.playStartCue()
@@ -335,11 +359,13 @@ export class BrowserVoiceSession implements VoiceController {
   }
 
   private onAudio(chunk: VoiceAudioChunk): void {
+    this.traceAudio(chunk)
     this.player?.enqueue(chunk.segmentId, chunk.pcm)
   }
 
   private onClose(close: VoiceSocketClose): void {
     this.socket = null
+    voiceLog.info("session_socket_closed", { code: close.code, reason: close.reason, requested: this.closing, status: this.store.snapshot.status, run_ms: this.runMs(), open_segments: this.traces.size })
     if (this.closing) return
     // Only an established socket can be suspended. One that never reached `ready` (a failed reconnect) failed on its own.
     const suspended = this.store.snapshot.status !== "connecting" && (this.watcher?.socketClosed() ?? false)
@@ -382,6 +408,7 @@ export class BrowserVoiceSession implements VoiceController {
     const ctx = this.ctx
     if (generation !== this.generation || !ctx) { stopTracks(stream); return }
     this.player ??= this.deps.createPlayer(ctx, (segmentId) => {
+      this.traceSegmentFinished(segmentId, "played")
       this.socket?.send({ type: "played", segmentId })
       this.syncCue()
     })
@@ -396,6 +423,7 @@ export class BrowserVoiceSession implements VoiceController {
     // A return and a tap can both have asked for a microphone: the later one wins, the earlier is let go.
     this.capture?.stop()
     this.capture = handle
+    voiceLog.info("capture_attached", { track_state: handle.track?.readyState, track_muted: handle.track?.muted, ...contextFields(ctx) })
     this.watchForSuspension(ctx)
     this.playStartCue()
   }
@@ -416,13 +444,19 @@ export class BrowserVoiceSession implements VoiceController {
     const state = this.store.snapshot
     if (state.status !== "on" || this.deps.now() < this.uplinkMutedUntil) return
     const player = this.player
-    if (this.detector && player && this.detector.feed(rms(pcm), player.isActive())) this.bargeIn(player)
+    if (this.detector && player) {
+      const active = player.isActive()
+      const level = rms(pcm)
+      if (active) this.traceMic(level)
+      if (this.detector.feed(level, active)) this.bargeIn(player, level)
+    }
     if (this.options.mode === "hands-free" || this.talking) this.socket?.sendAudio(pcm)
   }
 
   /** Playback stops on this thread, then the gateway is told where it stopped. */
-  private bargeIn(player: VoicePlayerLike): void {
+  private bargeIn(player: VoicePlayerLike, level: number): void {
     const cut = player.flush()
+    this.logBargeIn(level, cut)
     this.socket?.send({ type: "barge_in", segmentId: cut?.segmentId ?? null, playedMs: cut?.playedMs ?? 0 })
     this.syncCue()
   }
@@ -440,13 +474,16 @@ export class BrowserVoiceSession implements VoiceController {
     const ctx = this.ctx
     const generation = this.generation
     if (!ctx || this.closing) return
+    voiceLog.info("return_from_suspend", { suspended_ms: suspendedMs, ...contextFields(ctx), socket_open: this.socket?.isOpen === true, mic_live: this.microphoneLive() })
     if (!(await this.putBackAudio(ctx, generation))) return
     if (!this.recovered(ctx)) {
+      voiceLog.warn("return_needs_tap", { ...contextFields(ctx), socket_open: this.socket?.isOpen === true, mic_live: this.microphoneLive() })
       // A tap made meanwhile already resumed the session and is bringing the microphone back itself; only a session still paused asks for one.
       if (this.store.snapshot.status === "suspended") this.apply({ type: "needs-tap" })
       return
     }
     this.watcher?.clear()
+    voiceLog.info("return_recovered", { suspended_ms: suspendedMs })
     this.apply({ type: "resumed" })
     this.sendResume()
   }
@@ -469,13 +506,15 @@ export class BrowserVoiceSession implements VoiceController {
     const wait = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), MICROPHONE_REACQUIRE_WAIT_MS) })
     try {
       const stream = await Promise.race([microphone, wait])
+      voiceLog.info("mic_reacquire", { got_stream: Boolean(stream), waited_ms: MICROPHONE_REACQUIRE_WAIT_MS })
       if (!stream) {
         // Too slow: the tap asks again, so whatever this request yields later is let go.
         void microphone.then(stopTracks, () => undefined)
         return
       }
       await this.beginCapture(stream, generation)
-    } catch {
+    } catch (error) {
+      voiceLog.warn("mic_reacquire_failed", errorFields(error))
       /* refused or failed: it needs a tap */
     } finally {
       clearTimeout(timer)
@@ -495,12 +534,16 @@ export class BrowserVoiceSession implements VoiceController {
 
   private async tryResumeContext(ctx: VoiceAudioContext): Promise<void> {
     const wait = new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_RESUME_WAIT_MS))
+    const before = ctx.state
+    const at = voiceNow()
     await Promise.race([ctx.resume().catch(() => undefined), wait])
+    voiceLog.info("context_resume_attempt", { from: before, to: ctx.state, waited_ms: voiceNow() - at, limit_ms: CONTEXT_RESUME_WAIT_MS })
   }
 
   // ── teardown ──────────────────────────────────────────────────────────────
 
   private failStart(message: string): void {
+    voiceLog.warn("session_start_failed", { message_chars: message.length, run_ms: this.runMs() })
     this.closing = true
     dropHandoff(this)
     this.socket?.close(1000, "bye")
@@ -509,6 +552,10 @@ export class BrowserVoiceSession implements VoiceController {
   }
 
   private teardown(): void {
+    this.finishTraces("cut", "teardown", null)
+    this.stopContextTrace?.()
+    this.stopContextTrace = null
+    voiceLog.info("session_teardown", { run_ms: this.runMs() })
     this.generation++
     this.talking = false
     this.pendingResumeMs = null
@@ -529,5 +576,105 @@ export class BrowserVoiceSession implements VoiceController {
     this.ctx = null
     this.socket = null
     if (ctx) void ctx.close().catch(() => undefined)
+  }
+  // ── diagnostics ───────────────────────────────────────────────────────────
+
+  private runMs(): number {
+    return this.runStartedAt === 0 ? 0 : Math.round(voiceNow() - this.runStartedAt)
+  }
+
+  private logReady(frame: Extract<VoiceServerFrame, { type: "ready" }>): void {
+    voiceLog.info("session_ready", {
+      run_ms: this.runMs(),
+      output_rate: frame.output?.sampleRate,
+      input_rate: frame.input?.sampleRate,
+      player_rate: VOICE_OUTPUT_SAMPLE_RATE,
+      capture_rate: VOICE_INPUT_SAMPLE_RATE,
+      barge_in: this.detector !== null,
+      ...contextFields(this.ctx),
+    })
+    // The player and the capture worklet use the fixed protocol rates, not what the gateway advertised.
+    if (frame.output?.sampleRate !== VOICE_OUTPUT_SAMPLE_RATE) {
+      voiceLog.warn("output_rate_mismatch", { advertised: frame.output?.sampleRate, used: VOICE_OUTPUT_SAMPLE_RATE })
+    }
+    if (frame.input?.sampleRate !== VOICE_INPUT_SAMPLE_RATE) {
+      voiceLog.warn("input_rate_mismatch", { advertised: frame.input?.sampleRate, used: VOICE_INPUT_SAMPLE_RATE })
+    }
+  }
+
+  private traceSegmentStart(frame: Extract<VoiceServerFrame, { type: "segment_start" }>): void {
+    if (this.traces.has(frame.segmentId)) voiceLog.warn("segment_restart", { segment: frame.segmentId })
+    this.traces.set(frame.segmentId, new SegmentTrace(frame.segmentId, voiceNow(), frame.text?.length ?? 0))
+  }
+
+  private traceSegmentEnd(segmentId: number): void {
+    const trace = this.traces.get(segmentId)
+    if (!trace) {
+      voiceLog.warn("segment_end_unknown", { segment: segmentId })
+      return
+    }
+    trace.end(voiceNow())
+    if (trace.frames === 0) voiceLog.warn("segment_end_without_audio", { segment: segmentId, since_start_ms: voiceNow() - trace.startedAtMs })
+  }
+
+  private traceAudio(chunk: VoiceAudioChunk): void {
+    const now = voiceNow()
+    const trace = this.traces.get(chunk.segmentId)
+    const step = this.audioSeq.next(chunk.seq)
+    if (!trace) {
+      const fields = { segment: chunk.segmentId, seq: chunk.seq, samples: chunk.pcm.length }
+      const cutAt = this.cutAt.get(chunk.segmentId)
+      if (cutAt !== undefined) {
+        voiceLog.debug("audio_after_cut", () => ({ ...fields, since_cut_ms: Math.round(now - cutAt) }))
+      } else {
+        voiceLog.warn("audio_without_segment", fields)
+      }
+      return
+    }
+    if (trace.ended) voiceLog.warn("audio_after_segment_end", { segment: chunk.segmentId, seq: chunk.seq, late_ms: now - (trace.endedAtMs ?? now) })
+    if (trace.frames === 0) {
+      voiceLog.info("segment_first_audio", { segment: chunk.segmentId, since_start_ms: now - trace.startedAtMs, seq: chunk.seq, samples: chunk.pcm.length })
+    }
+    trace.frame(step, VOICE_AUDIO_HEADER_BYTES + chunk.pcm.length * 2, chunk.pcm.length, now)
+  }
+
+  /** Microphone level while speech is audible: the figure the onset detector sees, for judging echo against the threshold. */
+  private traceMic(level: number): void {
+    for (const trace of this.traces.values()) trace.micLevel(level)
+    const threshold = this.onset?.threshold
+    if (threshold !== undefined && level >= threshold) voiceLog.debug("onset_level", { level, threshold })
+  }
+
+  private logBargeIn(level: number, cut: { segmentId: number | null; playedMs: number } | null): void {
+    const threshold = this.onset?.threshold
+    const minSpeechMs = this.onset?.minSpeechMs
+    voiceLog.info("barge_in_local", { level, threshold, min_speech_ms: minSpeechMs, segment: cut?.segmentId ?? null, played_ms: cut?.playedMs ?? 0, mic_live: this.microphoneLive() })
+    this.finishTraces("cut", "barge_in", cut?.segmentId ?? null)
+  }
+
+  private onStopPlayback(reason: string): void {
+    const cut = this.player?.flush() ?? null
+    voiceLog.info("playback_cut", { reason: "stop_playback", cause: reason, segment: cut?.segmentId ?? null, played_ms: cut?.playedMs ?? 0 })
+    this.finishTraces("cut", `stop_playback_${reason}`, cut?.segmentId ?? null)
+  }
+
+  private traceSegmentFinished(segmentId: number, outcome: "played" | "cut", reason?: string, cutSegment?: number | null): void {
+    const trace = this.traces.get(segmentId)
+    if (!trace) return
+    this.traces.delete(segmentId)
+    voiceLog.info("segment_summary", { ...trace.summary(outcome, voiceNow(), VOICE_OUTPUT_SAMPLE_RATE), reason, cut_here: cutSegment === segmentId })
+  }
+
+  /** The player dropped everything: each segment still open ends as cut. */
+  private finishTraces(outcome: "played" | "cut", reason: string, cutSegment: number | null): void {
+    if (outcome === "cut") this.rememberCut([...this.traces.keys()])
+    for (const id of [...this.traces.keys()]) this.traceSegmentFinished(id, outcome, reason, cutSegment)
+  }
+
+  /** The segments just cut, so the audio still in flight for them is logged at debug, as the player does. */
+  private rememberCut(ids: number[]): void {
+    const now = voiceNow()
+    for (const [id, at] of this.cutAt) if (now - at >= CUT_MEMORY_MS) this.cutAt.delete(id)
+    for (const id of ids) this.cutAt.set(id, now)
   }
 }

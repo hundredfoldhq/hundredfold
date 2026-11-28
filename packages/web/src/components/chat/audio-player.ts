@@ -22,6 +22,29 @@
  * never stalls on one corrupt chunk.
  */
 
+import { contextFields, errorFields, traceContextState, voiceLog, voiceNow } from "@/lib/voice-log"
+import { describeWav } from "@/lib/voice/trace"
+
+/** What one playback run did, for the line written when it drains or is cut. Diagnostics only. */
+interface RunDiag {
+  startedAt: number
+  enqueued: number
+  scheduled: number
+  decodeFailed: number
+  stale: number
+  audioS: number
+  underruns: number
+  underrunS: number
+  firstPlayMs: number | null
+}
+
+function freshRun(): RunDiag {
+  return { startedAt: voiceNow(), enqueued: 0, scheduled: 0, decodeFailed: 0, stale: 0, audioS: 0, underruns: 0, underrunS: 0, firstPlayMs: null }
+}
+
+/** A hole in the schedule shorter than this is rounding, not an audible gap. */
+const GAP_EPSILON_S = 0.005
+
 export class WavChunkPlayer {
   private ctx: AudioContext | null = null
   private outputNode: GainNode | null = null
@@ -69,6 +92,11 @@ export class WavChunkPlayer {
 
   private idleCb: (() => void) | null = null
 
+  private run: RunDiag = freshRun()
+  /** Bumped by `reset()`; a decode that started under an older value outlived the reset. */
+  private resetGen = 0
+  private stopContextTrace: (() => void) | null = null
+
   /** Lazily build the output graph (on a supplied or freshly-created context). */
   private ensureContext(): AudioContext {
     if (this.ctx && this.outputNode) return this.ctx
@@ -83,6 +111,8 @@ export class WavChunkPlayer {
     gain.connect(ctx.destination)
     this.ctx = ctx
     this.outputNode = gain
+    voiceLog.info("wav_context_ready", { owned: this.ownsCtx, ...contextFields(ctx) })
+    this.stopContextTrace = traceContextState(ctx, "read_aloud")
     return ctx
   }
 
@@ -93,16 +123,27 @@ export class WavChunkPlayer {
    */
   resume(): Promise<void> {
     const ctx = this.ensureContext()
-    return ctx.state === "suspended" ? ctx.resume() : Promise.resolve()
+    if (ctx.state !== "suspended") return Promise.resolve()
+    const at = voiceNow()
+    voiceLog.info("wav_resume_from_gesture", { ...contextFields(ctx) })
+    const resumed = ctx.resume()
+    resumed.then(
+      () => voiceLog.info("wav_resumed", { wait_ms: voiceNow() - at, ...contextFields(ctx) }),
+      (error: unknown) => voiceLog.warn("wav_resume_failed", { wait_ms: voiceNow() - at, ...errorFields(error), ...contextFields(ctx) }),
+    )
+    return resumed
   }
 
   /** Resume a suspended context, awaiting it — used inside the schedule chain. */
   private async ensureResumed(): Promise<void> {
     const ctx = this.ctx
     if (ctx && ctx.state === "suspended") {
+      const at = voiceNow()
       try {
         await ctx.resume()
-      } catch {
+        voiceLog.info("wav_resumed_in_chain", { wait_ms: voiceNow() - at, ...contextFields(ctx) })
+      } catch (error) {
+        voiceLog.warn("wav_resume_failed", { in_chain: true, wait_ms: voiceNow() - at, ...errorFields(error), ...contextFields(ctx) })
         /* a failed resume must not stall the chain — scheduling will no-op safely */
       }
     }
@@ -129,6 +170,10 @@ export class WavChunkPlayer {
     if (last) this.ended = true
 
     this.inFlight++
+    if (this.run.enqueued === 0) this.run.startedAt = voiceNow()
+    this.run.enqueued += 1
+    const gen = this.resetGen
+    voiceLog.debug("wav_enqueue", () => ({ n: this.run.enqueued, bytes: data.byteLength, last, in_flight: this.inFlight, active: this.activeSources, ...contextFields(this.ctx) }))
     // Resume BEFORE scheduling (awaited): a browser may have auto-suspended the
     // context after the previous turn drained; a fire-and-forget resume would let
     // source.start() race a still-suspended clock and the turn plays silently
@@ -136,7 +181,7 @@ export class WavChunkPlayer {
     // schedule step so it reads a live (resumed) currentTime, not a frozen one.
     this.chain = this.chain
       .then(() => this.ensureResumed())
-      .then(() => this.decodeAndSchedule(data))
+      .then(() => this.decodeAndSchedule(data, gen))
   }
 
   /** Register a callback fired once when the first buffer of a run starts playing. */
@@ -144,20 +189,23 @@ export class WavChunkPlayer {
     this.startCb = cb
   }
 
-  private async decodeAndSchedule(data: ArrayBuffer): Promise<void> {
+  private async decodeAndSchedule(data: ArrayBuffer, gen: number): Promise<void> {
     const ctx = this.ctx
     const output = this.outputNode
+    this.noteIfStale(data, gen)
     if (!ctx || !output) {
       this.inFlight = Math.max(0, this.inFlight - 1)
       return
     }
 
     let buffer: AudioBuffer
+    const decodeStart = voiceNow()
     try {
       // decodeAudioData consumes the ArrayBuffer; slice keeps callers safe.
       buffer = await ctx.decodeAudioData(data.slice(0))
-    } catch {
+    } catch (error) {
       // Corrupt/unsupported chunk — skip it; the queue keeps flowing.
+      this.noteDecodeFailed(data, decodeStart, error)
       this.inFlight = Math.max(0, this.inFlight - 1)
       this.checkIdle()
       return
@@ -178,16 +226,13 @@ export class WavChunkPlayer {
     // catch up to "now" to avoid scheduling in the past.
     const now = ctx.currentTime
     const startAt = Math.max(this.playhead, now)
+    this.traceSchedule(buffer, startAt, now, voiceNow() - decodeStart)
     this.playhead = startAt + buffer.duration
 
     this.activeSources++
     this.inFlight = Math.max(0, this.inFlight - 1)
     this.liveSources.add(source)
-    source.onended = () => {
-      this.liveSources.delete(source)
-      this.activeSources--
-      this.checkIdle()
-    }
+    source.onended = () => this.sourceEnded(ctx, source)
     source.start(startAt)
     if (!this.startNotified) {
       this.startNotified = true
@@ -195,9 +240,18 @@ export class WavChunkPlayer {
     }
   }
 
+  private sourceEnded(ctx: AudioContext, source: AudioBufferSourceNode): void {
+    this.liveSources.delete(source)
+    this.activeSources--
+    voiceLog.debug("wav_source_ended", { active: this.activeSources, in_flight: this.inFlight, now_s: ctx.currentTime })
+    this.checkIdle()
+  }
+
   private checkIdle(): void {
     // Idle only when nothing is playing AND nothing is still queued to decode.
     if (this.activeSources <= 0 && this.inFlight <= 0) {
+      this.logRun("drained")
+      this.run = freshRun()
       this._playing = false
       this.started = false
       const cb = this.idleCb
@@ -221,6 +275,8 @@ export class WavChunkPlayer {
    * not just future enqueues — so pause/stop is immediate and silent.
    */
   reset(): void {
+    if (this._playing || this.liveSources.size > 0 || this.inFlight > 0) this.logRun("reset")
+    this.resetGen += 1
     this.stopLiveSources()
     // Abandon the in-flight decode chain; future enqueues start a fresh chain.
     this.chain = Promise.resolve()
@@ -231,6 +287,7 @@ export class WavChunkPlayer {
     this.activeSources = 0
     this.ended = false
     if (this.ctx) this.playhead = this.ctx.currentTime
+    this.run = freshRun()
   }
 
   /**
@@ -258,6 +315,8 @@ export class WavChunkPlayer {
   /** Fully tear down the AudioContext. Call on unmount. */
   dispose(): void {
     this.reset()
+    this.stopContextTrace?.()
+    this.stopContextTrace = null
     this.idleCb = null
     this.startCb = null
     const ctx = this.ctx
@@ -266,5 +325,54 @@ export class WavChunkPlayer {
     this.outputNode = null
     // Only close a context we created — a shared/external one belongs to the caller.
     if (owns && ctx && ctx.state !== "closed") void ctx.close().catch(() => {})
+  }
+
+  // ── diagnostics ───────────────────────────────────────────────────────────
+
+  /** The chain a reset abandons still runs; say so when one of its chunks gets this far. */
+  private noteIfStale(data: ArrayBuffer, gen: number): void {
+    if (gen === this.resetGen) return
+    this.run.stale += 1
+    voiceLog.warn("wav_stale_chunk", { bytes: data.byteLength, enqueued_under: gen, now_gen: this.resetGen, has_ctx: Boolean(this.ctx) })
+  }
+
+  private noteDecodeFailed(data: ArrayBuffer, decodeStart: number, error: unknown): void {
+    this.run.decodeFailed += 1
+    voiceLog.warn("wav_decode_failed", { bytes: data.byteLength, decode_ms: voiceNow() - decodeStart, ...errorFields(error), ...describeWav(data) })
+  }
+
+  private traceSchedule(buffer: AudioBuffer, startAt: number, now: number, decodeMs: number): void {
+    const run = this.run
+    run.scheduled += 1
+    run.audioS += buffer.duration
+    const gapS = this.started && run.scheduled > 1 ? startAt - this.playhead : 0
+    if (gapS > GAP_EPSILON_S) {
+      run.underruns += 1
+      run.underrunS += gapS
+      voiceLog.warn("wav_underrun", { chunk: run.scheduled, gap_ms: gapS * 1000, now_s: now, playhead_s: this.playhead })
+    }
+    if (run.firstPlayMs === null) {
+      run.firstPlayMs = voiceNow() - run.startedAt
+      voiceLog.info("wav_first_chunk", { since_enqueue_ms: run.firstPlayMs, decode_ms: decodeMs, rate: buffer.sampleRate, channels: buffer.numberOfChannels, audio_ms: buffer.duration * 1000 })
+    }
+    voiceLog.debug("wav_schedule", () => ({ chunk: run.scheduled, decode_ms: decodeMs, audio_ms: buffer.duration * 1000, rate: buffer.sampleRate, channels: buffer.numberOfChannels, start_s: startAt, now_s: now, lead_ms: (startAt - now) * 1000, in_flight: this.inFlight, ...contextFields(this.ctx) }))
+  }
+
+  private logRun(how: "drained" | "reset"): void {
+    const run = this.run
+    voiceLog.info("wav_run", {
+      outcome: how,
+      enqueued: run.enqueued,
+      scheduled: run.scheduled,
+      decode_failed: run.decodeFailed,
+      stale: run.stale,
+      audio_ms: run.audioS * 1000,
+      underruns: run.underruns,
+      underrun_ms: run.underrunS * 1000,
+      first_chunk_ms: run.firstPlayMs,
+      run_ms: voiceNow() - run.startedAt,
+      pending_sources: this.liveSources.size,
+      in_flight: this.inFlight,
+    })
   }
 }

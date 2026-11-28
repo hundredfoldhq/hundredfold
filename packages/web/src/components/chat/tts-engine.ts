@@ -25,7 +25,13 @@
 import { stripMarkdown } from "@/lib/strip-markdown"
 import { authFetch } from "@/lib/auth"
 import { WavChunkPlayer } from "@/components/chat/audio-player"
+import { errorFields, voiceLog, voiceNow } from "@/lib/voice-log"
+import { TtsStreamTrace } from "./tts-stream-trace"
 import type { TtsStart, TtsStartCallbacks } from "./tts-controller"
+
+/** Numbers each read-aloud request so the lines of one message can be told apart. Diagnostics only. */
+let requestCounter = 0
+let activeRequest = 0
 
 /** A gapless, ordered WAV-chunk player (subset of WavChunkPlayer we depend on). */
 export interface StreamPlayer {
@@ -81,12 +87,17 @@ export function createFrameReader(): { push: (chunk: Uint8Array) => ArrayBuffer[
 /** Build a `TtsStart` from injected playback dependencies. */
 export function createTtsStart(deps: TtsEngineDeps): TtsStart {
   return async (raw, cbs) => {
+    const req = ++requestCounter
+    activeRequest = req
+    const requestedAt = voiceNow()
     // MUST be first — runs in the click gesture's synchronous stack so the browser
     // unlocks audio for the streamed playback that begins after the fetch resolves.
     deps.primeAudio?.()
 
     const text = stripMarkdown(raw).trim()
+    voiceLog.info("tts_request", { req, raw_chars: raw.length, text_chars: text.length })
     if (!text) {
+      voiceLog.info("tts_nothing_to_speak", { req })
       cbs.onEnd() // nothing speakable (media-/code-only message) — end cleanly
       return NOOP
     }
@@ -97,16 +108,19 @@ export function createTtsStart(deps: TtsEngineDeps): TtsStart {
     } catch {
       available = false
     }
+    voiceLog.info("tts_backend", { req, kokoro_available: available, since_request_ms: voiceNow() - requestedAt })
 
     if (available) {
       try {
         // openStream rejects on 503 / network error → fall through to Web Speech.
-        return await playKokoroStream(deps, text, cbs)
-      } catch {
+        return await playKokoroStream(deps, text, cbs, req, requestedAt)
+      } catch (error) {
+        voiceLog.warn("tts_stream_open_failed", { req, since_request_ms: voiceNow() - requestedAt, ...errorFields(error) })
         /* Kokoro unavailable / connection failed at call time → browser fallback */
       }
     }
 
+    voiceLog.info("tts_fallback_speech_synthesis", { req, reason: available ? "stream_open_failed" : "kokoro_unavailable" })
     return deps.speak(text, cbs)
   }
 }
@@ -121,23 +135,30 @@ async function playKokoroStream(
   deps: TtsEngineDeps,
   text: string,
   cbs: TtsStartCallbacks,
+  req = 0,
+  requestedAt = voiceNow(),
 ): Promise<() => void> {
   const ac = new AbortController()
   const stream = await deps.openStream(text, ac.signal) // may throw → caller falls back
+  const streamOpenAt = voiceNow()
+  voiceLog.info("tts_stream_open", { req, since_request_ms: streamOpenAt - requestedAt })
   const player = deps.getPlayer()
 
   let started = false
   let streamDone = false
   let stopped = false
   let frames = 0
+  const trace = new TtsStreamTrace(req, requestedAt, streamOpenAt)
 
   player.onStart(() => {
+    trace.playerStarted(stopped)
     if (!started && !stopped) {
       started = true
       cbs.onPlaying()
     }
   })
   player.onIdle(() => {
+    trace.idle(streamDone, started, stopped)
     if (streamDone && started && !stopped) cbs.onEnd()
   })
 
@@ -149,14 +170,20 @@ async function playKokoroStream(
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
-        if (value) for (const wav of parser.push(value)) {
-          frames++
-          player.enqueueBuffer(wav)
+        if (value) {
+          trace.read(value.length)
+          for (const wav of parser.push(value)) {
+            frames++
+            trace.frame(wav)
+            player.enqueueBuffer(wav)
+          }
         }
       }
-    } catch {
+    } catch (error) {
+      trace.failed(error, stopped)
       /* aborted (pause) or network drop — fall through to settle below */
     } finally {
+      trace.ended(stopped, player.playing)
       streamDone = true
       if (!stopped) {
         if (frames === 0) {
@@ -170,6 +197,7 @@ async function playKokoroStream(
   })()
 
   return () => {
+    trace.stopRequested(streamDone, started)
     stopped = true
     ac.abort() // cancels in-flight server synthesis of the remaining sentences
     player.reset()
@@ -183,21 +211,41 @@ let availabilityPromise: Promise<boolean> | null = null
 /** GET /api/tts once and cache the answer for the page lifetime. */
 function checkAvailable(): Promise<boolean> {
   if (!availabilityPromise) {
+    const at = voiceNow()
     availabilityPromise = authFetch("/api/tts")
-      .then((r) => (r.ok ? (r.json() as Promise<{ available?: boolean }>) : { available: false }))
+      .then((r) => {
+        voiceLog.info("tts_availability_probe", { status: r.status, ok: r.ok, ms: voiceNow() - at })
+        return r.ok ? (r.json() as Promise<{ available?: boolean }>) : { available: false }
+      })
       .then((d) => !!d.available)
-      .catch(() => false)
+      .catch((error: unknown) => {
+        voiceLog.warn("tts_availability_probe_failed", { ms: voiceNow() - at, ...errorFields(error) })
+        return false
+      })
   }
   return availabilityPromise
 }
 
 async function openStream(text: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  const at = voiceNow()
+  const req = activeRequest
+  voiceLog.info("tts_fetch", { req, method: "POST", path: "/api/tts", text_chars: text.length })
   const r = await authFetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
     signal,
   })
+  voiceLog[r.ok && r.body ? "info" : "warn"]("tts_response", () => ({
+    req,
+    status: r.status,
+    ok: r.ok,
+    has_body: Boolean(r.body),
+    content_type: r.headers?.get("content-type") ?? undefined,
+    content_length: r.headers?.get("content-length") ?? undefined,
+    content_encoding: r.headers?.get("content-encoding") ?? undefined,
+    headers_ms: voiceNow() - at,
+  }))
   if (!r.ok || !r.body) throw new Error(`tts ${r.status}`)
   return r.body
 }
@@ -234,12 +282,26 @@ function speak(text: string, { onPlaying, onEnd, onError }: TtsStartCallbacks): 
     return NOOP
   }
   const utt = new SpeechSynthesisUtterance(text)
-  utt.onstart = () => onPlaying()
-  utt.onend = () => onEnd()
-  utt.onerror = () => onError()
+  const startedAt = voiceNow()
+  let spokeAt: number | null = null
+  voiceLog.info("speech_synthesis_speak", () => ({ chars: text.length, pending: synth.pending, speaking: synth.speaking, voices: synth.getVoices?.().length }))
+  utt.onstart = () => {
+    spokeAt = voiceNow()
+    voiceLog.info("speech_synthesis_start", { start_ms: spokeAt - startedAt })
+    onPlaying()
+  }
+  utt.onend = () => {
+    voiceLog.info("speech_synthesis_end", { chars: text.length, spoke_ms: spokeAt === null ? null : voiceNow() - spokeAt })
+    onEnd()
+  }
+  utt.onerror = (event) => {
+    voiceLog.warn("speech_synthesis_error", () => ({ error: (event as SpeechSynthesisErrorEvent | undefined)?.error, spoke_ms: spokeAt === null ? null : voiceNow() - spokeAt, chars: text.length }))
+    onError()
+  }
   synth.cancel() // clear any queued/leftover speech first
   synth.speak(utt)
   return () => {
+    voiceLog.info("speech_synthesis_stop", { spoke_ms: spokeAt === null ? null : voiceNow() - spokeAt })
     // cancel() may fire a late onend/onerror — the controller's generation guard
     // ignores those, so stop() is safe to call here.
     synth.cancel()

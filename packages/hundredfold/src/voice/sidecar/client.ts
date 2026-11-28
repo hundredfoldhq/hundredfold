@@ -6,6 +6,7 @@
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { logger } from "../../shared/logger.js";
+import { traceDebug, traceLine } from "../trace.js";
 import type { VadEventHandler } from "../provider.js";
 import { FrameDecoder, FramingError, encodeFrame, type SidecarFrame } from "./framing.js";
 
@@ -362,7 +363,10 @@ export class SpeechSidecarClient {
   async *synthesize(id: string, request: { text: string; voice: string; speed: number; lang: string }, signal: AbortSignal): AsyncGenerator<TtsChunk> {
     const release = this.lease();
     const inbox = new TtsInbox();
-    const onAbort = (): void => { this.cancel(id); inbox.finish(); };
+    const requestedAt = Date.now();
+    const short = id.slice(0, 8);
+    let aborted = false;
+    const onAbort = (): void => { aborted = true; this.cancel(id); inbox.finish(); };
     try {
       try {
         await raceAbort(this.ensureReady(), signal); // an abort while the sidecar is still starting ends it now
@@ -373,12 +377,27 @@ export class SpeechSidecarClient {
       this.tts.set(id, inbox);
       signal.addEventListener("abort", onAbort, { once: true });
       this.write({ op: "tts", id, ...request });
+      traceDebug("sidecar_tts_request", () => ({ id: short, chars: request.text.length, voice: request.voice, speed: request.speed, lang: request.lang, ready_ms: Date.now() - requestedAt }));
       yield* inbox.drain();
     } finally {
       signal.removeEventListener("abort", onAbort);
       if (this.tts.delete(id) && !inbox.ended) this.cancel(id);
       release();
+      this.traceTtsEnd(inbox, { id: short, chars: request.text.length, requestedAt, aborted });
     }
+  }
+
+  /** One summary line per synthesis request, written after the request's cleanup so it can never get in its way. */
+  private traceTtsEnd(inbox: TtsInbox, request: { id: string; chars: number; requestedAt: number; aborted: boolean }): void {
+    const stats = inbox.stats();
+    const fields = {
+      id: request.id, chars: request.chars, chunks: stats.chunks, bytes: stats.bytes, rates: stats.rates.join(","), odd_chunks: stats.oddChunks,
+      ttfb_ms: stats.firstAt === null ? undefined : stats.firstAt - request.requestedAt, total_ms: Date.now() - request.requestedAt, completed: inbox.ended && !request.aborted,
+    };
+    if (stats.rates.some((rate) => rate !== 24_000)) logger.warn(traceLine("sidecar_tts_rate_unexpected", { ...fields, expected: 24_000 }));
+    if (request.aborted) logger.info(traceLine("sidecar_tts_aborted", fields));
+    else if (stats.chunks === 0) logger.warn(traceLine("sidecar_tts_no_audio", fields));
+    else traceDebug("sidecar_tts_done", () => fields);
   }
 
   /** Tell the sidecar to drop a `tts` id or an utterance. */
@@ -394,11 +413,17 @@ export class SpeechSidecarClient {
       case "pong": this.pingsOutstanding = 0; return;
       case "vad.event": return this.onVadEvent(header);
       case "stt.text": return this.onSttText(header);
-      case "tts.audio": this.tts.get(String(header.id))?.push({ pcm: body, sampleRate: Number(header.sampleRate) }); return;
+      case "tts.audio": return this.onTtsAudio(header, body);
       case "tts.done": this.tts.get(String(header.id))?.finish(); return;
       case "error": return this.onError(header);
       default: logger.debug(`[voice-sidecar] ignoring frame ${String(header.op)}`);
     }
+  }
+
+  private onTtsAudio(header: SidecarFrame["header"], body: Buffer): void {
+    const waiter = this.tts.get(String(header.id));
+    if (!waiter) traceDebug("sidecar_tts_audio_unclaimed", () => ({ id: String(header.id).slice(0, 8), bytes: body.length }));
+    waiter?.push({ pcm: body, sampleRate: Number(header.sampleRate) });
   }
 
   private onReady(header: SidecarFrame["header"]): void {
@@ -513,8 +538,20 @@ class TtsInbox implements TtsWaiter {
     return this.done;
   }
 
+  /** Diagnostics only: what arrived, whether or not the consumer has taken it yet. */
+  private received = { chunks: 0, bytes: 0, oddChunks: 0, firstAt: null as number | null, rates: new Set<number>() };
+
+  stats(): { chunks: number; bytes: number; oddChunks: number; firstAt: number | null; rates: number[] } {
+    return { ...this.received, rates: [...this.received.rates] };
+  }
+
   push(chunk: TtsChunk): void {
     if (this.done) return;
+    this.received.chunks += 1;
+    this.received.bytes += chunk.pcm.length;
+    if (chunk.pcm.length % 2 !== 0) this.received.oddChunks += 1;
+    this.received.firstAt ??= Date.now();
+    this.received.rates.add(chunk.sampleRate);
     this.chunks.push(chunk);
     this.notify();
   }
