@@ -1,7 +1,7 @@
 import { VOICE_AUDIO_HEADER_BYTES, VOICE_INPUT_SAMPLE_RATE, VOICE_OUTPUT_SAMPLE_RATE, type VoiceClientFrame, type VoiceCueSettings, type VoiceMode, type VoiceOnsetSettings, type VoiceServerFrame } from "@hundredfold/gateway-events"
 import { contextFields, errorFields, traceContextState, voiceLog, voiceNow } from "@/lib/voice-log"
 import { startCapture, requestMicrophone } from "./capture-worklet"
-import { DEFAULT_CUE_SETTINGS, VoiceCuePlayer, wantedCue, type CueAudioContext, type CueInputs, type VoiceCuePlayerLike } from "./cues"
+import { DEFAULT_CUE_SETTINGS, START_CUE_TAIL_MS, VoiceCuePlayer, wantedCue, type CueAudioContext, type CueInputs, type VoiceCuePlayerLike } from "./cues"
 import { VoiceStore, dropHandoff, type VoiceController, type VoiceSessionStarter } from "./controller"
 import { OnsetDetector } from "./onset"
 import { rms } from "./pcm"
@@ -130,6 +130,10 @@ export class BrowserVoiceSession implements VoiceController {
   private generation = 0
   private talking = false
   private pendingResumeMs: number | null = null
+  /** The start cue (three beeps) sounds once per start: not again on a reconnect after a suspension. */
+  private startCueDone = false
+  /** Until this time the microphone is not sent up and not fed to the detector: the start cue is playing, and may leak into it. */
+  private uplinkMutedUntil = 0
   private session: string | null
   // Diagnostics only: none of this feeds back into behaviour.
   private runStartedAt = 0
@@ -157,6 +161,8 @@ export class BrowserVoiceSession implements VoiceController {
     if (this.store.snapshot.status !== "off") return Promise.resolve()
     this.apply({ type: "connecting", mode: this.options.mode })
     this.closing = false
+    this.startCueDone = false
+    this.uplinkMutedUntil = 0
     const generation = ++this.generation
     // The three calls iOS requires inside the tap, before any await.
     const ctx = this.deps.createContext()
@@ -325,6 +331,25 @@ export class BrowserVoiceSession implements VoiceController {
     this.logReady(frame)
     this.removeMediaSession ??= installMediaSession(this.deps.mediaSession, () => this.stop(), this.deps.createMediaMetadata ?? (() => null))
     this.sendResume()
+    this.playStartCue()
+  }
+
+  /**
+   * Three quick high beeps, once per start, when voice mode is live and listening: the gateway has said `ready`
+   * and the microphone is capturing. Whichever of the two comes second plays it, so a start that fails (no
+   * microphone, no `ready`) makes no sound. The beeps go through the cue player, never the speech player, and the
+   * microphone is held back while they sound, so they cannot be heard as speech or as barge-in.
+   */
+  private playStartCue(): void {
+    const state = this.store.snapshot
+    const ctx = this.ctx
+    if (this.startCueDone || this.closing || !ctx || !this.capture || state.status !== "on" || !state.ready) return
+    this.startCueDone = true
+    const settings = state.ready.cues
+    if (!settings.enabled || settings.volume <= 0) return
+    this.cuePlayer ??= this.deps.createCuePlayer(ctx)
+    const from = this.deps.now()
+    this.uplinkMutedUntil = from + this.cuePlayer.playStart(settings.volume) + START_CUE_TAIL_MS
   }
 
   private sendResume(): void {
@@ -400,6 +425,7 @@ export class BrowserVoiceSession implements VoiceController {
     this.capture = handle
     voiceLog.info("capture_attached", { track_state: handle.track?.readyState, track_muted: handle.track?.muted, ...contextFields(ctx) })
     this.watchForSuspension(ctx)
+    this.playStartCue()
   }
 
   private watchForSuspension(ctx: VoiceAudioContext): void {
@@ -416,7 +442,7 @@ export class BrowserVoiceSession implements VoiceController {
 
   private onCaptureFrame(pcm: Int16Array): void {
     const state = this.store.snapshot
-    if (state.status !== "on") return
+    if (state.status !== "on" || this.deps.now() < this.uplinkMutedUntil) return
     const player = this.player
     if (this.detector && player) {
       const active = player.isActive()

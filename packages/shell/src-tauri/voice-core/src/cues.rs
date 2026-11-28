@@ -17,7 +17,24 @@ pub enum Cue {
     Thinking,
     /// A pair of notes, the second a little higher, about every 1.8 seconds, while a tool runs.
     Tool,
+    /// Three quick, high beeps, once, when voice mode is live and listening. The platform loops what
+    /// it is handed, so this loop is the beeps followed by silence, and the session stops it after
+    /// `START_CUE_MS` (see `Session`), long before the loop comes round again.
+    Start,
 }
+
+/// How long the start cue sounds: its last beep ends at 340 ms. Mirrors `START_CUE_MS` in `cues.ts`.
+pub const START_CUE_MS: u64 = 340;
+
+/// Headroom between asking the platform to play the start cue and the beeps actually sounding (the
+/// call into Kotlin or Swift, building the track, output latency). The session stops the loop
+/// `START_CUE_MS + START_CUE_LATENCY_MS` after it asked, so a slow start still gets all three beeps;
+/// the loop is 2 s long, well beyond that, so it cannot come round again before the stop.
+pub const START_CUE_LATENCY_MS: u64 = 300;
+
+/// How long after the start cue ends the microphone stays muted toward the gateway: the room can
+/// still be ringing, and the speaker's output can reach the microphone a little late.
+pub const START_CUE_TAIL_MS: u64 = 250;
 
 /// `ready.cues`. A gateway that predates cues sends none: the defaults then apply.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,9 +87,13 @@ pub struct CueInputs {
     pub speech_audible: bool,
     /// The tool the turn is on was moved to the background.
     pub tool_backgrounded: bool,
+    /// Voice mode has just started and the start cue is still sounding.
+    pub starting: bool,
 }
 
 /// Which cue should sound now, or `None`.
+///
+/// The start cue (three beeps, once per start) comes first while it is sounding.
 ///
 /// A `thinking` turn gets the thinking cue and a `working` turn the tool cue, until
 /// the tool is moved to the background: the work then belongs to the background
@@ -85,6 +106,9 @@ pub fn wanted(input: &CueInputs) -> Option<Cue> {
     }
     if input.hearing || input.speech_audible {
         return None;
+    }
+    if input.starting {
+        return Some(Cue::Start);
     }
     match input.turn {
         Turn::Thinking => Some(Cue::Thinking),
@@ -120,7 +144,7 @@ struct Pattern {
     blips: &'static [Blip],
 }
 
-/// The first note comes `at_ms` after the cue starts, so a short pause in the work makes no sound at all.
+/// The first note of a looping cue comes `at_ms` after the cue starts, so a short pause in the work makes no sound at all.
 /// Pitches sit in the warm middle of the voice range, and every note is well under the 250 ms an
 /// utterance needs, with a clear gap before the next.
 fn pattern(cue: Cue) -> Pattern {
@@ -145,6 +169,28 @@ fn pattern(cue: Cue) -> Pattern {
                     at_ms: 500,
                     dur_ms: 110,
                     hz: 440.0,
+                },
+            ],
+        },
+        // Three beeps of 60 ms with a 60 ms gap at A6 (1760 Hz): the same recipe as `START_CUE` in
+        // `cues.ts`, far from the 250 ms an utterance needs. The loop is padded with silence to 2 s.
+        Cue::Start => Pattern {
+            loop_ms: 2000,
+            blips: &[
+                Blip {
+                    at_ms: 40,
+                    dur_ms: 60,
+                    hz: 1760.0,
+                },
+                Blip {
+                    at_ms: 160,
+                    dur_ms: 60,
+                    hz: 1760.0,
+                },
+                Blip {
+                    at_ms: 280,
+                    dur_ms: 60,
+                    hz: 1760.0,
                 },
             ],
         },
@@ -208,6 +254,7 @@ mod tests {
             hearing: false,
             speech_audible: false,
             tool_backgrounded: false,
+            starting: false,
         }
     }
 
@@ -238,6 +285,30 @@ mod tests {
         heard.hearing = true;
         assert_eq!(wanted(&heard), None);
         let mut spoken = input(Turn::Thinking);
+        spoken.speech_audible = true;
+        assert_eq!(wanted(&spoken), None);
+    }
+
+    #[test]
+    fn the_start_cue_comes_first_while_it_is_sounding_and_obeys_the_same_silencers() {
+        let mut starting = input(Turn::Idle);
+        starting.starting = true;
+        assert_eq!(wanted(&starting), Some(Cue::Start));
+        starting.turn = Turn::Thinking;
+        assert_eq!(wanted(&starting), Some(Cue::Start));
+        let mut off = starting;
+        off.settings.enabled = false;
+        assert_eq!(wanted(&off), None);
+        let mut silent = starting;
+        silent.settings.volume = 0.0;
+        assert_eq!(wanted(&silent), None);
+        let mut paused = starting;
+        paused.running = false;
+        assert_eq!(wanted(&paused), None);
+        let mut heard = starting;
+        heard.hearing = true;
+        assert_eq!(wanted(&heard), None);
+        let mut spoken = starting;
         spoken.speech_audible = true;
         assert_eq!(wanted(&spoken), None);
     }
@@ -330,6 +401,74 @@ mod tests {
                     loop_[*index]
                 );
             }
+        }
+    }
+
+    /// Three beeps, each about 60 ms, with a clear gap, all high and all inside `START_CUE_MS`.
+    #[test]
+    fn the_start_cue_is_three_short_high_beeps_inside_its_window() {
+        let rate = 24_000u32;
+        let cue = render_unit_loop(Cue::Start, rate);
+        assert_eq!(cue.len(), 2000 * 24);
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut from: Option<usize> = None;
+        for (i, s) in cue.iter().enumerate() {
+            match (from, *s != 0.0) {
+                (None, true) => from = Some(i),
+                (Some(start), false) => {
+                    runs.push((start, i));
+                    from = None;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        for (start, end) in &runs {
+            let ms = (end - start) as f64 * 1000.0 / f64::from(rate);
+            assert!(ms <= 61.0, "{ms} ms is too long a beep");
+            assert!(*end <= samples_of(START_CUE_MS as u32, rate));
+            let mut crossings = 0;
+            for i in start + 1..*end {
+                if (cue[i - 1] < 0.0) != (cue[i] < 0.0) {
+                    crossings += 1;
+                }
+            }
+            let hz = f64::from(crossings) / 2.0 / ((end - start) as f64 / f64::from(rate));
+            assert!((1500.0..2000.0).contains(&hz), "{hz} Hz is not high");
+        }
+        assert!(cue[samples_of(START_CUE_MS as u32, rate)..]
+            .iter()
+            .all(|s| *s == 0.0));
+        let peak = render_loop(Cue::Start, 1.0)
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
+            .max()
+            .unwrap();
+        assert!(peak <= (CUE_PEAK * 32767.0) as u16 && peak > 1000);
+    }
+
+    /// The same samples as `renderStartCue` in `cues.ts` at 24 kHz, which holds the same table.
+    #[test]
+    fn the_start_cue_renders_the_same_samples_as_the_web_synthesiser() {
+        let table: [(usize, f32); 10] = [
+            (1100, 0.236211),
+            (1250, 0.752128),
+            (1500, -0.571293),
+            (2300, 0.023956),
+            (4000, -0.300306),
+            (4300, -0.99263),
+            (4600, -0.75655),
+            (7000, -0.150611),
+            (7400, -0.637569),
+            (7900, -0.032303),
+        ];
+        let cue = render_unit_loop(Cue::Start, 24_000);
+        for (index, expected) in table {
+            assert!(
+                (cue[index] - expected).abs() < 1e-5,
+                "[{index}] = {} vs {expected}",
+                cue[index]
+            );
         }
     }
 

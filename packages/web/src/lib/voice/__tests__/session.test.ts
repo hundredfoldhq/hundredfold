@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { VoiceClientFrame, VoiceServerFrame } from "@hundredfold/gateway-events"
-import type { VoiceCuePlayerLike } from "../cues"
+import { START_CUE_MS, START_CUE_TAIL_MS, type VoiceCuePlayerLike } from "../cues"
 import { floatToInt16 } from "../pcm"
 import { MUTED_RETURN_WAIT_MS } from "../suspend"
 import { VoicePlayer } from "../player"
@@ -88,6 +88,8 @@ interface Rig {
   captureStops: ReturnType<typeof vi.fn>
   /** What the cue player was told, in order: `thinking@0.3`, `tool@0.3`, `stop`. */
   cues: string[]
+  /** Each start cue (three beeps) the cue player was asked for, as `start@<volume>`. */
+  startBeeps: string[]
   /** Pending prompts and worklet loads, when the rig was built to defer them. */
   micGates: Gate<MediaStream>[]
   captureGates: Gate<void>[]
@@ -96,7 +98,7 @@ interface Rig {
 
 interface Gate<T> { open(value: T extends void ? void : T): void; fail(error: unknown): void }
 
-function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; deferMic: boolean; deferCapture: boolean; sessionId: string | VoiceSessionStarter }> = {}): Rig {
+function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: boolean; deferMic: boolean; deferCapture: boolean; startBeepsStillSounding: boolean; sessionId: string | VoiceSessionStarter }> = {}): Rig {
   const micGates: Gate<MediaStream>[] = []
   const captureGates: Gate<void>[] = []
   const calls: string[] = []
@@ -125,8 +127,11 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
   }
   const mediaSession = { metadata: null as unknown, playbackState: "none", setActionHandler: vi.fn() }
   const cues: string[] = []
+  const startBeeps: string[] = []
   const cuePlayer: VoiceCuePlayerLike = {
-    set: (cue, volume) => { const call = cue ? `${cue}@${volume}` : "stop"; if (cues.at(-1) !== call) cues.push(call) },
+    // The beeps are over a moment later unless a test is looking at the time they sound.
+    playStart: (volume) => { startBeeps.push(`start@${volume}`); if (!options.startBeepsStillSounding) clock.now += 5_000; return START_CUE_MS },
+    set: (cue, volume) => { const call = cue ? `${cue}@${volume}` : "stop"; if (cues.at(-1) !== call && !(call === "stop" && cues.length === 0)) cues.push(call) },
     dispose: () => { if (cues.at(-1) !== "stop") cues.push("stop") },
   }
   const deps: BrowserVoiceDeps = {
@@ -155,7 +160,7 @@ function rig(options: Partial<{ mode: "hands-free" | "push-to-talk"; bargeIn: bo
     now: () => clock.now,
   }
   const session = new BrowserVoiceSession({ sessionId: options.sessionId ?? "s1", mode: options.mode ?? "hands-free", bargeIn: options.bargeIn ?? true }, deps)
-  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, micGates, captureGates, wakeLock }
+  return { session, calls, opened, sockets, contexts, tracks, doc, mediaSession, emitCapture: (f) => sink(f), micError, clock, captureStops, cues, startBeeps, micGates, captureGates, wakeLock }
 }
 
 async function started(options?: Parameters<typeof rig>[0]) {
@@ -1439,5 +1444,140 @@ describe("start, stop and start again", () => {
     expect(sources[1].stoppedAt).toBeNull()
     expect(sources[1].startedAt).not.toBeNull()
     expect(socket.types()).not.toContain("barge_in")
+  })
+})
+
+describe("the start cue: three beeps when voice mode is live", () => {
+  const live = async (options?: Parameters<typeof rig>[0], ready: VoiceServerFrame = READY) => {
+    const r = rig(options)
+    await r.session.start()
+    r.sockets[0].serverFrame(ready)
+    return r
+  }
+
+  it("plays once the gateway is ready and the microphone is capturing, at the configured volume", async () => {
+    const r = await live({}, { ...READY, cues: { enabled: true, volume: 0.45 } })
+    expect(r.startBeeps).toEqual(["start@0.45"])
+  })
+
+  it("plays at the default volume when the gateway sent no cue settings", async () => {
+    const r = await live()
+    expect(r.startBeeps).toEqual(["start@0.3"])
+  })
+
+  it("waits for the microphone: ready alone is not listening yet", async () => {
+    const r = rig({ deferCapture: true })
+    const starting = r.session.start()
+    await flush()
+    r.sockets[0].serverFrame(READY)
+    expect(r.startBeeps).toEqual([])
+    r.captureGates[0].open()
+    await starting
+    expect(r.startBeeps).toEqual(["start@0.3"])
+  })
+
+  it("waits for ready when the microphone came first", async () => {
+    const r = rig()
+    await r.session.start()
+    expect(r.startBeeps).toEqual([])
+    r.sockets[0].serverFrame(READY)
+    expect(r.startBeeps).toEqual(["start@0.3"])
+  })
+
+  it("makes no sound when voice mode fails to start: a refused microphone, a worklet that will not load, a socket that closes before ready", async () => {
+    const denied = rig()
+    denied.micError.value = new DOMException("denied", "NotAllowedError")
+    await denied.session.start()
+    denied.sockets[0].serverFrame(READY)
+    expect(denied.startBeeps).toEqual([])
+
+    const worklet = rig({ deferCapture: true })
+    const starting = worklet.session.start()
+    await flush()
+    worklet.captureGates[0].fail(new Error("worklet blocked"))
+    await starting
+    worklet.sockets[0].serverFrame(READY)
+    expect(worklet.startBeeps).toEqual([])
+
+    const noReady = rig()
+    await noReady.session.start()
+    noReady.sockets[0].drop(1011)
+    expect(noReady.startBeeps).toEqual([])
+  })
+
+  it("makes no sound when the gateway ends the attachment before the microphone is up", async () => {
+    const r = rig({ deferCapture: true })
+    const starting = r.session.start()
+    await flush()
+    r.sockets[0].serverFrame(READY)
+    r.sockets[0].serverFrame({ type: "detached", reason: "taken_over" })
+    r.captureGates[0].open()
+    await starting
+    expect(r.startBeeps).toEqual([])
+  })
+
+  it("plays again on a second start after hanging up, and only once per start", async () => {
+    const r = await live()
+    r.session.stop()
+    expect(r.startBeeps).toHaveLength(1)
+    await r.session.start()
+    r.sockets[1].serverFrame(READY)
+    r.sockets[1].serverFrame(READY) // a repeated ready on the same attachment
+    expect(r.startBeeps).toEqual(["start@0.3", "start@0.3"])
+  })
+
+  it("does not play again when a suspended session reconnects and is ready again", async () => {
+    const second = await live()
+    second.doc.set("hidden")
+    second.sockets[0].drop(1006)
+    second.doc.set("visible")
+    await flush()
+    await second.session.resumeFromTap()
+    expect(second.sockets).toHaveLength(2)
+    second.sockets[1].serverFrame(READY)
+    expect(second.session.getSnapshot().status).toBe("on")
+    expect(second.startBeeps).toEqual(["start@0.3"])
+  })
+
+  it("is silent when cues are switched off or the volume is zero, and stays silent for the run", async () => {
+    for (const cues of [{ enabled: false, volume: 0.3 }, { enabled: true, volume: 0 }]) {
+      const r = await live({}, { ...READY, cues })
+      r.sockets[0].serverFrame({ ...READY, cues: { enabled: true, volume: 0.3 } })
+      expect(r.startBeeps).toEqual([])
+    }
+  })
+
+  it("holds the microphone back while the beeps sound, so they are not transcribed or taken for barge-in", async () => {
+    const r = await live({ startBeepsStillSounding: true })
+    const hold = START_CUE_MS + START_CUE_TAIL_MS
+    for (let i = 0; i < 20; i++) r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].audio).toHaveLength(0)
+    r.clock.now += hold - 1
+    r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].audio).toHaveLength(0)
+    r.clock.now += 1
+    r.emitCapture(frameAt(0.2))
+    expect(r.sockets[0].audio).toHaveLength(1)
+    expect(r.sockets[0].types()).not.toContain("barge_in")
+  })
+
+  it("feeds the barge-in detector nothing while the beeps sound, even over speech already playing", async () => {
+    const r = await live({ startBeepsStillSounding: true })
+    r.sockets[0].serverFrame({ type: "turn", state: "speaking" })
+    r.sockets[0].serverFrame({ type: "segment_start", segmentId: 1, messageId: null, text: "Hi." })
+    r.sockets[0].serverAudio(1, 12_000)
+    for (let i = 0; i < 100; i++) r.emitCapture(frameAt(0.3))
+    expect(r.sockets[0].types()).not.toContain("barge_in")
+  })
+
+  it("push-to-talk gets the beeps too", async () => {
+    const r = await live({ mode: "push-to-talk" })
+    expect(r.startBeeps).toEqual(["start@0.3"])
+  })
+
+  it("hanging up while the beeps sound stops them", async () => {
+    const r = await live({ startBeepsStillSounding: true })
+    r.session.stop()
+    expect(r.cues.at(-1)).toBe("stop")
   })
 })

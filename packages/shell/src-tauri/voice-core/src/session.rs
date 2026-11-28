@@ -13,7 +13,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     audio::{parse_down_frame, FrameChunker},
-    cues::{wanted, Cue, CueInputs, CueRequest, CueSettings, Turn},
+    cues::{
+        wanted, Cue, CueInputs, CueRequest, CueSettings, Turn, START_CUE_LATENCY_MS, START_CUE_MS,
+        START_CUE_TAIL_MS,
+    },
     diag_debug, diag_info, diag_warn,
     protocol::{ClientFrame, GatewayFrame, Mode, Onset, OUTPUT_SAMPLE_RATE, PROTOCOL_VERSION},
 };
@@ -232,6 +235,8 @@ pub struct Session {
     guard_until_ms: u64,
     chunker: FrameChunker,
     cues: CueState,
+    /// Until this time the microphone is not sent up: the start cue is sounding and may leak into it.
+    uplink_muted_until_ms: u64,
     run_id: u64,
     segments: HashMap<u32, SegStats>,
     last_seq: Option<u16>,
@@ -250,6 +255,9 @@ struct CueState {
     speech: HashSet<u32>,
     /// What the platform was last told to play.
     playing: Option<Cue>,
+    /// The start cue (three beeps) is sounding, until `start_ends_ms`. Once per session, at its first `ready`.
+    starting: bool,
+    start_ends_ms: u64,
 }
 
 impl CueState {
@@ -262,6 +270,8 @@ impl CueState {
             partial: false,
             speech: HashSet::new(),
             playing: None,
+            starting: false,
+            start_ends_ms: 0,
         }
     }
 }
@@ -278,6 +288,7 @@ impl Session {
             guard_until_ms: 0,
             chunker: FrameChunker::default(),
             cues: CueState::new(),
+            uplink_muted_until_ms: 0,
             run_id: 0,
             segments: HashMap::new(),
             last_seq: None,
@@ -293,6 +304,14 @@ impl Session {
 
     pub fn totals(&self) -> Totals {
         self.totals
+    }
+
+    /// Tests only: the start cue has played out and the platform has been told to stop it.
+    #[cfg(test)]
+    fn start_cue_over(&mut self) {
+        self.cues.starting = false;
+        self.cues.playing = None;
+        self.uplink_muted_until_ms = 0;
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -476,6 +495,10 @@ impl Session {
         if matches!(input, Input::Onset { .. }) {
             self.cues.speech.clear();
         }
+        if self.cues.starting && now_ms >= self.cues.start_ends_ms {
+            // The platform loops what it is handed: the beeps are done, so stop the loop before it comes round.
+            self.cues.starting = false;
+        }
         let mut actions = self.handle_input(input, now_ms);
         match self.cue_change() {
             // Silence first: before anything else the same input asks of the platform.
@@ -497,7 +520,12 @@ impl Session {
                 || (self.mode == Mode::PushToTalk && self.ptt_down),
             speech_audible: !self.cues.speech.is_empty(),
             tool_backgrounded: self.cues.tool_backgrounded,
+            starting: self.cues.starting,
         });
+        if wanted != Some(Cue::Start) {
+            // Over, or silenced (off, paused, heard): the beeps are never picked up again partway.
+            self.cues.starting = false;
+        }
         if wanted == self.cues.playing {
             return None;
         }
@@ -644,7 +672,7 @@ impl Session {
                 }]
             }
             Input::Capture(bytes) => {
-                if !self.sending() {
+                if !self.sending() || now_ms < self.uplink_muted_until_ms {
                     self.totals.up_discarded_bytes += bytes.len() as u64;
                     self.chunker.clear();
                     return Vec::new();
@@ -834,13 +862,25 @@ impl Session {
                     actions.extend(self.stop(reason::ERROR, now_ms));
                     return actions;
                 }
+                let first_ready = self.phase == Phase::AwaitingReady;
                 self.phase = Phase::Running;
                 self.cues = CueState {
                     settings: ready.cues,
                     // What the platform plays carries over, so a second `ready` can still stop it.
                     playing: self.cues.playing,
+                    // So does a start cue still sounding: a repeated `ready` neither restarts nor cuts it.
+                    starting: self.cues.starting,
+                    start_ends_ms: self.cues.start_ends_ms,
                     ..CueState::new()
                 };
+                if first_ready && ready.cues.enabled && ready.cues.volume > 0.0 {
+                    // Live and listening: three beeps, once. Not on a repeated `ready`, nor when cues are off.
+                    self.cues.starting = true;
+                    self.cues.start_ends_ms =
+                        now_ms.saturating_add(START_CUE_MS + START_CUE_LATENCY_MS);
+                    self.uplink_muted_until_ms =
+                        self.cues.start_ends_ms.saturating_add(START_CUE_TAIL_MS);
+                }
                 actions.push(Action::ConfigureOnset(ready.onset));
                 actions.push(state(self.state(), None));
             }
@@ -995,10 +1035,18 @@ mod tests {
         bytes
     }
 
+    /// A session that is running with the start cue long over, so tests of everything else, on small
+    /// made-up clocks, see neither the beeps nor the microphone hold-back. `starting_session` keeps them.
     fn running(mode: Mode) -> Session {
+        let mut session = starting_session(mode, READY);
+        session.start_cue_over();
+        session
+    }
+
+    fn starting_session(mode: Mode, ready: &str) -> Session {
         let mut session = Session::new(mode);
         session.handle(Input::SocketOpened, 0);
-        session.handle(Input::GatewayText(READY.into()), 0);
+        session.handle(Input::GatewayText(ready.into()), 0);
         assert_eq!(session.state(), NativeState::Running);
         session
     }
@@ -1598,9 +1646,8 @@ mod tests {
     }
 
     fn running_with(cues: &str) -> Session {
-        let mut session = Session::new(Mode::HandsFree);
-        session.handle(Input::SocketOpened, 0);
-        session.handle(Input::GatewayText(ready_with(cues)), 0);
+        let mut session = starting_session(Mode::HandsFree, &ready_with(cues));
+        session.start_cue_over();
         session
     }
 
@@ -1895,6 +1942,197 @@ mod tests {
         let json = r#"{"type":"turn","state":"thinking"}"#;
         let actions = session.handle(Input::GatewayText(json.into()), 1);
         assert_eq!(actions[0], Action::Forward(json.into()));
+    }
+
+    // ── the start cue: three beeps when voice mode is live ──────────────────
+
+    /// When the session stops the start loop after asking for it: the beeps plus the latency headroom.
+    const STOP: u64 = START_CUE_MS + START_CUE_LATENCY_MS;
+
+    fn ready_at(session: &mut Session, ready: &str, now: u64) -> Vec<Option<Cue>> {
+        cue_actions(&session.handle(Input::GatewayText(ready.into()), now))
+    }
+
+    fn tick(session: &mut Session, now: u64) -> Vec<Option<Cue>> {
+        cue_actions(&session.handle(Input::Capture(vec![0; 64]), now))
+    }
+
+    fn awaiting_ready(mode: Mode) -> Session {
+        let mut session = Session::new(mode);
+        session.handle(Input::SocketOpened, 0);
+        session
+    }
+
+    #[test]
+    fn the_first_ready_starts_the_beeps_once_and_they_stop_when_done() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        assert_eq!(ready_at(&mut session, READY, 1_000), vec![Some(Cue::Start)]);
+        // Nothing more is asked while they sound; at the end the platform is told to stop the loop.
+        assert!(tick(&mut session, 1_100).is_empty());
+        assert!(tick(&mut session, 1_000 + STOP - 1).is_empty());
+        assert_eq!(tick(&mut session, 1_000 + STOP), vec![None]);
+        assert!(tick(&mut session, 5_000).is_empty());
+    }
+
+    #[test]
+    fn the_loop_is_not_stopped_before_a_slow_platform_has_played_all_three_beeps() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        ready_at(&mut session, READY, 0);
+        // Even if the platform took 250 ms to start sounding, the last beep (ending at 340 ms
+        // after it started) is not cut off: the stop comes later, and well before the 2 s loop ends.
+        assert!(tick(&mut session, START_CUE_MS + 250).is_empty());
+        const { assert!(STOP + START_CUE_TAIL_MS < 2_000) };
+        assert_eq!(tick(&mut session, STOP), vec![None]);
+    }
+
+    #[test]
+    fn the_beeps_are_asked_for_at_the_configured_volume() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        let actions = session.handle(
+            Input::GatewayText(ready_with(r#"{"enabled":true,"volume":0.45}"#)),
+            0,
+        );
+        assert!(actions.contains(&Action::SetCue(Some(CueRequest {
+            cue: Cue::Start,
+            volume: 0.45
+        }))));
+    }
+
+    #[test]
+    fn nothing_beeps_before_ready_or_when_the_start_fails() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        assert!(tick(&mut session, 100).is_empty());
+        let closed = cue_actions(&session.handle(
+            Input::SocketClosed {
+                code: Some(1011),
+                reason: String::new(),
+            },
+            200,
+        ));
+        assert!(closed.is_empty());
+        let mut refused = awaiting_ready(Mode::HandsFree);
+        let bad = READY.replace(r#""protocol":1"#, r#""protocol":99"#);
+        assert!(ready_at(&mut refused, &bad, 0).is_empty());
+        let mut timed_out = awaiting_ready(Mode::HandsFree);
+        let actions = timed_out.handle(Input::ReadyTimeout, 10_000);
+        assert!(cue_actions(&actions).is_empty());
+    }
+
+    #[test]
+    fn a_ready_with_cues_off_or_silent_makes_no_beeps_and_no_hold_back() {
+        for cues in [
+            r#"{"enabled":false,"volume":0.3}"#,
+            r#"{"enabled":true,"volume":0}"#,
+        ] {
+            let mut session = awaiting_ready(Mode::HandsFree);
+            assert!(ready_at(&mut session, &ready_with(cues), 0).is_empty());
+            assert_eq!(
+                session
+                    .handle(Input::Capture(vec![7; UP_FRAME_BYTES]), 1)
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_ready_does_not_beep_again() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        assert_eq!(ready_at(&mut session, READY, 0), vec![Some(Cue::Start)]);
+        assert_eq!(tick(&mut session, STOP), vec![None]);
+        assert!(ready_at(&mut session, READY, 2_000).is_empty());
+        assert!(tick(&mut session, 9_000).is_empty());
+        // Nor one that arrives while the first beeps still sound: neither restarted nor cut.
+        let mut early = awaiting_ready(Mode::HandsFree);
+        assert_eq!(ready_at(&mut early, READY, 0), vec![Some(Cue::Start)]);
+        assert!(ready_at(&mut early, READY, 100).is_empty());
+        assert_eq!(tick(&mut early, STOP), vec![None]);
+    }
+
+    #[test]
+    fn each_new_session_beeps_once_so_a_second_start_beeps_again() {
+        for _ in 0..2 {
+            let mut session = awaiting_ready(Mode::HandsFree);
+            assert_eq!(ready_at(&mut session, READY, 0), vec![Some(Cue::Start)]);
+            session.handle(
+                Input::Stop {
+                    reason: "user".into(),
+                },
+                50,
+            );
+            assert!(session.is_stopped());
+        }
+    }
+
+    #[test]
+    fn hanging_up_or_a_call_while_the_beeps_sound_stops_them_and_they_do_not_come_back() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        ready_at(&mut session, READY, 0);
+        let paused = cue_actions(&session.handle(Input::InterruptionBegan, 100));
+        assert_eq!(paused, vec![None]);
+        let back = cue_actions(&session.handle(Input::InterruptionEnded { suspended_ms: 50 }, 150));
+        assert!(back.is_empty());
+        assert!(tick(&mut session, 200).is_empty());
+    }
+
+    #[test]
+    fn the_microphone_is_held_back_while_the_beeps_sound_and_for_a_tail_after() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        ready_at(&mut session, READY, 1_000);
+        let hold = 1_000 + STOP + START_CUE_TAIL_MS;
+        let loud = vec![9; UP_FRAME_BYTES];
+        for now in [1_001, 1_200, hold - 1] {
+            assert!(session
+                .handle(Input::Capture(loud.clone()), now)
+                .iter()
+                .all(|a| !matches!(a, Action::SendBinary(_))));
+        }
+        let sent = session.handle(Input::Capture(loud), hold);
+        assert_eq!(
+            sent.iter()
+                .filter(|a| matches!(a, Action::SendBinary(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_beeps_never_ask_for_a_barge_in_or_a_transcript() {
+        // Not through the speech player: nothing is playing, so there is no segment to cut, and the
+        // only actions the beeps cause are cue changes and the forwarded frame.
+        let mut session = awaiting_ready(Mode::HandsFree);
+        let actions = session.handle(Input::GatewayText(READY.into()), 0);
+        assert!(actions.iter().all(|a| matches!(
+            a,
+            Action::Forward(_) | Action::ConfigureOnset(_) | Action::State(_) | Action::SetCue(_)
+        )));
+        assert!(!actions.iter().any(|a| matches!(
+            a,
+            Action::SendText(_) | Action::FlushPlayback | Action::Play { .. }
+        )));
+    }
+
+    #[test]
+    fn push_to_talk_beeps_too_and_a_held_button_silences_them() {
+        let mut session = awaiting_ready(Mode::PushToTalk);
+        assert_eq!(ready_at(&mut session, READY, 0), vec![Some(Cue::Start)]);
+        let mut held = awaiting_ready(Mode::PushToTalk);
+        ready_at(&mut held, READY, 0);
+        let down = cue_actions(&held.handle(Input::Ptt { down: true }, 100));
+        assert_eq!(down, vec![None]);
+        let up = cue_actions(&held.handle(Input::Ptt { down: false }, 150));
+        assert!(up.is_empty());
+    }
+
+    #[test]
+    fn a_thinking_turn_right_after_the_beeps_gets_its_own_cue() {
+        let mut session = awaiting_ready(Mode::HandsFree);
+        ready_at(&mut session, READY, 0);
+        let after = cue_actions(&session.handle(
+            Input::GatewayText(r#"{"type":"turn","state":"thinking"}"#.into()),
+            STOP,
+        ));
+        assert_eq!(after, vec![Some(Cue::Thinking)]);
     }
 
     fn down_seq(seq: u16, segment: u32, pcm: &[u8]) -> Vec<u8> {
