@@ -481,6 +481,19 @@ describe("an accepted message that has not run", () => {
     held.get("hold: target's long turn")!();
   }, 20000);
 
+  it("claims no notice for a sender stopped on purpose before the first sweep", async () => {
+    const fixture = setup({ limit: false });
+    const { context, held, target, caller } = fixture;
+    await post(context, target.id, { message: "hold: target's long turn" });
+    await eventually(() => expect(held.has("hold: target's long turn")).toBe(true));
+    await post(context, target.id, { message: "plan A" }, toolHeaders(caller.id));
+    markSessionStopped(caller.id);
+    const now = Date.now();
+    for (const minutes of [16, 30, 60]) expect(sweepLateralSends(context, { now: now + minutes * 60_000 }).reported).toEqual([]);
+    expect(dbModule.initDb().prepare("SELECT COUNT(*) FROM callback_deliveries WHERE delivery_kind = ?").pluck().get(LATERAL_STALL_DELIVERY_KIND)).toBe(0);
+    held.get("hold: target's long turn")!();
+  }, 20000);
+
   it("tells the sender again when a later turn of the target goes silent", async () => {
     const { gates, queue, context, target, caller, ids, base } = await queueThreeBehindATurn();
     await withRouteBackedFetch(context, {}, async () => {
